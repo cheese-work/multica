@@ -95,6 +95,14 @@ test.describe("Issues", () => {
     await expect(page.getByText(oldTitle)).toBeHidden({ timeout: 10000 });
     await expect(page.getByText(updatedTodayTitle)).toBeHidden({ timeout: 10000 });
 
+    // Choosing a date leaves the filter menu open, so a click on the trigger
+    // would close it. Close it first, then reopen it the way a user does.
+    await expect
+      .poll(async () => {
+        if ((await page.getByRole("menu").count()) > 0) await page.keyboard.press("Escape");
+        return page.getByRole("menu").count();
+      })
+      .toBe(0);
     await page.getByRole("button", { name: /1 filter/i }).click();
     const dateFilterItem = page.getByRole("menuitem", { name: /^Date\b/ });
     await dateFilterItem.focus();

@@ -239,9 +239,26 @@ var issueGetCmd = &cobra.Command{
 var issuePullRequestsCmd = &cobra.Command{
 	Use:     "pull-requests <id>",
 	Aliases: []string{"prs"},
-	Short:   "List pull requests linked to an issue",
+	Short:   "List or unlink pull requests linked to an issue",
 	Args:    exactArgs(1),
 	RunE:    runIssuePullRequests,
+}
+
+var issuePullRequestsListCmd = &cobra.Command{
+	Use:   "list <id>",
+	Short: "List pull requests linked to an issue",
+	Args:  exactArgs(1),
+	RunE:  runIssuePullRequests,
+}
+
+var issuePullRequestsUnlinkCmd = &cobra.Command{
+	Use:   "unlink <issue-id> <pr>",
+	Short: "Unlink a pull request from an issue and exclude it from auto-relinking",
+	Long: "Remove a pull request link from an issue and record an exclusion so subsequent\n" +
+		"webhooks for that pull request do not re-link or auto-complete the issue.\n\n" +
+		"<pr> accepts a pull request UUID, number (42 or #42), owner/repo#number, or URL.",
+	Args: exactArgs(2),
+	RunE: runIssuePullRequestsUnlink,
 }
 
 var issueChildrenCmd = &cobra.Command{
@@ -592,6 +609,9 @@ func init() {
 	issueSubscriberCmd.AddCommand(issueSubscriberAddCmd)
 	issueSubscriberCmd.AddCommand(issueSubscriberRemoveCmd)
 
+	issuePullRequestsCmd.AddCommand(issuePullRequestsListCmd)
+	issuePullRequestsCmd.AddCommand(issuePullRequestsUnlinkCmd)
+
 	// issue list
 	issueListCmd.Flags().String("output", "table", "Output format: table or json")
 	issueListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -615,6 +635,8 @@ func init() {
 
 	// issue pull-requests
 	issuePullRequestsCmd.Flags().String("output", "table", "Output format: table or json")
+	issuePullRequestsListCmd.Flags().String("output", "table", "Output format: table or json")
+	issuePullRequestsUnlinkCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -1060,6 +1082,165 @@ func runIssuePullRequests(cmd *cobra.Command, args []string) error {
 	prs, _ := result["pull_requests"].([]any)
 	printIssuePullRequestsTable(normalizePullRequestList(prs))
 	return nil
+}
+
+func runIssuePullRequestsUnlink(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	prRef, err := resolveIssuePullRequestRef(ctx, client, issueRef, args[1])
+	if err != nil {
+		return err
+	}
+
+	var result map[string]any
+	path := "/api/issues/" + url.PathEscape(issueRef.ID) + "/pull-requests/" + url.PathEscape(prRef.ID)
+	if err := client.DeleteJSONResponse(ctx, path, &result); err != nil {
+		return fmt.Errorf("unlink pull request: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Unlinked pull request %s from issue %s.\n", prRef.Display, issueRef.Display)
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		prs, _ := result["pull_requests"].([]any)
+		printIssuePullRequestsTable(normalizePullRequestList(prs))
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+var issuePRURLPattern = regexp.MustCompile(`^(https?://[^/?#]+/.+?/(?:pull|pulls|merge_requests)/\d+)(?:[/?#].*)?$`)
+
+func normalizeIssuePullRequestURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	m := issuePRURLPattern.FindStringSubmatch(u.Scheme + "://" + u.Host + u.EscapedPath())
+	if m == nil {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimRight(m[1], "/")), true
+}
+
+func resolveIssuePullRequestRef(ctx context.Context, client *cli.APIClient, issueRef resolvedID, raw string) (resolvedID, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return resolvedID{}, fmt.Errorf("pull request reference is required")
+	}
+	if uuidRegexp.MatchString(trimmed) {
+		id := strings.ToLower(trimmed)
+		return resolvedID{ID: id, Display: id}, nil
+	}
+
+	var (
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+		wantURL    string
+	)
+	if n, ok := parsePositiveInt(strings.TrimPrefix(trimmed, "#")); ok {
+		wantNumber = n
+	} else if hash := strings.LastIndex(trimmed, "#"); hash > 0 && !strings.Contains(trimmed, "://") {
+		repoPart, numPart := trimmed[:hash], trimmed[hash+1:]
+		slash := strings.Index(repoPart, "/")
+		if slash > 0 && slash < len(repoPart)-1 && !strings.Contains(repoPart[slash+1:], "/") {
+			if n, ok := parsePositiveInt(numPart); ok {
+				wantOwner = strings.ToLower(strings.TrimSpace(repoPart[:slash]))
+				wantRepo = strings.ToLower(strings.TrimSpace(repoPart[slash+1:]))
+				wantNumber = n
+			}
+		}
+	}
+	if wantNumber == 0 {
+		if normURL, ok := normalizeIssuePullRequestURL(trimmed); ok {
+			wantURL = normURL
+		}
+	}
+	if wantNumber == 0 && wantURL == "" {
+		return resolvedID{}, fmt.Errorf("invalid pull request reference %q; pass a PR number (e.g. 42 or #42), owner/repo#number, PR URL, or PR UUID", raw)
+	}
+
+	var listResp map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/pull-requests", &listResp); err != nil {
+		return resolvedID{}, fmt.Errorf("list issue pull requests: %w", err)
+	}
+	prsRaw, _ := listResp["pull_requests"].([]any)
+	prs := normalizePullRequestList(prsRaw)
+
+	var matches []map[string]any
+	for _, pr := range prs {
+		prNum, _ := parsePositiveInt(strVal(pr, "number"))
+		prOwner := strings.ToLower(strings.TrimSpace(strVal(pr, "repo_owner")))
+		prRepo := strings.ToLower(strings.TrimSpace(strVal(pr, "repo_name")))
+		prURL, _ := normalizeIssuePullRequestURL(pullRequestURL(pr))
+		switch {
+		case wantURL != "":
+			if prURL != "" && prURL == wantURL {
+				matches = append(matches, pr)
+			}
+		case wantOwner != "":
+			if prNum == wantNumber && ((prOwner == wantOwner && prRepo == wantRepo) || strings.HasSuffix(prURL, "/"+wantOwner+"/"+wantRepo+"/pull/"+strconv.Itoa(wantNumber)) || strings.HasSuffix(prURL, "/"+wantOwner+"/"+wantRepo+"/pulls/"+strconv.Itoa(wantNumber))) {
+				matches = append(matches, pr)
+			}
+		default:
+			if prNum == wantNumber {
+				matches = append(matches, pr)
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return resolvedID{}, fmt.Errorf("no linked pull request matching %q on issue %s", raw, issueRef.Display)
+	case 1:
+		pr := matches[0]
+		id := strings.TrimSpace(strVal(pr, "id"))
+		if id == "" {
+			return resolvedID{}, fmt.Errorf("linked pull request matching %q has no id", raw)
+		}
+		return resolvedID{ID: id, Display: formatPullRequestDisplay(pr, id)}, nil
+	default:
+		labels := make([]string, 0, len(matches))
+		for _, pr := range matches {
+			labels = append(labels, formatPullRequestDisplay(pr, strVal(pr, "id")))
+		}
+		return resolvedID{}, fmt.Errorf("ambiguous pull request %q on issue %s; matches: %s (disambiguate with owner/repo#number, URL, or PR UUID)", raw, issueRef.Display, strings.Join(labels, ", "))
+	}
+}
+
+func formatPullRequestDisplay(pr map[string]any, fallback string) string {
+	owner := strings.TrimSpace(strVal(pr, "repo_owner"))
+	repo := strings.TrimSpace(strVal(pr, "repo_name"))
+	num := strings.TrimSpace(strVal(pr, "number"))
+	if owner != "" && repo != "" && num != "" {
+		return fmt.Sprintf("%s/%s#%s", owner, repo, num)
+	}
+	if num != "" {
+		return "#" + num
+	}
+	if u := pullRequestURL(pr); u != "" {
+		return u
+	}
+	return fallback
 }
 
 func normalizePullRequestList(raw []any) []map[string]any {

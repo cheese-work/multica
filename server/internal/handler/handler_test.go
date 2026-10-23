@@ -3777,3 +3777,13 @@ func TestUpsertSkillFileRejectsSkillMd(t *testing.T) {
 		t.Fatalf("expected error message about reserved SKILL.md, got: %s", upsertRec.Body.String())
 	}
 }
+
+func TestHandlerNewLeavesUnconfiguredProviderFailureProbeNil(t *testing.T) {
+	if testHandler == nil || testHandler.TaskService == nil {
+		t.Skip("testHandler not initialized")
+	}
+	if testHandler.TaskService.ProviderFailureProbe != nil {
+		t.Fatalf("TaskService.ProviderFailureProbe = %#v (%T), want nil when ProviderRecoveryBaseURL is empty",
+			testHandler.TaskService.ProviderFailureProbe, testHandler.TaskService.ProviderFailureProbe)
+	}
+}

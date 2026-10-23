@@ -14,6 +14,11 @@ RETURNING *;
 UPDATE comment SET decision_intent_id = sqlc.arg('decision_intent_id')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id');
 
+-- name: AttachDecisionAskToComment :one
+UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask'
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id')
+RETURNING *;
+
 -- name: CloseDecisionIntent :exec
 UPDATE decision_intent
 SET closed_at = COALESCE(closed_at, clock_timestamp()), close_reason = sqlc.arg('close_reason'),
@@ -393,3 +398,10 @@ WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_
   AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id')), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT sqlc.arg('row_limit');
+
+-- name: LatestDecisionRequestLane :one
+SELECT chat_session_id FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

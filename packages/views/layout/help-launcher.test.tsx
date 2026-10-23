@@ -84,18 +84,29 @@ beforeEach(() => {
 
 afterEach(() => {
   configStore.getState().setServerVersion("");
+  configStore.getState().setServerBuild("");
+  configStore.getState().setServerCommit("");
 });
 
 describe("HelpLauncher", () => {
   it("does not show a version row when the server omits it", () => {
+    configStore.getState().setServerBuild("20261021-0856");
     render(<HelpLauncher />);
     expect(screen.queryByText(/Server version/)).not.toBeInTheDocument();
   });
 
-  it("shows the server version once /api/config resolves it", () => {
-    configStore.getState().setServerVersion("1.2.3");
+  it("shows the plain server version when server_build is absent", () => {
+    configStore.getState().setServerVersion("0.6.3");
     render(<HelpLauncher />);
-    expect(screen.getByText("Server version 1.2.3")).toBeInTheDocument();
+    expect(screen.getByText("Server version 0.6.3")).toBeInTheDocument();
+  });
+
+  it("joins server_version and server_build when both are present", () => {
+    configStore.getState().setServerVersion("0.6.3");
+    configStore.getState().setServerBuild("20261021-0856");
+    configStore.getState().setServerCommit("1de8883");
+    render(<HelpLauncher />);
+    expect(screen.getByText("Server version 0.6.3-20261021-0856")).toBeInTheDocument();
   });
 
   // MUL-6462: after web onboarding the desktop download CTA was unreachable —

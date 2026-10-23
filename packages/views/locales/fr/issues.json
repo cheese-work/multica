@@ -476,6 +476,9 @@
     "thread_nav_label": "Aller au fil de commentaires",
     "thread_nav_resolved_label": "{{title}} (résolu)",
     "thread_nav_reply_label": "{{author}} : {{title}}",
+    "thread_nav_show_replies_one": "Afficher {{count}} réponse",
+    "thread_nav_show_replies_other": "Afficher {{count}} réponses",
+    "thread_nav_hide_replies": "Masquer les réponses",
     "sidebar_tooltip": "Afficher ou masquer la barre latérale droite",
     "find": {
       "placeholder": "Rechercher dans la tâche...",
@@ -894,6 +897,7 @@
     "updated_ago": "Mis à jour {{time}}"
   },
   "actions": {
+    "rename_issue": "Renommer la tâche",
     "status": "Statut",
     "priority": "Priorité",
     "assignee": "Assigné à",
@@ -1602,6 +1606,7 @@
       "target_squad": "Squad · le leader répartit",
       "target_member": "Membre",
       "instructions_hint": "Envoyées au responsable avec cette exécution, avec la description et les commentaires de la tâche.",
+      "advance_on_ci_green": "Quand les contrôles d’une PR liée réussissent, passer à la colonne suivante",
       "next_hint": "Inscrit dans les consignes du responsable pour qu’il sache quel état vient ensuite. Le système n’avance jamais l’état à la fin d’une exécution.",
       "preview_brief": "Aperçu des consignes de l’agent",
       "preview_title": "Consignes de l’étape « {{status}} »",
@@ -1623,8 +1628,7 @@
       "step_off": "Désactivé : ce workflow n’utilise pas ce statut. Activez-le dans la liste des étapes pour l’utiliser.",
       "status_new_hint": "Nouveau statut. Il sera ajouté à la bibliothèque de statuts à l’enregistrement.",
       "no_other_status": "Tous les statuts sont déjà des étapes.",
-      "no_handoff_step": "Cette étape ne relaie pas : le responsable ne change pas et aucune exécution ne démarre.",
-      "new_step_handoff": "Enregistrez d’abord le workflow ; le nouveau statut pourra relayer ensuite."
+      "no_handoff_step": "Cette étape ne relaie pas : le responsable ne change pas et aucune exécution ne démarre."
     },
     "mapping": {
       "title": "Déplacer les tâches vers {{name}}",
@@ -1667,6 +1671,7 @@
     },
     "picker": {
       "header": "{{workflow}} · selon le projet « {{project}} »",
+      "header_no_project": "Statuts {{workflow}} · sans projet",
       "footer": "Seuls les états du workflow de cette tâche sont affichés. À droite : à qui elle est confiée en entrant dans l’état."
     },
     "confirm": {
@@ -1793,5 +1798,8 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "a créé {{created}} · mis à jour {{updated}}"
   }
 }
