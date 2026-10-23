@@ -1,4 +1,5 @@
 name: CD deploy to C00
+run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
 # D2 (CHE-530): deploys an already-admitted release-candidate tuple to the
 # live C00 self-host stack. This workflow is the ONLY place in the repo that
@@ -65,6 +66,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  candidate-preflight:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 65
+    outputs:
+      eligible: ${{ steps.candidate.outputs.eligible }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the YAML parser the path-filter reader needs
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Select the newest admissible candidate before C00 approval
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECKS_WAIT_SECONDS: "3600"
+        run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
+
   # ---------------------------------------------------------------------------
   # Automatic path only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
@@ -75,7 +106,8 @@ jobs:
   # removes: capture-tuple.sh inspects containers and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    needs: candidate-preflight
+    if: needs.candidate-preflight.outputs.eligible == 'true'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     # Up to 60 minutes waiting for CI's required checks plus the original
     # 15-minute budget for the baseline read and evidence issue.

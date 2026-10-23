@@ -2626,6 +2626,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}); err != nil {
 		slog.Warn("daemon claim: could not record the claimed model",
 			"task_id", uuidToString(task.ID), "error", err)
+	} else {
+		// resp was snapshotted before this write; report what is now stored.
+		resp.ClaimedModel = &agent.Model.String
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
