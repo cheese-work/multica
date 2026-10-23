@@ -1720,6 +1720,11 @@
     },
     "detail": {
       "follows_project": "(selon le projet)",
+      "follows_override": "(défini sur cette tâche)",
+      "override_title": "Workflow de cette tâche",
+      "override_follow_project": "Suivre le workflow du projet",
+      "override_error": "Impossible de modifier le workflow",
+      "no_workflow": "Aucun workflow",
       "card_title": "{{workflow}} · selon {{project}}",
       "card_hint": "Le workflow du projet décide de ces colonnes et transferts."
     },

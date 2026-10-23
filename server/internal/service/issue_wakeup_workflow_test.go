@@ -16,8 +16,20 @@ import (
 // status changes are refused like the registering run's would be. A wakeup a
 // member registered has no such run and starts from the issue's status.
 func TestWakeupRunKeepsTheRegisteringRunsStep(t *testing.T) {
+	t.Run("issue following its project", func(t *testing.T) { wakeupRunKeepsStep(t, false) })
+	t.Run("issue with a workflow override", func(t *testing.T) { wakeupRunKeepsStep(t, true) })
+}
+
+func wakeupRunKeepsStep(t *testing.T, overridden bool) {
 	f, s, issue, agent := wakeFixture(t)
 	ctx := context.Background()
+	if overridden {
+		var workflowID string
+		f.QueryRow(t, `INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps)
+			VALUES ($1, 'Wakeup override '||gen_random_uuid()::text, '', 'todo', '[]'::jsonb) RETURNING id::text`, f.WorkspaceID).Scan(&workflowID)
+		f.Cleanup(t, "DELETE FROM issue_workflow WHERE id=$1", workflowID)
+		f.Exec(t, "UPDATE issue SET workflow_id=$2 WHERE id=$1", issue, workflowID)
+	}
 	source := f.Task(t, agent, testutil.Cols{
 		"issue_id": issue, "status": "completed", "workflow_step": "in_progress",
 		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),

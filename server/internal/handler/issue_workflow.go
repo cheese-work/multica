@@ -743,6 +743,23 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issues that override to this workflow are not remapped; an edit cannot
+	// drop a status one of them still holds.
+	if !current.IsDefault {
+		held, err := qtx.ListOverrideIssueStatusesForWorkflow(ctx, db.ListOverrideIssueStatusesForWorkflowParams{WorkspaceID: wsUUID, WorkflowID: current.ID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save workflow")
+			return
+		}
+		after := issueworkflow.Definition{Steps: steps}
+		for _, status := range held {
+			if !after.Has(status) {
+				writeErrorCode(w, http.StatusConflict, "workflow_in_use", fmt.Sprintf("issues that use this workflow are on %q; move them first", status))
+				return
+			}
+		}
+	}
+
 	// Default accepts every status, so editing it never moves issues; issues
 	// on a status it drops stay there and show under hidden columns.
 	plan := workflowMappingPlan{Required: []StatusMappingRequirement{}, Unchanged: []StatusIssueCount{}}
@@ -859,6 +876,19 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			"error":         fmt.Sprintf("%d project(s) still use this workflow; switch them to another workflow first", len(projects)),
 			"code":          "workflow_in_use",
 			"project_count": len(projects),
+		})
+		return
+	}
+	overrides, err := qtx.CountIssuesOverridingToIssueWorkflow(ctx, db.CountIssuesOverridingToIssueWorkflowParams{WorkspaceID: wsUUID, WorkflowID: idUUID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete workflow")
+		return
+	}
+	if overrides > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":       fmt.Sprintf("%d issue(s) still use this workflow; switch them to another workflow first", overrides),
+			"code":        "workflow_in_use",
+			"issue_count": overrides,
 		})
 		return
 	}

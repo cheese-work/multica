@@ -31,11 +31,31 @@ func (q *Queries) ClaimIssueCIAdvance(ctx context.Context, arg ClaimIssueCIAdvan
 	return result.RowsAffected(), nil
 }
 
+const countIssuesOverridingToIssueWorkflow = `-- name: CountIssuesOverridingToIssueWorkflow :one
+SELECT COUNT(*)::bigint FROM issue
+WHERE workspace_id = $1::uuid
+  AND workflow_id = $2::uuid
+`
+
+type CountIssuesOverridingToIssueWorkflowParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+}
+
+// Direct references that block deleting a workflow.
+func (q *Queries) CountIssuesOverridingToIssueWorkflow(ctx context.Context, arg CountIssuesOverridingToIssueWorkflowParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssuesOverridingToIssueWorkflow, arg.WorkspaceID, arg.WorkflowID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countProjectIssuesByStatus = `-- name: CountProjectIssuesByStatus :many
 SELECT status, COUNT(*)::bigint AS issue_count
 FROM issue
 WHERE workspace_id = $1::uuid
   AND project_id = ANY($2::uuid[])
+  AND workflow_id IS NULL
 GROUP BY status
 ORDER BY status
 `
@@ -52,6 +72,8 @@ type CountProjectIssuesByStatusRow struct {
 
 // Status census for a workflow switch or step removal, including terminal
 // issues: every issue of the project must end on a status its workflow lists.
+// Issues with their own workflow override follow that workflow, not the
+// project's, so neither the census nor the remap below counts or moves them.
 func (q *Queries) CountProjectIssuesByStatus(ctx context.Context, arg CountProjectIssuesByStatusParams) ([]CountProjectIssuesByStatusRow, error) {
 	rows, err := q.db.Query(ctx, countProjectIssuesByStatus, arg.WorkspaceID, arg.ProjectIds)
 	if err != nil {
@@ -246,6 +268,24 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 	return i, err
 }
 
+const hasLiveTaskForIssue = `-- name: HasLiveTaskForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = $1::uuid
+      AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running', 'deferred')
+)
+`
+
+// Any task that can still run or retry. A deferred task is included: its retry
+// keeps the old workflow step, so a switch under it would pass the stale-step
+// check. HasActiveTaskForIssue covers only the first four states.
+func (q *Queries) HasLiveTaskForIssue(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasLiveTaskForIssue, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listIssueWorkflowNamesUsingStatusKey = `-- name: ListIssueWorkflowNamesUsingStatusKey :many
 SELECT name FROM issue_workflow
 WHERE workspace_id = $1::uuid
@@ -342,6 +382,39 @@ func (q *Queries) ListNamedIssueWorkflowSteps(ctx context.Context, workspaceID p
 			return nil, err
 		}
 		items = append(items, steps)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOverrideIssueStatusesForWorkflow = `-- name: ListOverrideIssueStatusesForWorkflow :many
+SELECT DISTINCT status FROM issue
+WHERE workspace_id = $1::uuid
+  AND workflow_id = $2::uuid
+`
+
+type ListOverrideIssueStatusesForWorkflowParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+}
+
+// Statuses held by issues that follow this workflow by override, for an edit
+// that would drop one of them.
+func (q *Queries) ListOverrideIssueStatusesForWorkflow(ctx context.Context, arg ListOverrideIssueStatusesForWorkflowParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listOverrideIssueStatusesForWorkflow, arg.WorkspaceID, arg.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			return nil, err
+		}
+		items = append(items, status)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -528,7 +601,8 @@ WHERE i.workspace_id = $2::uuid
   AND i.project_id = ANY($3::uuid[])
   AND i.status = $4::text
   AND i.status <> $1::text
-RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id
+  AND i.workflow_id IS NULL
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id
 `
 
 type RemapProjectIssueStatusParams struct {
@@ -589,6 +663,7 @@ func (q *Queries) RemapProjectIssueStatus(ctx context.Context, arg RemapProjectI
 			&i.LastActivityAt,
 			&i.TriageState,
 			&i.DuplicateOfIssueID,
+			&i.WorkflowID,
 		); err != nil {
 			return nil, err
 		}
@@ -622,6 +697,63 @@ type RemoveStatusFromDefaultIssueWorkflowParams struct {
 func (q *Queries) RemoveStatusFromDefaultIssueWorkflow(ctx context.Context, arg RemoveStatusFromDefaultIssueWorkflowParams) error {
 	_, err := q.db.Exec(ctx, removeStatusFromDefaultIssueWorkflow, arg.StatusKey, arg.WorkspaceID)
 	return err
+}
+
+const setIssueWorkflow = `-- name: SetIssueWorkflow :one
+UPDATE issue SET
+    workflow_id = $1::uuid,
+    revision = revision + 1,
+    updated_at = now()
+WHERE id = $2::uuid
+  AND workspace_id = $3::uuid
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id
+`
+
+type SetIssueWorkflowParams struct {
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Sets or clears (NULL) one issue's workflow override. Administrative like a
+// project workflow switch: no status, assignee or run changes.
+func (q *Queries) SetIssueWorkflow(ctx context.Context, arg SetIssueWorkflowParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, setIssueWorkflow, arg.WorkflowID, arg.ID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+		&i.WorkflowID,
+	)
+	return i, err
 }
 
 const setProjectWorkflow = `-- name: SetProjectWorkflow :one

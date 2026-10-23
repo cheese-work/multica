@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // CheckContext is one normalized check for a PR head. Both check runs and commit
@@ -80,12 +81,16 @@ type restPullRequest struct {
 }
 
 type restCheckRun struct {
-	ID         int64  `json:"id"`
-	HeadSHA    string `json:"head_sha"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	DetailsURL string `json:"details_url"`
+	ID         int64     `json:"id"`
+	HeadSHA    string    `json:"head_sha"`
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion"`
+	DetailsURL string    `json:"details_url"`
+	StartedAt  time.Time `json:"started_at"`
+	App        struct {
+		ID int64 `json:"id"`
+	} `json:"app"`
 }
 
 type restStatusContext struct {
@@ -119,6 +124,12 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 
 	snap := &PRSnapshot{HeadSHA: pr.Head.SHA}
 	seenRuns := make(map[int64]struct{}, len(runs))
+	type checkKey struct {
+		Name  string
+		AppID int64
+	}
+	latestIndexes := make(map[checkKey]int, len(runs))
+	latestRuns := make([]restCheckRun, 0, len(runs))
 	for _, run := range runs {
 		if run.ID <= 0 || run.Name == "" || run.HeadSHA != snap.HeadSHA {
 			return nil, errors.New("ghsnapshot: invalid check run or mismatched head")
@@ -127,6 +138,22 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			return nil, errors.New("ghsnapshot: duplicate check run during pagination")
 		}
 		seenRuns[run.ID] = struct{}{}
+		key := checkKey{Name: run.Name, AppID: run.App.ID}
+		if index, exists := latestIndexes[key]; exists {
+			previous := latestRuns[index]
+			newer := run.ID > previous.ID
+			if !run.StartedAt.IsZero() && !previous.StartedAt.IsZero() && !run.StartedAt.Equal(previous.StartedAt) {
+				newer = run.StartedAt.After(previous.StartedAt)
+			}
+			if newer {
+				latestRuns[index] = run
+			}
+		} else {
+			latestIndexes[key] = len(latestRuns)
+			latestRuns = append(latestRuns, run)
+		}
+	}
+	for _, run := range latestRuns {
 		status := normalizeRunStatus(run.Status)
 		conclusion := strings.ToLower(run.Conclusion)
 		if status != "completed" {

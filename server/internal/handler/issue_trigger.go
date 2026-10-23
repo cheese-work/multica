@@ -117,7 +117,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 // for the run a write lost to the pending-task unique index.
 func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
 	stepHandsOff := false
-	if def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID); err == nil && def != nil {
+	if def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID); err == nil && def != nil {
 		step, ok := def.Step(issue.Status)
 		stepHandsOff = ok && step.HandsOff()
 	}

@@ -1647,6 +1647,14 @@ export class ApiClient {
     });
   }
 
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
+  }
+
   async moveIssue(id: string, data: MoveIssueRequest): Promise<Issue> {
     return this.fetch(`/api/issues/${id}/move`, {
       method: "POST",
