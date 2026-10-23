@@ -116,7 +116,7 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
 	}
 	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun)
+		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
 	}
 	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
 	if willRun {
