@@ -1034,6 +1034,40 @@ func TestScanCodexSessionUsageReadsPerTaskHome(t *testing.T) {
 	}
 }
 
+func TestCodexResultUsageMapUsesSessionModelForDefaultAgent(t *testing.T) {
+	t.Parallel()
+	taskHome := t.TempDir()
+	threadID := "default-model-thread"
+	startTime := time.Now().Add(-time.Minute)
+	dateDir := filepath.Join(taskHome, "sessions",
+		fmt.Sprintf("%04d", startTime.Year()),
+		fmt.Sprintf("%02d", int(startTime.Month())),
+		fmt.Sprintf("%02d", startTime.Day()),
+	)
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatalf("mkdir date dir: %v", err)
+	}
+	content := fmt.Sprintf(
+		`{"timestamp":%q,"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}`+"\n",
+		startTime.Add(time.Second).UTC().Format(time.RFC3339Nano),
+	)
+	if err := os.WriteFile(filepath.Join(dateDir, "rollout-2026-07-13T00-00-00-"+threadID+".jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	jsonRPCUsage := TokenUsage{
+		InputTokens:      321,
+		OutputTokens:     42,
+		CacheReadTokens:  1000,
+		CacheWriteTokens: 7,
+	}
+	got := codexResultUsageMap(startTime, taskHome, threadID, false, "", jsonRPCUsage)
+	want := map[string]TokenUsage{"gpt-5.6-sol": jsonRPCUsage}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("usage map = %#v, want session model with unchanged JSON-RPC usage %#v", got, want)
+	}
+}
+
 func TestScanCodexSessionUsageSubtractsResumeBaseline(t *testing.T) {
 	t.Parallel()
 	taskHome := t.TempDir()
@@ -4230,9 +4264,14 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousMessages(t *testing.T) {
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-progress","turn":{"id":"turn-progress","status":"completed"}}}'`+"\n")
 
+	// The fixture pauses 50ms between events. A timeout only slightly above
+	// that fails when the machine is busy: the pause itself can run long
+	// (a sleep process to start), and the no-progress timer then fires on a
+	// healthy stream. Keep the timeout far above the gap so only a real stall
+	// can trip it.
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
-		SemanticInactivityTimeout: 90 * time.Millisecond,
+		Timeout:                   10 * time.Second,
+		SemanticInactivityTimeout: 2 * time.Second,
 	})
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
@@ -4267,9 +4306,11 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-delta","turn":{"id":"turn-delta","status":"completed"}}}'`+"\n")
 
+	// Same margin rule as the test above: the 50ms pauses must stay far inside
+	// the timeout.
 	result := executeFakeCodex(t, fakePath, ExecOptions{
-		Timeout:                   5 * time.Second,
-		SemanticInactivityTimeout: 150 * time.Millisecond,
+		Timeout:                   10 * time.Second,
+		SemanticInactivityTimeout: 2 * time.Second,
 	})
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)

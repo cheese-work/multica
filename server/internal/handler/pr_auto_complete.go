@@ -184,13 +184,13 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteNone
 		return d, nil
 	}
-	// An unresolvable custom key is returned unchanged and treated as not
-	// terminal, the same direction the previous merge gate took.
-	effective := resolver.Effective(ctx, h.issueStatusCatalog(), issue.Status)
+	// Only the literal built-in done and cancelled are terminal. Custom
+	// statuses, whatever their category (agent_accepted, approved), still move
+	// on merge; Effective would fold them into done or cancelled (CHE-1990).
 	// The guards that make a merge change nothing come first, so the issue page
 	// only speaks when a merge would move the issue.
 	switch {
-	case effective == issuestatus.Done || effective == issuestatus.Cancelled:
+	case issue.Status == issuestatus.Done || issue.Status == issuestatus.Cancelled:
 		d.State = prAutoCompleteTerminal
 		return d, nil
 	case issue.TriageState.Valid:

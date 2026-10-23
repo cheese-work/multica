@@ -261,6 +261,21 @@ Omit `--for` only when the window names exactly one person. The person must stil
 
 The response contains only `id`, `title`, `updated_at` and `issue_mentions`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
 
+### Decision requests
+
+A running assigned issue task asks a person in one call:
+
+```bash
+multica decision request --issue MUL-123 --for <user-id> --class reversible \
+  --ask-file ./ask.md [--footer-file ./footer.md] [--parent <comment-id>]
+```
+
+One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
+
+The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
+
+If a decision-intent comment is still open for the task, the older two-step flow applies: pass `--session` or `--new-dm --for`, and the ask replies under the intent comment. `--parent` is refused there.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.
