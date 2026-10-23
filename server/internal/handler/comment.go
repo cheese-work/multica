@@ -1444,6 +1444,7 @@ type CreateCommentRequest struct {
 	DecisionRecord   bool     `json:"decision_record"`
 	DecisionVeto     bool     `json:"decision_veto"`
 	MessageIDs       []string `json:"message_ids"`
+	ContextMessageID string   `json:"context_message_id"`
 	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
@@ -1719,8 +1720,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		h.createDecisionRecordComment(w, r, issue, req)
 		return
 	}
-	if len(req.MessageIDs) != 0 || req.EscalationClass != "" {
-		writeError(w, http.StatusBadRequest, "message_ids and escalation_class require decision_record")
+	if len(req.MessageIDs) != 0 || req.ContextMessageID != "" || req.EscalationClass != "" {
+		writeError(w, http.StatusBadRequest, "message_ids, context_message_id and escalation_class require decision_record")
 		return
 	}
 

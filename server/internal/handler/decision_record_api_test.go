@@ -175,3 +175,49 @@ func TestUnpromptedDecisionSourceRefusals(test *testing.T) {
 		})
 	}
 }
+
+// A bare reply ("1", "yes") is unreadable on the issue unless the record also
+// attests the options it chose between (CHE-1958).
+func TestDecisionRecordAPIQuotesOfferedOptions(test *testing.T) {
+	for _, mutation := range []string{"ok", "other_session", "user_message", "after_reply", "missing"} {
+		test.Run(mutation, func(test *testing.T) {
+			fixture := newAskedRecordFixture(test)
+			offered := map[string]string{"chat_session_id": fixture.sessionID, "role": "assistant", "content": "1) Ship now\n2) Hold", "created_at": "2020-01-01T00:00:00Z"}
+			switch mutation {
+			case "other_session":
+				offered["chat_session_id"] = dbfx.ChatSession(test, fixture.agentID)
+			case "user_message":
+				offered["role"] = "user"
+			case "after_reply":
+				delete(offered, "created_at")
+			}
+			cols := testutil.Cols{}
+			for column, value := range offered {
+				cols[column] = value
+			}
+			contextID := dbfx.Insert(test, "chat_message", cols)
+			if mutation == "missing" {
+				contextID = "11111111-1111-4111-8111-111111111111"
+			}
+			body := `{"decision_record":true,"message_ids":["` + fixture.messageID + `"],"escalation_class":"reversible","context_message_id":"` + contextID + `"}`
+			request := fixture.recordRequest()
+			request.Body = ioBody(body)
+			response := httptest.NewRecorder()
+			testHandler.CreateComment(response, withIssueParam(request, fixture.issueID))
+			if mutation != "ok" {
+				if response.Code != http.StatusBadRequest {
+					test.Fatalf("context refusal: status=%d body=%s", response.Code, response.Body.String())
+				}
+				return
+			}
+			var comment db.Comment
+			if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &comment) != nil {
+				test.Fatalf("record with context: status=%d body=%s", response.Code, response.Body.String())
+			}
+			const wanted = "Options offered:\n> 1) Ship now\n> 2) Hold\n\nReply:\n>   Yes.\n> Keep the exact words.  "
+			if comment.Content != wanted {
+				test.Fatalf("quote lacks the offered options:\n%q", comment.Content)
+			}
+		})
+	}
+}
