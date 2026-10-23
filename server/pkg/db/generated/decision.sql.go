@@ -643,6 +643,28 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 	return i, err
 }
 
+const getLastAssistantMessageBefore = `-- name: GetLastAssistantMessageBefore :one
+SELECT id FROM chat_message
+WHERE chat_session_id = $1 AND role = 'assistant' AND message_kind = 'message'
+  AND created_at < $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLastAssistantMessageBeforeParams struct {
+	SessionID pgtype.UUID        `json:"session_id"`
+	Before    pgtype.Timestamptz `json:"before"`
+}
+
+// The agent's own last reply before a message: the options a bare reply chose
+// between, attestable with --context-message.
+func (q *Queries) GetLastAssistantMessageBefore(ctx context.Context, arg GetLastAssistantMessageBeforeParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLastAssistantMessageBefore, arg.SessionID, arg.Before)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
 WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
 UPDATE decision_answer answer SET
@@ -1113,6 +1135,62 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 			&i.ReaskDeliveredAt,
 			&i.ReaskOutcome,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDecisionRequestsBeforeMessage = `-- name: ListOpenDecisionRequestsBeforeMessage :many
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
+    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.chat_session_id = $2
+  AND request.status = 'open' AND request.origin = 'asked'
+  AND ping.created_at < $3
+ORDER BY ping.created_at, request.id
+LIMIT 5
+`
+
+type ListOpenDecisionRequestsBeforeMessageParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	SessionID   pgtype.UUID        `json:"session_id"`
+	Before      pgtype.Timestamptz `json:"before"`
+}
+
+type ListOpenDecisionRequestsBeforeMessageRow struct {
+	ID             pgtype.UUID `json:"id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
+	Ask            string      `json:"ask"`
+	IssueKey       string      `json:"issue_key"`
+}
+
+// Open asked requests in a DM whose ping precedes the given message: what a
+// bare reply in that DM is answering.
+func (q *Queries) ListOpenDecisionRequestsBeforeMessage(ctx context.Context, arg ListOpenDecisionRequestsBeforeMessageParams) ([]ListOpenDecisionRequestsBeforeMessageRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionRequestsBeforeMessage, arg.WorkspaceID, arg.SessionID, arg.Before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionRequestsBeforeMessageRow{}
+	for rows.Next() {
+		var i ListOpenDecisionRequestsBeforeMessageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.IssueKey,
 		); err != nil {
 			return nil, err
 		}
