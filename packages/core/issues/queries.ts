@@ -2,6 +2,7 @@ import {
   infiniteQueryOptions,
   keepPreviousData,
   queryOptions,
+  type Query,
   type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
@@ -18,6 +19,8 @@ import type {
   ListIssuesParams,
   ListIssuesCache,
 } from "../types";
+import { freshestCachedIssueRevision } from "./cache-coordinator";
+import { reconcileIssueFullSnapshotRevision } from "./ws-updaters";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 
@@ -439,10 +442,122 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/** Mutation key shared by the single and batch issue update hooks. */
+export const issueWriteMutationKey = (wsId: string) =>
+  ["issue-write", wsId] as const;
+
+/** An update for `issueId` is in flight: it has patched loaded projections
+ *  optimistically without advancing their revision. */
+function hasPendingIssueWrite(qc: QueryClient, wsId: string, issueId: string) {
+  return qc.getMutationCache().findAll({
+    mutationKey: issueWriteMutationKey(wsId),
+    status: "pending",
+    predicate: ({ state }) => {
+      const vars = state.variables as { id?: string; ids?: string[] } | undefined;
+      return vars?.id === issueId || !!vars?.ids?.includes(issueId);
+    },
+  }).length > 0;
+}
+
+/**
+ * Whether a full-issue response may become the detail entry. Both writers of
+ * that entry (the uuid detail query and the bare-key lookup seed) ask this, so
+ * a response that started before a newer write reached ANY projection cannot
+ * land over it: with `staleTime: Infinity` the older data is never re-read.
+ * The ordering is `onIssueUpdated`'s, widened to every cached projection.
+ *  - an unversioned response never displaces ordered data;
+ *  - a pending write for the issue has patched projections without advancing
+ *    their revision, so only a strictly newer response is admissible;
+ *  - otherwise an equal or newer revision is.
+ */
+function admitsFullIssue(qc: QueryClient, wsId: string, issue: Issue) {
+  const freshest = freshestCachedIssueRevision(qc, wsId, issue.id);
+  const pendingWrite = hasPendingIssueWrite(qc, wsId, issue.id);
+  if (issue.revision === undefined) return freshest === undefined && !pendingWrite;
+  if (freshest === undefined) return !pendingWrite;
+  return pendingWrite ? issue.revision > freshest : issue.revision >= freshest;
+}
+
+class StaleIssueResponseError extends Error {
+  constructor() {
+    super("Issue response is older than cached data");
+  }
+}
+
+/**
+ * TanStack marks a query fresh when its fetch ends (resolved, rejected, or
+ * cancelled and reverted to the state it had when the fetch began), and
+ * `staleTime: Infinity` then keeps whatever it holds. Once that has happened,
+ * give detail back the obligations that fresh mark erased: an auxiliary event
+ * proved a newer revision exists, or another projection already holds one. The
+ * second case is only flagged, not refetched, so a server that stays behind
+ * cannot cause a refetch loop.
+ *
+ * The end of the fetch is observed through a cache listener that exists only
+ * while this query is fetching: it releases itself on the first event that
+ * finds the query idle or removed, which every outcome produces (including a
+ * cancel whose request never answers). The restoration itself runs on a timer,
+ * after TanStack has finished writing the outcome, never inside the listener.
+ */
+const detailFetchWatchers = new WeakMap<Query, () => void>();
+
+function restoreDetailObligationsWhenFetchEnds(qc: QueryClient, wsId: string, id: string) {
+  const cache = qc.getQueryCache();
+  const detailKey = issueKeys.detail(wsId, id);
+  const query = cache.find({ queryKey: detailKey, exact: true });
+  if (!query || detailFetchWatchers.has(query)) return;
+  const release = cache.subscribe((event) => {
+    if (event.query !== query) return;
+    if (event.type !== "removed" && query.state.fetchStatus === "fetching") return;
+    release();
+    detailFetchWatchers.delete(query);
+    if (event.type !== "removed") setTimeout(() => restoreDetailObligations(qc, wsId, id), 0);
+  });
+  detailFetchWatchers.set(query, release);
+}
+
+/**
+ * `reconcileIssueFullSnapshotRevision`, for a snapshot that may carry no
+ * revision. An unversioned snapshot is behind every recorded auxiliary
+ * revision, so -Infinity orders it below all of them; passing `undefined`
+ * would return early and leave a freshly written entry fresh forever.
+ */
+function reconcileDetailSnapshot(
+  qc: QueryClient,
+  wsId: string,
+  id: string,
+  revision: number | undefined,
+) {
+  reconcileIssueFullSnapshotRevision(qc, wsId, id, revision ?? Number.NEGATIVE_INFINITY);
+}
+
+function restoreDetailObligations(qc: QueryClient, wsId: string, id: string) {
+  const detailKey = issueKeys.detail(wsId, id);
+  const detail = qc.getQueryData<Issue>(detailKey);
+  if (!detail) return;
+  reconcileDetailSnapshot(qc, wsId, id, detail.revision);
+  const freshest = freshestCachedIssueRevision(qc, wsId, id);
+  const behind =
+    freshest !== undefined && (detail.revision === undefined || detail.revision < freshest);
+  if (behind) {
+    qc.invalidateQueries({ queryKey: detailKey, exact: true, refetchType: "none" });
+  }
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
+    queryFn: async ({ client }) => {
+      restoreDetailObligationsWhenFetchEnds(client, wsId, id);
+      const issue = await api.getIssue(id);
+      if (admitsFullIssue(client, wsId, issue)) return issue;
+      // Keep what the cache has. With no detail entry there is nothing to
+      // keep: fail this attempt so the query retries against the server
+      // instead of storing a response known to be behind.
+      const cached = client.getQueryData<Issue>(issueKeys.detail(wsId, id));
+      if (cached) return cached;
+      throw new StaleIssueResponseError();
+    },
   });
 }
 
@@ -471,9 +586,22 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
     queryKey: issueKeys.identifier(wsId, identifier),
     // Keep this small, cacheable lookup alive when the last mention unmounts.
     // A remount can then share its request instead of aborting and restarting it.
-    queryFn: async () => {
+    queryFn: async ({ client }) => {
       try {
-        return await api.getIssue(identifier);
+        const issue = await api.getIssue(identifier);
+        // Seed the detail cache so the chip that renders next reads this
+        // issue instead of firing a second `getIssue(uuid)` and painting a
+        // label-only chip until it lands. Same admission as the uuid detail
+        // response: a lookup that started before a newer write must not seed
+        // over it, and the chip then reads the loaded projection or fetches
+        // detail itself.
+        if (admitsFullIssue(client, wsId, issue)) {
+          client.setQueryData(issueKeys.detail(wsId, issue.id), issue);
+          // `setQueryData` clears the stale flag; give it back when an
+          // auxiliary event already proved a newer revision exists.
+          reconcileDetailSnapshot(client, wsId, issue.id, issue.revision);
+        }
+        return issue;
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
         // Any other failure (401/5xx) must keep propagating so the query

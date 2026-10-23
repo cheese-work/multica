@@ -6,6 +6,7 @@ import { projectKeys } from "../projects/queries";
 import {
   applyIssueChange,
   bucketedListEntries,
+  freshestCachedIssueRevision,
   flatListEntries,
   invalidateIssueDerivatives,
   invalidateLastActivitySortedIssueLists,
@@ -227,36 +228,6 @@ function patchIssueSnapshot(
       ),
     );
   }
-}
-
-function freshestCachedIssueRevision(
-  qc: QueryClient,
-  wsId: string,
-  issueId: string,
-): number | undefined {
-  let freshest = qc.getQueryData<Issue>(issueKeys.detail(wsId, issueId))?.revision;
-  const consider = (issue: Issue | undefined) => {
-    if (issue?.revision !== undefined && (freshest === undefined || issue.revision > freshest)) {
-      freshest = issue.revision;
-    }
-  };
-  for (const [, data] of bucketedListEntries(qc, wsId)) {
-    consider(findIssueLocation(data, issueId)?.issue);
-  }
-  for (const [, data] of flatListEntries(qc, wsId)) {
-    for (const page of data.pages) {
-      consider(page.issues.find((issue) => issue.id === issueId));
-    }
-  }
-  for (const [, data] of tableRowEntries(qc, wsId)) {
-    consider(data.rows.find((row) => row.issue.id === issueId)?.issue);
-  }
-  for (const prefix of [issueKeys.childrenAll(wsId), issueKeys.projectGanttAll(wsId)]) {
-    for (const [, data] of issueArrayEntries(qc, prefix)) {
-      consider(data.find((issue) => issue.id === issueId));
-    }
-  }
-  return freshest;
 }
 
 function refetchForUnversionedIssueEvent(
