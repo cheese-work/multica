@@ -1130,7 +1130,6 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 			return &errDispatchSkipped{reason: providerFailureCooldownReason(recoveryAttempt), code: dispatch.ReasonProviderFailureCooldown}
 		}
 	}
-
 	// Update run with task reference.
 	updatedRun, err := queries.UpdateAutopilotRunRunning(ctx, db.UpdateAutopilotRunRunningParams{
 		ID:     run.ID,
@@ -1146,6 +1145,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 			return fmt.Errorf("commit autopilot recovery dispatch: %w", err)
 		}
 	}
+	s.TaskSvc.RecordHumanDelegation(ctx, autopilotAttr)
 
 	// Drop the empty-claim cache and wake the daemon. dispatchRunOnly
 	// inserts the task row directly via Queries.CreateAutopilotTask
