@@ -277,6 +277,8 @@ import {
   ChatMessageListSchema,
   ChatMessagesPageSchema,
   ChatPendingTaskSchema,
+  PendingChatTasksResponseSchema,
+  EMPTY_PENDING_CHAT_TASKS,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
@@ -4139,7 +4141,10 @@ export class ApiClient {
   }
 
   async listPendingChatTasks(): Promise<PendingChatTasksResponse> {
-    return this.fetch(`/api/chat/pending-tasks`);
+    const raw = await this.fetch<unknown>(`/api/chat/pending-tasks`);
+    return parseWithFallback(raw, PendingChatTasksResponseSchema, EMPTY_PENDING_CHAT_TASKS, {
+      endpoint: "GET /api/chat/pending-tasks",
+    });
   }
 
   async hasAnyPendingChatTasks(): Promise<HasPendingChatTasksResponse> {
