@@ -2,11 +2,12 @@
 
 import { StrictMode, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enChat from "../locales/en/chat.json";
@@ -1133,5 +1134,54 @@ describe("ChatPage back stack", () => {
       expect(history.entries).toEqual(["/acme/chat"]);
       expect(activeSession()).toBeNull();
     });
+  });
+});
+
+describe("ChatPage deep link vs workspace rehydration", () => {
+  // The [workspaceSlug] layout publishes the workspace in an effect, and the
+  // persisted chat store rehydrates from that workspace's namespace one
+  // microtask later. When the page mounts in the same commit as that effect,
+  // the rehydration lands after the page's own URL -> store sync and replaced
+  // the selection the URL names (CHE-1900: the quick-actions E2E deep link
+  // ended on "Pick a conversation" with `?session=` stripped).
+  const publishWorkspace = async () => {
+    await act(async () => {
+      setCurrentWorkspace("acme", "ws-1");
+      await Promise.resolve();
+    });
+  };
+
+  beforeEach(async () => {
+    setCurrentWorkspace(null, null);
+    // Leaving a workspace rehydrates from the un-namespaced key, which an
+    // earlier test's selection wrote; clear it through the store's own setter.
+    await Promise.resolve();
+    useChatStore.getState().setActiveSession(null);
+  });
+
+  // The pages here outlive the test that rendered them unless unmounted, and a
+  // retained page would keep reacting to the next test's workspace changes.
+  afterEach(cleanup);
+
+  it("keeps the thread the URL names when the rehydration lands after the mount sync", async () => {
+    const { replace } = renderPage("session=session-5");
+    expect(activeSession()).toBe("session-5");
+
+    await publishWorkspace();
+
+    expect(activeSession()).toBe("session-5");
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("applies the URL thread when the workspace only becomes current after the mount", async () => {
+    platformWorkspace.slug = null as unknown as string;
+    const { replace } = renderPage("session=session-5");
+    expect(activeSession()).toBeNull();
+
+    platformWorkspace.slug = "acme";
+    await publishWorkspace();
+
+    expect(activeSession()).toBe("session-5");
+    expect(replace).not.toHaveBeenCalled();
   });
 });

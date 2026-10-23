@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { TestApiClient } from "./fixtures";
 
 const DEFAULT_E2E_NAME = "E2E User";
@@ -87,4 +87,33 @@ export async function openWorkspaceMenu(page: Page) {
   await workspaceButton.click();
   // Wait for dropdown to appear
   await expect(page.locator('[class*="popover"]')).toBeVisible();
+}
+
+/**
+ * Click a control that only works once React has hydrated it. The composer
+ * shells are server-rendered buttons, and a click that lands before hydration
+ * is dropped without a trace, so the editor never mounts. React tags a node
+ * with `__reactProps$…` when it attaches, so wait for that, then click.
+ */
+export async function waitForHydrated(locator: Locator) {
+  await expect
+    .poll(
+      () => locator.evaluate((el) => Object.keys(el).some((key) => key.startsWith("__reactProps"))),
+      { timeout: 30000 },
+    )
+    .toBe(true);
+}
+
+export async function clickWhenHydrated(locator: Locator, expected?: Locator) {
+  await waitForHydrated(locator);
+  if (!expected) {
+    await locator.click();
+    return;
+  }
+  // The control can also be re-created by a render that follows hydration, so
+  // click until the thing it opens is there.
+  await expect(async () => {
+    await locator.click();
+    await expect(expected).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30000 });
 }

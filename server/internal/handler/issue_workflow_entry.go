@@ -46,7 +46,7 @@ type workflowHandoff struct {
 // move the issue from the step it works on. It returns the handoff that write
 // triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
-	def, project, err := issueworkflow.ForProject(ctx, q, prev.WorkspaceID, params.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
 	}
@@ -127,10 +127,29 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 	}
 }
 
+// handoffRunReasonTargetDiffers records that a handoff run started although the
+// caller asked for no run: the step's handler is not the caller.
+const handoffRunReasonTargetDiffers = "handoff_target_differs"
+
+// suppressRunForWrite is the write's suppress_run after the handoff rule:
+// --no-start says the caller's own work is already underway, which holds only
+// when the caller is the agent the handoff goes to. A handoff to anyone else
+// keeps its run, or nobody starts it. The reason is set when the flag was
+// overridden.
+func (h *Handler) suppressRunForWrite(ctx context.Context, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, handoff *workflowHandoff, suppressRun bool) (suppress bool, reason string) {
+	if !suppressRun || handoff == nil {
+		return suppressRun, ""
+	}
+	if actorType == "agent" && h.handedToAgent(ctx, prev, params, true) == actorID {
+		return true, ""
+	}
+	return false, handoffRunReasonTargetDiffers
+}
+
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
 // the activity log can record the status change and the handoff as one
 // timeline entry.
-func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, runStarted bool) map[string]string {
+func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, runStarted bool, runReason string) map[string]string {
 	out := map[string]string{
 		"workflow": hand.def.Name,
 		"to_type":  issue.AssigneeType.String,
@@ -140,12 +159,19 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 	if runStarted && note != "" {
 		out["note"] = note
 	}
+	if runStarted && runReason != "" {
+		out["run_reason"] = runReason
+	}
 	return out
 }
 
 // writeIssueWorkflowError answers a workflow rejection. It reports false when
 // err is not one, so the caller can fall through to its generic 500.
 func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
+		writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
+		return true
+	}
 	var notIn *issueworkflow.NotInWorkflowError
 	if errors.As(err, &notIn) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -413,7 +439,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 // step's instructions and commands; any other agent working on the issue
 // gets the observer brief, so it does not move a step it does not own.
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue) *TaskProjectWorkflowData {
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
 		slog.Warn("task claim: failed to load project workflow for brief injection",
 			"issue_id", uuidToString(issue.ID), "error", err)

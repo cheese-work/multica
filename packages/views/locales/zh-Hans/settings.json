@@ -279,6 +279,8 @@
     "field_name": "名称",
     "field_name_placeholder": "代码审查",
     "field_target": "执行者",
+    "no_target": "无目标",
+    "no_target_hint": "发布消息，不提及任何人。",
     "field_prompt": "提示词",
     "field_prompt_placeholder": "请审查这个任务关联的代码，重点关注正确性和边界情况。",
     "prompt_hint": "原样发送。智能体本来就能看到这个任务。",
@@ -1393,6 +1395,15 @@
   "desktop": {
     "tabs": {
       "updates": "更新"
+    },
+    "tab_bar": {
+      "pin": "固定标签页",
+      "unpin": "取消固定标签页",
+      "close": "关闭标签页",
+      "close_others": "关闭其他标签页",
+      "open_window": "在新窗口打开",
+      "new": "新建标签页",
+      "pinned_name": "{{title}}（已固定）"
     },
     "updates": {
       "title": "更新",

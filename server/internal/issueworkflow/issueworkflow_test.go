@@ -357,3 +357,33 @@ func TestBriefWithoutBlockedPointsAtTheBackStatus(t *testing.T) {
 		t.Fatalf("a workflow without blocked should not suggest it:\n%s", brief)
 	}
 }
+
+func TestAdvanceOnCIGreenRoundTripsAndValidates(t *testing.T) {
+	steps := []Step{
+		{StatusKey: "todo", Handler: Handler{Type: HandlerNone}},
+		{StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, AdvanceOnCIGreen: true},
+		{StatusKey: "in_review", Handler: Handler{Type: HandlerNone}},
+		{StatusKey: "done", Handler: Handler{Type: HandlerNone}},
+	}
+	raw, err := EncodeSteps(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[1].AdvanceOnCIGreen || got[2].AdvanceOnCIGreen {
+		t.Fatalf("flags after round trip = %v, %v; want true, false", got[1].AdvanceOnCIGreen, got[2].AdvanceOnCIGreen)
+	}
+	def := Definition{Steps: steps}
+	if err := ValidateHandoff(steps[1], def); err != nil {
+		t.Fatalf("in_progress cannot advance on CI green: %v", err)
+	}
+	for _, key := range []string{"done", "backlog", "blocked", "cancelled"} {
+		def := Definition{Steps: append(append([]Step{}, steps...), Step{StatusKey: key, Handler: Handler{Type: HandlerNone}})}
+		if err := ValidateHandoff(Step{StatusKey: key, Handler: Handler{Type: HandlerNone}, AdvanceOnCIGreen: true}, def); err == nil {
+			t.Fatalf("%q accepted advance_on_ci_green", key)
+		}
+	}
+}
