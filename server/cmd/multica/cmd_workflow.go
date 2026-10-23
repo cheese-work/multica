@@ -173,19 +173,19 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	steps, _ := wf["steps"].([]any)
-	match := -1
-	for i, raw := range steps {
+	var match map[string]any
+	for _, raw := range steps {
 		if s, _ := raw.(map[string]any); strVal(s, "status_key") == status {
-			if match >= 0 {
+			if match != nil {
 				return fmt.Errorf("status %q matches more than one step; nothing was changed", status)
 			}
-			match = i
+			match = s
 		}
 	}
-	if match < 0 {
+	if match == nil {
 		return fmt.Errorf("status %q matches no step; nothing was changed", status)
 	}
-	steps[match].(map[string]any)["instructions"] = string(text)
+	match["instructions"] = string(text)
 
 	// expected_version makes the server refuse the write if someone edited the
 	// workflow after the read above, instead of overwriting their change.
