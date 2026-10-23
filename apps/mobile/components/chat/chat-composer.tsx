@@ -53,10 +53,13 @@ interface Props {
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
   /** Hard-disable typing + send. Used when there's no usable agent in the
-   *  workspace or the session is archived (legacy). */
+   *  workspace or an archive/unarchive mutation is in flight. */
   disabled?: boolean;
   /** When `disabled`, replaces the pill label with the reason. */
   disabledReason?: string;
+  /** True when the active session is archived — keeps composer enabled and
+   *  shows the unarchive-on-send placeholder. */
+  archived?: boolean;
 }
 
 const IS_IOS = process.env.EXPO_OS === "ios";
@@ -70,6 +73,7 @@ export function ChatComposer({
   allowStop = true,
   disabled = false,
   disabledReason,
+  archived = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("chat");
@@ -96,30 +100,36 @@ export function ChatComposer({
     onStop();
   }, [onStop]);
 
+  const idlePrompt = archived
+    ? t("composer.archived_send")
+    : t("composer.message");
+
   return (
-    <MessageComposer
-      value={value}
-      onChangeText={onChangeText}
-      onSubmit={onSubmit}
-      mentionPickerPath={{
-        pathname: "/[workspace]/mention-picker",
-        params: { workspace: wsSlug ?? "", mode: "chat" },
-      }}
-      placeholder={sending ? t("composer.working") : t("composer.message")}
-      pillLabel={
-        sending
-          ? t("composer.working")
-          : disabled
-            ? (disabledReason ?? t("composer.unavailable"))
-            : t("composer.message")
-      }
-      pillIcon="chatbubble-ellipses-outline"
-      disabled={disabled}
-      disabledReason={disabledReason}
-      isSending={sending}
-      renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
-      manageKeyboard={false}
-    />
+    <View testID="mobile-chat-composer">
+      <MessageComposer
+        value={value}
+        onChangeText={onChangeText}
+        onSubmit={onSubmit}
+        mentionPickerPath={{
+          pathname: "/[workspace]/mention-picker",
+          params: { workspace: wsSlug ?? "", mode: "chat" },
+        }}
+        placeholder={sending ? t("composer.working") : idlePrompt}
+        pillLabel={
+          sending
+            ? t("composer.working")
+            : disabled
+              ? (disabledReason ?? t("composer.unavailable"))
+              : idlePrompt
+        }
+        pillIcon="chatbubble-ellipses-outline"
+        disabled={disabled}
+        disabledReason={disabledReason}
+        isSending={sending}
+        renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
+        manageKeyboard={false}
+      />
+    </View>
   );
 }
 
