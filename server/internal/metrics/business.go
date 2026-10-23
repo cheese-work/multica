@@ -833,7 +833,7 @@ func claimDecisionSeries() []claimDecisionSeriesKey {
 			claimDecisionSeriesKey{claimPath, "no_tasks", "no_visible_candidates"},
 		)
 	}
-	for _, s := range []claimDecisionSeriesKey{
+	series = append(series, []claimDecisionSeriesKey{
 		{"runtime", "empty_cache_hit", "empty_cache"},
 		{"runtime", "empty_db", "no_visible_candidates"},
 		{"runtime", "reclaimed_dispatched", "stale_dispatch_recovered"},
@@ -846,8 +846,6 @@ func claimDecisionSeries() []claimDecisionSeriesKey {
 		{"batch", "error_promote_deferred", "error"},
 		{"batch", "error_reclaim_dispatched", "error"},
 		{"batch", "error_list", "error"},
-	} {
-		series = append(series, s)
-	}
+	}...)
 	return series
 }

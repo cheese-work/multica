@@ -339,7 +339,7 @@ func TestOpaquePaginationWithEmptyProjectedPage(t *testing.T) {
 
 func TestTerminalReportSurvivesRestart(t *testing.T) {
 	h := setup(t)
-	h.b.state.Runs = []*run{&run{TaskID: "task-1", SessionID: "sess_1", Phase: "final", Outcome: "completed", Output: "Recovered result"}}
+	h.b.state.Runs = []*run{{TaskID: "task-1", SessionID: "sess_1", Phase: "final", Outcome: "completed", Output: "Recovered result"}}
 	if err := h.b.persist(); err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestRunDeadlineReleasesQueue(t *testing.T) {
 
 func TestAmbiguousCreationIsNotRepeated(t *testing.T) {
 	h := setup(t)
-	h.b.state.Runs = []*run{&run{TaskID: "task-1", Phase: "creating", Deadline: time.Now().Add(time.Hour)}}
+	h.b.state.Runs = []*run{{TaskID: "task-1", Phase: "creating", Deadline: time.Now().Add(time.Hour)}}
 	if err := h.b.step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
