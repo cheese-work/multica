@@ -168,6 +168,9 @@ type Step struct {
 	Instructions  string  `json:"instructions"`
 	NextStatusKey string  `json:"next_status_key,omitempty"`
 	BackStatusKey string  `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
+	// when the checks of a linked PR pass on the current head (CHE-1966).
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -195,6 +198,7 @@ type storedStep struct {
 	Instructions  string   `json:"instructions,omitempty"`
 	NextStatusKey string   `json:"next_status_key,omitempty"`
 	BackStatusKey string   `json:"back_status_key,omitempty"`
+	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -224,6 +228,8 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			Instructions:  s.Instructions,
 			NextStatusKey: s.NextStatusKey,
 			BackStatusKey: s.BackStatusKey,
+
+			AdvanceOnCIGreen: s.AdvanceOnCI,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -245,7 +251,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -443,6 +449,9 @@ func ValidateHandoff(s Step, def Definition) error {
 		if ref != "" && (ref == s.StatusKey || !def.Has(ref)) {
 			return invalid("%q is not another status of this workflow", ref)
 		}
+	}
+	if s.AdvanceOnCIGreen && (!AcceptsHandoff(s.StatusKey) || s.StatusKey == issuestatus.Blocked) {
+		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
 	return nil
 }

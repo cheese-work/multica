@@ -11,6 +11,7 @@ import { projectListOptions } from "@multica/core/projects/queries";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import type { IssueWorkflow, IssueWorkflowStep, Project } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +36,8 @@ import { useStatusLabel } from "../issues/utils/status-label";
 import { useT } from "../i18n";
 
 const NOT_SET = "__not_set__";
+/** Statuses that cannot advance on CI green: nothing is worked on in them. */
+const CI_ADVANCE_STATUSES = new Set(["backlog", "blocked", "done", "cancelled"]);
 
 type HandoffMode = "none" | "agent" | "member";
 
@@ -48,7 +51,7 @@ function modeOf(handler: IssueWorkflowStep["handler"]): HandoffMode {
  * The parts of a handoff that are saved. Instructions and next/back statuses
  * only reach an agent's brief, so they are kept for agent handoffs alone.
  */
-export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key">>(
+export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green">>(
   step: T,
 ): T {
   if (step.handler.type === "agent") return step;
@@ -61,7 +64,8 @@ function sameStep(a: IssueWorkflowStep, b: IssueWorkflowStep): boolean {
     (a.handler.id ?? "") === (b.handler.id ?? "") &&
     a.instructions === b.instructions &&
     (a.next_status_key ?? "") === (b.next_status_key ?? "") &&
-    (a.back_status_key ?? "") === (b.back_status_key ?? "")
+    (a.back_status_key ?? "") === (b.back_status_key ?? "") &&
+    !!a.advance_on_ci_green === !!b.advance_on_ci_green
   );
 }
 
@@ -147,6 +151,7 @@ export function WorkflowHandoffForm({
         instructions: out.instructions,
         next_status_key: out.next_status_key,
         back_status_key: out.back_status_key,
+        advance_on_ci_green: out.advance_on_ci_green,
         copyForProjectId: copyFor?.id,
       });
       toast.success(
@@ -559,6 +564,16 @@ function NextBackFields({
           );
         })}
       </div>
+      {CI_ADVANCE_STATUSES.has(step.status_key) ? null : (
+        <label className="flex cursor-pointer items-center gap-2 text-body">
+          <Checkbox
+            checked={!!step.advance_on_ci_green}
+            disabled={!canEdit}
+            onCheckedChange={(v) => onPatch({ advance_on_ci_green: v === true ? true : undefined })}
+          />
+          {t(($) => $.workflows.editor.advance_on_ci_green)}
+        </label>
+      )}
       <p className="text-caption leading-5 text-muted-foreground">
         {t(($) => $.workflows.editor.next_hint)}
         {onPreview && (

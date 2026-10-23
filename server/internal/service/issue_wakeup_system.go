@@ -30,11 +30,16 @@ import (
 // edited by agents, and it is evaluated when sub-issues change instead of on a
 // polling schedule.
 const (
-	SystemRuleChildDone       = "child_done"
-	SystemRulePRMerged        = "pr_merged"
-	SystemRulePRChecksFailed  = "pr_checks_failed"
+	SystemRuleChildDone      = "child_done"
+	SystemRulePRMerged       = "pr_merged"
+	SystemRulePRChecksFailed = "pr_checks_failed"
+	// SystemRulePRChecksPassed wakes the owner once per head when every check
+	// of a linked PR passed (CHE-1966). It is off until a workspace turns on
+	// github_wake_on_ci_success: a green wake costs a run on every push.
+	SystemRulePRChecksPassed  = "pr_checks_passed"
 	WorkspaceSettingPRMerged  = "github_wake_on_pr_merge"
 	WorkspaceSettingPRFailure = "github_wake_on_ci_failure"
+	WorkspaceSettingPRSuccess = "github_wake_on_ci_success"
 	// SystemRulePRAttention wakes the owner when a linked PR can no longer
 	// merge as is: its merge state turned DIRTY or BEHIND, or it went back to
 	// draft after the issue was accepted (CHE-1417).
@@ -98,6 +103,8 @@ func prWakeupSetting(rule string) (string, bool) {
 		return WorkspaceSettingPRMerged, true
 	case SystemRulePRChecksFailed:
 		return WorkspaceSettingPRFailure, true
+	case SystemRulePRChecksPassed:
+		return WorkspaceSettingPRSuccess, true
 	case SystemRulePRAttention:
 		return WorkspaceSettingPRAttention, true
 	default:
@@ -110,8 +117,10 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("unknown pull request system wakeup rule %q", rule)
 	}
+	// Every rule but pr_checks_passed is on until a workspace turns it off.
+	unset := rule != SystemRulePRChecksPassed
 	if len(settings) == 0 {
-		return true, nil
+		return unset, nil
 	}
 	var values prWakeupSettings
 	if err := json.Unmarshal(settings, &values); err != nil {
@@ -121,7 +130,10 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 		return false, nil
 	}
 	enabled := values.ruleSetting(rule)
-	return enabled == nil || *enabled, nil
+	if enabled == nil {
+		return unset, nil
+	}
+	return *enabled, nil
 }
 
 func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issueID pgtype.UUID, in PullRequestWakeupInput) error {
@@ -145,6 +157,12 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 		eventType = "pr.checks_failed"
 		eventKey += ":" + in.HeadSHA
+	case SystemRulePRChecksPassed:
+		if in.Conclusion != "SUCCESS" || in.HeadSHA == "" {
+			return fmt.Errorf("invalid passing pull request checks input")
+		}
+		eventType = "pr.checks_passed"
+		eventKey += ":passed:" + in.HeadSHA
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
 		// one wake; a retarget or a new head is a new pair. Each state has its
@@ -334,7 +352,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			payload["default_branch"] = in.DefaultBranch
 			payload["layer_delivered"] = in.BaseBranch != "" && in.BaseBranch != in.DefaultBranch
 		}
-	case SystemRulePRChecksFailed:
+	case SystemRulePRChecksFailed, SystemRulePRChecksPassed:
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
 	case SystemRulePRAttention:
@@ -845,6 +863,9 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
 		return fmt.Sprintf("Checks for linked %s finished with %s on head %s. The issue status when those checks finished was %s. Inspect the current check details and issue state, then decide what follow-up is needed.", pr, conclusion, headSHA, issueStatus)
+	case SystemRulePRChecksPassed:
+		headSHA, _ := facts["head_sha"].(string)
+		return fmt.Sprintf("Checks for linked %s passed on head %s. The issue status when those checks finished was %s. Inspect the current issue state, then continue with the next step.", pr, headSHA, issueStatus)
 	default:
 		return w.Instruction
 	}
@@ -856,6 +877,8 @@ func systemWakeupTriggerSummary(rule string) string {
 		return "Wakeup: linked PR merged"
 	case SystemRulePRChecksFailed:
 		return "Wakeup: linked PR checks failed"
+	case SystemRulePRChecksPassed:
+		return "Wakeup: linked PR checks passed"
 	case SystemRulePRAttention:
 		return "Wakeup: linked PR needs attention"
 	default:
