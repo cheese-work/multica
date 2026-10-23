@@ -375,6 +375,13 @@ type AgentTaskResponse struct {
 	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
 	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
+	// ClaimedModel is the model the daemon was told to run when it claimed this
+	// task (CHE-1862), read from the stored column, never from the agent's
+	// current model. Always on the wire: null = nothing stored (unclaimed, or
+	// the claim could not record it), "" = an empty string was stored. A
+	// missing key means a server that predates the field. It attests the claim,
+	// not the upstream model that actually served the run.
+	ClaimedModel *string `json:"claimed_model"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -865,6 +872,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IssueID:                uuidToString(t.IssueID),
 		WorkspaceID:            workspaceID,
 		Status:                 t.Status,
+		ClaimedModel:           textToPtr(t.ClaimedModel),
 		Priority:               t.Priority,
 		DispatchedAt:           timestampToPtr(t.DispatchedAt),
 		StartedAt:              timestampToPtr(t.StartedAt),
