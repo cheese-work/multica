@@ -113,6 +113,12 @@ function renderCard(entry: TimelineEntry, replies: TimelineEntry[] = []) {
 }
 
 describe("CommentCard — decision quote", () => {
+  it("keeps the comment card and the reply input the admit sheet names", () => {
+    renderCard(quote());
+    expect(screen.getByTestId("comment-card")).toBeTruthy();
+    expect(screen.getByTestId("comment-reply-input")).toBeTruthy();
+  });
+
   it("shows the human as the author and the agent only on the card", () => {
     renderCard(quote());
     const avatar = screen.getAllByTestId("avatar")[0]!;
