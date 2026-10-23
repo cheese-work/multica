@@ -49,7 +49,7 @@ func TestWebhookStatusResolver(t *testing.T) {
 				fail           bool
 				wantReads      int
 			}{
-				{"custom", []string{"approved", "dropped", "review", "approved", "done"}, []string{"approved", "dropped", "done", "approved", "done"}, false, 1},
+				{"custom", []string{"approved", "dropped", "review", "approved", "done"}, []string{"done", "dropped", "done", "done", "done"}, false, 1},
 				{"builtins", []string{"done", "cancelled", "in_review"}, []string{"done", "cancelled", "done"}, false, 0},
 				// An unresolved key keeps the old nonterminal-gate behavior. This
 				// optimization must not introduce a new close-policy decision.
@@ -120,9 +120,6 @@ func TestWebhookStatusResolver(t *testing.T) {
 						}
 						for i, id := range ids {
 							want := tc.want[i]
-							if workspace == 1 && tc.statuses[i] == "approved" {
-								want = "done"
-							}
 							var status string
 							fixture.QueryRow(t, "SELECT status FROM issue WHERE id = $1", id).Scan(&status)
 							if status != want {
