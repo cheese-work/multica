@@ -268,6 +268,7 @@ func TestChatWakeupCapAndValidation(t *testing.T) {
 	for _, body := range map[string]map[string]any{
 		"empty instruction": {"instruction": "  ", "after_seconds": 600},
 		"over 24 hours":     {"instruction": "x", "after_seconds": 25 * 3600},
+		"seconds overflow":  {"instruction": "x", "after_seconds": int64(18446744074)},
 		"in the past":       {"instruction": "x", "at": time.Now().Add(-time.Minute).Format(time.RFC3339)},
 		"both at and after": {"instruction": "x", "after_seconds": 60, "at": time.Now().Add(time.Hour).Format(time.RFC3339)},
 		"neither":           {"instruction": "x"},
