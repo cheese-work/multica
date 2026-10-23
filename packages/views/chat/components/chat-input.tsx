@@ -639,10 +639,6 @@ export function ChatInput({
         }
       };
       if (fork && onFork) {
-        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
-          setForkError(t(($) => $.input.command_no_attachments, { command: "fork" }));
-          return false;
-        }
         setForkError(null);
         const result = await onFork(fork.message, uniqueActiveIds);
         if (!result.ok) {

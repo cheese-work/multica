@@ -146,7 +146,10 @@ describe("CHE-1762 web command registry behavior", () => {
     },
   );
 
-  it("rejects attachments on client commands with an inline hint and retains the draft", async () => {
+  it.each([
+    ["/archive", { onArchive: vi.fn().mockResolvedValue(true) }],
+    ["/statistic", { onStatistic: vi.fn().mockResolvedValue(true) }],
+  ] as const)("rejects attachments on %s with an inline hint and retains the draft", async (command, props) => {
     const attachment: Attachment = {
       id: "att-1",
       workspace_id: "ws-c1",
@@ -166,27 +169,30 @@ describe("CHE-1762 web command registry behavior", () => {
     };
     useChatStore.setState({
       activeSessionId: "session-c1",
-      inputDrafts: { "session-c1": "/archive" },
+      inputDrafts: { "session-c1": command },
       inputDraftAttachments: {
         "session-c1": [attachmentToDraftUpload(attachment)],
       },
     });
 
-    const onArchive = vi.fn().mockResolvedValue(true);
-    const { editor, onSend } = renderInput({ onArchive, sessionArchived: false });
+    const { editor, onSend } = renderInput({ ...props, sessionArchived: false });
     await waitFor(() => expect(editor.isInitialized).toBe(true));
     await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
 
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/cannot be sent with attachments/i);
-    expect(onArchive).not.toHaveBeenCalled();
+    expect(alert).toHaveTextContent(
+      `${command} cannot be sent with attachments. Remove attachments before running ${command}.`,
+    );
+    for (const handler of Object.values(props)) expect(handler).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
-    expect(editor.getText()).toBe("/archive");
+    expect(editor.getText()).toBe(command);
+    expect(useChatStore.getState().inputDrafts["session-c1"]).toBe(command);
+    expect(useChatStore.getState().inputDraftAttachments["session-c1"]).toEqual([attachmentToDraftUpload(attachment)]);
   });
 
-  it("rejects /fork with attachments before execution, shows an inline hint, and preserves the draft", async () => {
+  it("exempts /fork from the client attachment gate and forwards the attachment ids", async () => {
     const attachment: Attachment = {
       id: "att-fork-1",
       workspace_id: "ws-c1",
@@ -206,7 +212,7 @@ describe("CHE-1762 web command registry behavior", () => {
     };
     useChatStore.setState({
       activeSessionId: "session-c1",
-      inputDrafts: { "session-c1": "/fork continue with plan B" },
+      inputDrafts: { "session-c1": "/fork continue with plan B https://cdn.example.com/diagram.png" },
       inputDraftAttachments: {
         "session-c1": [attachmentToDraftUpload(attachment)],
       },
@@ -219,11 +225,11 @@ describe("CHE-1762 web command registry behavior", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/cannot be sent with attachments/i);
-    expect(onFork).not.toHaveBeenCalled();
+    await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
+    expect(onFork).toHaveBeenCalledWith(expect.stringContaining("continue with plan B"), ["att-fork-1"]);
     expect(onSend).not.toHaveBeenCalled();
-    expect(editor.getText()).toBe("/fork continue with plan B");
-    expect(useChatStore.getState().inputDraftAttachments["session-c1"]).toHaveLength(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(useChatStore.getState().inputDraftAttachments["session-c1"] ?? []).toHaveLength(0));
+    expect(editor.getText()).toBe("");
   });
 });
