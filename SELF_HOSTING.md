@@ -537,7 +537,7 @@ multica daemon start
 For environment variables, manual setup (without Docker), reverse proxy configuration, database setup, and more, see the [Advanced Configuration Guide](SELF_HOSTING_ADVANCED.md).
 ## Address-bar suggestions
 
-Each workspace publishes `/<workspace-slug>/opensearch.xml`. Its authenticated suggestions URL is `/api/search/suggestions?workspace_slug=<slug>&q=<typed-text>` on the web origin. Discover the engine by visiting a workspace, then activate the entry in your browser's search-engine settings. Existing entries must be deleted, re-discovered and activated after upgrading; browsers can retain an old template.
+Each workspace publishes `/<workspace-slug>/opensearch.xml`. Its authenticated suggestions URL is `/api/search/suggestions?workspace_slug=<slug>&q=<typed-text>` on the web origin. To discover the matching engine in a signed-in self-hosted app, open the intended workspace once to set `last_workspace_slug`. Then type the exact web-origin root `/` in the address bar (for example, `https://multica.example/`), follow its redirect to that workspace, and activate the matching workspace engine in the browser's search-engine settings. This app-root flow applies to the self-hosted application, not the official marketing root, and does not guarantee Brave registration. Existing entries must be deleted, re-discovered and activated after upgrading; browsers can retain an old template.
 
 In Brave, turn **Improve search suggestions** on at `brave://settings/search`. Type your Multica keyword, press Tab, and type at least two characters. Suggestions contain up to five issue identifiers/titles and three project titles. Only title or identifier matches appear, including closed issues. Choosing an issue row opens that issue; choosing a project row searches its title. A query or project title that starts with this workspace's issue identifier also opens that issue instead of the palette.
 
@@ -562,7 +562,7 @@ Reverse proxies must preserve the browser-visible scheme, hostname and port in f
 | `unauthenticated` | Missing, expired or invalid session | Sign in on the engine's web origin. |
 | `not_member` | Unknown workspace or missing membership | Use an accessible workspace's engine. |
 | `forbidden` | Agent credentials or denied human access | Use a valid human session. |
-| `bad_request` | Missing workspace slug | Re-discover the engine with its workspace URL. |
+| `bad_request` | Missing workspace slug | In the signed-in self-hosted app, open the intended workspace once, type its web-origin root `/`, follow the redirect, and activate the matching engine. |
 | `throttled` | Per-user budget exceeded | Wait for `Retry-After`. |
 | `over_cap` | All process slots are occupied | Retry after load falls. |
 | `timeout`, `cancelled`, `error` | Slow, abandoned or failed search | Empty suggestions preserve plain site search; inspect query-free outcomes. |
