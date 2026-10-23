@@ -1547,6 +1547,7 @@
       "target_squad": "스쿼드 · 리더가 배분",
       "target_member": "멤버",
       "instructions_hint": "이번 실행의 지침으로 처리자에게 전달되며, 태스크 설명·댓글과 함께 맥락이 됩니다.",
+      "advance_on_ci_green": "연결된 PR의 검사가 통과하면 다음 열로 이동",
       "next_hint": "처리자가 받는 설명에 적혀 다음에 어떤 상태로 바꿀지 알려 줍니다. 실행이 끝나도 시스템이 상태를 자동으로 넘기지 않습니다.",
       "preview_brief": "에이전트가 받는 설명 미리 보기",
       "preview_title": "“{{status}}” 단계 설명",
