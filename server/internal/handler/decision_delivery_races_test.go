@@ -448,7 +448,7 @@ func TestDecisionDeliveryQueuedMergeConcurrent(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	mergeParams, err := testHandler.commentMergeParams(context.Background(), issue, commentAgentTrigger{Agent: agent, Source: commentTriggerSourceIssueAssignee}, mergeCommentID, pgtype.Text{})
+	mergeParams, _, err := testHandler.commentMergeParams(context.Background(), issue, commentAgentTrigger{Agent: agent, Source: commentTriggerSourceIssueAssignee}, mergeCommentID, pgtype.Text{})
 	if err != nil {
 		test.Fatal(err)
 	}
