@@ -5,7 +5,7 @@ import {
   issueBehavesAsAny,
   issueStatusCategory,
 } from "@multica/core/issues";
-import { IssueFlowCard } from "../../workflows/issue-flow-card";
+import { IssueFlowCard, useIssueFlowVisible } from "../../workflows/issue-flow-card";
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
@@ -132,9 +132,6 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import {
-  useProjectWorkflow,
-} from "@multica/core/issue-workflows";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
@@ -3442,7 +3439,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               issue={issue}
             />
           </PropRow>
-          <IssueWorkflowPropRow projectId={issue.project_id} status={issue.status} label={t(($) => $.workflows.project.label)} />
+          <IssueWorkflowPropRow issueId={issue.id} projectId={issue.project_id} workflowId={issue.workflow_id} status={issue.status} label={t(($) => $.workflows.project.label)} />
 
           {/* Optional props — rendered only when set on the issue OR added
               via "+ Add property" in this session. Row order follows the
@@ -4787,20 +4784,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
 /** The workflow the issue follows through its project (MUL-7420). */
 function IssueWorkflowPropRow({
+  issueId,
   projectId,
+  workflowId,
   status,
   label,
 }: {
+  issueId: string;
   projectId: string | null;
+  workflowId: string | null | undefined;
   status: string;
   label: string;
 }) {
-  const wsId = useWorkspaceId();
-  const workflow = useProjectWorkflow(wsId, projectId);
-  if (!workflow) return null;
+  const visible = useIssueFlowVisible(projectId, workflowId);
+  if (!visible) return null;
   return (
     <PropRow label={label}>
-      <IssueFlowCard projectId={projectId} currentStatus={status} />
+      <IssueFlowCard issueId={issueId} projectId={projectId} workflowId={workflowId} currentStatus={status} />
     </PropRow>
   );
 }

@@ -1649,6 +1649,11 @@
     },
     "detail": {
       "follows_project": "（プロジェクトに従う）",
+      "follows_override": "（この課題で設定）",
+      "override_title": "この課題のワークフロー",
+      "override_follow_project": "プロジェクトのワークフローに従う",
+      "override_error": "ワークフローを変更できませんでした",
+      "no_workflow": "ワークフローなし",
       "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
       "card_hint": "これらの列と引き継ぎはプロジェクトのワークフローで決まります。"
     },

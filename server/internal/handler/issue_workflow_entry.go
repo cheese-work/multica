@@ -46,7 +46,7 @@ type workflowHandoff struct {
 // move the issue from the step it works on. It returns the handoff that write
 // triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
-	def, project, err := issueworkflow.ForProject(ctx, q, prev.WorkspaceID, params.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
 	}
@@ -168,6 +168,10 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 // writeIssueWorkflowError answers a workflow rejection. It reports false when
 // err is not one, so the caller can fall through to its generic 500.
 func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
+		writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
+		return true
+	}
 	var notIn *issueworkflow.NotInWorkflowError
 	if errors.As(err, &notIn) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -435,7 +439,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 // step's instructions and commands; any other agent working on the issue
 // gets the observer brief, so it does not move a step it does not own.
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue) *TaskProjectWorkflowData {
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
 		slog.Warn("task claim: failed to load project workflow for brief injection",
 			"issue_id", uuidToString(issue.ID), "error", err)

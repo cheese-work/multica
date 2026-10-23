@@ -106,7 +106,10 @@ export function BatchActionToolbar({
   });
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const allowedStatuses = useMemo(
-    () => (sharedProjectId ? null : sharedWorkflowStatusKeys(workflows, projects, selectedIssues)),
+    () =>
+      sharedProjectId && !selectedIssues.some((i) => i.workflow_id)
+        ? null
+        : sharedWorkflowStatusKeys(workflows, projects, selectedIssues),
     [sharedProjectId, workflows, projects, selectedIssues],
   );
 
@@ -207,10 +210,10 @@ export function BatchActionToolbar({
     const status = updates.status;
     if (!status) return;
     const targetIds = targets.map((i) => i.id);
-    const inProjects = targets.filter((i) => i.project_id && i.status !== status);
+    const inProjects = targets.filter((i) => (i.project_id || i.workflow_id) && i.status !== status);
     const resolved = inProjects.map((issue) => ({
       issue,
-      ...resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, projects, issue.project_id),
+      ...resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, projects, issue.project_id, issue.workflow_id),
     }));
     // A workflow that is merely unloaded, failed to load, or loaded without this
     // project's workflow reads as "no handoff"; the server would still apply the

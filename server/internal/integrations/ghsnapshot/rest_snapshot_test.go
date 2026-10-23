@@ -104,6 +104,147 @@ func TestFetchPRSnapshotRESTPagination(t *testing.T) {
 	}
 }
 
+func TestFetchPRSnapshotRESTLatestCheckRuns(t *testing.T) {
+	checkRun := func(id int64, name, startedAt, status, conclusion string, appID int64) map[string]any {
+		run := map[string]any{
+			"id": id, "head_sha": "sha1", "name": name, "status": status, "conclusion": conclusion,
+			"details_url": fmt.Sprintf("https://example.com/runs/%d", id), "app": map[string]any{"id": appID},
+		}
+		if startedAt != "" {
+			run["started_at"] = startedAt
+		}
+		return run
+	}
+	const earlier = "2026-10-23T05:00:00Z"
+	const later = "2026-10-23T05:01:00Z"
+	const latest = "2026-10-23T05:02:00Z"
+	cases := []struct {
+		name       string
+		runs       []map[string]any
+		wantIDs    []int64
+		wantRollup string
+	}{
+		{
+			name: "superseded cancelled runs across pages",
+			runs: []map[string]any{
+				checkRun(120246062455, "Changelog line", earlier, "completed", "cancelled", 1),
+				checkRun(120246095647, "Changelog line", later, "completed", "success", 1),
+				checkRun(120246962928, "Changelog line", latest, "completed", "success", 1),
+				checkRun(120246056938, "close-target", earlier, "completed", "cancelled", 1),
+				checkRun(120246273743, "close-target", later, "completed", "success", 1),
+				checkRun(120246965111, "close-target", latest, "completed", "success", 1),
+			},
+			wantIDs: []int64{120246962928, 120246965111}, wantRollup: "SUCCESS",
+		},
+		{
+			name: "newest cancelled run stays failed",
+			runs: []map[string]any{
+				checkRun(1, "ci", earlier, "completed", "success", 1),
+				checkRun(2, "ci", later, "completed", "cancelled", 1),
+			},
+			wantIDs: []int64{2}, wantRollup: "FAILURE",
+		},
+		{
+			name: "started time takes precedence over id",
+			runs: []map[string]any{
+				checkRun(1, "ci", later, "completed", "success", 1),
+				checkRun(2, "ci", earlier, "completed", "cancelled", 1),
+			},
+			wantIDs: []int64{1}, wantRollup: "SUCCESS",
+		},
+		{
+			name: "equal started times use higher id",
+			runs: []map[string]any{
+				checkRun(2, "ci", earlier, "completed", "success", 1),
+				checkRun(1, "ci", earlier, "completed", "cancelled", 1),
+			},
+			wantIDs: []int64{2}, wantRollup: "SUCCESS",
+		},
+		{
+			name: "missing started times use higher id",
+			runs: []map[string]any{
+				checkRun(1, "ci", "", "completed", "cancelled", 1),
+				checkRun(2, "ci", "", "completed", "success", 1),
+			},
+			wantIDs: []int64{2}, wantRollup: "SUCCESS",
+		},
+		{
+			name: "one missing started time uses higher id",
+			runs: []map[string]any{
+				checkRun(2, "ci", "", "completed", "success", 1),
+				checkRun(1, "ci", later, "completed", "cancelled", 1),
+			},
+			wantIDs: []int64{2}, wantRollup: "SUCCESS",
+		},
+		{
+			name: "same name from different apps stays separate",
+			runs: []map[string]any{
+				checkRun(1, "ci", earlier, "completed", "cancelled", 1),
+				checkRun(2, "ci", later, "completed", "success", 2),
+			},
+			wantIDs: []int64{1, 2}, wantRollup: "FAILURE",
+		},
+		{
+			name: "newest running check replaces failure",
+			runs: []map[string]any{
+				checkRun(1, "ci", earlier, "completed", "failure", 1),
+				checkRun(2, "ci", later, "in_progress", "", 1),
+			},
+			wantIDs: []int64{2}, wantRollup: "PENDING",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := snapshotServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/o/r/pulls/5":
+					writeTestPR(w, "sha1", true, "clean")
+				case "/repos/o/r/commits/sha1/check-runs":
+					var page int
+					_, _ = fmt.Sscan(r.URL.Query().Get("page"), &page)
+					start := (page - 1) * 2
+					end := min(start+2, len(tc.runs))
+					_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(tc.runs), "check_runs": tc.runs[start:end]})
+				case "/repos/o/r/commits/sha1/status":
+					_, _ = w.Write([]byte(`{"total_count":1,"statuses":[{"context":"ci","state":"success"}]}`))
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			defer srv.Close()
+			snap, err := FetchPRSnapshot(context.Background(), newTestClient(t, srv.URL), 1, "o", "r", 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.RollupState != tc.wantRollup {
+				t.Errorf("rollup = %q, want %q", snap.RollupState, tc.wantRollup)
+			}
+			if len(snap.Contexts) != len(tc.wantIDs)+1 {
+				t.Fatalf("contexts = %d, want %d after deduplication: %+v", len(snap.Contexts), len(tc.wantIDs)+1, snap.Contexts)
+			}
+			for index, wantID := range tc.wantIDs {
+				var want CheckContext
+				for _, run := range tc.runs {
+					if run["id"] == wantID {
+						want = CheckContext{Name: run["name"].(string), Status: run["status"].(string), Conclusion: run["conclusion"].(string), DetailsURL: run["details_url"].(string)}
+						break
+					}
+				}
+				if snap.Contexts[index] != want {
+					t.Errorf("context[%d] = %+v, want %+v", index, snap.Contexts[index], want)
+				}
+			}
+			if last := snap.Contexts[len(tc.wantIDs)]; last != (CheckContext{Name: "ci", Status: "completed", Conclusion: "success", IsStatusContext: true}) {
+				t.Errorf("legacy status context changed: %+v", last)
+			}
+			if !snap.HasChecks || snap.Decided() != (tc.wantRollup != "PENDING") {
+				t.Errorf("HasChecks = %v, Decided = %v", snap.HasChecks, snap.Decided())
+			}
+		})
+	}
+}
+
 func TestFetchPRSnapshotRESTResults(t *testing.T) {
 	cases := []struct {
 		name, runs, statuses, want string
