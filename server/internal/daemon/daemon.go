@@ -5106,7 +5106,7 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if cli.ForkUpdateSupported(runtime.GOOS) {
 		// targetVersion is an upstream release tag from the server or poller; the
-		// fork source ignores it and re-resolves the newest eligible main build.
+		// fork source ignores it and takes the build its own server carries.
 		return d.runForkUpdate()
 	}
 	if cli.IsBrewInstall() {
