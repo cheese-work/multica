@@ -383,6 +383,15 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_i
 ORDER BY ping.created_at, request.id
 LIMIT 5;
 
+-- name: GetLastAssistantMessageBefore :one
+-- The agent's own last reply before a message: the options a bare reply chose
+-- between, attestable with --context-message.
+SELECT id FROM chat_message
+WHERE chat_session_id = sqlc.arg('session_id') AND role = 'assistant' AND message_kind = 'message'
+  AND created_at < sqlc.arg('before')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: LatestDecisionRequestLane :one
 SELECT chat_session_id FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')

@@ -125,3 +125,31 @@ func TestChatDecisionContextOmitsPingNewerThanReply(t *testing.T) {
 		t.Fatalf("ping newer than the reply was offered as context: %q, %v", block, err)
 	}
 }
+
+// An unprompted decision has no open request, so the claim must still hand the
+// run the ids --decision-record needs: the reply itself and the options message
+// it chose between (CHE-1958).
+func TestClaimChatCarriesDecisionRecordIDs(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "decision ids chat")
+	optionsID := dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "1) Ship\n2) Hold", "created_at": "2020-01-01T00:00:00Z"})
+	sendDirectChat(t, ctx, agentID, sessionID, "1")
+	var replyID string
+	if err := testPool.QueryRow(ctx, `SELECT id::text FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, sessionID).Scan(&replyID); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp struct {
+		Task *struct {
+			ChatMessageIDs   []string `json:"chat_message_ids"`
+			ChatPriorReplyID string   `json:"chat_prior_reply_id"`
+		} `json:"task"`
+	}
+	claimForRuntimeExpecting(t, testHandler, runtimeID, daemonID, http.StatusOK).JSON(&resp)
+	if resp.Task == nil || len(resp.Task.ChatMessageIDs) != 1 || resp.Task.ChatMessageIDs[0] != replyID || resp.Task.ChatPriorReplyID != optionsID {
+		t.Fatalf("claim lacks decision record ids (reply %s, options %s): %+v", replyID, optionsID, resp.Task)
+	}
+}

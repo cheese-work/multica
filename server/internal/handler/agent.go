@@ -523,6 +523,8 @@ type AgentTaskResponse struct {
 	ChatInThread             bool                 `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
 	ChatMessage              string               `json:"chat_message,omitempty"`                // user message for chat tasks
 	ChatDecisionContext      string               `json:"chat_decision_context,omitempty"`       // open decision request(s) this DM reply may answer
+	ChatMessageIDs           []string             `json:"chat_message_ids,omitempty"`            // web DM only: ids of the user messages in ChatMessage, for --decision-record --message
+	ChatPriorReplyID         string               `json:"chat_prior_reply_id,omitempty"`         // web DM only: the agent's last reply before ChatMessage, for --context-message
 	ChatMessageAttachments   []ChatAttachmentMeta `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
 	ChatIntro                bool                 `json:"chat_intro,omitempty"`                  // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
 	AutopilotRunID           string               `json:"autopilot_run_id,omitempty"`            // non-empty for autopilot-spawned tasks
