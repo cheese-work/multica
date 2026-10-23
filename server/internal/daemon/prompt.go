@@ -736,9 +736,6 @@ func buildChatPrompt(task Task) string {
 	if task.ChatDecisionContext != "" {
 		b.WriteString(task.ChatDecisionContext + "\n")
 	}
-	if len(task.ChatMessageIDs) > 0 {
-		b.WriteString(chatDecisionIDs(task) + "\n")
-	}
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments
@@ -876,16 +873,4 @@ func taskIsSquadLeader(task Task) bool {
 		return task.Agent != nil && strings.Contains(task.Agent.Instructions, squadBriefingMarker)
 	}
 	return task.IsLeaderTask || task.SquadID != ""
-}
-
-// chatDecisionIDs hands a web DM run the ids `--decision-record` needs, so
-// recording a decision needs no lookup command. The second id is the options
-// message a bare reply ("1", "A", "yes") chose between; without it the issue
-// shows only the reply.
-func chatDecisionIDs(task Task) string {
-	line := "If this message makes a decision, record it with `--decision-record --message " + strings.Join(task.ChatMessageIDs, " --message ") + "`"
-	if task.ChatPriorReplyID != "" {
-		line += " and, when it answers options you offered, `--context-message " + task.ChatPriorReplyID + "` (your previous reply)"
-	}
-	return line + ". These ids are this DM's own; no `multica chat history` lookup is needed."
 }

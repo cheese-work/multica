@@ -136,7 +136,7 @@ func TestChatClaimCountsAllOpenAsksBeforeTheDisplayLimit(test *testing.T) {
 func TestChatClaimDoesNotLeakAcrossDMsOrWorkspaces(test *testing.T) {
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
-	_, siblingID, _, _ := setupDirectChatSession(test, ctx, "Sibling DM")
+	siblingID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Sibling DM"})
 	seedDMDecision(test, agentID, siblingID, "Sibling ask?", "open", "2 hours")
 	foreignID, _, _ := seedDMDecision(test, agentID, sessionID, "Foreign workspace ask?", "open", "2 hours")
 	dbfx.Exec(test, `UPDATE decision_request SET workspace_id = gen_random_uuid() WHERE id = $1`, foreignID)
