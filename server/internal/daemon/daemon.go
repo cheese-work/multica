@@ -8729,11 +8729,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}()
 	retiredSessionID = gateOpenCodeResumeToSaneClock(ctx, &task, &taskCtx, provider, backendConfig, env.WorkDir, effectiveMcpConfig, taskLog)
 	if retiredSessionID != "" {
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		if briefErr != nil {
 			return TaskResult{}, fmt.Errorf("prepare fresh OpenCode session after clock check: %w", briefErr)
-		} else {
-			runtimeBrief = freshBrief
 		}
+		runtimeBrief = freshBrief
 		prompt = BuildPrompt(task, provider, promptOptions...)
 	}
 	backend, err := agent.ResolveBackend(provider, backendConfig)

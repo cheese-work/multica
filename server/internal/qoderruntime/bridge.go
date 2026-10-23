@@ -96,11 +96,11 @@ func New(cfg Config, log *slog.Logger) (*Bridge, error) {
 	}
 	m, err := newAPI(cfg.MulticaURL, cfg.MulticaToken, cfg.WorkspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("Multica: %w", err)
+		return nil, fmt.Errorf("multica: %w", err)
 	}
 	q, err := newAPI(cfg.QoderURL, cfg.QoderToken, "")
 	if err != nil {
-		return nil, fmt.Errorf("Qoder: %w", err)
+		return nil, fmt.Errorf("qoder: %w", err)
 	}
 	if log == nil {
 		log = slog.Default()
@@ -115,7 +115,7 @@ func New(cfg Config, log *slog.Logger) (*Bridge, error) {
 func (b *Bridge) Run(ctx context.Context) error {
 	var err error
 	if b.cfg.LoadState == nil {
-		if err = os.MkdirAll(b.cfg.StateDir, 0700); err != nil {
+		if err := os.MkdirAll(b.cfg.StateDir, 0700); err != nil {
 			return err
 		}
 		lock, err := lockState(filepath.Join(b.cfg.StateDir, "bridge.lock"))
@@ -149,10 +149,10 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 
 	// A stable daemon identity reconnects to the same runtime registration.
-	if err = b.register(ctx, binding); err != nil {
+	if err := b.register(ctx, binding); err != nil {
 		return err
 	}
-	if err = b.persist(); err != nil {
+	if err := b.persist(); err != nil {
 		return err
 	}
 	b.log.InfoContext(ctx, "Qoder runtime registered", "runtime_id", b.state.RuntimeID)
@@ -456,7 +456,7 @@ func (b *Bridge) createSession(ctx context.Context, r *run, resources []map[stri
 		return err
 	}
 	if session.ID == "" {
-		return fmt.Errorf("Qoder create returned no session ID")
+		return fmt.Errorf("qoder create returned no session ID")
 	}
 	r.SessionID = session.ID
 	r.Phase = "created"

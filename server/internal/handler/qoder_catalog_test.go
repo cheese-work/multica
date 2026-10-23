@@ -47,7 +47,7 @@ func TestQoderCatalogRejectsMalformedAndRedactsErrors(t *testing.T) {
 		}
 		server.Close()
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "private-token", 401) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "private-token", http.StatusUnauthorized) }))
 	defer server.Close()
 	_, err := fetchQoderCatalog(context.Background(), server.URL, "private-token", "agents")
 	if err == nil || strings.Contains(err.Error(), "private-token") {

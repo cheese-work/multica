@@ -2,6 +2,7 @@ package agent
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +83,7 @@ func (w *hermesDepSyncWatcher) Write(p []byte) (int, error) {
 		// One reinstall per launch is all we report; skip scanning.
 		return len(p), nil
 	}
-	data := append(w.remains, p...)
+	data := slices.Concat(w.remains, p)
 	nl := strings.LastIndexByte(string(data), '\n')
 	if nl < 0 {
 		if len(data) > hermesDepSyncRemainsCap {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -57,7 +58,7 @@ func (d *acpRuntimePanicDetector) Write(p []byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	data := append(d.remains, p...)
+	data := slices.Concat(d.remains, p)
 	nl := strings.LastIndexByte(string(data), '\n')
 	if nl < 0 {
 		d.remains = append(d.remains[:0], data...)

@@ -41,7 +41,7 @@ func (h *Handler) cleanupQoderJournal(ctx context.Context, ws string) error {
 		return err
 	}
 	var encrypted string
-	if err = h.DB.QueryRow(ctx, `SELECT journal_encrypted FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, ws).Scan(&encrypted); err != nil {
+	if err := h.DB.QueryRow(ctx, `SELECT journal_encrypted FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, ws).Scan(&encrypted); err != nil {
 		return err
 	}
 	if encrypted == "" {
@@ -60,7 +60,7 @@ func (h *Handler) cleanupQoderJournal(ctx context.Context, ws string) error {
 		Runs    []journalRun `json:"runs"`
 		Cleanup []string     `json:"cleanup"`
 	}
-	if err = json.Unmarshal([]byte(raw), &state); err != nil {
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
 		return err
 	}
 	if state.Run != nil {
@@ -106,7 +106,7 @@ func (h *Handler) prepareQoderWorkspaceDeletion(ctx context.Context, ws string) 
 	if err != nil {
 		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	if busy {

@@ -16,13 +16,13 @@ func (b *Bridge) prepare(ctx context.Context, t *claimedTask) (*run, error) {
 		return nil, fmt.Errorf("claim identity does not match bridge")
 	}
 	if t.IssueID == "" || t.ChatSessionID != "" || t.IsLeaderTask {
-		return nil, fmt.Errorf("Qoder bridge currently supports issue runs only")
+		return nil, fmt.Errorf("Qoder bridge currently supports issue runs only") //nolint:staticcheck // ST1005: message is shown verbatim to users as the run failure reason
 	}
 	if !strings.HasPrefix(t.AuthToken, "mat_") {
 		return nil, fmt.Errorf("claim is missing a task-scoped credential")
 	}
 	if len(t.RemoteMCPConnections) > 0 || len(t.ConnectedApps) > 0 || len(t.PluginHookTools) > 0 {
-		return nil, fmt.Errorf("Multica connected apps and runtime MCP tools are not supported by the Qoder bridge")
+		return nil, fmt.Errorf("Multica connected apps and runtime MCP tools are not supported by the Qoder bridge") //nolint:staticcheck // ST1005: message is shown verbatim to users as the run failure reason
 	}
 	if t.Agent != nil && (hasCustomSkills(t.Agent.Skills) || len(t.Agent.SkillRefs) > 0 || len(t.Agent.CustomEnv) > 0 || len(t.Agent.CustomArgs) > 0 || len(t.Agent.McpConfig) > 0 && string(t.Agent.McpConfig) != "null" && string(t.Agent.McpConfig) != "{}" || t.Agent.Model != "" || t.Agent.ThinkingLevel != "" || t.Agent.ServiceTier != "") {
 		return nil, fmt.Errorf("configure skills, tools, credentials and model on the Qoder Agent; Multica execution overrides are not supported by this bridge")
@@ -88,7 +88,7 @@ func (b *Bridge) prepare(ctx context.Context, t *claimedTask) (*run, error) {
 		}
 		r.Resources = append(r.Resources, resource)
 		if len(r.Resources) > 1 {
-			return nil, fmt.Errorf("Qoder Cloud Agents supports one project repository per run")
+			return nil, fmt.Errorf("Qoder Cloud Agents supports one project repository per run") //nolint:staticcheck // ST1005: message is shown verbatim to users as the run failure reason
 		}
 	}
 	// Project repositories win; otherwise use the agent's default repository,
@@ -149,7 +149,7 @@ func repositoryResource(ref Repository) (map[string]any, error) {
 	}
 	resource := map[string]any{"type": "github_repository", "url": ref.URL}
 	if strings.HasPrefix(ref.Ref, "refs/tags/") || commitRef.MatchString(ref.Ref) {
-		return nil, fmt.Errorf("Qoder Cloud Agents supports branch refs only")
+		return nil, fmt.Errorf("Qoder Cloud Agents supports branch refs only") //nolint:staticcheck // ST1005: message is shown verbatim to users as the run failure reason
 	}
 	if name := strings.TrimPrefix(ref.Ref, "refs/heads/"); name != "" {
 		resource["checkout"] = map[string]string{"type": "branch", "name": name}

@@ -60,7 +60,7 @@ func (b *Bridge) events(ctx context.Context, r *run) error {
 	}
 	for _, e := range page.Data {
 		if e.ID == "" {
-			return fmt.Errorf("Qoder event has no ID")
+			return fmt.Errorf("qoder event has no ID")
 		}
 		if e.ID == r.Cursor {
 			continue
@@ -133,7 +133,7 @@ func (b *Bridge) events(ctx context.Context, r *run) error {
 	r.Page = ""
 	if page.HasMore {
 		if page.NextPage == "" || page.NextPage == q.Get("page") {
-			return fmt.Errorf("Qoder pagination cursor did not advance")
+			return fmt.Errorf("qoder pagination cursor did not advance")
 		}
 		r.Page = page.NextPage
 	}

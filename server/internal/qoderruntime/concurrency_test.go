@@ -41,7 +41,11 @@ func setupMulti(t *testing.T, limit int, tasks ...*daemon.Task) *multiHarness {
 	h := &multiHarness{queue: tasks, status: map[string]string{}, completed: map[string]map[string]any{}, failed: map[string]map[string]any{}, sessions: map[string][]map[string]any{}, sessionStatus: map[string]string{}, prompts: map[string]string{}, metadata: map[string]map[string]string{}, resources: map[string][]map[string]any{}}
 	taskID := func(path string) string {
 		rest := strings.TrimPrefix(path, "/api/daemon/tasks/")
-		return rest[:strings.Index(rest, "/")]
+		idx := strings.Index(rest, "/")
+		if idx < 0 {
+			t.Fatalf("task path %q has no task ID segment", path)
+		}
+		return rest[:idx]
 	}
 	m := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()

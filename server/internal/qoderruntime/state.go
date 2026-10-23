@@ -61,10 +61,10 @@ func save(path string, j *journal) error {
 		f.Close()
 		return err
 	}
-	if err = f.Close(); err != nil {
+	if err := f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), path); err != nil {
+	if err := os.Rename(f.Name(), path); err != nil {
 		return err
 	}
 	return syncStateDir(filepath.Dir(path))

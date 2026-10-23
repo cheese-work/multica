@@ -70,7 +70,7 @@ func TestMediaTempFileRemovedAfterProcessExit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		os.Exit(43) // Bypass deferred closes, as an abnormal process exit does.
+		os.Exit(43) //nolint:gocritic // exitAfterDefer: bypassing the deferred close simulates an abnormal process exit
 	}
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

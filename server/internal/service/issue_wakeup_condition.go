@@ -64,7 +64,7 @@ var (
 	errPRSnapshotsUnavailable = errors.New("PR checks cannot be evaluated: GitHub snapshot refresh is unavailable on this server; ask the server administrator to configure the GitHub App snapshot client")
 	errPRNotLinked            = errors.New("no pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
 	errPRSnapshotPending      = errors.New("PR check snapshot is not available yet; inspect this issue's pull-requests snapshot_available field and ask the server administrator to check snapshot refresh if it persists")
-	errPRConflictsUnsupported = errors.New("Merge conflicts can only be detected on GitHub pull requests; this issue links only self-hosted (Forgejo/Gitea/GitLab) pull requests")
+	errPRConflictsUnsupported = errors.New("merge conflicts can only be detected on GitHub pull requests; this issue links only self-hosted (Forgejo/Gitea/GitLab) pull requests")
 )
 
 func conditionDiagnostic(err error) bool {
@@ -489,7 +489,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	state := w.ConditionState
 	if met {
 		if conditionNewlyMet(state, fingerprint) {
-			if err = recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return w.NextFireAt, err
 			}
 		}

@@ -208,7 +208,7 @@ type qoderOverrides struct {
 func (o qoderOverrides) validate() error {
 	mcp := strings.TrimSpace(string(o.mcpConfig))
 	if o.skills > 0 || o.customEnv > 0 || o.customArgs > 0 || (mcp != "" && mcp != "null" && mcp != "{}") || o.model != "" || o.thinkingLevel != "" || o.serviceTier != "" {
-		return fmt.Errorf("Qoder agents take skills, tools, credentials and model from the Qoder Agent; remove them from this agent")
+		return fmt.Errorf("Qoder agents take skills, tools, credentials and model from the Qoder Agent; remove them from this agent") //nolint:staticcheck // ST1005: message is returned to API clients and starts with the product name
 	}
 	return nil
 }

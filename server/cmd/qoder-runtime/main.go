@@ -17,6 +17,11 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run returns the exit code so deferred cleanup runs before the process exits.
+func run() int {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	configPath := flag.String("config", "", "JSON configuration file; supplied fields override environment variables")
 	checkOnly := flag.Bool("check", false, "Verify API access without registering a runtime or running tasks")
@@ -24,27 +29,28 @@ func main() {
 	cfg, err := loadConfig(*configPath, os.Getenv)
 	if err != nil {
 		log.Error("read bridge configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	b, err := qoderruntime.New(cfg, log)
 	if err != nil {
 		log.Error("invalid bridge configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if *checkOnly {
 		if err := b.Check(ctx); err != nil {
 			log.ErrorContext(ctx, "bridge check failed", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		log.InfoContext(ctx, "bridge API access verified")
-		return
+		return 0
 	}
 	if err := b.Run(ctx); err != nil {
 		log.ErrorContext(ctx, "Qoder bridge stopped", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func loadConfig(path string, getenv func(string) string) (qoderruntime.Config, error) {

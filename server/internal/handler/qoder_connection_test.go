@@ -93,7 +93,7 @@ func TestQoderBaseURL(t *testing.T) {
 	for raw, want := range map[string]string{
 		"":                                       qoderAPIURL,
 		"https://api.qoder.com/api/v1/cloud/":    qoderAPIURL,
-		" https://api.qoder.com.cn/api/v1/cloud": "https://api.qoder.com.cn/api/v1/cloud",
+		" https://api.qoder.com.cn/api/v1/cloud": "https://api.qoder.com.cn/api/v1/cloud", //nolint:gocritic // mapKey: the leading space is deliberate, it checks that qoderBaseURL trims input
 	} {
 		if got, ok := qoderBaseURL(raw); !ok || got != want {
 			t.Fatalf("qoderBaseURL(%q) = %q, %v", raw, got, ok)
