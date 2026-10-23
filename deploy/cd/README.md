@@ -279,6 +279,7 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-candidate-preflight.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -555,7 +556,23 @@ change as part of D2 work.
 
 `cd-deploy.yml` runs automatically after a successful `cd-qualification` run
 for a `main` commit, and can still be dispatched by hand. The automatic path
-adds one job the manual path does not: `prepare-release-candidate`.
+adds `candidate-preflight` and `prepare-release-candidate`, which the manual
+path does not need. The run title names the qualifying candidate SHA rather
+than the workflow run's default-branch SHA.
+
+`candidate-preflight` runs on X99 without the `c00-production` environment or
+C00 credentials. It uses the workflow revision's tools so an older candidate
+does not need to contain the new preflight script. Before requesting approval,
+it checks the candidate against the current `main` head, waits for required
+checks, and checks `main` again. A superseded candidate or non-admissible check
+result leaves `eligible=false`; `prepare-release-candidate` and the automatic
+admission/deploy chain are skipped, not failed. The summary records the real
+candidate SHA and the skip reason. API or tooling errors still fail closed.
+
+An eligible candidate proceeds to the protected preparation job. Preparation
+still records a fresh check snapshot after approval; preflight evidence does
+not replace final admission. Manual dispatch keeps its existing evidence and
+admission requirements and bypasses only the automatic eligibility filter.
 
 The `deploy` job does not check out the repository on C00 — it `scp`'s an
 explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from

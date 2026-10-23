@@ -74,7 +74,9 @@ type IssueResponse struct {
 	// an endpoint that skips the filler emits null rather than a bare pointer.
 	DuplicateOf *IssueRefResponse `json:"duplicate_of"`
 	ProjectID   *string           `json:"project_id"`
-	Position    float64           `json:"position"`
+	// WorkflowID is the issue's own workflow override; null follows the project.
+	WorkflowID *string `json:"workflow_id"`
+	Position   float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -501,6 +503,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -539,6 +542,7 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -609,6 +613,7 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -3045,6 +3050,7 @@ type CreateIssueRequest struct {
 	AssigneeID    *string  `json:"assignee_id"`
 	ParentIssueID *string  `json:"parent_issue_id"`
 	ProjectID     *string  `json:"project_id"`
+	WorkflowID    *string  `json:"workflow_id"`
 	Stage         *int32   `json:"stage,omitempty"`
 	StartDate     *string  `json:"start_date"`
 	DueDate       *string  `json:"due_date"`
@@ -3300,7 +3306,26 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			workflowProjectID = parent.ProjectID
 		}
 	}
-	createWorkflow, createWorkflowProject, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, workflowProjectID)
+	var overrideID pgtype.UUID
+	if req.WorkflowID != nil && *req.WorkflowID != "" {
+		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
+		if !ok {
+			return
+		}
+		overrideID = id
+	}
+	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
+	if overrideID.Valid {
+		if !h.requireProjectWorkflowsV1(w, r) {
+			return
+		}
+		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, createWorkflowProject); !ok {
+			return
+		}
+	}
+	if writeIssueWorkflowError(w, err) {
+		return
+	}
 	if err != nil {
 		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
@@ -3505,6 +3530,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		CreatorID:       parseUUID(actualCreatorID),
 		ParentIssueID:   parentIssueID,
 		ProjectID:       projectID,
+		WorkflowID:      overrideID,
 		StartDate:       startDate,
 		DueDate:         dueDate,
 		OriginType:      originType,
@@ -3570,6 +3596,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			"the target status was archived while this request was in flight; reload the status list and retry")
 		return
 	}
+	if writeIssueWorkflowError(w, err) {
+		return
+	}
 	if writeIssueCreatePropertyError(w, err) {
 		return
 	}
@@ -3629,6 +3658,8 @@ type UpdateIssueRequest struct {
 	// ("暂时不启动" — MUL-3375). It is not an undo: the change takes effect and
 	// the issue can be run later via manual run/rerun. Optional; omitted or
 	// false keeps today's behavior. Mirrors comment suppress_agent_ids.
+	// A status change that hands off to a workflow step's handler other than
+	// the caller still starts that handler's run.
 	SuppressRun bool `json:"suppress_run,omitempty"`
 	// HandoffNote is retained at the API boundary for installed clients that
 	// predate the handoff UI removal. It is consumed only when this write starts
@@ -4143,7 +4174,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.SuppressRun))
+	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
+	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -4227,7 +4259,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 	)
-	willRun = willRun && !req.SuppressRun
+	willRun = willRun && !suppressRun
 
 	updatedPayload := map[string]any{
 		"issue":               resp,
@@ -4255,7 +4287,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
+		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	if attachmentsChanged {
@@ -5002,7 +5034,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, req.Updates.SuppressRun))
+		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
+		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5056,7 +5089,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		)
-		willRun = willRun && !req.Updates.SuppressRun
+		willRun = willRun && !suppressRun
 		batchPayload := map[string]any{
 			"issue":                      resp,
 			"assignee_changed":           assigneeChanged,
@@ -5068,7 +5101,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
+			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 		}
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
 

@@ -470,6 +470,8 @@
     "thread_nav_label": "スレッドへ移動",
     "thread_nav_resolved_label": "{{title}}（解決済み）",
     "thread_nav_reply_label": "{{author}}：{{title}}",
+    "thread_nav_show_replies_other": "{{count}} 件の返信を表示",
+    "thread_nav_hide_replies": "返信を折りたたむ",
     "sidebar_tooltip": "右サイドバーの開閉",
     "find": {
       "placeholder": "タスク内を検索...",
@@ -850,6 +852,7 @@
     "updated_ago": "{{time}} に更新"
   },
   "actions": {
+    "rename_issue": "タスク名を変更",
     "status": "ステータス",
     "priority": "優先度",
     "assignee": "担当者",
@@ -1544,6 +1547,7 @@
       "target_squad": "スクワッド · リーダーが割り振り",
       "target_member": "メンバー",
       "instructions_hint": "今回の実行の指示として処理者に送られ、タスクの説明やコメントと一緒にコンテキストになります。",
+      "advance_on_ci_green": "リンクした PR のチェックが通ったら次の列へ移動",
       "next_hint": "処理者が受け取る説明に書き込まれ、次にどのステータスへ変えるかを伝えます。実行が終わってもシステムはステータスを自動で進めません。",
       "preview_brief": "エージェントが受け取る説明をプレビュー",
       "preview_title": "「{{status}}」ステップの説明",
@@ -1565,8 +1569,7 @@
       "step_off": "オフ：このワークフローはこのステータスを使いません。左のリストでオンにすると使えます。",
       "status_new_hint": "新しいステータスです。保存時にステータスライブラリに追加されます。",
       "no_other_status": "すべてのステータスがすでにステップです。",
-      "no_handoff_step": "このステップは引き継ぎません。入っても担当者は変わらず、実行も始まりません。",
-      "new_step_handoff": "先にワークフローを保存してください。保存後に新しいステータスの引き継ぎを設定できます。"
+      "no_handoff_step": "このステップは引き継ぎません。入っても担当者は変わらず、実行も始まりません。"
     },
     "mapping": {
       "title": "タスクを「{{name}}」に移動",
@@ -1602,6 +1605,7 @@
     },
     "picker": {
       "header": "{{workflow}} · プロジェクト「{{project}}」に従う",
+      "header_no_project": "{{workflow}} のステータス · プロジェクトなし",
       "footer": "このタスクのワークフローのステータスだけを表示しています。右側はそのステータスに入ったときの引き継ぎ先です。"
     },
     "confirm": {
@@ -1645,6 +1649,11 @@
     },
     "detail": {
       "follows_project": "（プロジェクトに従う）",
+      "follows_override": "（この課題で設定）",
+      "override_title": "この課題のワークフロー",
+      "override_follow_project": "プロジェクトのワークフローに従う",
+      "override_error": "ワークフローを変更できませんでした",
+      "no_workflow": "ワークフローなし",
       "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
       "card_hint": "これらの列と引き継ぎはプロジェクトのワークフローで決まります。"
     },
@@ -1722,5 +1731,8 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "{{created}}に作成 · {{updated}}に更新"
   }
 }

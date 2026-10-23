@@ -280,6 +280,25 @@ WHERE runtime_id = $1 AND kind = 'user'
 ORDER BY id
 FOR UPDATE;
 
+-- name: ListNonOwnerAgentsByRuntime :many
+-- Returns every agent bound to a runtime whose owner differs from its owner,
+-- including hidden Builder execution carriers. This is the dependency plan shown before a public
+-- runtime is made private: owner-owned agents keep their binding, while every
+-- teammate-owned agent loses machine access.
+SELECT * FROM agent
+WHERE runtime_id = @runtime_id
+  AND owner_id IS DISTINCT FROM @runtime_owner_id
+ORDER BY name ASC;
+
+-- name: ListNonOwnerAgentsByRuntimeForUpdate :many
+-- Runtime access-change locking serializes new bindings. NOWAIT avoids waiting
+-- behind a writer that already holds an agent and needs the runtime row.
+SELECT * FROM agent
+WHERE runtime_id = @runtime_id
+  AND owner_id IS DISTINCT FROM @runtime_owner_id
+ORDER BY id
+FOR UPDATE NOWAIT;
+
 -- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, archived_by = NULL, updated_at = now()
 WHERE id = $1
@@ -1060,7 +1079,7 @@ WITH retired_sessions AS (
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
-        t.started_at, t.issue_snapshot,
+        t.started_at, t.issue_snapshot, t.context_tokens,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1080,7 +1099,9 @@ WITH retired_sessions AS (
 -- and retired sessions, so it can legitimately return an OLDER run than the
 -- newest one. Measuring against the newest one would then tell an agent whose
 -- resumed memory predates an edit that the issue is unchanged.
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot FROM latest_per_session
+-- context_tokens is that run's last prompt size, which tells a claim whether the
+-- session is too large to keep resuming (leader session compaction, CHE-1983).
+SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, context_tokens FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')

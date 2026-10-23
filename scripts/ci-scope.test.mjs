@@ -36,6 +36,7 @@ for (const [name, files, selected] of [
   ["shell installer", ["scripts/install.sh"], ["scripts", "installer"]],
   ["PowerShell installer", ["scripts/install.ps1.test.ps1"], ["installer"]],
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
+  ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
@@ -89,16 +90,16 @@ test("upstream-sync heads never select the X99 self-hosted scopes", () => {
 });
 
 // A candidate controls scripts/ci-scope.mjs, which the runner does not block.
-// Simulate a candidate whose helper ignores the head ref: the X99 jobs must
+// Simulate a candidate whose helper ignores the head ref: the sync-sensitive jobs must
 // still be skipped by their own job-level `if`, and the gate fails closed.
-test("a tampered ci-scope helper cannot admit a sync head to X99", () => {
+test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive jobs", () => {
   const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
   const syncHead = "upstream-sync/multica/" + "a".repeat(40);
   const tampered = decideScopes("pull_request", { ...everything, frontend: "false" });
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: .*cheese-x99/m);
+    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
