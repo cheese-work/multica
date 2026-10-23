@@ -3074,7 +3074,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				if prior.RuntimeID == task.RuntimeID {
+				// A leader whose session has outgrown the threshold starts a
+				// fresh one in the same workdir: the cold issue and comment
+				// reads rebuild its state, so nothing but the transcript is lost.
+				if prior.RuntimeID == task.RuntimeID && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
 					resp.PriorSessionID = prior.SessionID.String
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned

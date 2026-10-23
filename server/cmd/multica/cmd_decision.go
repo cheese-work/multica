@@ -15,7 +15,7 @@ import (
 var decisionCmd = &cobra.Command{Use: "decision", Short: "Request and read issue decisions"}
 
 var decisionRequestCmd = &cobra.Command{
-	Use: "request", Short: "Ask a named person in this issue task's decision window", Args: cobra.NoArgs, RunE: runDecisionRequest,
+	Use: "request", Short: "Ask a named person with one issue comment and one DM message", Args: cobra.NoArgs, RunE: runDecisionRequest,
 }
 
 var decisionGetCmd = &cobra.Command{
@@ -33,9 +33,11 @@ func init() {
 	}
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
-	decisionRequestCmd.Flags().String("for", "", "Named person's user ID (required with --new-dm)")
+	decisionRequestCmd.Flags().String("for", "", "Named person's user ID (required unless an open intent names the person)")
+	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 file containing the exact ask")
+	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
 	}
@@ -53,21 +55,23 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	humanID, _ := command.Flags().GetString("for")
 	class, _ := command.Flags().GetString("class")
 	askPath, _ := command.Flags().GetString("ask-file")
+	footerPath, _ := command.Flags().GetString("footer-file")
+	parentID, _ := command.Flags().GetString("parent")
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
 	}
-	if newDM == (sessionID != "") || newDM && humanID == "" || !newDM && humanID != "" {
-		return fmt.Errorf("choose --session or --new-dm with --for")
+	if newDM && (sessionID != "" || humanID == "") || !newDM && sessionID == "" && humanID == "" {
+		return fmt.Errorf("choose --session, or --for (add --new-dm to force a new DM)")
 	}
-	ask, err := os.ReadFile(askPath)
+	ask, err := readDecisionText(askPath, "ask")
 	if err != nil {
-		return fmt.Errorf("read ask file: %w", err)
+		return err
 	}
-	if strings.TrimSpace(string(ask)) == "" {
-		return fmt.Errorf("ask file must not be empty")
-	}
-	if !utf8.Valid(ask) {
-		return fmt.Errorf("ask file must contain valid UTF-8")
+	footer := ""
+	if footerPath != "" {
+		if footer, err = readDecisionText(footerPath, "footer"); err != nil {
+			return err
+		}
 	}
 	client, err := newAPIClient(command)
 	if err != nil {
@@ -81,11 +85,25 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", map[string]any{
-		"issue_id": issue.ID, "session_id": sessionID, "new_dm": newDM, "for": humanID, "ask": string(ask), "escalation_class": class,
+		"issue_id": issue.ID, "session_id": sessionID, "new_dm": newDM, "for": humanID, "ask": ask, "footer": footer, "parent_id": parentID, "escalation_class": class,
 	}, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}
 	return printDecisions(command, []map[string]any{result}, false)
+}
+
+func readDecisionText(path, label string) (string, error) {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s file: %w", label, err)
+	}
+	if !utf8.Valid(text) {
+		return "", fmt.Errorf("%s file must contain valid UTF-8", label)
+	}
+	if label == "ask" && strings.TrimSpace(string(text)) == "" {
+		return "", fmt.Errorf("ask file must not be empty")
+	}
+	return string(text), nil
 }
 
 func runDecisionGet(command *cobra.Command, args []string) error {
