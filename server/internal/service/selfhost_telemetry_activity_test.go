@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -74,6 +75,40 @@ func TestSelfHostTelemetryActorAssignmentMarksToday(t *testing.T) {
 	}
 	if got := delegationDays(t, f, f.UserID); len(got) != 1 || got[0] != utcDate(time.Now()) {
 		t.Fatalf("actor assignment days = %v, want [today]", got)
+	}
+}
+
+func TestSelfHostTelemetryEnqueueRecordsOnlySuccessfulMemberActions(t *testing.T) {
+	for _, path := range []string{"issue", "mention"} {
+		t.Run(path, func(t *testing.T) {
+			fixture, wakeups, issueID, agentID := activityFixture(t)
+			ctx := context.Background()
+			cleanupDelegationDays(t, fixture, fixture.UserID)
+			issue := assignIssueToAgent(t, fixture, issueID, agentID)
+			actedAt := time.Now().UTC().Add(-24 * time.Hour)
+			commentID := parseTestUUID(t, fixture.Comment(t, issueID.String(), "delegate work", testutil.Cols{"created_at": actedAt}))
+			enqueue := func() error {
+				if path == "mention" {
+					_, err := wakeups.Tasks.EnqueueTaskForMention(ctx, issue, parseTestUUID(t, agentID), commentID, OriginNamed)
+					return err
+				}
+				_, err := wakeups.Tasks.EnqueueTaskForIssue(ctx, issue, commentID)
+				return err
+			}
+			if err := enqueue(); err != nil {
+				t.Fatal(err)
+			}
+			if days := delegationDays(t, fixture, fixture.UserID); len(days) != 1 || days[0] != utcDate(actedAt) {
+				t.Fatalf("successful enqueue days = %v, want [%s]", days, utcDate(actedAt))
+			}
+			fixture.Exec(t, "DELETE FROM member_delegation_day WHERE user_id=$1", fixture.UserID)
+			if err := enqueue(); !errors.Is(err, ErrDuplicatePendingTask) {
+				t.Fatalf("duplicate enqueue error = %v, want %v", err, ErrDuplicatePendingTask)
+			}
+			if days := delegationDays(t, fixture, fixture.UserID); len(days) != 0 {
+				t.Fatalf("failed enqueue recorded delegation days %v", days)
+			}
+		})
 	}
 }
 
