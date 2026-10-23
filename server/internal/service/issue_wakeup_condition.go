@@ -487,9 +487,19 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	// condition_state dedups a satisfied predicate; each new satisfaction
 	// gets its own receipt key.
 	state := w.ConditionState
-	if met && fingerprint != state {
-		if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+	if met {
+		newlyMet := fingerprint != state
+		var condition WakeupCondition
+		if err := json.Unmarshal(w.Condition, &condition); err != nil {
 			return w.NextFireAt, err
+		}
+		if condition.Type == "pull_request" && condition.Event == "conflicts" {
+			newlyMet = conditionNewlyMet(state, fingerprint)
+		}
+		if newlyMet {
+			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+				return w.NextFireAt, err
+			}
 		}
 		state = fingerprint
 	} else if !met {

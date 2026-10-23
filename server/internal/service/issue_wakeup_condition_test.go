@@ -301,6 +301,56 @@ func TestWakeupConditionPRConflictsAcrossSeveralPRs(t *testing.T) {
 	}
 }
 
+func TestWakeupConditionPRSetShrinkPreservesExistingEventPolicy(test *testing.T) {
+	for _, event := range []string{"merged", "checks_finished", "conflicts"} {
+		test.Run(event, func(test *testing.T) {
+			fixture, wakeups, issueID, agentID := conditionFixture(test)
+			wakeups.Tasks.PRSnapshotsEnabled = true
+			var firstPR string
+			for number := 1; number <= 2; number++ {
+				state := "open"
+				if event == "merged" {
+					state = "merged"
+				}
+				pullRequestID := fixture.Insert(test, "github_pull_request", testutil.Cols{
+					"workspace_id": fixture.WorkspaceID, "installation_id": 1,
+					"repo_owner": "fixture", "repo_name": "shrink-policy", "pr_number": number,
+					"title": "PR", "state": state, "html_url": "https://example.test/shrink-policy",
+					"pr_created_at": "2026-01-01T00:00:00Z", "pr_updated_at": "2026-01-01T00:00:00Z",
+					"head_sha": "current-head", "snapshot_head_sha": "current-head",
+					"checks_rollup_state": "PENDING", "api_mergeable": "CONFLICTING",
+				})
+				fixture.Cleanup(test, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pullRequestID)
+				fixture.Exec(test, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", issueID, pullRequestID)
+				if number == 1 {
+					firstPR = pullRequestID
+				}
+			}
+			wakeup := wakeCreate(test, fixture, wakeups, issueID, WakeupInput{
+				AgentID: agentID, Kind: "event", Mode: "continuous", Instruction: "Follow PR changes",
+				Condition: condition(test, map[string]any{"type": "pull_request", "event": event}),
+			})
+			if event == "checks_finished" {
+				fixture.Exec(test, "UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE id IN (SELECT pull_request_id FROM issue_pull_request WHERE issue_id=$1)", issueID)
+			}
+			wakeTick(test, fixture, wakeups, wakeup.ID)
+			if runs := wakeRuns(test, fixture, wakeup.ID); runs != 1 {
+				test.Fatalf("initial runs = %d, want 1", runs)
+			}
+			fixture.Exec(test, "UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE context->>'wakeup_id'=$1", util.UUIDToString(wakeup.ID))
+			fixture.Exec(test, "DELETE FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2", issueID, firstPR)
+			wakeTick(test, fixture, wakeups, wakeup.ID)
+			wantRuns := 2
+			if event == "conflicts" {
+				wantRuns = 1
+			}
+			if runs := wakeRuns(test, fixture, wakeup.ID); runs != wantRuns {
+				test.Fatalf("after unlinking one satisfying PR: runs = %d, want %d", runs, wantRuns)
+			}
+		})
+	}
+}
+
 // Checks and merged keys carry only the PR number, so same-numbered PRs from
 // two repositories share a key. The second one satisfying still wakes.
 func TestWakeupConditionPRSharedNumberWakesForEachPR(t *testing.T) {
