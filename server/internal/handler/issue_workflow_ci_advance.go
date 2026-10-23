@@ -32,11 +32,11 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		}
 		return false
 	}
-	if !issue.ProjectID.Valid || issue.TriageState.Valid ||
+	if (!issue.ProjectID.Valid && !issue.WorkflowID.Valid) || issue.TriageState.Valid ||
 		issuestatus.Category(ctx, h.Queries, issue.WorkspaceID, issue.Status) == issuestatus.CategoryClosed {
 		return false
 	}
-	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil || def == nil {
 		if err != nil {
 			slog.Warn("ci advance: load workflow failed", "err", err, "issue_id", uuidToString(issueID))

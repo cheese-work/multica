@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { IssueWorkflow, IssueWorkflowStep } from "../types";
 import {
   projectMoveMayHandOff,
+  resolveIssueWorkflow,
   resolveProjectWorkflow,
+  sharedWorkflowStatusKeys,
   stepHandsOff,
   statusAcceptsHandoff,
   workflowAllowsStatus,
@@ -107,5 +109,38 @@ describe("projectMoveMayHandOff", () => {
 
   it("never asks without a workflow", () => {
     expect(projectMoveMayHandOff(null, "todo")).toBe(false);
+  });
+});
+
+describe("per-issue workflow override", () => {
+  const project = { id: "p1", workflow_id: "wf-content" } as never;
+  const workflows = [defaultWorkflow, content];
+
+  it("resolves the issue's own workflow ahead of its project's, in a project or not", () => {
+    expect(resolveIssueWorkflow(workflows, [project], "p1", "wf-default")).toMatchObject({ resolved: true, workflow: { id: "wf-default" } });
+    expect(resolveIssueWorkflow(workflows, [], null, "wf-content")).toMatchObject({ resolved: true, workflow: { id: "wf-content" } });
+    expect(resolveIssueWorkflow(workflows, [project], "p1", null).workflow?.id).toBe("wf-content");
+  });
+
+  it("leaves an override the list lacks unresolved instead of using the project's", () => {
+    expect(resolveIssueWorkflow(workflows, [project], "p1", "gone")).toMatchObject({ resolved: false, workflow: null });
+  });
+
+  it("offers no status for an override the workflow list lacks, instead of the project's", () => {
+    const keys = sharedWorkflowStatusKeys(workflows, [project], [{ project_id: "p1", workflow_id: "gone" }]);
+    expect(keys).not.toBeNull();
+    expect(keys?.size).toBe(0);
+  });
+
+  it("intersects statuses per issue, so two issues of one project can differ", () => {
+    const issues = [
+      { project_id: "p1", workflow_id: null },
+      { project_id: "p1", workflow_id: "wf-narrow" },
+    ];
+    const narrow: IssueWorkflow = { ...content, id: "wf-narrow", name: "Narrow", steps: columns("editing") };
+    expect([...(sharedWorkflowStatusKeys([...workflows, narrow], [project], issues) ?? [])].sort()).toEqual(
+      ["backlog", "blocked", "cancelled", "done", "editing", "todo"],
+    );
+    expect(sharedWorkflowStatusKeys([...workflows, narrow], [project], [issues[0]!])?.has("drafting")).toBe(true);
   });
 });
