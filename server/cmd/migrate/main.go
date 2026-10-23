@@ -178,6 +178,7 @@ var concurrentIndexCleanups = map[string]string{
 	"658_issue_workflow_pkey_index":                             "issue_workflow_pkey_uidx",
 	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
 	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
+	"674_issue_workflow_override_index":                         "idx_issue_workflow_override",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
 	"564_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
 	"567_issue_child_event_id":                                  "issue_child_event_id_idx",

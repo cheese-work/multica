@@ -467,18 +467,43 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	return Decode(row)
 }
 
+// ErrOverrideMissing means an issue's workflow override names a workflow that
+// no longer exists. Deletion is blocked while an issue references a workflow,
+// so this is a data fault; the issue never falls back to a looser workflow.
+var ErrOverrideMissing = errors.New("the issue's workflow override no longer exists")
+
 // ForProject loads the workflow a project uses. def is nil only for an issue
 // outside any project.
 func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID) (*Definition, db.Project, error) {
-	if !projectID.Valid {
-		return nil, db.Project{}, nil
-	}
-	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, db.Project{}, nil
+	return ForIssue(ctx, q, workspaceID, pgtype.UUID{}, projectID)
+}
+
+// ForIssue loads the workflow an issue follows: its own override when set,
+// otherwise its project's. def is nil only for an issue with neither. project
+// is the zero value outside a project, so handlers relative to the project
+// resolve to nobody. Every consumer resolves through here.
+func ForIssue(ctx context.Context, q Querier, workspaceID, workflowID, projectID pgtype.UUID) (*Definition, db.Project, error) {
+	var project db.Project
+	if projectID.Valid {
+		var err error
+		project, err = q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, db.Project{}, err
 		}
-		return nil, db.Project{}, err
+	}
+	if workflowID.Valid {
+		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: workflowID, WorkspaceID: workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, project, ErrOverrideMissing
+		}
+		if err != nil {
+			return nil, project, err
+		}
+		def, err := Decode(row)
+		return &def, project, err
+	}
+	if !project.ID.Valid {
+		return nil, db.Project{}, nil
 	}
 	def, err := ForProjectRow(ctx, q, project)
 	return def, project, err

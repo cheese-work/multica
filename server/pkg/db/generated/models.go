@@ -1220,6 +1220,7 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	TriageState        pgtype.Text        `json:"triage_state"`
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID         pgtype.UUID        `json:"workflow_id"`
 }
 
 type IssueCheckpoint struct {
