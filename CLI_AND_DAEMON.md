@@ -1056,6 +1056,28 @@ multica issue update <issue-id> --project <project-id>
 multica issue list --project <project-id>
 ```
 
+## Workflows
+
+Read and edit project workflows (the per-status handler and `instructions` an
+issue gets when it enters a status). Any member can read; the server allows
+writes only to workspace owners and admins, and a `403` is reported as such.
+
+```bash
+multica workflow list                          # table; --output json for the raw array
+multica workflow get <id>                      # JSON; --output table lists steps and instructions
+multica workflow update <id> --steps-file steps.json
+multica workflow set-instructions <id> --status in_progress --file s2.md
+```
+
+- `update` replaces the whole steps array. The file is a JSON array in the shape
+  `workflow get --output json` prints under `steps` (`status_key`, `handler`,
+  `instructions`, `next_status_key`, `back_status_key`). The server's readback is printed.
+- `set-instructions` reads the workflow, replaces only the `instructions` of the
+  one step whose `status_key` equals `--status`, sends every other step back
+  unchanged, and prints the readback. It fails before sending anything when
+  `--status` matches no step or more than one. It sends the version it read, so
+  a concurrent edit is refused with `workflow_changed_elsewhere` instead of overwritten.
+
 ## Setup
 
 ```bash
