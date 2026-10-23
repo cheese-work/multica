@@ -18,7 +18,7 @@ import { constants } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveVersion } from "./package.mjs";
+import { deriveCliVersion } from "./package.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..", "..");
@@ -103,7 +103,7 @@ async function exists(p) {
 }
 
 if (hasGo()) {
-  const version = deriveVersion(repoRoot) || "dev";
+  const version = deriveCliVersion(repoRoot) || "dev";
   const commit = git("rev-parse", "--short", "HEAD") || "unknown";
   const buildCommit = git("rev-parse", "HEAD") || "unknown";
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z");

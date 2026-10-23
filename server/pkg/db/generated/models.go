@@ -1222,6 +1222,7 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	TriageState        pgtype.Text        `json:"triage_state"`
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID         pgtype.UUID        `json:"workflow_id"`
 }
 
 type IssueCheckpoint struct {
@@ -1253,6 +1254,12 @@ type IssueChildEvent struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
+}
+
+type IssueCiAdvance struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	HeadSha   string             `json:"head_sha"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueDependency struct {

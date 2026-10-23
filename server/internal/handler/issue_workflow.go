@@ -71,6 +71,9 @@ type IssueWorkflowStepPayload struct {
 	Instructions  string                      `json:"instructions"`
 	NextStatusKey string                      `json:"next_status_key,omitempty"`
 	BackStatusKey string                      `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen moves an issue on this step to its next status when a
+	// linked PR's checks pass on the current head.
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -118,6 +121,8 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Instructions:  s.Instructions,
 		NextStatusKey: s.NextStatusKey,
 		BackStatusKey: s.BackStatusKey,
+
+		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 	}
 }
 
@@ -128,6 +133,8 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Instructions:  in.Instructions,
 		NextStatusKey: in.NextStatusKey,
 		BackStatusKey: in.BackStatusKey,
+
+		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 	}
 }
 
@@ -314,6 +321,8 @@ type IssueWorkflowStepInput struct {
 	Instructions  string                       `json:"instructions,omitempty"`
 	NextStatusKey string                       `json:"next_status_key,omitempty"`
 	BackStatusKey string                       `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -355,6 +364,8 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Instructions:  in.Instructions,
 			NextStatusKey: in.NextStatusKey,
 			BackStatusKey: in.BackStatusKey,
+
+			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -732,6 +743,23 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issues that override to this workflow are not remapped; an edit cannot
+	// drop a status one of them still holds.
+	if !current.IsDefault {
+		held, err := qtx.ListOverrideIssueStatusesForWorkflow(ctx, db.ListOverrideIssueStatusesForWorkflowParams{WorkspaceID: wsUUID, WorkflowID: current.ID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save workflow")
+			return
+		}
+		after := issueworkflow.Definition{Steps: steps}
+		for _, status := range held {
+			if !after.Has(status) {
+				writeErrorCode(w, http.StatusConflict, "workflow_in_use", fmt.Sprintf("issues that use this workflow are on %q; move them first", status))
+				return
+			}
+		}
+	}
+
 	// Default accepts every status, so editing it never moves issues; issues
 	// on a status it drops stay there and show under hidden columns.
 	plan := workflowMappingPlan{Required: []StatusMappingRequirement{}, Unchanged: []StatusIssueCount{}}
@@ -848,6 +876,19 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			"error":         fmt.Sprintf("%d project(s) still use this workflow; switch them to another workflow first", len(projects)),
 			"code":          "workflow_in_use",
 			"project_count": len(projects),
+		})
+		return
+	}
+	overrides, err := qtx.CountIssuesOverridingToIssueWorkflow(ctx, db.CountIssuesOverridingToIssueWorkflowParams{WorkspaceID: wsUUID, WorkflowID: idUUID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete workflow")
+		return
+	}
+	if overrides > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":       fmt.Sprintf("%d issue(s) still use this workflow; switch them to another workflow first", overrides),
+			"code":        "workflow_in_use",
+			"issue_count": overrides,
 		})
 		return
 	}

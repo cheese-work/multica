@@ -226,6 +226,9 @@ type daemonWorkspaceReposResponse struct {
 	Repos        []RepoData      `json:"repos"`
 	ReposVersion string          `json:"repos_version"`
 	Settings     json.RawMessage `json:"settings,omitempty"`
+	// CACerts carries the backend's extra CA certificates (PEM) for the
+	// daemon's git. Older daemons ignore it.
+	CACerts string `json:"ca_certs,omitempty"`
 }
 
 func normalizeWorkspaceRepos(repos []RepoData) []RepoData {
@@ -274,12 +277,13 @@ func parseWorkspaceRepos(raw []byte) []RepoData {
 	return normalizeWorkspaceRepos(repos)
 }
 
-func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte) daemonWorkspaceReposResponse {
+func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte, caCerts []byte) daemonWorkspaceReposResponse {
 	repos := parseWorkspaceRepos(raw)
 	resp := daemonWorkspaceReposResponse{
 		WorkspaceID:  workspaceID,
 		Repos:        repos,
 		ReposVersion: workspaceReposVersion(repos),
+		CACerts:      string(caCerts),
 	}
 	if len(settingsRaw) > 0 {
 		resp.Settings = json.RawMessage(settingsRaw)
@@ -735,14 +739,18 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"runtimes": resp,
 	})
 
-	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings)
+	repoResp := workspaceReposResponse(req.WorkspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"runtimes":      resp,
 		"repos":         repoResp.Repos,
 		"repos_version": repoResp.ReposVersion,
 		"settings":      repoResp.Settings,
-	})
+	}
+	if repoResp.CACerts != "" {
+		body["ca_certs"] = repoResp.CACerts
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // mergeLegacyRuntimes folds every runtime row keyed on a prior hostname-derived
@@ -919,7 +927,7 @@ func (h *Handler) GetDaemonWorkspaceRepos(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, workspaceReposResponse(workspaceID, ws.Repos, ws.Settings))
+	writeJSON(w, http.StatusOK, workspaceReposResponse(workspaceID, ws.Repos, ws.Settings, h.cfg.GitExtraCACerts))
 }
 
 // setRuntimeOffline flips a runtime offline, recording the daemon's reason when
@@ -2618,6 +2626,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}); err != nil {
 		slog.Warn("daemon claim: could not record the claimed model",
 			"task_id", uuidToString(task.ID), "error", err)
+	} else {
+		// resp was snapshotted before this write; report what is now stored.
+		resp.ClaimedModel = &agent.Model.String
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
@@ -3066,7 +3077,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				if prior.RuntimeID == task.RuntimeID {
+				// A leader whose session has outgrown the threshold starts a
+				// fresh one in the same workdir: the cold issue and comment
+				// reads rebuild its state, so nothing but the transcript is lost.
+				if prior.RuntimeID == task.RuntimeID && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
 					resp.PriorSessionID = prior.SessionID.String
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned

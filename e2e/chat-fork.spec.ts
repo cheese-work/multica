@@ -161,6 +161,8 @@ for (const surface of ["page", "window"] as const) {
         // DM list titles; the list renders before the DM header that repeats the title.
         const forkRow = page.getByText("Storage engine choice (fork)", { exact: true }).first();
         const otherRow = page.getByText("Unrelated recent DM", { exact: true });
+        // The reload must keep the fork selected: under load it can start before the URL names the fork.
+        await expect(page).toHaveURL(new RegExp(`session=${child.rows[0]!.id}`));
         await page.reload({ waitUntil: "domcontentloaded" });
         await expect(otherRow).toBeVisible({ timeout: 30_000 });
         await expect(forkRow).toBeVisible();

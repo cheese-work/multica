@@ -383,3 +383,10 @@ JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id')
   AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[])
 ORDER BY answer.created_at, answer.id;
+
+-- name: LatestDecisionRequestLane :one
+SELECT chat_session_id FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

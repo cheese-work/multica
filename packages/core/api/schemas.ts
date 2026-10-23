@@ -563,6 +563,7 @@ const IssueWorkflowStepSchema = z.object({
   instructions: z.string().default(""),
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
+  advance_on_ci_green: z.boolean().optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -1517,6 +1518,8 @@ export const IssueSchema = z.object({
     .optional()
     .catch(undefined),
   project_id: z.string().nullable(),
+  // Older backends predate the per-issue workflow override.
+  workflow_id: z.string().nullable().optional().catch(null),
   position: z.number(),
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
@@ -2627,6 +2630,17 @@ export const DuplicateIssueErrorBodySchema = z.object({
     title: z.string(),
   }).loose(),
 }).loose();
+
+// A destructive confirmation must fail closed on an incomplete plan. Do not
+// default missing arrays to empty or silently discard malformed entries.
+export const RuntimeAccessRevocationPlanSchema = z.object({
+  code: z.enum(["runtime_has_nonowner_dependents", "runtime_access_revocation_plan_changed"]),
+  nonowner_agents: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+  active_task_ids: z.array(z.string().uuid()),
+}).refine((body) =>
+  new Set(body.nonowner_agents.map((agent) => agent.id)).size === body.nonowner_agents.length &&
+  new Set(body.active_task_ids).size === body.active_task_ids.length,
+).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids }));
 
 export interface DuplicateIssueErrorBody {
   code: "active_duplicate_issue";
