@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -19,8 +20,8 @@ func TestChatSendRecordsOnlyCommittedHumanDelegation(test *testing.T) {
 					forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "Source instruction"})
 				}
 				handler := *testHandler
-				tasks := *testHandler.TaskService
-				handler.TaskService = &tasks
+				tasks := service.NewTaskService(handler.Queries, handler.TxStarter, handler.Hub, handler.Bus, testHandler.TaskService.Wakeup)
+				handler.TaskService = tasks
 				tasks.RecordMemberActivity = outcome != "disabled"
 				dbfx.Exec(test, "DELETE FROM member_delegation_day WHERE user_id=$1", testUserID)
 				dbfx.Cleanup(test, "DELETE FROM member_delegation_day WHERE user_id=$1", testUserID)
