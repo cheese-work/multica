@@ -1440,14 +1440,15 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 var identifierRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{0,9})-(\d+)\b`)
 
 // closingIdentifierRe extracts identifiers that appear immediately after a
-// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?"),
-// optionally separated by a colon and whitespace. Matching is intentionally
+// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?") or
+// a plain reference keyword ("refs?", "part of"), optionally separated by a
+// colon and whitespace. Matching is intentionally
 // strict on adjacency — "Fix MUL-1" names MUL-1, but "Fix login MUL-1" does
 // not. It is the one way a PR body links an issue; a bare body mention links
 // nothing. Since MUL-7726 the keyword only links: what a merge does is the
 // workspace's choice, not the PR text's.
 var closingIdentifierRe = regexp.MustCompile(
-	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
 )
 
 // HandleGitHubWebhook (POST /api/webhooks/github) is GitHub's destination for
