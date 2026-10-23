@@ -1271,6 +1271,12 @@ type IssueChildEvent struct {
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
 }
 
+type IssueCiAdvance struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	HeadSha   string             `json:"head_sha"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`
@@ -1864,6 +1870,39 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RunGateEvent struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	Source              string             `json:"source"`
+	EventKey            string             `json:"event_key"`
+	CandidateKey        string             `json:"candidate_key"`
+	Origin              string             `json:"origin"`
+	AuthorType          pgtype.Text        `json:"author_type"`
+	NonLeaderAgentReply bool               `json:"non_leader_agent_reply"`
+	TriggerCommentID    pgtype.UUID        `json:"trigger_comment_id"`
+	SystemRule          pgtype.Text        `json:"system_rule"`
+	WakeupID            pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision      pgtype.Int8        `json:"wakeup_revision"`
+	ReceiptID           pgtype.UUID        `json:"receipt_id"`
+	AgentID             pgtype.UUID        `json:"agent_id"`
+	SquadID             pgtype.UUID        `json:"squad_id"`
+	IssueRevision       int64              `json:"issue_revision"`
+	IssueStatus         string             `json:"issue_status"`
+	PrHeadSha           pgtype.Text        `json:"pr_head_sha"`
+	EventTime           pgtype.Timestamptz `json:"event_time"`
+	NativeFoldEligible  bool               `json:"native_fold_eligible"`
+	NativeFoldTaskID    pgtype.UUID        `json:"native_fold_task_id"`
+	QueueSnapshot       []byte             `json:"queue_snapshot"`
+	ActiveTaskID        pgtype.UUID        `json:"active_task_id"`
+	AdmissionStatus     pgtype.Text        `json:"admission_status"`
+	AdmissionReason     pgtype.Text        `json:"admission_reason"`
+	AdmissionAt         pgtype.Timestamptz `json:"admission_at"`
+	SeenCount           int32              `json:"seen_count"`
+	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt          pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type RuntimeProfile struct {

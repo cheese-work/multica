@@ -72,12 +72,12 @@ UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND stat
 
 -- name: ListChatWakeupLinkedPullRequests :many
 -- checks_identity names the finished result: a digest of every check run's name,
--- state, details URL and GraphQL node id, in a fixed order that does not depend
+-- state, details URL and GitHub id, in a fixed order that does not depend
 -- on the order GitHub returned them in. A rerun creates new check runs and a
--- status posted again creates a new status object, so the node ids change with
+-- status posted again creates a new status object, so the GitHub ids change with
 -- the result even when name, state, URL and time match, and even if no poll saw
 -- the run in progress. checks_identity_partial is true while a finished run has
--- no node id (rows written before the column existed, until the next snapshot
+-- no GitHub id (rows written before the column existed, until the next snapshot
 -- refresh): such data cannot name a result. snapshotted is false until the first
 -- successful API snapshot: before it, nothing is known about the checks.
 SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, (pr.snapshot_fetched_at IS NOT NULL)::boolean AS snapshotted, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { projectListOptions } from "../projects/queries";
 import type { IssueWorkflow } from "../types";
-import { type IssueWorkflowResolution, issueWorkflowListOptions, resolveIssueWorkflow } from "./queries";
+import { type IssueWorkflowResolution, defaultWorkflow, issueWorkflowListOptions, resolveIssueWorkflow } from "./queries";
 
 const EMPTY: IssueWorkflow[] = [];
 
@@ -35,11 +35,17 @@ export function useIssueWorkflows(wsId: string): {
  * hand the issue off) must wait for it, because a null workflow that is merely
  * unresolved looks exactly like "no handoff" and would skip the confirmation.
  * `retry` reloads both lists.
+ *
+ * `defaultWorkflow` is the workspace Default itself, null until loaded or on a
+ * server without workflows. An issue outside any project offers its statuses.
+ * (MUL-8121)
  */
 export function useProjectWithWorkflow(
   wsId: string,
   projectId: string | null | undefined,
 ): IssueWorkflowResolution & {
+  /** The workspace Default workflow, once loaded. */
+  defaultWorkflow: IssueWorkflow | null;
   /** A list is still on its way; an unresolved answer may yet resolve by itself. */
   loading: boolean;
   retry: () => void;
@@ -60,6 +66,7 @@ export function useProjectWithWorkflow(
   return useMemo(
     () => ({
       ...resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, projects, projectId),
+      defaultWorkflow: defaultWorkflow(workflowsLoaded ? workflows : undefined),
       loading: Boolean(projectId) && ((!workflowsLoaded && !workflowsFailed) || (projectsPending && projects === undefined)),
       retry,
     }),

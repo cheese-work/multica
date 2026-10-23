@@ -3,170 +3,9 @@ package ghsnapshot
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 )
-
-// graphqlServer stands in for GitHub's GraphQL endpoint. tokenHandler mints a
-// token; the queryFn produces the `data` payload for each GraphQL request,
-// receiving the request variables so it can page.
-func graphqlServer(t *testing.T, queryFn func(vars map[string]any) string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"token":"ghs_secret","expires_at":"` +
-				time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			Variables map[string]any `json:"variables"`
-		}
-		_ = json.Unmarshal(body, &req)
-		_, _ = w.Write([]byte(`{"data":` + queryFn(req.Variables) + `}`))
-	}))
-}
-
-func graphqlSnapshotPage(head string, hasNext bool, endCursor string) string {
-	return fmt.Sprintf(`{"repository":{"pullRequest":{
-		"headRefOid":%q,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
-		"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{
-			"pageInfo":{"hasNextPage":%t,"endCursor":%q},"nodes":[]
-		}}}}]}}}}`, head, hasNext, endCursor)
-}
-
-// TestFetchPRSnapshotPaginatesContexts is the acceptance-criterion-2 test:
-// contexts spanning two pages must all be collected — never assume <100.
-func TestFetchPRSnapshotPaginatesContexts(t *testing.T) {
-	srv := graphqlServer(t, func(vars map[string]any) string {
-		cursor, _ := vars["cursor"].(string)
-		if cursor == "" {
-			// Page 1: two contexts, more to come.
-			return `{"repository":{"pullRequest":{
-				"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
-				"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{
-					"pageInfo":{"hasNextPage":true,"endCursor":"CUR2"},
-					"nodes":[
-						{"__typename":"CheckRun","name":"backend","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"u1"},
-						{"__typename":"CheckRun","name":"frontend","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"u2"}
-					]}}}}]}}}}`
-		}
-		// Page 2 (cursor==CUR2): one more context, plus a legacy StatusContext.
-		return `{"repository":{"pullRequest":{
-			"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
-			"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{
-				"pageInfo":{"hasNextPage":false,"endCursor":""},
-				"nodes":[
-					{"__typename":"CheckRun","name":"e2e","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"u3"},
-					{"__typename":"StatusContext","context":"vercel","state":"SUCCESS","targetUrl":"u4"}
-				]}}}}]}}}}`
-	})
-	defer srv.Close()
-
-	c := newTestClient(t, srv.URL)
-	snap, err := FetchPRSnapshot(context.Background(), c, 1, "o", "r", 5)
-	if err != nil {
-		t.Fatalf("FetchPRSnapshot: %v", err)
-	}
-	if snap.HeadSHA != "sha1" || snap.Mergeable != "MERGEABLE" || snap.MergeStateStatus != "CLEAN" {
-		t.Fatalf("head/merge = %+v", snap)
-	}
-	if !snap.HasChecks || snap.RollupState != "FAILURE" {
-		t.Fatalf("rollup = %q hasChecks=%v", snap.RollupState, snap.HasChecks)
-	}
-	if len(snap.Contexts) != 4 {
-		t.Fatalf("collected %d contexts across pages, want 4", len(snap.Contexts))
-	}
-	// StatusContext normalization: SUCCESS → completed/success, is_status_context.
-	last := snap.Contexts[3]
-	if last.Name != "vercel" || last.Status != "completed" || last.Conclusion != "success" || !last.IsStatusContext {
-		t.Fatalf("status context normalized wrong: %+v", last)
-	}
-	// In-progress CheckRun stays running.
-	if snap.Contexts[2].Status != "in_progress" || snap.Contexts[2].Conclusion != "" {
-		t.Fatalf("in-progress run normalized wrong: %+v", snap.Contexts[2])
-	}
-	if snap.Decided() {
-		t.Fatal("snapshot with an in-progress run must be undecided")
-	}
-}
-
-func TestFetchPRSnapshotRejectsHeadChangeDuringPagination(t *testing.T) {
-	calls := 0
-	srv := graphqlServer(t, func(vars map[string]any) string {
-		calls++
-		if calls == 1 {
-			return graphqlSnapshotPage("shaA", true, "CUR2")
-		}
-		return graphqlSnapshotPage("shaB", false, "")
-	})
-	defer srv.Close()
-
-	c := newTestClient(t, srv.URL)
-	snap, err := FetchPRSnapshot(context.Background(), c, 1, "o", "r", 5)
-	if err == nil || !strings.Contains(err.Error(), "head changed during pagination") {
-		t.Fatalf("FetchPRSnapshot error = %v, want head-change rejection", err)
-	}
-	if snap != nil {
-		t.Fatalf("head-change response returned partial snapshot: %+v", snap)
-	}
-	if calls != 2 {
-		t.Fatalf("GraphQL calls = %d, want 2", calls)
-	}
-}
-
-func TestFetchPRSnapshotRejectsPaginationBeyondLimit(t *testing.T) {
-	calls := 0
-	srv := graphqlServer(t, func(vars map[string]any) string {
-		calls++
-		return graphqlSnapshotPage("shaA", true, fmt.Sprintf("CUR%d", calls))
-	})
-	defer srv.Close()
-
-	c := newTestClient(t, srv.URL)
-	snap, err := FetchPRSnapshot(context.Background(), c, 1, "o", "r", 5)
-	if err == nil || !strings.Contains(err.Error(), "pagination exceeds page limit") {
-		t.Fatalf("FetchPRSnapshot error = %v, want page-limit rejection", err)
-	}
-	if snap != nil {
-		t.Fatalf("page-limit response returned truncated snapshot: %+v", snap)
-	}
-	if calls != maxSnapshotContextPages {
-		t.Fatalf("GraphQL calls = %d, want %d", calls, maxSnapshotContextPages)
-	}
-}
-
-// TestFetchPRSnapshotNullRollup is the acceptance-criterion-5 test: a null
-// statusCheckRollup means "no checks yet" (HasChecks=false), never passed.
-func TestFetchPRSnapshotNullRollup(t *testing.T) {
-	srv := graphqlServer(t, func(vars map[string]any) string {
-		return `{"repository":{"pullRequest":{
-			"headRefOid":"sha9","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN",
-			"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}`
-	})
-	defer srv.Close()
-
-	c := newTestClient(t, srv.URL)
-	snap, err := FetchPRSnapshot(context.Background(), c, 1, "o", "r", 5)
-	if err != nil {
-		t.Fatalf("FetchPRSnapshot: %v", err)
-	}
-	if snap.HasChecks {
-		t.Fatal("null rollup must yield HasChecks=false")
-	}
-	if snap.RollupState != "" || len(snap.Contexts) != 0 {
-		t.Fatalf("null rollup must have empty rollup/contexts, got %+v", snap)
-	}
-	if snap.Decided() {
-		t.Fatal("UNKNOWN mergeable must be undecided")
-	}
-}
 
 func TestSnapshotDecided(t *testing.T) {
 	cases := []struct {
@@ -192,15 +31,38 @@ func TestSnapshotDecided(t *testing.T) {
 	}
 }
 
-// CHE-1874: the node id names one finished result. A check run and a commit
-// status both carry it, whatever their state.
-func TestNormalizeNodeCarriesTheNodeID(t *testing.T) {
-	run, ok := normalizeNode([]byte(`{"__typename":"CheckRun","id":"CR_abc","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://x/job/1"}`))
-	if !ok || run.ExternalID != "CR_abc" {
-		t.Fatalf("check run = %+v, %v", run, ok)
+// CHE-1874: the GitHub id names one finished result. A check run and a commit
+// status both carry it, so a rerun with the same name, state, URL and time still
+// has a new identity. A status that arrives without an id carries none.
+func TestFetchPRSnapshotCarriesTheGitHubIDOfEachCheck(t *testing.T) {
+	srv := snapshotServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/5":
+			writeTestPR(w, "sha1", true, "clean")
+		case "/repos/o/r/commits/sha1/check-runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 1, "check_runs": []map[string]any{
+				{"id": 4711, "head_sha": "sha1", "name": "build", "status": "completed", "conclusion": "success", "details_url": "https://x/job/1"},
+			}})
+		case "/repos/o/r/commits/sha1/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "statuses": []map[string]any{
+				{"id": 99, "context": "ci", "state": "success", "target_url": "https://x/7"},
+				{"context": "legacy", "state": "success"},
+			}})
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+	snap, err := FetchPRSnapshot(context.Background(), newTestClient(t, srv.URL), 1, "o", "r", 5)
+	if err != nil {
+		t.Fatal(err)
 	}
-	status, _ := normalizeNode([]byte(`{"__typename":"StatusContext","id":"SC_def","context":"ci","state":"SUCCESS","targetUrl":"https://x/7"}`))
-	if status.ExternalID != "SC_def" {
-		t.Fatalf("status = %+v", status)
+	got := map[string]string{}
+	for _, c := range snap.Contexts {
+		got[c.Name] = c.ExternalID
+	}
+	if got["build"] != "4711" || got["ci"] != "99" || got["legacy"] != "" {
+		t.Fatalf("external ids = %v, want build=4711 ci=99 legacy=\"\"", got)
 	}
 }
