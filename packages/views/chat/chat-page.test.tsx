@@ -31,9 +31,20 @@ vi.mock("./components/chat-message-list", async () => {
   return {
     // Only the divider link is real: AppLink pushes through the adapter, as
     // the "continued from" link in the transcript does.
-    ChatMessageList: ({ continuedIntoSessionId }: { continuedIntoSessionId?: string | null }) => (
+    ChatMessageList: ({
+      continuedIntoSessionId,
+      jumpToMessageId,
+      onJumpSettled,
+    }: {
+      continuedIntoSessionId?: string | null;
+      jumpToMessageId?: string | null;
+      onJumpSettled?: (outcome: "landed" | "missing") => void;
+    }) => (
       <div>
         chat-message-list
+        <span data-testid="jump-target">{jumpToMessageId ?? ""}</span>
+        <button type="button" onClick={() => onJumpSettled?.("landed")}>settle-landed</button>
+        <button type="button" onClick={() => onJumpSettled?.("missing")}>settle-missing</button>
         {continuedIntoSessionId && (
           <AppLink href={`/acme/chat?session=${continuedIntoSessionId}`}>continued-link</AppLink>
         )}
@@ -301,6 +312,29 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+  it("hands ?message= to the list for the session it names, then drops it once landed", () => {
+    seedSession("session-9");
+    const { replace } = renderPage("session=session-9&message=msg-7");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-7");
+    fireEvent.click(screen.getByText("settle-landed"));
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("toasts and drops ?message= when the message cannot be found", () => {
+    seedSession("session-9");
+    const { replace } = renderPage("session=session-9&message=gone");
+    fireEvent.click(screen.getByText("settle-missing"));
+    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("passes no jump target without ?message=", () => {
+    seedSession("session-9");
+    renderPage("session=session-9");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("");
+  });
+
 
   it("prompts for interactive re-login without navigating or clearing the session", () => {
     interactiveLoginRequiredRef.current = true;
