@@ -1736,5 +1736,37 @@
   },
   "hover_card": {
     "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
+  },
+  "decision": {
+    "class": {
+      "reversible": "可撤销",
+      "spend": "支出",
+      "deploy": "部署",
+      "publish": "发布",
+      "irreversible": "不可撤销",
+      "product_direction": "产品方向"
+    },
+    "state": {
+      "pending": "待生效",
+      "effective": "已生效",
+      "disclaimed": "已撤回"
+    },
+    "via_dm": "来自私信",
+    "recorded_by": "由 {{name}} 记录",
+    "open_dm": "打开私信",
+    "private_dm": "来自私人私信",
+    "disclaim_action": "撤回",
+    "disclaiming": "正在撤回…",
+    "disclaim_title": "撤回这个决定？",
+    "disclaim_desc": "智能体会收到该决定已撤回的通知，请求会重新打开。此操作无法撤销。",
+    "keep_action": "保留决定",
+    "changed_title": "你阅读期间这个决定已发生变化。",
+    "changed_body": "请先刷新查看当前状态，再决定是否撤回。未撤回任何内容。",
+    "refresh_action": "刷新",
+    "withdrawn_title": "已被撤回。",
+    "withdrawn_body": "此次点击未更改任何内容。",
+    "review_action": "查看",
+    "failed_notice": "无法撤回，决定保持不变。",
+    "try_again_action": "重试"
   }
 }

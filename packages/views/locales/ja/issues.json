@@ -1736,5 +1736,37 @@
   },
   "hover_card": {
     "created_updated": "{{created}}に作成 · {{updated}}に更新"
+  },
+  "decision": {
+    "class": {
+      "reversible": "取り消し可能",
+      "spend": "支出",
+      "deploy": "デプロイ",
+      "publish": "公開",
+      "irreversible": "取り消し不可",
+      "product_direction": "プロダクトの方向性"
+    },
+    "state": {
+      "pending": "保留中",
+      "effective": "有効",
+      "disclaimed": "撤回済み"
+    },
+    "via_dm": "DM 経由",
+    "recorded_by": "{{name}} が記録",
+    "open_dm": "DM を開く",
+    "private_dm": "非公開 DM から",
+    "disclaim_action": "撤回",
+    "disclaiming": "撤回中…",
+    "disclaim_title": "この決定を撤回しますか？",
+    "disclaim_desc": "エージェントに決定の撤回が通知され、リクエストが再び開きます。この操作は取り消せません。",
+    "keep_action": "決定を維持",
+    "changed_title": "閲覧中にこの決定が変更されました。",
+    "changed_body": "撤回する前に更新して現在の状態を確認してください。何も撤回されていません。",
+    "refresh_action": "更新",
+    "withdrawn_title": "すでに撤回されています。",
+    "withdrawn_body": "今回のクリックでは何も変更されていません。",
+    "review_action": "確認",
+    "failed_notice": "撤回できませんでした。決定は変更されていません。",
+    "try_again_action": "再試行"
   }
 }

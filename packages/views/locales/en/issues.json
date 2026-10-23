@@ -1808,5 +1808,37 @@
   },
   "hover_card": {
     "created_updated": "created {{created}} · updated {{updated}}"
+  },
+  "decision": {
+    "class": {
+      "reversible": "reversible",
+      "spend": "spend",
+      "deploy": "deploy",
+      "publish": "publish",
+      "irreversible": "irreversible",
+      "product_direction": "product direction"
+    },
+    "state": {
+      "pending": "Pending",
+      "effective": "In effect",
+      "disclaimed": "Disclaimed"
+    },
+    "via_dm": "via DM",
+    "recorded_by": "Recorded by {{name}}",
+    "open_dm": "Open DM",
+    "private_dm": "from a private DM",
+    "disclaim_action": "Disclaim",
+    "disclaiming": "Disclaiming…",
+    "disclaim_title": "Disclaim this decision?",
+    "disclaim_desc": "The agent is told the decision is withdrawn and the request reopens. This cannot be undone.",
+    "keep_action": "Keep decision",
+    "changed_title": "This decision changed while you were reading.",
+    "changed_body": "Refresh to see the current state before you disclaim. Nothing was withdrawn.",
+    "refresh_action": "Refresh",
+    "withdrawn_title": "Already withdrawn.",
+    "withdrawn_body": "Nothing was changed by this click.",
+    "review_action": "Review",
+    "failed_notice": "Could not disclaim. The decision is unchanged.",
+    "try_again_action": "Try again"
   }
 }
