@@ -82,11 +82,16 @@ func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params
 // lockProject takes the catalog and project locks of the project the write
 // lands the issue in. Call it before any row lock.
 func (w *workflowWrite) lockProject(ctx context.Context, q *db.Queries) error {
-	if w == nil || !w.pre.ProjectID.Valid {
+	if w == nil || (!w.pre.ProjectID.Valid && !w.prev.WorkflowID.Valid) {
 		return nil
 	}
+	// An override reads the workflow row, so a workflow edit (exclusive on the
+	// catalog) must not interleave, in a project or not.
 	if err := q.LockIssueStatusCatalogShared(ctx, w.prev.WorkspaceID); err != nil {
 		return err
+	}
+	if !w.pre.ProjectID.Valid {
+		return nil
 	}
 	if _, err := q.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: w.pre.ProjectID, WorkspaceID: w.prev.WorkspaceID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

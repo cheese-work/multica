@@ -96,8 +96,8 @@ var selfReloadProbeTimeout = 10 * time.Second
 // different multica binary". It runs two independent checks on one goroutine,
 // which is what keeps them from racing each other into triggerRestart:
 //
-//   - tryAutoUpdate: poll GitHub for a newer release and, when the daemon is
-//     idle, run the same brew-or-download upgrade as the server-triggered path.
+//   - tryAutoUpdate: poll GitHub for a newer release and install it using the
+//     same upgrade as the server-triggered path, then restart when idle.
 //   - trySelfReload: notice that the binary on disk was replaced out of band
 //     and re-exec into it.
 //
@@ -194,9 +194,9 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 }
 
 // tryAutoUpdate runs one check-and-maybe-upgrade cycle. Bails early on any of:
-// already updating (server-triggered upgrade in flight), active tasks (defer
-// to next tick — we never interrupt running agents), version fetch failure,
-// or no newer release. The function never returns an error: a check that
+// already updating (server-triggered upgrade in flight), version fetch failure,
+// or no newer release. Installation proceeds while busy; only restart waits
+// for the idle barrier. The function never returns an error: a check that
 // fails today will be retried at the next tick, and we don't want a transient
 // network blip to escalate to a process-level shutdown.
 func (d *Daemon) tryAutoUpdate(ctx context.Context) {
@@ -211,16 +211,6 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		d.logger.Debug("auto-update: skip — update already in progress")
 		return
 	}
-	// Cheap pre-fetch idle check: the release-metadata fetch below makes an
-	// HTTPS call to GitHub, and there is no point paying that cost (or the
-	// rate-limit budget) when we already know we are going to defer. A task
-	// that starts between this load and the barrier check below is caught
-	// by the strict re-check under claimMu inside trySetClaimBarrier.
-	if running := d.activeTasks.Load(); running > 0 {
-		d.logger.Debug("auto-update: skip — tasks running", "active", running)
-		return
-	}
-
 	target, ok := d.autoUpdateTarget(ctx)
 	if !ok {
 		return
@@ -241,24 +231,6 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		}
 	}()
 
-	// Strict barrier: between the cheap pre-fetch idle check and now the
-	// release fetch took anywhere from tens of milliseconds (typical) to
-	// seconds (slow link, GitHub hiccup), plenty of time for a poller to
-	// claim a fresh task. trySetClaimBarrier checks claimsInFlight +
-	// activeTasks under claimMu and only flips pauseClaims to true if both
-	// are zero, so once it returns true we can run the upgrade knowing that
-	// no in-flight task will be cancelled by triggerRestart.
-	if !d.trySetClaimBarrier() {
-		d.logger.Info("auto-update: deferring — task or claim in flight at barrier check")
-		return
-	}
-	barrierReleased := false
-	defer func() {
-		if !barrierReleased {
-			d.releaseClaimBarrier()
-		}
-	}()
-
 	d.logger.Info("auto-update: newer release available, upgrading",
 		"current", d.cfg.CLIVersion, "target", target)
 
@@ -267,6 +239,22 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		d.logger.Warn("auto-update: upgrade failed — will retry", "error", err, "output", output)
 		return
 	}
+
+	// Strict restart barrier: installation does not pause claims or tasks.
+	// trySetClaimBarrier checks claimsInFlight + activeTasks under claimMu
+	// and only flips pauseClaims to true if both are zero, so no in-flight
+	// task will be cancelled by triggerRestart.
+	if !d.trySetClaimBarrier() {
+		d.logger.Info("auto-update: upgrade completed, deferring restart — task or claim in flight at barrier check",
+			"target", target, "output", output)
+		return
+	}
+	barrierReleased := false
+	defer func() {
+		if !barrierReleased {
+			d.releaseClaimBarrier()
+		}
+	}()
 
 	d.logger.Info("auto-update: upgrade completed, restarting", "target", target, "output", output)
 	if !d.triggerRestart() {
@@ -289,13 +277,14 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 }
 
 // autoUpdateTarget reports whether a newer build exists and what to call it in
-// logs. Fork source: newest successful main CI artifact ahead of the running
-// commit; otherwise the upstream release tag.
+// logs. Fork source: the daemon build the daemon's own server carries, when its
+// commit differs from the running one; otherwise the upstream release tag.
 func (d *Daemon) autoUpdateTarget(ctx context.Context) (string, bool) {
 	if forkUpdateSource() {
-		u, err := resolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, currentCommit())
+		serverURL, token := d.updateServer()
+		u, err := resolveForkUpdate(ctx, serverURL, token, runtime.GOOS, runtime.GOARCH, currentCommit())
 		switch {
-		case errors.Is(err, cli.ErrForkUpToDate), errors.Is(err, cli.ErrForkNotNewer):
+		case errors.Is(err, cli.ErrForkUpToDate):
 			return "", false
 		case err != nil:
 			d.logger.Warn("auto-update: fork update unavailable, keeping installed daemon — will retry", "error", err)
@@ -464,17 +453,26 @@ var (
 	currentCommit     = func() string { return cli.ClientCommit }
 )
 
-// runForkUpdate installs the newest successful fork main CI artifact. Every
-// failure leaves the installed binary intact and is returned as-is; nothing
-// falls back to upstream releases or Homebrew.
+// updateServer is the server the daemon takes updates from: the one it works for.
+func (d *Daemon) updateServer() (serverURL, token string) {
+	if d.client == nil {
+		return "", ""
+	}
+	return d.client.BaseURL(), d.client.Token()
+}
+
+// runForkUpdate installs the daemon build the daemon's own server carries.
+// Every failure leaves the installed binary intact and is returned as-is;
+// nothing falls back to GitHub, upstream releases or Homebrew.
 func (d *Daemon) runForkUpdate() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cli.DefaultUpdateDownloadTimeout+time.Minute)
 	defer cancel()
-	u, err := resolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, currentCommit())
+	serverURL, token := d.updateServer()
+	u, err := resolveForkUpdate(ctx, serverURL, token, runtime.GOOS, runtime.GOARCH, currentCommit())
 	if err != nil {
 		return "", fmt.Errorf("fork update unavailable, installed daemon unchanged: %w", err)
 	}
-	d.logger.Info("updating CLI from fork main CI artifact", "artifact", u.String())
+	d.logger.Info("updating CLI from the server", "build", u.String())
 	out, err := applyForkUpdate(ctx, u, cli.DefaultUpdateDownloadTimeout)
 	if err != nil {
 		return out, fmt.Errorf("fork update failed, installed daemon unchanged: %w", err)

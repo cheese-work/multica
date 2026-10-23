@@ -3610,6 +3610,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			Content:       "Stopped.",
 			TaskID:        claimed.ID,
 			ElapsedMs:     computeChatElapsedMs(claimed),
+			FailureReason: claimed.FailureReason,
 		})
 		if err != nil {
 			return fmt.Errorf("create cancelled chat message: %w", err)
@@ -8395,6 +8396,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		// row with no live mark; IssueToMapResolved resolves it for the rest.
 		"duplicate_of":     nil,
 		"project_id":       util.UUIDToPtr(issue.ProjectID),
+		"workflow_id":      util.UUIDToPtr(issue.WorkflowID),
 		"position":         issue.Position,
 		"stage":            util.Int4ToPtr(issue.Stage),
 		"start_date":       util.DateToPtr(issue.StartDate),

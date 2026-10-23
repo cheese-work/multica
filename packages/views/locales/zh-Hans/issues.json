@@ -468,6 +468,8 @@
     "thread_nav_label": "快速跳转到讨论",
     "thread_nav_resolved_label": "{{title}}（已解决）",
     "thread_nav_reply_label": "{{author}}：{{title}}",
+    "thread_nav_show_replies_other": "展开 {{count}} 条回复",
+    "thread_nav_hide_replies": "收起回复",
     "sidebar_tooltip": "切换右侧边栏",
     "find": {
       "placeholder": "在任务中查找...",
@@ -850,6 +852,7 @@
     "updated_ago": "更新于 {{time}}"
   },
   "actions": {
+    "rename_issue": "重命名任务",
     "status": "状态",
     "priority": "优先级",
     "assignee": "负责人",
@@ -1544,6 +1547,7 @@
       "target_squad": "小队 · 由 leader 分派",
       "target_member": "成员",
       "instructions_hint": "作为这次运行的说明发给处理人，和任务描述、评论一起作为上下文。",
+      "advance_on_ci_green": "关联 PR 的检查通过后，自动移到下一列",
       "next_hint": "写进处理人收到的说明里，告诉它下一步该把状态改成什么。系统不会在运行结束后自动推进状态。",
       "preview_brief": "预览智能体收到的说明",
       "preview_title": "「{{status}}」这一步的说明",
@@ -1565,8 +1569,7 @@
       "step_off": "已关闭：这个工作流不使用这个状态。在左侧列表打开开关即可使用。",
       "status_new_hint": "新状态，保存时加入状态库。",
       "no_other_status": "所有状态都已经是步骤了。",
-      "no_handoff_step": "这一步不交接：任务进入时负责人不变，也不会启动运行。",
-      "new_step_handoff": "先保存工作流，新状态保存后就可以设置交接。"
+      "no_handoff_step": "这一步不交接：任务进入时负责人不变，也不会启动运行。"
     },
     "mapping": {
       "title": "将任务移入「{{name}}」",
@@ -1602,6 +1605,7 @@
     },
     "picker": {
       "header": "{{workflow}} · 跟随项目「{{project}}」",
+      "header_no_project": "{{workflow}} 状态 · 无项目",
       "footer": "只显示这个任务所在工作流里的状态。右侧是进入该状态时的处理人。"
     },
     "confirm": {
@@ -1645,6 +1649,11 @@
     },
     "detail": {
       "follows_project": "（跟随项目）",
+      "follows_override": "（此议题单独设置）",
+      "override_title": "此议题的工作流",
+      "override_follow_project": "跟随项目的工作流",
+      "override_error": "无法更改工作流",
+      "no_workflow": "无工作流",
       "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
       "card_hint": "这些列和交接由项目的工作流决定。"
     },
@@ -1722,5 +1731,8 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
   }
 }

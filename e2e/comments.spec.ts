@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createTestApi, loginAsDefault, waitForPageText } from "./helpers";
+import { clickWhenHydrated, createTestApi, loginAsDefault, waitForPageText } from "./helpers";
 import type { TestApiClient } from "./fixtures";
 
 test.describe("Comments", () => {
@@ -33,7 +33,7 @@ test.describe("Comments", () => {
     // clicking it mounts and focuses the real ProseMirror editor.
     const shell = page.getByTestId("comment-composer-shell");
     await expect(shell).toBeVisible();
-    await shell.click();
+    await clickWhenHydrated(shell);
 
     // Type a comment
     const commentText = "E2E comment " + Date.now();
@@ -47,7 +47,7 @@ test.describe("Comments", () => {
     await page.keyboard.press("ControlOrMeta+Enter");
 
     // Comment should appear in the activity section
-    await expect(page.locator(`text=${commentText}`)).toBeVisible({
+    await expect(page.locator(`text=${commentText}`).first()).toBeVisible({
       timeout: 5000,
     });
   });
