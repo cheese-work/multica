@@ -375,6 +375,13 @@ type AgentTaskResponse struct {
 	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
 	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
+	// ClaimedModel is the model the daemon was told to run when it claimed this
+	// task (CHE-1862), read from the stored column, never from the agent's
+	// current model. Always on the wire: null = nothing stored (unclaimed, or
+	// the claim could not record it), "" = an empty string was stored. A
+	// missing key means a server that predates the field. It attests the claim,
+	// not the upstream model that actually served the run.
+	ClaimedModel *string `json:"claimed_model"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -522,6 +529,9 @@ type AgentTaskResponse struct {
 	ChatType                 string               `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
 	ChatInThread             bool                 `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
 	ChatMessage              string               `json:"chat_message,omitempty"`                // user message for chat tasks
+	ChatDecisionContext      string               `json:"chat_decision_context,omitempty"`       // open decision request(s) this DM reply may answer
+	ChatMessageIDs           []string             `json:"chat_message_ids,omitempty"`            // web DM only: ids of the user messages in ChatMessage, for --decision-record --message
+	ChatPriorReplyID         string               `json:"chat_prior_reply_id,omitempty"`         // web DM only: the agent's last reply before ChatMessage, for --context-message
 	ChatMessageAttachments   []ChatAttachmentMeta `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
 	ChatIntro                bool                 `json:"chat_intro,omitempty"`                  // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
 	AutopilotRunID           string               `json:"autopilot_run_id,omitempty"`            // non-empty for autopilot-spawned tasks
@@ -864,6 +874,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IssueID:                uuidToString(t.IssueID),
 		WorkspaceID:            workspaceID,
 		Status:                 t.Status,
+		ClaimedModel:           textToPtr(t.ClaimedModel),
 		Priority:               t.Priority,
 		DispatchedAt:           timestampToPtr(t.DispatchedAt),
 		StartedAt:              timestampToPtr(t.StartedAt),

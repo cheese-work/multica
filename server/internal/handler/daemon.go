@@ -2626,6 +2626,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}); err != nil {
 		slog.Warn("daemon claim: could not record the claimed model",
 			"task_id", uuidToString(task.ID), "error", err)
+	} else {
+		// resp was snapshotted before this write; report what is now stored.
+		resp.ClaimedModel = &agent.Model.String
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
@@ -3400,6 +3403,32 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
+		if resp.ChatChannelType == "" && !autoCompact && len(unanswered) > 0 {
+			decisionContext, err := chatDecisionContext(r.Context(), h.Queries, cs.WorkspaceID, cs.ID, unanswered[0].CreatedAt)
+			if err != nil {
+				slog.Error("chat claim: load open decision requests failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_decision_context", status: http.StatusInternalServerError, message: "failed to load decision context",
+				}
+			}
+			resp.ChatDecisionContext = decisionContext
+			resp.ChatMessageIDs = make([]string, len(unanswered))
+			for i, m := range unanswered {
+				resp.ChatMessageIDs[i] = uuidToString(m.ID)
+			}
+			prior, err := h.Queries.GetLastAssistantMessageBefore(r.Context(), db.GetLastAssistantMessageBeforeParams{SessionID: cs.ID, Before: unanswered[0].CreatedAt})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				slog.Error("chat claim: load prior assistant message failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_prior_message", status: http.StatusInternalServerError, message: "failed to load prior message",
+				}
+			}
+			if err == nil {
+				resp.ChatPriorReplyID = uuidToString(prior)
+			}
+		}
 		if autoCompact {
 			resp.ChatMessage = "/compact"
 		}
