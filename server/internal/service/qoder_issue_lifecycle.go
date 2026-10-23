@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -53,6 +54,12 @@ func syncQoderIssue(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, 
 			return nil, nil
 		}
 	}
+	// Both targets are optional workflow columns: a status outside the issue's
+	// effective workflow would move it off its board. Leave it unchanged then.
+	inWorkflow, err := workflowHasStatus(ctx, q, issue, target)
+	if err != nil || !inWorkflow {
+		return nil, err
+	}
 	updated, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Status: target, SourceTaskID: task.ID,
 	})
@@ -73,6 +80,20 @@ func syncQoderIssue(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, 
 		return nil, err
 	}
 	return &qoderIssueChange{issue: updated, previous: issue.Status, activity: wakeupActivity{row: activity, actorType: "agent", actorID: util.UUIDToString(task.AgentID), details: details}}, nil
+}
+
+// workflowHasStatus reports whether status is a column of the workflow the
+// issue follows: its own override, else its project's. Default and issues with
+// no workflow accept any status, as the manual status writes do.
+func workflowHasStatus(ctx context.Context, q *db.Queries, issue db.Issue, status string) (bool, error) {
+	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return def == nil || def.IsDefault || def.Has(status), nil
 }
 
 func (s *TaskService) publishQoderIssueChange(ctx context.Context, change *qoderIssueChange) {
