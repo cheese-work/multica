@@ -72,7 +72,7 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var target pgtype.UUID
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
+	if req.WorkflowID != nil {
 		if !h.requireProjectWorkflowsV1(w, r) {
 			return
 		}

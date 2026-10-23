@@ -312,6 +312,12 @@ func TestSwitchRequiresTheWorkflowIDField(t *testing.T) {
 			}
 		})
 	}
+	// An empty string is a value, not a reset.
+	req := withURLParam(newRequest("PUT", "/api/issues/"+issueID+"/workflow", map[string]any{"workflow_id": ""}), "id", issueID)
+	testutil.Call(t, testHandler.SetIssueWorkflow, req).Want(http.StatusBadRequest)
+	if got := issueOverride(t, issueID); got != wf.ID {
+		t.Fatalf("override = %q after an empty workflow_id, want it kept", got)
+	}
 	putIssueWorkflow(t, issueID, "").Want(http.StatusOK)
 	if got := issueOverride(t, issueID); got != "" {
 		t.Fatalf("override = %q after explicit null, want none", got)
