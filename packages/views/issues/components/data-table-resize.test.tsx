@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import {
   getCoreRowModel,
   useReactTable,
@@ -6,7 +6,7 @@ import {
   type ColumnSizingState,
 } from "@tanstack/react-table";
 import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DataTable } from "@multica/ui/components/ui/data-table";
 
 type Row = { status: string; owner: string };
@@ -70,6 +70,19 @@ function pointer(target: EventTarget, type: string, clientX: number) {
     target.dispatchEvent(
       new MouseEvent(type, { bubbles: true, cancelable: true, clientX }),
     );
+  });
+}
+
+// Scrolls the table and lets the row virtualizer's scroll-reset timer fire
+// while the table is still mounted, so it cannot outlive the test. act()
+// flushes the re-render that the scroll and the reset schedule.
+function scrollSideways(scroller: HTMLElement, left: number) {
+  scroller.scrollLeft = left;
+  act(() => {
+    scroller.dispatchEvent(new Event("scroll"));
+  });
+  act(() => {
+    vi.runOnlyPendingTimers();
   });
 }
 
@@ -226,58 +239,65 @@ describe("DataTable column resize", () => {
     expect(onSizingChange).not.toHaveBeenCalled();
   });
 
-  it("casts a shadow past the frozen columns only once scrolled sideways", () => {
-    render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
-
-    const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
-    const shadow = () =>
-      document.querySelector<HTMLElement>(
-        '[data-slot="data-table-pinned-shadow"]',
-      );
-
-    // The border between frozen and scrolling columns is permanent and says
-    // where the boundary is. The shadow says something is passing underneath
-    // right now, so at rest there is nothing for it to report.
-    expect(shadow()).toBeNull();
-
-    scroller.scrollLeft = 120;
-    act(() => {
-      scroller.dispatchEvent(new Event("scroll"));
-    });
-    expect(shadow()).not.toBeNull();
-
-    scroller.scrollLeft = 0;
-    act(() => {
-      scroller.dispatchEvent(new Event("scroll"));
-    });
-    expect(shadow()).toBeNull();
-  });
-
-  it("places the shadow at the frozen block's measured edge", () => {
-    render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
-
-    const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
-    // Rendered widths diverge from configured ones under fixed table-layout,
-    // so the boundary is read off the DOM rather than summed from column
-    // sizes — summing put the shadow in the middle of visible content.
-    const edge = document.querySelector<HTMLElement>(
-      "thead th[data-pinned-edge]",
-    )!;
-    edge.getBoundingClientRect = () =>
-      ({ right: 240, left: 0, width: 240 }) as DOMRect;
-    scroller.getBoundingClientRect = () =>
-      ({ left: 40, right: 900, width: 860 }) as DOMRect;
-
-    scroller.scrollLeft = 120;
-    act(() => {
-      scroller.dispatchEvent(new Event("scroll"));
+  // Scrolling arms the row virtualizer's scroll-reset timer. These tests own
+  // setTimeout so a timer that outlives the unmounted table fails the test
+  // instead of firing after the environment is torn down.
+  describe("while scrolled sideways", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     });
 
-    expect(
-      document.querySelector<HTMLElement>(
-        '[data-slot="data-table-pinned-shadow"]',
-      )!.style.left,
-    ).toBe("200px");
+    afterEach(() => {
+      cleanup();
+      const pending = vi.getTimerCount();
+      vi.useRealTimers();
+      expect(pending).toBe(0);
+    });
+
+    it("casts a shadow past the frozen columns only once scrolled sideways", () => {
+      render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
+
+      const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
+      const shadow = () =>
+        document.querySelector<HTMLElement>(
+          '[data-slot="data-table-pinned-shadow"]',
+        );
+
+      // The border between frozen and scrolling columns is permanent and says
+      // where the boundary is. The shadow says something is passing underneath
+      // right now, so at rest there is nothing for it to report.
+      expect(shadow()).toBeNull();
+
+        scrollSideways(scroller, 120);
+      expect(shadow()).not.toBeNull();
+
+        scrollSideways(scroller, 0);
+      expect(shadow()).toBeNull();
+    });
+
+    it("places the shadow at the frozen block's measured edge", () => {
+      render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
+
+      const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
+      // Rendered widths diverge from configured ones under fixed table-layout,
+      // so the boundary is read off the DOM rather than summed from column
+      // sizes — summing put the shadow in the middle of visible content.
+      const edge = document.querySelector<HTMLElement>(
+        "thead th[data-pinned-edge]",
+      )!;
+      edge.getBoundingClientRect = () =>
+        ({ right: 240, left: 0, width: 240 }) as DOMRect;
+      scroller.getBoundingClientRect = () =>
+        ({ left: 40, right: 900, width: 860 }) as DOMRect;
+
+        scrollSideways(scroller, 120);
+
+      expect(
+        document.querySelector<HTMLElement>(
+          '[data-slot="data-table-pinned-shadow"]',
+        )!.style.left,
+      ).toBe("200px");
+    });
   });
 
   it("covers the viewport with a cursor layer only while dragging", () => {
