@@ -1,4 +1,4 @@
--- CHE-1966: one row per issue and PR head whose green checks already advanced
+-- One row per issue and PR head whose green checks already advanced
 -- the issue one workflow step, so a redelivered snapshot never advances it again.
 CREATE TABLE IF NOT EXISTS issue_ci_advance (
     issue_id UUID NOT NULL,

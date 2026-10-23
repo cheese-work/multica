@@ -169,7 +169,7 @@ type Step struct {
 	NextStatusKey string  `json:"next_status_key,omitempty"`
 	BackStatusKey string  `json:"back_status_key,omitempty"`
 	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
-	// when the checks of a linked PR pass on the current head (CHE-1966).
+	// when the checks of a linked PR pass on the current head.
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 }
 

@@ -34,7 +34,7 @@ const (
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"
 	// SystemRulePRChecksPassed wakes the owner once per head when every check
-	// of a linked PR passed (CHE-1966). It is off until a workspace turns on
+	// of a linked PR passed. It is off until a workspace turns on
 	// github_wake_on_ci_success: a green wake costs a run on every push.
 	SystemRulePRChecksPassed  = "pr_checks_passed"
 	WorkspaceSettingPRMerged  = "github_wake_on_pr_merge"

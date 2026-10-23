@@ -1,4 +1,4 @@
--- CHE-1966: the pr_checks_passed system rule wakes an issue's owner once per
+-- The pr_checks_passed system rule wakes an issue's owner once per
 -- head when every check of a linked PR passed. It has no stored definitions,
 -- so only the issue_wakeup instance constraint changes.
 SET LOCAL lock_timeout = '2s';

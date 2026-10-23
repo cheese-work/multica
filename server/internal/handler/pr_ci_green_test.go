@@ -9,7 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 )
 
-// CHE-1966: a green head wakes the owner (pr_checks_passed) and, in a project
+// A green head wakes the owner (pr_checks_passed) and, in a project
 // whose step asks for it, moves the issue one workflow step.
 
 type greenSnapshot struct {
@@ -45,11 +45,11 @@ func TestPRChecksPassedWakesOwnerOncePerHead(t *testing.T) {
 	const installationID int64 = 1966001
 	const prNumber int32 = 196601
 	fx := newPRMergeWebhookFixture(t, installationID)
-	agentID := createHandlerTestAgent(t, "CHE-1966 green wake", nil)
+	agentID := createHandlerTestAgent(t, "green wake", nil)
 	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
-	linkedPRForWakeup(t, fx, installationID, prNumber, "che1966-head-a")
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-head-a")
 	setWorkspacePRWakeSetting(t, "github_enabled", true)
-	snap := newGreenSnapshot("che1966-head-a")
+	snap := newGreenSnapshot("green-head-a")
 	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
 	count := func() int { return prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_passed") }
 	finish := func() {
@@ -72,14 +72,14 @@ func TestPRChecksPassedWakesOwnerOncePerHead(t *testing.T) {
 		t.Fatalf("same green head woke again: %d wakeups, want 1", got)
 	}
 
-	snap.set(t, prNumber, "che1966-head-b", "FAILURE")
+	snap.set(t, prNumber, "green-head-b", "FAILURE")
 	refresh()
 	if got := count(); got != 1 {
 		t.Fatalf("red head queued a green wakeup: %d, want 1", got)
 	}
 
 	finish() // the red head's own wakeup run would otherwise carry the next one
-	snap.set(t, prNumber, "che1966-head-c", "SUCCESS")
+	snap.set(t, prNumber, "green-head-c", "SUCCESS")
 	refresh()
 	if got := count(); got != 2 {
 		t.Fatalf("new green head queued %d wakeups in total, want 2", got)
@@ -109,19 +109,19 @@ func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
 		t.Fatal(err)
 	}
-	linkedPRForWakeup(t, fx, installationID, prNumber, "che1966-adv-a")
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-adv-a")
 	setWorkspacePRWakeSetting(t, "github_enabled", true)
-	snap := newGreenSnapshot("che1966-adv-a")
+	snap := newGreenSnapshot("green-adv-a")
 	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
 	status := func() string { s, _, _ := issueStatusAndAssignee(t, fx.child.ID); return s }
 
-	snap.set(t, prNumber, "che1966-adv-a", "FAILURE")
+	snap.set(t, prNumber, "green-adv-a", "FAILURE")
 	refresh()
 	if got := status(); got != "in_progress" {
 		t.Fatalf("red head moved the issue to %s", got)
 	}
 
-	snap.set(t, prNumber, "che1966-adv-a", "SUCCESS")
+	snap.set(t, prNumber, "green-adv-a", "SUCCESS")
 	refresh()
 	got, assigneeType, assigneeID := issueStatusAndAssignee(t, fx.child.ID)
 	if got != "in_review" || assigneeType != "agent" || assigneeID != reviewer {
@@ -142,7 +142,7 @@ func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 		t.Fatalf("a head that already advanced the issue advanced it again to %s", got)
 	}
 
-	snap.set(t, prNumber, "che1966-adv-b", "SUCCESS")
+	snap.set(t, prNumber, "green-adv-b", "SUCCESS")
 	refresh()
 	if got := status(); got != "in_review" {
 		t.Fatalf("new green head left the issue at %s, want in_review", got)
@@ -163,9 +163,9 @@ func TestCIGreenDoesNotAdvanceUnflaggedStep(t *testing.T) {
 	projectID := createWorkflowTestProject(t, "CI no advance project")
 	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
 	testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress' WHERE id=$1`, fx.child.ID, projectID)
-	linkedPRForWakeup(t, fx, installationID, prNumber, "che1966-flat-a")
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-flat-a")
 	setWorkspacePRWakeSetting(t, "github_enabled", true)
-	refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("che1966-flat-a").get)
+	refresh := startSnapshotRefresh(t, installationID, prNumber, newGreenSnapshot("green-flat-a").get)
 	refresh()
 	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "in_progress" {
 		t.Fatalf("a step without the option moved to %s", got)
