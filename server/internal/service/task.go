@@ -5590,13 +5590,18 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 // never started, so there is nothing to be idempotent about, and every bundle
 // that did download is already cached on disk — a retry resumes from there
 // instead of re-fetching the whole set (MUL-5370).
+// provider_server_error (a gateway 5xx such as 503) retries once under the
+// task's generic max_attempts ceiling: a retry child is what keeps the
+// delegated-failure callback from waking a coordinator on a failure that may
+// still recover (CHE-1984). The claim-time gateway cooldown spaces the retry.
 var retryableReasons = map[string]bool{
-	string(taskfailure.ReasonRuntimeOffline):         true,
-	string(taskfailure.ReasonRuntimeRecovery):        true,
-	string(taskfailure.ReasonTimeout):                true,
-	"codex_semantic_inactivity":                      true,
-	string(taskfailure.ReasonAgentProviderNetwork):   true,
-	string(taskfailure.ReasonSkillBundleUnavailable): true,
+	string(taskfailure.ReasonRuntimeOffline):           true,
+	string(taskfailure.ReasonRuntimeRecovery):          true,
+	string(taskfailure.ReasonTimeout):                  true,
+	"codex_semantic_inactivity":                        true,
+	string(taskfailure.ReasonAgentProviderNetwork):     true,
+	string(taskfailure.ReasonSkillBundleUnavailable):   true,
+	string(taskfailure.ReasonAgentProviderServerError): true,
 }
 
 // runtime_offline retries start deferred, not queued: their positive fire_at
