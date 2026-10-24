@@ -25,6 +25,29 @@ describe("ApiClient status reorder", () => {
   });
 });
 
+describe("ApiClient decision cards", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("disclaims a decision answer with a POST to its disclaim route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").disclaimDecisionAnswer("answer-1");
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-answers/answer-1/disclaim");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+  });
+
+  it("asks for an anchored window with ?around= and no cursor", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ messages: [], limit: 50, has_more: false, has_newer: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const page = await new ApiClient("https://api.example.test").listChatMessagesPage("session-1", { around: "msg-9" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "https://api.example.test/api/chat/sessions/session-1/messages/page?limit=50&around=msg-9",
+    );
+    expect(page.has_newer).toBe(true);
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",
