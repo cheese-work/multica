@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ChatChannelHistoryReader reads a chat session's bound IM-channel history. The
@@ -112,12 +113,17 @@ func (h *Handler) chatMessageHistory(r *http.Request, scope chatHistoryScope) (c
 		if m.Role == "assistant" {
 			role = channel.HistoryRoleAssistant
 		}
+		kind := m.MessageKind
+		if kind == protocol.ChatMessageKindMessage {
+			kind = ""
+		}
 		out = append(out, channel.HistoryMessage{
-			ID:     uuidToString(m.ID),
-			Role:   role,
-			Text:   m.Content,
-			Author: transcriptAuthor(role),
-			TS:     m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			ID:          uuidToString(m.ID),
+			Role:        role,
+			Text:        m.Content,
+			Author:      transcriptAuthor(role),
+			TS:          m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			MessageKind: kind,
 		})
 	}
 	// Name the platform the transcript came from. HistoryPage.ChannelType is
