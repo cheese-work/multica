@@ -589,15 +589,18 @@ therefore still stop at it. Secrets are copied to `c00-runtime` and must be
 rotated in both environments until `c00-production` secrets are retired. A
 missing `c00-runtime` environment fails closed: GitHub creates it empty, the
 SSH step has no key and stops. They share the
-job-level lock `cd-deploy-c00` with `cancel-in-progress: false`: one C00 stage
-at a time, and a started deploy is never cancelled. A `deploy` that queued
-behind a running one repeats the `main` check when it gets the lock. A job that
-joins a concurrency group evicts the group's pending job whatever its version,
-so a stale stage must not join at all: `approve-c00` guards `prepare-release-candidate`
-and `deploy-gate` (after `admission`) guards `deploy`; both stale stages are
-skipped before they queue. The seconds between the check and the join stay
-open; an eviction there cancels the newer run, which fails safe and needs a
-re-run. There is no workflow-level lock, since a run waiting for approval would hold it and
+job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
+C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
+default queue (`single`) keeps one pending job and cancels it for any newcomer,
+whatever its version, so a stale stage joining late would evict the newest
+candidate. A freshness check made before the join cannot prevent that, because
+check and join are not atomic. `max` holds up to 100 pending jobs and evicts
+none; if the queue is full GitHub cancels the newcomer. A stale stage that
+reaches its turn is skipped: `approve-c00` and `deploy-gate` (after `admission`)
+skip the stages that follow them before they queue, and `deploy` checks again
+once it has the lock. A stale `prepare-release-candidate` that does run is
+read-only and stops at `deploy-gate`. `actionlint` does not know the `queue` key
+yet and reports it; GitHub validates it on the first run. There is no workflow-level lock, since a run waiting for approval would hold it and
 block every newer version.
 
 Preparation still records a fresh check snapshot after approval; preflight

@@ -92,7 +92,10 @@ class DeployApprovalTests(unittest.TestCase):
             with self.subTest(job=name):
                 lock = self.jobs[name]["concurrency"]
                 self.assertEqual(lock["group"], LOCK)
-                self.assertIs(lock["cancel-in-progress"], False)
+                self.assertFalse(lock.get("cancel-in-progress", False))
+                # Default `single` keeps ONE pending job and evicts it for any
+                # newcomer, whatever its version. `max` queues FIFO instead.
+                self.assertEqual(lock["queue"], "max")
 
     def test_superseded_run_is_skipped_before_it_mutates_c00(self):
         guard = self.jobs[GATE]["outputs"]["current"]
@@ -107,46 +110,59 @@ class DeployApprovalTests(unittest.TestCase):
 
 
 class LockModel:
-    """GitHub's documented concurrency rule for cancel-in-progress: false:
-    one running job, one pending job; a job that joins evicts the pending one."""
+    """GitHub's documented concurrency rules for cancel-in-progress: false.
+    queue=single: one running job, one pending job; a job that joins evicts the
+    pending one. queue=max: up to 100 pending jobs, FIFO; none is evicted."""
 
-    def __init__(self):
-        self.running, self.pending, self.evicted = None, None, []
+    def __init__(self, queue):
+        self.queue, self.running, self.pending, self.evicted = queue, None, [], []
 
     def join(self, job):
         if self.running is None:
             self.running = job
-        else:
-            if self.pending is not None:
-                self.evicted.append(self.pending)
-            self.pending = job
+            return
+        if self.queue == "single" and self.pending:
+            self.evicted.extend(self.pending)
+            self.pending = []
+        self.pending.append(job)
 
     def release(self):
-        self.running, self.pending = self.pending, None
+        self.running = self.pending.pop(0) if self.pending else None
 
 
 class StaleStageEvictionTests(unittest.TestCase):
-    """Reviewer scenario: three approved versions; the oldest finishes
-    admission late, after the middle one holds the lock and the newest queued."""
+    """Reviewer scenario: the oldest candidate passed its guard while current and
+    keeps that stored result. The middle version then holds the lock, the newest
+    queues, and only then does the oldest downstream job join the lock."""
 
-    def run_scenario(self, stale_stage_may_join):
-        lock = LockModel()
-        main_head = "newest"
+    def run_scenario(self, queue):
+        lock = LockModel(queue)
+        oldest_guard_said_current = True  # stored output; main moved on afterwards
         lock.join("middle:prepare")
         lock.join("newest:prepare")
-        if stale_stage_may_join("oldest", main_head):
+        if oldest_guard_said_current:
             lock.join("oldest:deploy")
         return lock
 
-    def test_without_the_freshness_gate_the_newest_candidate_is_evicted(self):
-        lock = self.run_scenario(lambda version, head: True)
-        self.assertEqual(lock.evicted, ["newest:prepare"])
+    def test_single_pending_slot_loses_the_newest_candidate(self):
+        self.assertEqual(self.run_scenario("single").evicted, ["newest:prepare"])
 
-    def test_the_freshness_gate_keeps_the_newest_candidate_queued(self):
-        # deploy-gate's rule: join the lock only if the candidate is the main head.
-        lock = self.run_scenario(lambda version, head: version == head)
+    def test_max_queue_keeps_every_candidate_in_order(self):
+        lock = self.run_scenario("max")
         self.assertEqual(lock.evicted, [])
-        self.assertEqual(lock.pending, "newest:prepare")
+        self.assertEqual(lock.pending, ["newest:prepare", "oldest:deploy"])
+
+    def test_workflow_uses_the_queue_that_never_evicts(self):
+        queues = {n: j["concurrency"]["queue"] for n, j in self.jobs.items()
+                  if j.get("concurrency", {}).get("group") == LOCK}
+        self.assertEqual(queues, {"prepare-release-candidate": "max", "deploy": "max"})
+        # The in-lock guard then skips the stale oldest deploy when its turn comes.
+        steps = {s.get("id"): s for s in self.jobs["deploy"]["steps"]}
+        self.assertIn("require-current.sh", steps["guard"]["run"])
+
+    @property
+    def jobs(self):
+        return yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
 
 
 class RequireCurrentTests(unittest.TestCase):

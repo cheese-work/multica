@@ -62,10 +62,14 @@ permissions:
 # below is replaced by a newer version, and the two jobs that touch C00
 # (prepare-release-candidate, deploy) share one never-cancelled lock group.
 #
-# A job entering a concurrency group evicts the group's pending job, whichever
-# version it belongs to. So no stale stage may reach the lock: each job that
-# joins it runs only if an earlier job (approve-c00, deploy-gate) found its
-# candidate still current, so a stale stage is skipped before it can queue.
+# The lock uses `queue: max`. The default (`single`) keeps ONE pending job and
+# cancels it for any newcomer, whatever its version, so a stale stage joining
+# late would evict the newest candidate; a freshness check made before the join
+# cannot close that gap, since check and join are not atomic. `max` queues up
+# to 100 pending jobs FIFO and evicts none. A stale stage that reaches its turn
+# is skipped by the checks below, or runs read-only (prepare-release-candidate)
+# and stops at deploy-gate. `cancel-in-progress` stays off (the default): it
+# cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
   # ---------------------------------------------------------------------------
   # The ONE approval per version. It uses c00-production, the protected
@@ -152,7 +156,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
-      cancel-in-progress: false
+      queue: max
     # Up to 60 minutes waiting for CI's required checks plus the original
     # 15-minute budget for the baseline read and evidence issue.
     timeout-minutes: 80
@@ -462,10 +466,10 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Last freshness check before the lock. Admission can finish long after
-  # approval; a stale candidate must not queue for the lock, because queueing
-  # would evict a newer candidate waiting there. No concurrency group, no
-  # secrets, nothing on C00.
+  # Freshness check before the lock. Admission can finish long after approval;
+  # a stale candidate is skipped here instead of waiting in the queue for its
+  # turn. Not atomic with the join, so deploy checks again once it has the lock.
+  # No concurrency group, no secrets, nothing on C00.
   deploy-gate:
     needs: admission
     runs-on: ubuntu-latest
@@ -496,11 +500,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
     environment: c00-runtime
-    # Shared with prepare-release-candidate: one C00 stage at a time. Never
-    # cancelled, so a newer version cannot interrupt a deploy that has started.
+    # Shared with prepare-release-candidate: one C00 stage at a time, queued
+    # FIFO. Never cancelled and never evicted, so a newer version can neither
+    # interrupt a deploy that has started nor displace a queued newer one.
     concurrency:
       group: cd-deploy-c00
-      cancel-in-progress: false
+      queue: max
     steps:
       # A deploy can wait in the lock behind a running one. Re-check as soon
       # as it gets the lock (deploy-gate only covers the time before it
