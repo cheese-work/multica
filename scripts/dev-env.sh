@@ -203,16 +203,56 @@ EOF
 # The trailing `|| true` is load-bearing on macOS's bash 3.2: `x="$(fn)"` inside
 # a function aborts the script under `set -e` when fn's last command fails, and
 # "no process is listening" is the normal answer here, not an error.
-port_listener_pid() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true
+#
+# lsof alone is not enough on Linux: lsof 4.95 prints no pid for a process whose
+# name contains " (", and Next names its server "next-server (v16.3.8)". ss
+# reports that listener, so its pids are merged in. The ss filter is repeated
+# in awk so only the exact port, on any address family, can match.
+ss_listening_rows() {
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -Hltn${2:-} "sport = :$1" 2>/dev/null | awk -v port="$1" '
+    $1 == "LISTEN" && substr($4, length($4) - length(port)) == ":" port
+  ' || true
 }
 
-port_free() { [ -z "$(port_listener_pid "$1")" ]; }
+port_listener_pids() {
+  {
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true
+    ss_listening_rows "$1" p | grep -o 'pid=[0-9]*' | cut -d= -f2 || true
+  } | awk 'NF && !seen[$0]++'
+}
+
+# One pid, or nothing. Two distinct listeners are ambiguous, and so is a visible
+# pid next to a listener whose owner is hidden (another user's socket), so
+# ownership checks built on this lookup fail closed instead of trusting one.
+port_listener_pid() {
+  local pids
+  pids="$(port_listener_pids "$1")"
+  [ -n "$pids" ] && [ "$(printf '%s\n' "$pids" | wc -l)" -eq 1 ] || return 0
+  [ -z "$(ss_listening_rows "$1" p | grep -v 'pid=' || true)" ] || return 0
+  printf '%s\n' "$pids"
+}
+
+# A listening socket whose owner is not visible (another user's process) still
+# makes the port busy.
+port_free() {
+  [ -z "$(port_listener_pids "$1")" ] && [ -z "$(ss_listening_rows "$1")" ]
+}
 
 describe_port_owner() {
-  local pid
+  local pid pids
+  pids="$(port_listener_pids "$1")"
   pid="$(port_listener_pid "$1")"
-  [ -n "$pid" ] || { printf 'free'; return; }
+  if [ -z "$pid" ]; then
+    if [ -n "$pids" ]; then
+      printf 'pids %s' "$(printf '%s' "$pids" | tr '\n' ' ')"
+    elif port_free "$1"; then
+      printf 'free'
+    else
+      printf 'a listener with no visible owner'
+    fi
+    return
+  fi
   printf 'pid %s (%s), up %s' "$pid" \
     "$(ps -p "$pid" -o comm= 2>/dev/null | sed 's/^ *//' || echo unknown)" \
     "$(ps -p "$pid" -o etime= 2>/dev/null | sed 's/^ *//' || echo unknown)"

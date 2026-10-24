@@ -103,6 +103,28 @@ assert_listener_ownership() {
   )
 }
 
+assert_port_lookup() {
+  local case_name=$1 want_pid=$2 want_free=$3 lsof_out=$4 ss_out=$5
+  (
+    # shellcheck disable=SC1090
+    source "$root_dir/scripts/dev-env.sh"
+    TEST_LSOF=$lsof_out
+    TEST_SS=$ss_out
+    # Stub both lookups. The stubs ignore their filters on purpose, so the
+    # lookup itself must enforce the exact port and the LISTEN state.
+    lsof() { [ -z "$TEST_LSOF" ] || printf '%s\n' "$TEST_LSOF"; }
+    ss() { [ -z "$TEST_SS" ] || printf '%s\n' "$TEST_SS"; }
+
+    local pid free=busy
+    pid="$(port_listener_pid 13000)"
+    [ "$pid" = "$want_pid" ] \
+      || fail "$case_name port_listener_pid = '$pid', want '$want_pid'"
+    if port_free 13000; then free=free; fi
+    [ "$free" = "$want_free" ] \
+      || fail "$case_name port_free = $free, want $want_free"
+  )
+}
+
 assert_nested_listener_is_recorded() (
   # shellcheck disable=SC1090
   source "$root_dir/scripts/dev-env.sh"
@@ -283,6 +305,49 @@ assert_listener_ownership nested owned 100 420 310
 assert_listener_ownership recorded owned 100 200 200 200
 assert_listener_ownership external external 100 999 999
 assert_nested_listener_is_recorded
+
+# Listener lookup must not depend on lsof alone. X99's lsof 4.95.0 prints no pid
+# for a listener whose process name contains " (", which is how Next names its
+# server ("next-server (v16.3.8)"), so ss is consulted as well. The lookup
+# keeps exact port matching across IPv4 and IPv6, and fails closed: two
+# distinct listeners or a listener with no visible owner never yield a pid,
+# and such a port is never reported free.
+assert_port_lookup lsof-only 4100 busy '4100' ''
+assert_port_lookup parenthesized-name 4242 busy '' \
+  'LISTEN 0 511 127.0.0.1:13000 0.0.0.0:* users:(("next-server (v1",pid=4242,fd=19))'
+assert_port_lookup ipv6-wildcard 4243 busy '' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("next-server (v1",pid=4243,fd=19))'
+assert_port_lookup ipv4-mapped 4244 busy '' \
+  'LISTEN 0 511 [::ffff:127.0.0.1]:13000 *:* users:(("node",pid=4244,fd=20))'
+assert_port_lookup both-tools-agree 4245 busy '4245' \
+  'LISTEN 0 511 *:13000 *:* users:(("node",pid=4245,fd=20))'
+assert_port_lookup other-port '' free '' \
+  'LISTEN 0 511 127.0.0.1:130001 0.0.0.0:* users:(("next-server (v1",pid=4246,fd=19))
+LISTEN 0 511 127.0.0.1:113000 0.0.0.0:* users:(("node",pid=4247,fd=19))'
+assert_port_lookup two-listeners '' busy '4248
+4249' ''
+assert_port_lookup two-listeners-across-tools '' busy '4250' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4251,fd=20))'
+assert_port_lookup unknown-owner '' busy '' \
+  'LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
+assert_port_lookup nothing '' free '' ''
+# One visible pid plus a listener whose owner is hidden is not a proved owner.
+assert_port_lookup visible-and-hidden-lsof '' busy '4252' \
+  'LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
+assert_port_lookup visible-and-hidden-ss '' busy '' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4253,fd=20))
+LISTEN 0 511 0.0.0.0:13000 0.0.0.0:*'
+assert_port_lookup one-owner-two-families 4254 busy '' \
+  'LISTEN 0 511 [::]:13000 [::]:* users:(("node",pid=4254,fd=20))
+LISTEN 0 511 0.0.0.0:13000 0.0.0.0:* users:(("node",pid=4254,fd=21))'
+
+# Only LISTEN rows count. An established connection on the port, even one owned
+# by another process, is neither a listener nor a reason to call the port busy.
+assert_port_lookup established-only '' free '' \
+  'ESTAB 0 0 127.0.0.1:13000 127.0.0.1:52344 users:(("node",pid=4255,fd=30))'
+assert_port_lookup listen-and-established 4256 busy '' \
+  'LISTEN 0 511 *:13000 *:* users:(("node",pid=4256,fd=20))
+ESTAB 0 0 127.0.0.1:13000 127.0.0.1:52345 users:(("curl",pid=4257,fd=3))'
 
 # Stopping first records an owned nested listener before killing the launcher's
 # process group. An unrelated port occupant never receives a signal.
