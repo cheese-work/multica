@@ -1,0 +1,227 @@
+{
+ "A": {
+  "busyJump": [
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   }
+  ],
+  "disabledRetry": [
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   }
+  ],
+  "enabledJump": {
+   "canFocus": true,
+   "matchesFocusVisible": true,
+   "outline": "solid 2px oklch(0.141 0.005 285.823)"
+  },
+  "enabledFocusExamples": 1
+ },
+ "B": {
+  "busyJump": [
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   }
+  ],
+  "disabledRetry": [
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   }
+  ],
+  "enabledJump": {
+   "canFocus": true,
+   "matchesFocusVisible": true,
+   "outline": "solid 2px oklch(0.141 0.005 285.823)"
+  },
+  "enabledFocusExamples": 1
+ },
+ "C": {
+  "busyJump": [
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   },
+   {
+    "disabledAttr": true,
+    "matchesDisabled": true,
+    "ariaBusy": "true",
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false,
+    "describedBy": "Retry and Jump to latest messages are off until this attempt ends."
+   }
+  ],
+  "disabledRetry": [
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   },
+   {
+    "disabledAttr": true,
+    "canFocus": false,
+    "clicksReceived": 0,
+    "inTabOrder": false
+   }
+  ],
+  "enabledJump": {
+   "canFocus": true,
+   "matchesFocusVisible": true,
+   "outline": "solid 2px oklch(0.141 0.005 285.823)"
+  },
+  "enabledFocusExamples": 1
+ }
+}
