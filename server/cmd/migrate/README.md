@@ -316,3 +316,16 @@ their names. The upstream migrations take 678 through 685, after the fork's
 The up and down SQL bytes are unchanged. The runner's concurrent-index name
 map uses the new prefixes. No collision exception is added. A later sync
 must not reintroduce these upstream filenames under their original prefixes.
+
+## Chat migration renumbering
+
+PR 315 added `678_chat_message_decision_answer` and `679_chat_message_lineage`
+after `main` already held `678_issue_workflow_owner` and
+`679_cloud_agent_connection`. The chat migrations take the next free prefixes
+(CHE-2028):
+
+- `678_chat_message_decision_answer` is now `687_chat_message_decision_answer`
+- `679_chat_message_lineage` is now `688_chat_message_lineage`
+
+The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
+so a database that already applied the old names re-runs them safely.
