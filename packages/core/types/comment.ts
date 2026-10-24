@@ -15,7 +15,9 @@ export interface Reaction {
   comment_revision?: number;
 }
 
-export interface Comment {
+import type { DecisionCommentFields } from "./decision";
+
+export interface Comment extends DecisionCommentFields {
   id: string;
   issue_id: string;
   author_type: CommentAuthorType;

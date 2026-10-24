@@ -15,6 +15,7 @@ export type WSEventType =
   | "issue_attachments:changed"
   | "issue:deleted"
   | "comment:created"
+  | "decision_answer:updated"
   | "comment:updated"
   | "comment:deleted"
   | "comment:resolved"
@@ -249,6 +250,13 @@ export interface CommentResolvedPayload {
 
 export interface CommentUnresolvedPayload {
   comment: Comment;
+}
+
+/** A decision card changed state; clients refetch the affected cards. */
+export interface DecisionAnswerUpdatedPayload {
+  answer_id: string;
+  issue_id: string;
+  state: import("./decision").DecisionState;
 }
 
 export interface WorkspaceUpdatedPayload {
@@ -587,6 +595,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "comment:created": CommentCreatedPayload;
+  "decision_answer:updated": DecisionAnswerUpdatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;
   "comment:resolved": CommentResolvedPayload;

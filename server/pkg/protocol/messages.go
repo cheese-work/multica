@@ -280,6 +280,9 @@ const (
 	// DM wakeup started (CHE-1874): it carries the agent's own instruction into
 	// the prompt. Like the kickoff, user-facing APIs never expose it.
 	ChatMessageKindWakeupTrigger = "wakeup_trigger"
+	// ChatMessageKindDecisionReference is the server-authored note that a
+	// decision was recorded from this DM. Its decision_answer_id names the card.
+	ChatMessageKindDecisionReference = "decision_reference"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
