@@ -1,4 +1,5 @@
 import { Suspense, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -102,6 +103,19 @@ function renderLayout(slug = "acme") {
   );
 }
 
+function renderStaticLayout(slug = "acme") {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <WorkspaceLayout params={makeParams(slug)}>
+        <div data-testid="workspace-content" />
+      </WorkspaceLayout>
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.user = {
@@ -118,6 +132,41 @@ beforeEach(() => {
 });
 
 describe("WorkspaceLayout", () => {
+  it("renders the matching OpenSearch link in initial HTML before auth hydration", () => {
+    state.isAuthLoading = true;
+
+    const html = renderStaticLayout();
+
+    expect(html).toContain('rel="search"');
+    expect(html).toContain('href="/acme/opensearch.xml"');
+    expect(html).not.toContain('data-testid="workspace-content"');
+  });
+
+  it("renders only the routed workspace discovery link during an initial transition", () => {
+    state.isAuthLoading = true;
+    state.pathname = "/globex/issues";
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <>
+          <WorkspaceLayout params={makeParams("acme")}>
+            <div data-testid="stale-workspace-content" />
+          </WorkspaceLayout>
+          <WorkspaceLayout params={makeParams("globex")}>
+            <div data-testid="routed-workspace-content" />
+          </WorkspaceLayout>
+        </>
+      </QueryClientProvider>,
+    );
+
+    expect(html.match(/rel="search"/g)).toHaveLength(1);
+    expect(html).toContain('href="/globex/opensearch.xml"');
+    expect(html).not.toContain('href="/acme/opensearch.xml"');
+  });
+
   it("advertises the workspace OpenSearch document in the document head", async () => {
     state.workspace = { id: "workspace-acme", slug: "acme" };
     renderLayout();
