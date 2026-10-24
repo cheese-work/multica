@@ -584,18 +584,20 @@ type ChatSession struct {
 }
 
 type ChatWakeup struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	AgentID       pgtype.UUID        `json:"agent_id"`
-	CreatedBy     pgtype.UUID        `json:"created_by"`
-	SourceTaskID  pgtype.UUID        `json:"source_task_id"`
-	Instruction   string             `json:"instruction"`
-	FireAt        pgtype.Timestamptz `json:"fire_at"`
-	Status        string             `json:"status"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	AgentID            pgtype.UUID        `json:"agent_id"`
+	CreatedBy          pgtype.UUID        `json:"created_by"`
+	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
+	Instruction        string             `json:"instruction"`
+	FireAt             pgtype.Timestamptz `json:"fire_at"`
+	Status             string             `json:"status"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	Condition          []byte             `json:"condition"`
+	ConditionCheckedAt pgtype.Timestamptz `json:"condition_checked_at"`
 }
 
 type ClientUsageDaily struct {
@@ -917,6 +919,7 @@ type GithubPullRequestCheckRun struct {
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
+	ExternalID      pgtype.Text `json:"external_id"`
 }
 
 type GithubPullRequestCheckSuite struct {

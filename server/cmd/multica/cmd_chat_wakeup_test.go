@@ -76,3 +76,67 @@ func TestChatWakeupCreatePostsResolvedTimeAndInstruction(t *testing.T) {
 		t.Fatal("accepted --at together with --after")
 	}
 }
+
+func TestChatWakeupCreateConditionFlagsBuildTheConditionBody(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags map[string]string
+		want  map[string]any
+		fail  bool
+	}{
+		{"status", map[string]string{"until-issue": "CHE-12", "until-status": "done"}, map[string]any{"issue": "CHE-12", "status": "done"}, false},
+		{"pr checks", map[string]string{"until-issue": "CHE-12", "until-pr": "checks"}, map[string]any{"issue": "CHE-12", "pr": "checks_finished"}, false},
+		{"pr merged", map[string]string{"until-issue": "CHE-12", "until-pr": "merged"}, map[string]any{"issue": "CHE-12", "pr": "merged"}, false},
+		{"comment", map[string]string{"until-issue": "CHE-12", "event": "comment.created", "filter-actor-id": "u1"},
+			map[string]any{"issue": "CHE-12", "comment_by": map[string]any{"type": "member", "id": "u1"}}, false},
+		{"agent comment", map[string]string{"until-issue": "CHE-12", "event": "comment.created", "filter-actor-id": "a1", "filter-actor-type": "agent"},
+			map[string]any{"issue": "CHE-12", "comment_by": map[string]any{"type": "agent", "id": "a1"}}, false},
+		{"issue alone", map[string]string{"until-issue": "CHE-12"}, nil, true},
+		{"two predicates", map[string]string{"until-issue": "CHE-12", "until-status": "done", "until-pr": "merged"}, nil, true},
+		{"predicate without issue", map[string]string{"until-status": "done"}, nil, true},
+		{"unknown pr", map[string]string{"until-issue": "CHE-12", "until-pr": "opened"}, nil, true},
+		{"unknown event", map[string]string{"until-issue": "CHE-12", "event": "issue.updated"}, nil, true},
+		{"comment without actor", map[string]string{"until-issue": "CHE-12", "event": "comment.created"}, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearAmbientDaemonTaskEnv(t)
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":"w1","fire_at":"x","status":"pending"}`))
+			}))
+			t.Cleanup(server.Close)
+			setCLITestServerEnv(t, server.URL)
+			flags := map[string]string{"after": "1h", "instruction": "check it"}
+			for k, v := range tc.flags {
+				flags[k] = v
+			}
+			for k, v := range flags {
+				if err := chatWakeupCreateCmd.Flags().Set(k, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() {
+				for k := range flags {
+					chatWakeupCreateCmd.Flags().Set(k, "")
+				}
+			})
+			err := runChatWakeupCreate(chatWakeupCreateCmd, nil)
+			if tc.fail {
+				if err == nil || body != nil {
+					t.Fatalf("want a refusal before any request, got err=%v body=%v", err, body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _ := json.Marshal(body["condition"])
+			want, _ := json.Marshal(tc.want)
+			if string(got) != string(want) || body["after_seconds"] != float64(3600) {
+				t.Fatalf("condition = %s, want %s (body %v)", got, want, body)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -227,7 +228,7 @@ func TestFetchPRSnapshotRESTLatestCheckRuns(t *testing.T) {
 				var want CheckContext
 				for _, run := range tc.runs {
 					if run["id"] == wantID {
-						want = CheckContext{Name: run["name"].(string), Status: run["status"].(string), Conclusion: run["conclusion"].(string), DetailsURL: run["details_url"].(string)}
+						want = CheckContext{Name: run["name"].(string), Status: run["status"].(string), Conclusion: run["conclusion"].(string), DetailsURL: run["details_url"].(string), ExternalID: strconv.FormatInt(wantID, 10)}
 						break
 					}
 				}

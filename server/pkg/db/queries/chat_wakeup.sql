@@ -11,8 +11,8 @@ WITH RECURSIVE lineage AS (
 SELECT count(*) FROM chat_wakeup WHERE chat_session_id IN (SELECT lineage.id FROM lineage) AND status = 'pending';
 
 -- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, created_by, source_task_id, instruction, fire_at, condition)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('condition'))
 RETURNING *;
 
 -- name: ListPendingChatWakeups :many
@@ -48,10 +48,55 @@ ORDER BY fire_at ASC, id ASC
 LIMIT $1;
 
 -- name: LockPendingChatWakeup :one
--- Re-reads a due wakeup under a row lock; a concurrent cancel or tick wins.
+-- Re-reads a pending wakeup under a row lock; a concurrent cancel or tick wins.
+-- The caller decides it is due: the deadline passed or its condition held.
 SELECT * FROM chat_wakeup
-WHERE id = $1 AND status = 'pending' AND fire_at <= now()
+WHERE id = $1 AND status = 'pending'
 FOR UPDATE SKIP LOCKED;
+
+-- name: ListWaitingConditionalChatWakeups :many
+-- Pending wakeups whose condition is still being watched (before the deadline),
+-- least recently checked first. seen holds the ids already evaluated in this
+-- tick, so a tick can page through all of them.
+SELECT * FROM chat_wakeup
+WHERE status = 'pending' AND condition IS NOT NULL AND fire_at > now()
+  AND NOT (id = ANY(COALESCE(sqlc.arg('seen')::uuid[], '{}'::uuid[])))
+ORDER BY condition_checked_at ASC NULLS FIRST, fire_at ASC, id ASC
+LIMIT sqlc.arg('batch');
+
+-- name: TouchChatWakeupConditionChecked :exec
+UPDATE chat_wakeup SET condition_checked_at = now() WHERE id = $1;
+
+-- name: UpdateChatWakeupCondition :exec
+UPDATE chat_wakeup SET condition = $2, updated_at = now() WHERE id = $1 AND status = 'pending';
+
+-- name: ListChatWakeupLinkedPullRequests :many
+-- checks_identity names the finished result: a digest of every check run's name,
+-- state, details URL and GitHub id, in a fixed order that does not depend
+-- on the order GitHub returned them in. A rerun creates new check runs and a
+-- status posted again creates a new status object, so the GitHub ids change with
+-- the result even when name, state, URL and time match, and even if no poll saw
+-- the run in progress. checks_identity_partial is true while a finished run has
+-- no GitHub id (rows written before the column existed, until the next snapshot
+-- refresh): such data cannot name a result. snapshotted is false until the first
+-- successful API snapshot: before it, nothing is known about the checks.
+SELECT pr.pr_number, pr.installation_id, pr.repo_owner, pr.repo_name, (pr.snapshot_fetched_at IS NOT NULL)::boolean AS snapshotted, COALESCE(pr.snapshot_head_sha, '')::text AS head_sha, COALESCE(pr.checks_rollup_state, '')::text AS checks,
+       COALESCE((
+           SELECT md5(string_agg(x.t, E'\n' ORDER BY x.t))
+           FROM (
+               SELECT cr.name || '|' || cr.status || '|' || COALESCE(cr.conclusion, '') || '|' || COALESCE(cr.details_url, '') || '|'
+                      || COALESCE(cr.external_id, '') AS t
+               FROM github_pull_request_check_run cr
+               WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha
+           ) x
+       ), '')::text AS checks_identity,
+       EXISTS (
+           SELECT 1 FROM github_pull_request_check_run cr
+           WHERE cr.pr_id = pr.id AND cr.head_sha = pr.snapshot_head_sha AND cr.status = 'completed' AND cr.external_id IS NULL
+       ) AS checks_identity_partial
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+WHERE ipr.issue_id = $1;
 
 -- name: MoveChatWakeupToSession :exec
 UPDATE chat_wakeup SET chat_session_id = $2, updated_at = now() WHERE id = $1;
@@ -66,6 +111,17 @@ DELETE FROM chat_wakeup WHERE chat_session_id = $1;
 -- name: MarkChatTaskWakeup :one
 -- Flags a chat task as the turn a DM wakeup started.
 UPDATE agent_task_queue SET task_kind = 'wakeup' WHERE id = $1 RETURNING *;
+
+-- name: GetChatWakeupIssueIdentifier :one
+SELECT (ws.issue_prefix || '-' || i.number)::text AS identifier
+FROM issue i JOIN workspace ws ON ws.id = i.workspace_id
+WHERE i.id = $1 AND i.workspace_id = $2;
+
+-- name: GetChatWakeupNewComment :one
+-- The newest comment the watched actor wrote on the issue after the wakeup was set.
+SELECT id FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = $3 AND author_id = $4 AND created_at > $5
+ORDER BY created_at DESC LIMIT 1;
 
 -- name: MoveQueuedWakeupTasksToSession :exec
 -- A continuation archives the DM the run was replying in. A wakeup turn that is

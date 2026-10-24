@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,8 +22,13 @@ type CheckContext struct {
 	// Conclusion is the normalized result: "success", "failure", "neutral",
 	// "cancelled", "skipped", "timed_out", "action_required", "startup_failure",
 	// "stale", or "error"; empty while the check is still running.
-	Conclusion      string
-	DetailsURL      string
+	Conclusion string
+	DetailsURL string
+	// ExternalID is the GitHub id of the check run or status. A rerun creates a
+	// new check run and a status posted again creates a new status, so the id
+	// names one finished result even when name, state, URL and time match. Empty
+	// when GitHub sent no id.
+	ExternalID      string
 	IsStatusContext bool
 }
 
@@ -94,6 +100,7 @@ type restCheckRun struct {
 }
 
 type restStatusContext struct {
+	ID        int64  `json:"id"`
 	Context   string `json:"context"`
 	State     string `json:"state"`
 	TargetURL string `json:"target_url"`
@@ -163,7 +170,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			// refresh queue and the persisted running-check counts.
 			status, conclusion = "queued", ""
 		}
-		snap.Contexts = append(snap.Contexts, CheckContext{Name: run.Name, Status: status, Conclusion: conclusion, DetailsURL: run.DetailsURL})
+		snap.Contexts = append(snap.Contexts, CheckContext{Name: run.Name, Status: status, Conclusion: conclusion, DetailsURL: run.DetailsURL, ExternalID: strconv.FormatInt(run.ID, 10)})
 	}
 	seenStatuses := make(map[string]struct{}, len(statuses))
 	for _, entry := range statuses {
@@ -175,7 +182,11 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		}
 		seenStatuses[entry.Context] = struct{}{}
 		status, conclusion := normalizeStatusState(entry.State)
-		snap.Contexts = append(snap.Contexts, CheckContext{Name: entry.Context, Status: status, Conclusion: conclusion, DetailsURL: entry.TargetURL, IsStatusContext: true})
+		externalID := ""
+		if entry.ID > 0 {
+			externalID = strconv.FormatInt(entry.ID, 10)
+		}
+		snap.Contexts = append(snap.Contexts, CheckContext{Name: entry.Context, Status: status, Conclusion: conclusion, DetailsURL: entry.TargetURL, ExternalID: externalID, IsStatusContext: true})
 	}
 
 	latest, err := fetchSnapshotPR(ctx, c, installationID, prPath)
