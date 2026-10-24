@@ -149,4 +149,23 @@ describe("ChatQueue send-now gating", () => {
 
     expect(screen.getAllByRole("button", { name: "Steer" })[0]!).not.toBeDisabled();
   });
+
+  it("labels a turn that a scheduled follow-up started instead of an empty preview", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatQueue
+          headStatus="running"
+          tasks={[
+            { task_id: "task-9", status: "queued", content: "", task_kind: "wakeup", created_at: "2026-07-01T00:03:00Z" },
+          ]}
+          onSendNow={vi.fn()}
+          onEdit={vi.fn()}
+          onRemove={vi.fn()}
+          onClear={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Scheduled follow-up")).toBeInTheDocument();
+    expect(screen.queryByText("Queued message")).not.toBeInTheDocument();
+  });
 });

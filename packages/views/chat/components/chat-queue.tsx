@@ -121,7 +121,10 @@ export function ChatQueue({
                     aria-hidden="true"
                   />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {task.content?.trim() || t(($) => $.queue.fallback)}
+                    {task.content?.trim() ||
+                      (task.task_kind === "wakeup"
+                        ? t(($) => $.queue.scheduled)
+                        : t(($) => $.queue.fallback))}
                   </span>
                   <div className="flex shrink-0 items-center gap-0.5">
                     <span

@@ -41,6 +41,9 @@ export const chatKeys = {
   messagesPage: (sessionId: string) => [...chatKeys.messagesPageAll(), sessionId] as const,
   pendingTaskAll: () => ["chat", "pending-task"] as const,
   pendingTask: (sessionId: string) => [...chatKeys.pendingTaskAll(), sessionId] as const,
+  wakeupsAll: () => ["chat", "wakeups"] as const,
+  /** Pending follow-ups (DM wakeups) of a session and its continuation lineage. */
+  wakeups: (sessionId: string) => [...chatKeys.wakeupsAll(), sessionId] as const,
   /** Client-only marker: this session's last turn awaits a quick-actions supplement. */
   quickActionsPendingAll: () => ["chat", "quick-actions-pending"] as const,
   quickActionsPending: (sessionId: string) =>
@@ -72,6 +75,17 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 export function isTaskMessageTaskId(taskId: string | null | undefined): taskId is string {
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
+}
+
+export function chatWakeupsOptions(sessionId: string) {
+  return queryOptions({
+    queryKey: chatKeys.wakeups(sessionId),
+    queryFn: () => api.listChatWakeups(sessionId),
+    enabled: !!sessionId,
+    // Refreshed by chat events (a turn that schedules one ends with chat:done)
+    // and by cancel; nothing else changes the list.
+    staleTime: Infinity,
+  });
 }
 
 export function chatSessionsOptions(wsId: string) {

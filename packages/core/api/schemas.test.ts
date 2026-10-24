@@ -29,6 +29,8 @@ import {
   DashboardUsageDailyListSchema,
   ChatDraftRestoresResponseSchema,
   ChatPendingTaskSchema,
+  ChatWakeupListSchema,
+  EMPTY_CHAT_WAKEUP_LIST,
   ChatSessionListSchema,
   ChatSessionSchema,
   PrioritizeQueuedChatTaskResponseSchema,
@@ -2467,5 +2469,59 @@ describe("JevCredentialPresenceSchema", () => {
 
   it("rejects a response without the presence flag", () => {
     expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
+  });
+});
+
+describe("ChatWakeupListSchema", () => {
+  const ENDPOINT = { endpoint: "GET /api/chat/sessions/:id/wakeups" };
+
+  it("parses time and conditional wakeups", () => {
+    const parsed = parseWithFallback(
+      {
+        wakeups: [
+          {
+            id: "w1",
+            chat_session_id: "s1",
+            instruction: "Check CHE-1812.",
+            fire_at: "2026-10-21T04:40:00Z",
+            status: "pending",
+            task_id: null,
+            condition: null,
+          },
+          {
+            id: "w2",
+            chat_session_id: "s0",
+            instruction: "Tell me the result.",
+            fire_at: "2026-10-21T05:00:00Z",
+            status: "pending",
+            condition: {
+              issue_id: "i1",
+              identifier: "CHE-1812",
+              check: { type: "issue_field", field: "status", value: "done" },
+            },
+          },
+        ],
+      },
+      ChatWakeupListSchema,
+      EMPTY_CHAT_WAKEUP_LIST,
+      ENDPOINT,
+    );
+    expect(parsed.wakeups).toHaveLength(2);
+    expect(parsed.wakeups[0]).toMatchObject({ id: "w1", condition: null });
+    expect(parsed.wakeups[1]?.condition).toMatchObject({ identifier: "CHE-1812" });
+  });
+
+  it("drops a malformed row without discarding the valid ones, and tolerates unknown fields", () => {
+    const parsed = ChatWakeupListSchema.parse({
+      wakeups: [
+        { id: "w1", chat_session_id: "s1", instruction: "ok", fire_at: "2026-10-21T04:40:00Z", status: "pending", future_field: 1 },
+        { instruction: "no id" },
+      ],
+    });
+    expect(parsed.wakeups.map((w) => w.id)).toEqual(["w1"]);
+  });
+
+  it("falls back to an empty list for an unexpected body", () => {
+    expect(parseWithFallback("nope", ChatWakeupListSchema, EMPTY_CHAT_WAKEUP_LIST, ENDPOINT)).toEqual({ wakeups: [] });
   });
 });

@@ -459,3 +459,17 @@ export function useRegenerateChatQuickActions() {
     },
   });
 }
+
+/**
+ * Cancels a pending follow-up. The list is refreshed from the server on every
+ * outcome: after a success the row is gone, after a failure or a 404 the server
+ * says whether it is still pending. The row is never removed optimistically, so
+ * a failed cancel cannot hide a follow-up that will still run.
+ */
+export function useCancelChatWakeup(sessionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (wakeupId: string) => api.cancelChatWakeup(sessionId, wakeupId),
+    onSettled: () => qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) }),
+  });
+}
