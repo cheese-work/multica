@@ -1807,5 +1807,37 @@
   },
   "hover_card": {
     "created_updated": "a créé {{created}} · mis à jour {{updated}}"
+  },
+  "decision": {
+    "class": {
+      "reversible": "réversible",
+      "spend": "dépense",
+      "deploy": "déploiement",
+      "publish": "publication",
+      "irreversible": "irréversible",
+      "product_direction": "orientation produit"
+    },
+    "state": {
+      "pending": "En attente",
+      "effective": "En vigueur",
+      "disclaimed": "Retirée"
+    },
+    "via_dm": "via DM",
+    "recorded_by": "Enregistré par {{name}}",
+    "open_dm": "Ouvrir le DM",
+    "private_dm": "d'un DM privé",
+    "disclaim_action": "Retirer",
+    "disclaiming": "Retrait…",
+    "disclaim_title": "Retirer cette décision ?",
+    "disclaim_desc": "L'agent est informé que la décision est retirée et la demande est rouverte. Cette action est irréversible.",
+    "keep_action": "Garder la décision",
+    "changed_title": "Cette décision a changé pendant votre lecture.",
+    "changed_body": "Actualisez pour voir l'état actuel avant de la retirer. Rien n'a été retiré.",
+    "refresh_action": "Actualiser",
+    "withdrawn_title": "Déjà retirée.",
+    "withdrawn_body": "Ce clic n'a rien modifié.",
+    "review_action": "Consulter",
+    "failed_notice": "Retrait impossible. La décision est inchangée.",
+    "try_again_action": "Réessayer"
   }
 }
