@@ -251,6 +251,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	})
 	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID)}
 	if sendFirst {
+		h.TaskService.RecordHumanDelegation(r.Context(), plan.Attribution)
 		h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(child.ID), protocol.ChatMessagePayload{
 			ChatSessionID: uuidToString(child.ID), MessageID: uuidToString(sent.Message.ID), Role: "user",
 			Content: message, TaskID: uuidToString(sent.Task.ID), CreatedAt: timestampToString(sent.Message.CreatedAt),

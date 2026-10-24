@@ -446,7 +446,7 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 		return "", empty, nil
 	}
 	if snapshot.task.Status == "queued" {
-		params, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
+		params, _, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
 		if err != nil {
 			return "", empty, err
 		}
