@@ -1609,7 +1609,7 @@
       "target_member": "Membre",
       "instructions_hint": "Envoyées au responsable avec cette exécution, avec la description et les commentaires de la tâche.",
       "advance_on_ci_green": "Quand les contrôles d’une PR liée réussissent, passer à la colonne suivante",
-      "next_hint": "Inscrit dans les consignes du responsable pour qu’il sache quel état vient ensuite. Le système n’avance jamais l’état à la fin d’une exécution.",
+      "next_hint": "C’est le responsable qui déplace le ticket, et il ne le renvoie que pour une reprise, pas pour un blocage. La fin d’une exécution ne change jamais l’état.",
       "preview_brief": "Aperçu des consignes de l’agent",
       "preview_title": "Consignes de l’étape « {{status}} »",
       "preview_description": "Ce que reçoit l’exécution du responsable quand une tâche entre dans cette étape. Pas besoin d’enregistrer pour prévisualiser.",
@@ -1727,8 +1727,7 @@
       "override_follow_project": "Suivre le workflow du projet",
       "override_error": "Impossible de modifier le workflow",
       "no_workflow": "Aucun workflow",
-      "card_title": "{{workflow}} · selon {{project}}",
-      "card_hint": "Le workflow du projet décide de ces colonnes et transferts."
+      "card_title": "{{workflow}} · selon {{project}}"
     },
     "list_separator": ", ",
     "handoff": {

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
+import enCommon from "../../locales/en/common.json";
 
 const updateMutate = vi.hoisted(() => vi.fn());
 
@@ -31,7 +32,7 @@ vi.mock("../../navigation", () => ({
 
 import { ChatSessionHeader } from "./chat-session-header";
 
-const TEST_RESOURCES = { en: { chat: enChat } };
+const TEST_RESOURCES = { en: { chat: enChat, common: enCommon } };
 const RENAME_LABEL = enChat.header.rename;
 const OUTSIDE_LABEL = "Outside control";
 

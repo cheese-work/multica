@@ -712,14 +712,14 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
+	if !canEditIssueWorkflow(member, current) {
+		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
+		return
+	}
 	// Read under the exclusive catalog lock, so no other save can slip between
 	// this check and the write below.
 	if req.ExpectedVersion != nil && *req.ExpectedVersion != issueWorkflowVersion(current.UpdatedAt) {
 		writeErrorCode(w, http.StatusConflict, "workflow_changed_elsewhere", "the workflow was changed by someone else since you opened it")
-		return
-	}
-	if !canEditIssueWorkflow(member, current) {
-		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
 	var projects []db.Project
