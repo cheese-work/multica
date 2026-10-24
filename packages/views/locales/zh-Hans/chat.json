@@ -290,5 +290,11 @@
     "selection_failed": "未能获取选中文字。请在同一条回复内重新选择后再试。",
     "source_changed": "原文已更改或不可用，已保留你保存的引用。",
     "removed": "已移除评论 {{number}}"
+  },
+  "decision": {
+    "quoted_in": "已引用到 {{issue}}",
+    "from_original_dm": "来自原始私信",
+    "inherited": "继承",
+    "message_unavailable": "该消息已不可用"
   }
 }

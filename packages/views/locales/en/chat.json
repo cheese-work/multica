@@ -296,5 +296,11 @@
     "selection_failed": "Could not capture the selection. Select text inside one reply and try again.",
     "source_changed": "The source changed or is unavailable. Your saved quote is kept.",
     "removed": "Comment {{number}} removed"
+  },
+  "decision": {
+    "quoted_in": "Quoted in {{issue}}",
+    "from_original_dm": "from the original DM",
+    "inherited": "Inherited",
+    "message_unavailable": "Message no longer available"
   }
 }
