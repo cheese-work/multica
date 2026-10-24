@@ -1168,6 +1168,7 @@ function CommentCardImpl({
   const reactions = entry.reactions ?? [];
 
   const isHighlighted = highlightedCommentId === entry.id;
+  const toggleLabel = open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread);
 
   // Reply-resolution display. When a REPLY is the thread's resolution, the other
   // replies fold behind a bar and the resolution stays visible (root-resolution
@@ -1333,24 +1334,29 @@ function CommentCardImpl({
               )}
 
               <div data-comment-actions className="ml-auto flex shrink-0 items-center gap-0.5">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread)}
-                  aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
-                  title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : (open ? t(($) => $.comment.collapse_thread) : t(($) => $.comment.expand_thread))}
-                  aria-expanded={open}
-                  aria-controls={open ? `comment-body-${entry.id}` : undefined}
-                  // Only collapsing (from `open`) can hide a match — expanding
-                  // never does, so the control stays live in that direction
-                  // even while find owns this thread's reveal.
-                  disabled={open && findManualCollapseDisabled}
-                  onClick={handleToggle}
-                  className={commentActionClassName}
-                >
-                  <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
-                </Button>
+                <DeferredTooltip
+                  content={toggleLabel}
+                  trigger={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={toggleLabel}
+                      aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                      title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                      aria-expanded={open}
+                      aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                      // Only collapsing (from `open`) can hide a match — expanding
+                      // never does, so the control stays live in that direction
+                      // even while find owns this thread's reveal.
+                      disabled={open && findManualCollapseDisabled}
+                      onClick={handleToggle}
+                      className={commentActionClassName}
+                    >
+                      <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
+                    </Button>
+                  }
+                />
                 {open && !deleted && <>
                   {!edit.editing && <QuickEmojiPicker
                     onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
