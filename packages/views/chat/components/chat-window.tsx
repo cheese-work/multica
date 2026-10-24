@@ -41,6 +41,7 @@ import {
   PropertyPicker,
 } from "../../issues/components/pickers/property-picker";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { ChatFollowUpsPanel } from "./chat-followups-panel";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
@@ -969,6 +970,8 @@ export function ChatWindow() {
       ) : (
         <OfflineBanner agentName={activeAgent?.name} availability={availability} />
       )}
+
+      <ChatFollowUpsPanel sessionId={activeSessionId} agentName={activeAgent?.name} />
 
       <ChatQueue
         tasks={queuedTasks}

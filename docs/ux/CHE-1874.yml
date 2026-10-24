@@ -1,0 +1,22 @@
+# DM follow-up strip (CHE-1874, UI slice). One strip is added behind the DM composer, in the
+# web and desktop chat window (packages/views/chat). Direction A of the approved design: a quiet
+# bordered strip with one row per pending follow-up an agent scheduled in the DM. Nothing in the
+# existing window is moved or removed: messages, queue, banners, composer, continuation, annotations
+# and unread behavior stay as they are. Mobile is a follow-up and is not in this sheet.
+issue: CHE-1874
+design: design/dm-wakeup-chip/rev-2/A.html @ 1de88837484c950de61639786daaef123bc41c33   # approved by merge of design PR #323 (revision source 89d22f879ac88d4ce2276702f7bdaef5524736ce)
+pages:
+  - id: chat-dm
+    url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview; the floating chat window mounts the same strip
+    ids: [chat-followups, chat-followup-row, chat-followup-cancel, chat-followup-cancel-error, chat-followups-load-error, chat-followups-offline]   # data-testid
+    keep:
+      - chat-user-message
+      - assistant-message-copy
+      - chat-input-surface
+      - chat-queue
+      - chat-queue-row
+      - offline-banner
+    change:
+      - chat-followups: "new strip behind the composer, shown only while the DM has pending follow-ups: visible 'Scheduled follow-ups' label, one row per follow-up with the agent, the time or condition with its deadline, the instruction and Cancel; at most three rows tall, then it scrolls"
+      - chat-queue-row: "a queued turn that a scheduled follow-up started shows 'Scheduled follow-up' instead of an empty preview (the server blanks the hidden instruction)"
+    remove: []
