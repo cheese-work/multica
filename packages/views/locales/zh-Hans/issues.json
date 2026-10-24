@@ -1550,7 +1550,7 @@
       "target_member": "成员",
       "instructions_hint": "作为这次运行的说明发给处理人，和任务描述、评论一起作为上下文。",
       "advance_on_ci_green": "关联 PR 的检查通过后，自动移到下一列",
-      "next_hint": "写进处理人收到的说明里，告诉它下一步该把状态改成什么。系统不会在运行结束后自动推进状态。",
+      "next_hint": "由处理人自己改状态，只有需要返工时才退回，受阻不用退回。运行结束不会自动改状态。",
       "preview_brief": "预览智能体收到的说明",
       "preview_title": "「{{status}}」这一步的说明",
       "preview_description": "任务进入这一步时，处理人的运行会收到这段说明。预览不需要先保存。",
@@ -1656,8 +1656,7 @@
       "override_follow_project": "跟随项目的工作流",
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
-      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
-      "card_hint": "这些列和交接由项目的工作流决定。"
+      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」"
     },
     "list_separator": "、",
     "handoff": {

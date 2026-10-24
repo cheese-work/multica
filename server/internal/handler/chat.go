@@ -1315,9 +1315,18 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	}
 	groupedAtt := h.groupChatMessageAttachments(ctx, workspaceID, messageIDs)
 
+	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
+
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		if cards := quotes[uuidToString(m.ID)]; len(cards) > 0 {
+			resp[i].DecisionQuotes = cards
+		}
+		if card, ok := refs[uuidToString(m.DecisionAnswerID)]; ok && m.MessageKind == protocol.ChatMessageKindDecisionReference {
+			card.Inherited = len(m.LineageMessageIds) > 0
+			resp[i].DecisionRef = &card
+		}
 	}
 	return resp
 }
@@ -2199,6 +2208,12 @@ type ChatMessageResponse struct {
 	// agent can `multica attachment download <id>` rather than guessing
 	// from a markdown URL that may expire.
 	Attachments []AttachmentResponse `json:"attachments,omitempty"`
+	// DecisionQuotes lists the decision records made from this user bubble.
+	// Always an array; only the session owner can read a DM, so no extra gate.
+	DecisionQuotes []DecisionCard `json:"decision_quotes"`
+	// DecisionRef is the card a decision_reference message announces; nil for
+	// other kinds and for rows written before the link was stored.
+	DecisionRef *DecisionCard `json:"decision_ref,omitempty"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
@@ -2224,17 +2239,18 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 
 func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) ChatMessageResponse {
 	return ChatMessageResponse{
-		ID:            uuidToString(m.ID),
-		ChatSessionID: uuidToString(m.ChatSessionID),
-		Role:          m.Role,
-		Content:       m.Content,
-		TaskID:        uuidToPtr(m.TaskID),
-		CreatedAt:     timestampToString(m.CreatedAt),
-		FailureReason: textToPtr(m.FailureReason),
-		ElapsedMs:     int8ToPtr(m.ElapsedMs),
-		MessageKind:   normalizeMessageKind(m.MessageKind),
-		QuickActions:  decodeChatQuickActions(m.QuickActions),
-		Attachments:   attachments,
+		ID:             uuidToString(m.ID),
+		ChatSessionID:  uuidToString(m.ChatSessionID),
+		Role:           m.Role,
+		Content:        m.Content,
+		TaskID:         uuidToPtr(m.TaskID),
+		CreatedAt:      timestampToString(m.CreatedAt),
+		FailureReason:  textToPtr(m.FailureReason),
+		ElapsedMs:      int8ToPtr(m.ElapsedMs),
+		MessageKind:    normalizeMessageKind(m.MessageKind),
+		QuickActions:   decodeChatQuickActions(m.QuickActions),
+		Attachments:    attachments,
+		DecisionQuotes: []DecisionCard{},
 	}
 }
 
@@ -2287,6 +2303,8 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingKickoff
 	case protocol.ChatMessageKindOnboardingOpening:
 		return protocol.ChatMessageKindOnboardingOpening
+	case protocol.ChatMessageKindDecisionReference:
+		return protocol.ChatMessageKindDecisionReference
 	default:
 		return protocol.ChatMessageKindMessage
 	}

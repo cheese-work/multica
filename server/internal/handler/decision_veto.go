@@ -60,6 +60,7 @@ func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, re
 		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	writeJSON(writer, http.StatusCreated, commentToResponse(result.Comments[0], nil, nil))
 }
 

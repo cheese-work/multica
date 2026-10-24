@@ -4032,9 +4032,13 @@ export class ApiClient {
     });
   }
 
+  async disclaimDecisionAnswer(answerId: string): Promise<void> {
+    await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
-    params: { before?: { created_at: string; id: string } | null; limit?: number } = {},
+    params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
   ): Promise<ChatMessagesPage> {
     const limit = params.limit ?? 50;
     const query = new URLSearchParams({ limit: String(limit) });
@@ -4042,6 +4046,8 @@ export class ApiClient {
       query.set("before_created_at", params.before.created_at);
       query.set("before_id", params.before.id);
     }
+    // Anchored window centred on one message; the server rejects a cursor with it.
+    if (params.around) query.set("around", params.around);
     try {
       const raw: unknown = await this.fetch(
         `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
@@ -4063,7 +4069,7 @@ export class ApiClient {
       // the fallback page reports has_more: false and there is no follow-up
       // request to translate. A 404 on a cursor request is an unexpected state
       // and propagates instead of duplicating the whole list.
-      if (err instanceof ApiError && err.status === 404 && !params.before) {
+      if (err instanceof ApiError && err.status === 404 && !params.before && !params.around) {
         const messages = await this.listChatMessages(sessionId);
         return { messages, limit, has_more: false, next_cursor: null };
       }
