@@ -55,7 +55,7 @@ export function IssueFlowCard({
   const catalog = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
   const { project, workflow } = useProjectWithWorkflow(wsId, projectId, workflowId);
-  const { isAdmin, canManageProject } = useWorkflowPermissions(project);
+  const { canCreateWorkflow, canManageProject } = useWorkflowPermissions(project);
   const { workflows } = useIssueWorkflows(wsId);
   const setWorkflow = useSetIssueWorkflow();
   const handlerLabel = useStepHandlerLabel(project);
@@ -127,9 +127,6 @@ export function IssueFlowCard({
             );
           })}
         </ol>
-        {workflow && !workflowId && (
-          <p className="mt-2 text-caption text-muted-foreground">{t(($) => $.workflows.detail.card_hint)}</p>
-        )}
         {canSwitch && (
           <div className="-mx-3 mt-2 border-t border-surface-border px-1 pt-1">
             <p className="px-2 py-1 text-caption text-muted-foreground">{t(($) => $.workflows.detail.override_title)}</p>
@@ -160,8 +157,8 @@ export function IssueFlowCard({
             ))}
           </div>
         )}
-        {isAdmin && enabled && (
-          <div className="-mx-3 -mb-3 mt-1 border-t border-surface-border p-1">
+        {canCreateWorkflow && enabled && (
+          <div className="-mx-3 -mb-3 mt-2 border-t border-surface-border p-1">
             <Button
               variant="ghost"
               size="sm"

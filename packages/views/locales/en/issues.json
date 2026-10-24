@@ -1609,7 +1609,7 @@
       "target_member": "Member",
       "instructions_hint": "Sent to the handler with this run, alongside the issue description and comments.",
       "advance_on_ci_green": "When a linked PR's checks pass, move to the next column",
-      "next_hint": "Written into the handler’s brief so it knows which status comes next. The system never advances the status when a run ends.",
+      "next_hint": "The handler moves the issue itself and sends it back only for rework, not blockers. A run ending never changes the status.",
       "preview_brief": "Preview the agent’s brief",
       "preview_title": "Brief for the “{{status}}” step",
       "preview_description": "What the handler’s run receives when an issue enters this step. Saved changes are not required to preview.",
@@ -1727,8 +1727,7 @@
       "override_follow_project": "Follow the project’s workflow",
       "override_error": "Couldn’t change the workflow",
       "no_workflow": "No workflow",
-      "card_title": "{{workflow}} · from {{project}}",
-      "card_hint": "The project’s workflow decides these columns and handoffs."
+      "card_title": "{{workflow}} · from {{project}}"
     },
     "list_separator": ", ",
     "handoff": {
