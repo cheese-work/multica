@@ -300,7 +300,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		ConditionKey:     attempt.Scope.ConditionKey,
 		FailedAt:         pgtype.Timestamptz{Time: attempt.FailedAt, Valid: true},
 		ProbeAt:          pgtype.Timestamptz{Time: attempt.ProbeAt, Valid: true},
-		ProbeStatus:      attempt.ProbeStatus,
+		ProbeStatus:      pgtype.Int4{Int32: attempt.ProbeStatus, Valid: true},
 		ChangedCondition: providerFailureChangedState,
 		RecoveryRunID:    recoveryRunID,
 		RecoveryTaskID:   recoveryTaskID,
@@ -309,6 +309,33 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		return false, fmt.Errorf("reserve provider failure recovery: %w", err)
 	}
 	return rows == 1, nil
+}
+
+func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, error) {
+	if tx == nil {
+		return false, errors.New("provider failure recovery reservation requires a transaction")
+	}
+	if apply == nil {
+		return false, errors.New("provider failure recovery reservation requires an apply function")
+	}
+	rows, err := db.New(tx).RecordProviderFailureRecovery(ctx, reservation)
+	if err != nil {
+		return false, fmt.Errorf("reserve provider failure recovery: %w", err)
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if rows != 1 {
+		return false, fmt.Errorf("reserve provider failure recovery: inserted %d rows, want at most one", rows)
+	}
+	if err := apply(ctx, tx); err != nil {
+		applyErr := fmt.Errorf("apply provider failure recovery reservation: %w", err)
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			return false, errors.Join(applyErr, fmt.Errorf("rollback provider failure recovery reservation: %w", rollbackErr))
+		}
+		return false, applyErr
+	}
+	return true, nil
 }
 
 func providerFailureCooldownReason(attempt *providerFailureRecoveryAttempt) string {
