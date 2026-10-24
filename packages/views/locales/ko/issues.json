@@ -1735,5 +1735,37 @@
   },
   "hover_card": {
     "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
+  },
+  "decision": {
+    "class": {
+      "reversible": "되돌릴 수 있음",
+      "spend": "지출",
+      "deploy": "배포",
+      "publish": "게시",
+      "irreversible": "되돌릴 수 없음",
+      "product_direction": "제품 방향"
+    },
+    "state": {
+      "pending": "대기 중",
+      "effective": "적용됨",
+      "disclaimed": "철회됨"
+    },
+    "via_dm": "DM 경유",
+    "recorded_by": "{{name}} 기록",
+    "open_dm": "DM 열기",
+    "private_dm": "비공개 DM에서",
+    "disclaim_action": "철회",
+    "disclaiming": "철회 중…",
+    "disclaim_title": "이 결정을 철회할까요?",
+    "disclaim_desc": "에이전트에 결정이 철회되었음이 전달되고 요청이 다시 열립니다. 이 작업은 되돌릴 수 없습니다.",
+    "keep_action": "결정 유지",
+    "changed_title": "읽는 동안 이 결정이 변경되었습니다.",
+    "changed_body": "철회하기 전에 새로고침하여 현재 상태를 확인하세요. 철회된 것은 없습니다.",
+    "refresh_action": "새로고침",
+    "withdrawn_title": "이미 철회되었습니다.",
+    "withdrawn_body": "이번 클릭으로 변경된 것은 없습니다.",
+    "review_action": "확인",
+    "failed_notice": "철회하지 못했습니다. 결정은 그대로입니다.",
+    "try_again_action": "다시 시도"
   }
 }
