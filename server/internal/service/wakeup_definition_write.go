@@ -322,11 +322,11 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	switch {
 	case keep && !found:
 		row, err = q.InsertWakeupDefinition(ctx, db.InsertWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
 		})
 	case keep:
 		row, err = q.UpdateWakeupDefinition(ctx, db.UpdateWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
 		})
 	case found:
 		var n int64
