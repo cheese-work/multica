@@ -43,6 +43,7 @@ export function useIssueWorkflows(wsId: string): {
 export function useProjectWithWorkflow(
   wsId: string,
   projectId: string | null | undefined,
+  workflowId?: string | null,
 ): IssueWorkflowResolution & {
   /** The workspace Default workflow, once loaded. */
   defaultWorkflow: IssueWorkflow | null;
@@ -65,12 +66,12 @@ export function useProjectWithWorkflow(
   }, [retryWorkflows, refetchProjects]);
   return useMemo(
     () => ({
-      ...resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, projects, projectId),
+      ...resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, projects, projectId, workflowId),
       defaultWorkflow: defaultWorkflow(workflowsLoaded ? workflows : undefined),
-      loading: Boolean(projectId) && ((!workflowsLoaded && !workflowsFailed) || (projectsPending && projects === undefined)),
+      loading: Boolean(projectId || workflowId) && ((!workflowsLoaded && !workflowsFailed) || (projectsPending && projects === undefined)),
       retry,
     }),
-    [projectId, projects, projectsPending, workflows, workflowsLoaded, workflowsFailed, retry],
+    [projectId, workflowId, projects, projectsPending, workflows, workflowsLoaded, workflowsFailed, retry],
   );
 }
 

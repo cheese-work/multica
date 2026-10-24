@@ -219,6 +219,17 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
   });
+  it("reads the workflow override and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    expect(parse({ workflow_id: "wf-1" })?.workflow_id).toBe("wf-1");
+    expect(parse({ workflow_id: null })?.workflow_id).toBeNull();
+    expect(parse({})?.workflow_id ?? null).toBeNull();
+    for (const bad of [42, { id: "wf-1" }, true]) {
+      const issue = parse({ workflow_id: bad });
+      expect(issue?.id).toBe(baseIssue.id);
+      expect(issue?.workflow_id ?? null).toBeNull();
+    }
+  });
   it("keeps the issue while independently dropping a malformed source context", () => {
     const parsed = ListIssuesResponseSchema.parse({
       issues: [{ ...baseIssue, source_context: { snapshot: "bad" } }],

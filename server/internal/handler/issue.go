@@ -28,6 +28,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/qoderruntime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
@@ -37,13 +38,14 @@ import (
 
 // IssueResponse is the JSON response for an issue.
 type IssueResponse struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	Number      int32   `json:"number"`
-	Identifier  string  `json:"identifier"`
-	Title       string  `json:"title"`
-	Description *string `json:"description"`
-	Status      string  `json:"status"`
+	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	ID              string                  `json:"id"`
+	WorkspaceID     string                  `json:"workspace_id"`
+	Number          int32                   `json:"number"`
+	Identifier      string                  `json:"identifier"`
+	Title           string                  `json:"title"`
+	Description     *string                 `json:"description"`
+	Status          string                  `json:"status"`
 	// StatusCategory encodes lifecycle using the legacy seven-value wire enum. It is
 	// omitted when an endpoint cannot resolve a custom status, so consumers must
 	// fall back to their catalog rather than treat a blank as "no category".
@@ -74,7 +76,9 @@ type IssueResponse struct {
 	// an endpoint that skips the filler emits null rather than a bare pointer.
 	DuplicateOf *IssueRefResponse `json:"duplicate_of"`
 	ProjectID   *string           `json:"project_id"`
-	Position    float64           `json:"position"`
+	// WorkflowID is the issue's own workflow override; null follows the project.
+	WorkflowID *string `json:"workflow_id"`
+	Position   float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -308,12 +312,31 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 // after commit.
 func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.UpdateIssueParams) (db.Issue, []db.AgentTaskQueue, error) {
 	issue, err := q.UpdateIssue(ctx, params)
-	if err != nil || !params.Status.Valid {
+	if err != nil {
 		return issue, nil, err
 	}
-	cancelled, err := service.StopClosedIssueWakeups(ctx, q, issue)
-	if err != nil {
-		return db.Issue{}, nil, fmt.Errorf("stop closed issue wakeups: %w", err)
+	var cancelled []db.AgentTaskQueue
+	if params.Status.Valid {
+		cancelled, err = service.StopClosedIssueWakeups(ctx, q, issue)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("stop closed issue wakeups: %w", err)
+		}
+	}
+	if issue.ProjectID.Valid {
+		status, err := q.GetIssueProjectStatus(ctx, issue.ID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return db.Issue{}, nil, err
+		}
+		if service.ProjectInactive(status) {
+			stopped, err := q.CancelAgentTasksByIssue(ctx, issue.ID)
+			if err != nil {
+				return db.Issue{}, nil, err
+			}
+			if err := service.SettleTerminalTaskState(ctx, q, stopped...); err != nil {
+				return db.Issue{}, nil, err
+			}
+			cancelled = append(cancelled, stopped...)
+		}
 	}
 	return issue, cancelled, nil
 }
@@ -327,6 +350,9 @@ func (h *Handler) broadcastCancelledWakeups(ctx context.Context, workspaceID pgt
 // writeIssueStatusRaceError renders errIssueStatusArchivedRace as a 409 and
 // reports whether it handled the error.
 func writeIssueStatusRaceError(w http.ResponseWriter, err error) bool {
+	if writeProjectAdmissionError(w, err) {
+		return true
+	}
 	if errors.Is(err, errIssueStatusArchivedRace) {
 		writeError(w, http.StatusConflict,
 			"the target status was archived while this request was in flight; reload the status list and retry")
@@ -501,6 +527,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -539,6 +566,7 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -609,6 +637,7 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
+		WorkflowID:         uuidToPtr(i.WorkflowID),
 		Position:           i.Position,
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
@@ -2995,6 +3024,12 @@ func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, sour
 			"reason": "agent's runtime is no longer registered",
 		}
 	}
+	if rt.Provider == qoderruntime.Provider {
+		return http.StatusUnprocessableEntity, map[string]any{
+			"code":   "agent_unavailable",
+			"reason": "Qoder Cloud Agents supports existing issue runs only; create the issue manually and assign it to this agent",
+		}
+	}
 	current := readRuntimeCLIVersion(rt.Metadata)
 	switch err := agentpkg.CheckMinCLIVersionFor(current, minimum); {
 	case err == nil:
@@ -3045,6 +3080,7 @@ type CreateIssueRequest struct {
 	AssigneeID    *string  `json:"assignee_id"`
 	ParentIssueID *string  `json:"parent_issue_id"`
 	ProjectID     *string  `json:"project_id"`
+	WorkflowID    *string  `json:"workflow_id"`
 	Stage         *int32   `json:"stage,omitempty"`
 	StartDate     *string  `json:"start_date"`
 	DueDate       *string  `json:"due_date"`
@@ -3300,7 +3336,26 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			workflowProjectID = parent.ProjectID
 		}
 	}
-	createWorkflow, createWorkflowProject, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, workflowProjectID)
+	var overrideID pgtype.UUID
+	if req.WorkflowID != nil && *req.WorkflowID != "" {
+		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
+		if !ok {
+			return
+		}
+		overrideID = id
+	}
+	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
+	if overrideID.Valid {
+		if !h.requireProjectWorkflowsV1(w, r) {
+			return
+		}
+		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, createWorkflowProject); !ok {
+			return
+		}
+	}
+	if writeIssueWorkflowError(w, err) {
+		return
+	}
 	if err != nil {
 		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
@@ -3505,6 +3560,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		CreatorID:       parseUUID(actualCreatorID),
 		ParentIssueID:   parentIssueID,
 		ProjectID:       projectID,
+		WorkflowID:      overrideID,
 		StartDate:       startDate,
 		DueDate:         dueDate,
 		OriginType:      originType,
@@ -3570,10 +3626,16 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			"the target status was archived while this request was in flight; reload the status list and retry")
 		return
 	}
+	if writeIssueWorkflowError(w, err) {
+		return
+	}
 	if writeIssueCreatePropertyError(w, err) {
 		return
 	}
 	if writeIssueLimitReached(w, err) {
+		return
+	}
+	if writeProjectAdmissionError(w, err) {
 		return
 	}
 	if err != nil {
@@ -3587,6 +3649,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	resp := issueToResponse(issue, prefix)
 	fillCreated(&resp)
+	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 	resp.Attachments = buildAttachmentResponses(res.Attachments)
 	// Echo the authoritative labels attached in the create transaction. Always
 	// non-nil (empty slice when none) so a newer client can tell the backend
@@ -4078,6 +4141,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params.ProjectID = projectUUID
+			if !h.allowProjectWrite(w, r, prevIssue.WorkspaceID, projectUUID) {
+				return
+			}
 		} else {
 			params.ProjectID = pgtype.UUID{Valid: false}
 		}
@@ -4188,6 +4254,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
+	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
@@ -4822,6 +4889,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	// The issues this batch wrote; the rest were skipped by a per-issue guard.
 	updatedIDs := []string{}
+	var triggerOutcomes []CommentTriggerOutcome
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillBatch := h.newStatusCategoryFiller(r.Context(), wsUUID)
@@ -4842,6 +4910,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			continue
+		}
+		if !h.allowIssueProjectWrite(w, r, prevIssue) || !h.allowProjectWrite(w, r, wsUUID, batchProjectID) {
+			return
 		}
 
 		params := db.UpdateIssueParams{
@@ -5038,6 +5109,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
 
 		fillBatch(&resp)
+		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
+		triggerOutcomes = append(triggerOutcomes, resp.TriggerOutcomes...)
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil || handoff != nil) &&
 			(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 		statusChanged := (req.Updates.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
@@ -5125,7 +5198,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
-	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "updated_ids": updatedIDs})
+	response := map[string]any{"updated": updated, "updated_ids": updatedIDs}
+	if len(triggerOutcomes) > 0 {
+		response["trigger_outcomes"] = triggerOutcomes
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 type BatchDeleteIssuesRequest struct {
@@ -5133,6 +5210,7 @@ type BatchDeleteIssuesRequest struct {
 }
 
 func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
+	r = h.withWakeupActor(r)
 	var req BatchDeleteIssuesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -5172,10 +5250,15 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		if !h.allowIssueProjectWrite(w, r, issue) {
+			return
+		}
 
 		seenIssueIDs[issueUUID] = struct{}{}
 		issues = append(issues, issue)
 		excludedIDs = append(excludedIDs, issue.ID)
+	}
+	for _, issue := range issues {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 		_ = h.AutopilotService.FailAutopilotRunsByIssue(r.Context(), issue.ID)
 	}

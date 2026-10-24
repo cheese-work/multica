@@ -204,12 +204,23 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.SlackHistory == nil {
+	threadID := r.URL.Query().Get("id")
+	var page channel.HistoryPage
+	var err error
+	switch {
+	case h.SlackHistory == nil && threadID != "":
 		h.writeNoChannelIntegration(w)
 		return
+	case h.SlackHistory == nil:
+		page, err = h.chatMessageHistory(r, scope)
+	default:
+		page, err = h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
+		if threadID == "" && errors.Is(err, slack.ErrNoSlackSession) {
+			// A web DM has one flat transcript, so "the thread I am in" is
+			// that transcript, exactly what `chat history` serves.
+			page, err = h.chatMessageHistory(r, scope)
+		}
 	}
-	threadID := r.URL.Query().Get("id")
-	page, err := h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 

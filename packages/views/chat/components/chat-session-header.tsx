@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, Minimize2, MoreHorizontal, Pencil, Trash2, UserRound } from "lucide-react";
-import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -33,6 +33,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
 /**
  * Per-session header for the conversation pane: agent avatar + editable chat
@@ -206,14 +207,15 @@ export function ChatSessionHeader({
             className="w-full rounded-sm bg-background px-1 py-0.5 text-body font-semibold outline-none ring-1 ring-border focus-visible:ring-brand"
           />
         ) : (
-          <button
-            type="button"
-            onClick={startRename}
-            title={t(($) => $.header.rename)}
-            className="block max-w-full truncate text-left text-body font-semibold text-foreground outline-none hover:text-foreground/80 focus-visible:text-foreground/80"
-          >
-            {title}
-          </button>
+          <TooltipHint label={t(($) => $.header.rename)}>
+            <button
+              type="button"
+              onClick={startRename}
+              className="block max-w-full truncate text-left text-body font-semibold text-foreground outline-none hover:text-foreground/80 focus-visible:text-foreground/80"
+            >
+              {title}
+            </button>
+          </TooltipHint>
         )}
         {agent && (
           <div className="truncate text-caption text-muted-foreground">
@@ -233,8 +235,13 @@ export function ChatSessionHeader({
 
       <DropdownMenu>
         <DropdownMenuTrigger
-          aria-label={t(($) => $.header.more_actions)}
-          render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" />}
+          render={
+            <IconButton
+              label={t(($) => $.header.more_actions)}
+              tooltipSide="bottom"
+              className="text-muted-foreground"
+            />
+          }
         >
           <MoreHorizontal className="h-4 w-4" />
         </DropdownMenuTrigger>
