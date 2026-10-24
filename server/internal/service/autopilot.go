@@ -695,6 +695,9 @@ func (s *AutopilotService) dispatchAutopilotRun(
 // fail-closed attribution refusal is attribution_blocked; everything else is an
 // unclassified internal error.
 func dispatchFailReasonCode(err error) dispatch.ReasonCode {
+	if IsProjectInactive(err) {
+		return dispatch.ReasonProjectInactive
+	}
 	if errors.Is(err, ErrAttributionFailClosed) {
 		return dispatch.ReasonAttributionBlocked
 	}
@@ -740,6 +743,9 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("refresh autopilot: %w", err)
 	}
 	projectID := currentAutopilot.ProjectID
+	if err := RequireActiveProject(ctx, qtx, ap.WorkspaceID, projectID); err != nil {
+		return err
+	}
 
 	if duplicate, found, err := issueguard.LockAndFindRecentAutopilotDuplicate(
 		ctx, qtx, ap.WorkspaceID, ap.ID, projectID, title, autopilotRecentDuplicateWindow,
@@ -1397,6 +1403,12 @@ func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reaso
 //     agent assignee being missing is now a real condition the gate must
 //     handle (previously cascade-deleted).
 func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopilot, actorUserID, triggerID pgtype.UUID) (string, dispatch.ReasonCode, bool) {
+	if err := RequireActiveProject(ctx, s.Queries, ap.WorkspaceID, ap.ProjectID); err != nil {
+		if IsProjectInactive(err) {
+			return ErrProjectInactive.Error(), dispatch.ReasonProjectInactive, true
+		}
+		return "project admission unavailable", dispatch.ReasonInternalError, true
+	}
 	if !ap.AssigneeID.Valid {
 		return "autopilot has no assignee", dispatch.ReasonTargetUnavailable, true
 	}
