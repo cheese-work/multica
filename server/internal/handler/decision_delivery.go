@@ -383,6 +383,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		handler.publish(protocol.EventCommentCreated, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID))
+	if snapshot.kind == "" {
+		for _, answer := range snapshot.answers {
+			handler.publishDecisionAnswerUpdated(uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), answer.ID, snapshot.issue.ID, decisionStateEffective)
+		}
+	}
 	return false, nil
 }
 
