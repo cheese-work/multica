@@ -3031,6 +3031,11 @@ RETURNING *;
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
 
+-- name: ListAgentsByIDsIncludingArchived :many
+-- Batch GetAgent for a set of ids: one chat continuation chain can span many
+-- agents, and an archived agent still owns its past DMs.
+SELECT * FROM agent WHERE id = ANY(@agent_ids::uuid[]);
+
 -- name: SetTaskClaimedModel :exec
 -- CHE-1862: the model the daemon is told to run for this claim. The vote gate
 -- reads it as the task's lab identity, so an edit of the agent row after the

@@ -49,7 +49,13 @@ func TestMain(m *testing.M) {
 		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
 	}
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolConfig, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		exitIntegrationTestsWithoutDatabase(err)
+	}
+	// Lets a test count the statements one HTTP request issues (see requestQueryTrace).
+	poolConfig.ConnConfig.Tracer = requestQueries
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		testutil.ExitWithoutDatabase(err)
 	}

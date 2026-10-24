@@ -143,7 +143,28 @@ export interface ChatUsageModel {
   cost_usd_ticks: number;
 }
 
-/** `GET /api/chat/sessions/{id}/usage`: totals for this session only. */
+/**
+ * The "whole conversation" total across a continuation chain (continued_from /
+ * continued_into, `/agent` handoff hops included, forks excluded).
+ */
+export interface ChatUsageChain {
+  /** Readable sessions summed, including the viewed one. */
+  session_count: number;
+  /** True when the walk stopped at its 100-hop limit or a chain member was left out as unreadable. */
+  partial: boolean;
+  tokens: ChatUsageTokens;
+  uncosted_tokens: ChatUsageTokens;
+  cost_usd_ticks: number;
+  by_model: Record<string, ChatUsageModel>;
+  runs: {
+    terminal: number;
+    metered: number;
+    unreported: number;
+    total_run_ms: number;
+  };
+}
+
+/** `GET /api/chat/sessions/{id}/usage`: this session's totals, plus the chain total when there is one. */
 export interface ChatSessionUsage {
   session_id: string;
   tokens: ChatUsageTokens;
@@ -167,6 +188,8 @@ export interface ChatSessionUsage {
   continued_from_session_id: string | null;
   continued_into_session_id: string | null;
   forked_from_session_id: string | null;
+  /** Null for a DM with no readable continuation link and for non-interactive callers. */
+  chain: ChatUsageChain | null;
 }
 
 export interface ChatContinueResponse {

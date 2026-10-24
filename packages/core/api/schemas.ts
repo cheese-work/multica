@@ -2271,6 +2271,21 @@ const ChatUsageModelSchema = z.object({
   cost_usd_ticks: z.number().default(0),
 }).loose();
 
+const ChatUsageChainSchema = z.object({
+  session_count: z.number().default(0),
+  partial: z.boolean().default(false),
+  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  uncosted_tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
+  cost_usd_ticks: z.number().default(0),
+  by_model: z.record(z.string(), ChatUsageModelSchema).default({}),
+  runs: z.object({
+    terminal: z.number().default(0),
+    metered: z.number().default(0),
+    unreported: z.number().default(0),
+    total_run_ms: z.number().default(0),
+  }).loose().default({ terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 }),
+}).loose();
+
 // cost_usd_ticks (here and per model) is in ticks of 1e-10 USD: 1 USD = 1e10 ticks.
 export const ChatSessionUsageSchema = z.object({
   session_id: z.string(),
@@ -2291,6 +2306,8 @@ export const ChatSessionUsageSchema = z.object({
   continued_from_session_id: z.string().nullable().default(null),
   continued_into_session_id: z.string().nullable().default(null),
   forked_from_session_id: z.string().nullable().default(null),
+  // A malformed chain costs only the "Whole conversation" row, not the session totals.
+  chain: ChatUsageChainSchema.nullable().default(null).catch(null),
 }).loose();
 
 export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
@@ -2304,6 +2321,7 @@ export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
   continued_from_session_id: null,
   continued_into_session_id: null,
   forked_from_session_id: null,
+  chain: null,
 };
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
