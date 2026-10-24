@@ -3709,9 +3709,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
-	if _, ok := h.loadIssueForUser(w, r, uuidToString(existing.IssueID)); !ok {
-		return
-	}
 	if bound, err := h.Queries.CommentHasTaskSupplement(r.Context(), db.CommentHasTaskSupplementParams{
 		CommentID: existing.ID, WorkspaceID: wsUUID,
 	}); err != nil {
@@ -3775,6 +3772,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			"code":  "required_source_link_undetermined",
 			"field": "content",
 		})
+		return
+	}
+	if !h.allowIssueProjectWrite(w, r, issueForSource) {
 		return
 	}
 	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {

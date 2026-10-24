@@ -26,7 +26,7 @@ WHERE i.project_id=$1 AND i.workspace_id=$2
 ORDER BY w.id FOR UPDATE OF w;
 
 -- name: BumpProjectWakeupRevisions :exec
-UPDATE issue_wakeup w SET revision=revision+1
+UPDATE issue_wakeup w SET revision=w.revision+1
 FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
 AND i.project_id=$1 AND i.workspace_id=$2;
 
