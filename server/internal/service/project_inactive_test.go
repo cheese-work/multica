@@ -9,7 +9,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+func TestInactiveProjectResumeClearsWakeupError(test *testing.T) {
+	fixture, wakeups, issue, agent := conditionFixture(test)
+	projectID := fixture.Project(test, "Resume wakeup error", testutil.Cols{"status": "in_progress"})
+	fixture.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issue, projectID)
+	rule := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Fresh events only"})
+	for _, status := range []string{"paused", "in_progress"} {
+		_, err := wakeups.Tasks.UpdateProject(context.Background(), util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
+			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
+		}, false)
+		if err != nil {
+			test.Fatal(err)
+		}
+		stored, err := fixture.q.LocklessWakeup(context.Background(), rule.ID)
+		if err != nil {
+			test.Fatal(err)
+		}
+		if status == "paused" && stored.LastError.String != "project_inactive" {
+			test.Errorf("inactive wakeup error = %q", stored.LastError.String)
+		}
+		if status == "in_progress" && stored.LastError.Valid {
+			test.Errorf("resumed wakeup retains error %q", stored.LastError.String)
+		}
+	}
+}
 
 func TestProjectAdmissionHoldsWorkspaceFence(test *testing.T) {
 	fixture, _ := newPrincipalFixture(test)

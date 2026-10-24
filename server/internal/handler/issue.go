@@ -312,12 +312,31 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 // after commit.
 func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.UpdateIssueParams) (db.Issue, []db.AgentTaskQueue, error) {
 	issue, err := q.UpdateIssue(ctx, params)
-	if err != nil || !params.Status.Valid {
+	if err != nil {
 		return issue, nil, err
 	}
-	cancelled, err := service.StopClosedIssueWakeups(ctx, q, issue)
-	if err != nil {
-		return db.Issue{}, nil, fmt.Errorf("stop closed issue wakeups: %w", err)
+	var cancelled []db.AgentTaskQueue
+	if params.Status.Valid {
+		cancelled, err = service.StopClosedIssueWakeups(ctx, q, issue)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("stop closed issue wakeups: %w", err)
+		}
+	}
+	if issue.ProjectID.Valid {
+		status, err := q.GetIssueProjectStatus(ctx, issue.ID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return db.Issue{}, nil, err
+		}
+		if service.ProjectInactive(status) {
+			stopped, err := q.CancelAgentTasksByIssue(ctx, issue.ID)
+			if err != nil {
+				return db.Issue{}, nil, err
+			}
+			if err := service.SettleTerminalTaskState(ctx, q, stopped...); err != nil {
+				return db.Issue{}, nil, err
+			}
+			cancelled = append(cancelled, stopped...)
+		}
 	}
 	return issue, cancelled, nil
 }
@@ -5191,6 +5210,7 @@ type BatchDeleteIssuesRequest struct {
 }
 
 func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
+	r = h.withWakeupActor(r)
 	var req BatchDeleteIssuesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -5230,10 +5250,15 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		if !h.allowIssueProjectWrite(w, r, issue) {
+			return
+		}
 
 		seenIssueIDs[issueUUID] = struct{}{}
 		issues = append(issues, issue)
 		excludedIDs = append(excludedIDs, issue.ID)
+	}
+	for _, issue := range issues {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 		_ = h.AutopilotService.FailAutopilotRunsByIssue(r.Context(), issue.ID)
 	}

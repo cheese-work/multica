@@ -479,7 +479,11 @@ func (q *Queries) LockProjectForDelete(ctx context.Context, arg LockProjectForDe
 }
 
 const requireActiveProject = `-- name: RequireActiveProject :one
-SELECT lock_active_project($1::uuid, $2::uuid)::boolean AS allowed
+WITH workspace_lock AS MATERIALIZED (
+    SELECT id FROM workspace WHERE id=$2::uuid FOR KEY SHARE
+)
+SELECT p.status FROM project p JOIN workspace_lock w ON w.id=p.workspace_id
+WHERE p.id=$1::uuid FOR SHARE OF p
 `
 
 type RequireActiveProjectParams struct {
@@ -487,11 +491,11 @@ type RequireActiveProjectParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) RequireActiveProject(ctx context.Context, arg RequireActiveProjectParams) (bool, error) {
+func (q *Queries) RequireActiveProject(ctx context.Context, arg RequireActiveProjectParams) (string, error) {
 	row := q.db.QueryRow(ctx, requireActiveProject, arg.ProjectID, arg.WorkspaceID)
-	var allowed bool
-	err := row.Scan(&allowed)
-	return allowed, err
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const updateProject = `-- name: UpdateProject :one

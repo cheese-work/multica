@@ -28,21 +28,45 @@ func RequireActiveProject(ctx context.Context, queries *db.Queries, workspaceID,
 	if !projectID.Valid {
 		return nil
 	}
-	project, err := queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	status, err := queries.RequireActiveProject(ctx, db.RequireActiveProjectParams{ProjectID: projectID, WorkspaceID: workspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if ProjectInactive(project.Status) {
+	if ProjectInactive(status) {
 		return ErrProjectInactive
 	}
-	_, err = queries.RequireActiveProject(ctx, db.RequireActiveProjectParams{ProjectID: projectID, WorkspaceID: workspaceID})
-	if IsProjectInactive(err) {
-		return ErrProjectInactive
+	return nil
+}
+
+func lockTaskProjectForStart(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {
+	if !task.IssueID.Valid {
+		return requireActiveTaskProject(ctx, queries, task)
 	}
-	return err
+	issue, err := queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return err
+	}
+	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
+		return err
+	}
+	if err := queries.LockIssueStatusCatalogShared(ctx, issue.WorkspaceID); err != nil {
+		return err
+	}
+	admissionErr := RequireActiveProject(ctx, queries, issue.WorkspaceID, issue.ProjectID)
+	if admissionErr != nil && !IsProjectInactive(admissionErr) {
+		return admissionErr
+	}
+	current, err := queries.LockWakeupIssue(ctx, issue.ID)
+	if err != nil {
+		return err
+	}
+	if current.ProjectID != issue.ProjectID {
+		return pgx.ErrNoRows
+	}
+	return admissionErr
 }
 
 func RequireActiveIssueProject(ctx context.Context, queries *db.Queries, issueID pgtype.UUID) error {
@@ -126,6 +150,11 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 		for _, rule := range rules {
 			if err := wakeups.settleInactiveProjectRule(ctx, tx, queries, rule); err != nil {
 				return db.Project{}, err
+			}
+			if !ProjectInactive(project.Status) {
+				if err := queries.NoteWakeupFailure(ctx, db.NoteWakeupFailureParams{ID: rule.ID}); err != nil {
+					return db.Project{}, err
+				}
 			}
 		}
 		if err := queries.BumpProjectWakeupRevisions(ctx, db.BumpProjectWakeupRevisionsParams{ProjectID: project.ID, WorkspaceID: workspaceID}); err != nil {

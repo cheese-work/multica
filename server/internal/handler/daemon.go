@@ -4749,6 +4749,9 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("start task failed", "task_id", taskID, "error", err)
+		if writeProjectAdmissionError(w, err) {
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			status := http.StatusConflict
 			if legacy {

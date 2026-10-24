@@ -10,7 +10,11 @@ SELECT * FROM project
 WHERE id = $1 AND workspace_id = $2;
 
 -- name: RequireActiveProject :one
-SELECT lock_active_project(sqlc.narg(project_id)::uuid, sqlc.arg(workspace_id)::uuid)::boolean AS allowed;
+WITH workspace_lock AS MATERIALIZED (
+    SELECT id FROM workspace WHERE id=sqlc.arg(workspace_id)::uuid FOR KEY SHARE
+)
+SELECT p.status FROM project p JOIN workspace_lock w ON w.id=p.workspace_id
+WHERE p.id=sqlc.narg(project_id)::uuid FOR SHARE OF p;
 
 -- name: GetIssueProjectStatus :one
 SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id

@@ -4600,17 +4600,61 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // StartTask transitions a dispatched task to running.
 // Local agents manage issue status via the CLI; Qoder runs use guarded server transitions.
 func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
-	enableTaskSupplement := len(supplementSupport) > 0 && supplementSupport[0]
+	return s.startTask(ctx, taskID, nil, len(supplementSupport) > 0 && supplementSupport[0])
+}
+
+// StartTaskForClaim serializes the ownership check and transition with reclaim,
+// cancellation and other start requests. A replay linearizes at the locked read;
+// a cancellation that commits later can still cancel the acknowledged task.
+func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentTaskStartClaimParams, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
+	if !claim.ID.Valid || !claim.RuntimeID.Valid || !claim.DispatchedAt.Valid {
+		return nil, fmt.Errorf("start task: incomplete claim")
+	}
+	return s.startTask(ctx, claim.ID, &claim, len(supplementSupport) > 0 && supplementSupport[0])
+}
+
+func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *db.LockAgentTaskStartClaimParams, enableTaskSupplement bool) (*db.AgentTaskQueue, error) {
 	var task db.AgentTaskQueue
 	var change *qoderIssueChange
+	var replay, refused bool
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
+		candidate, err := qtx.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		admissionErr := lockTaskProjectForStart(ctx, qtx, candidate)
+		if admissionErr != nil && !IsProjectInactive(admissionErr) {
+			return admissionErr
+		}
+		if claim != nil {
+			task, err = qtx.LockAgentTaskStartClaim(ctx, *claim)
+		} else {
+			task, err = qtx.LockAgentTaskLegacyStart(ctx, taskID)
+		}
+		if err != nil {
+			return err
+		}
+		if IsProjectInactive(admissionErr) {
+			task, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+				ID: task.ID, Error: pgtype.Text{String: ErrProjectInactive.Error(), Valid: true},
+				FailureReason: pgtype.Text{String: ErrProjectInactive.Error(), Valid: true},
+			})
+			if err != nil {
+				return err
+			}
+			refused = true
+			return SettleTerminalTaskState(ctx, qtx, task)
+		}
+		replay = task.Status == "running"
+		if replay {
+			return nil
+		}
 		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
-			TaskID:               taskID,
+			TaskID:               task.ID,
 			EnableTaskSupplement: enableTaskSupplement,
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("start claimed task: %w", err)
 		}
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
 			return err
@@ -4621,57 +4665,9 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplem
 	if err != nil {
 		return nil, fmt.Errorf("start task: %w", err)
 	}
-	s.publishQoderIssueChange(ctx, change)
-	s.taskStarted(ctx, task)
-	return &task, nil
-}
-
-// StartTaskForClaim serializes the ownership check and transition with reclaim,
-// cancellation and other start requests. A replay linearizes at the locked read;
-// a cancellation that commits later can still cancel the acknowledged task.
-func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentTaskStartClaimParams, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
-	if !claim.ID.Valid || !claim.RuntimeID.Valid || !claim.DispatchedAt.Valid {
-		return nil, fmt.Errorf("start task: incomplete claim")
-	}
-	tx, err := s.TxStarter.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin task start: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := s.Queries.WithTx(tx)
-	candidate, err := qtx.GetAgentTask(ctx, claim.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireActiveTaskProject(ctx, qtx, candidate); err != nil {
-		return nil, err
-	}
-	task, err := qtx.LockAgentTaskStartClaim(ctx, claim)
-	if err != nil {
-		return nil, fmt.Errorf("lock task start claim: %w", err)
-	}
-	var change *qoderIssueChange
-	replay := task.Status == "running"
-	if !replay {
-		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
-			TaskID:               task.ID,
-			EnableTaskSupplement: len(supplementSupport) > 0 && supplementSupport[0],
-		})
-		if err != nil {
-			return nil, fmt.Errorf("start claimed task: %w", err)
-		}
-		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
-			return nil, err
-		}
-	}
-	if !replay {
-		change, err = syncQoderIssue(ctx, qtx, task, false)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit task start: %w", err)
+	if refused {
+		s.BroadcastCancelledTasks(ctx, s.ResolveTaskWorkspaceID(ctx, task), []db.AgentTaskQueue{task})
+		return nil, ErrProjectInactive
 	}
 	s.publishQoderIssueChange(ctx, change)
 	if !replay {

@@ -3,10 +3,15 @@ package handler
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func inactiveProject(test *testing.T, status string) string {
@@ -108,9 +113,19 @@ func TestInactiveProjectCloseCancelsRunsAndResumeDoesNotReplay(test *testing.T) 
 			projectID := inactiveProject(test, "in_progress")
 			issueID := fixture.issueFor(test, "", "project close")
 			dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
+			var eventMu sync.Mutex
+			cancelledEvents := make(map[string]int)
+			testHandler.Bus.Subscribe(protocol.EventTaskCancelled, func(event events.Event) {
+				if event.WorkspaceID == testWorkspaceID {
+					eventMu.Lock()
+					cancelledEvents[event.TaskID]++
+					eventMu.Unlock()
+				}
+			})
+			var taskIDs []string
 			for _, runStatus := range []string{"queued", "dispatched", "running", "deferred"} {
-				dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID, "status": runStatus,
-					"trigger_comment_id": dbfx.Comment(test, issueID, runStatus)})
+				taskIDs = append(taskIDs, dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID, "status": runStatus,
+					"trigger_comment_id": dbfx.Comment(test, issueID, runStatus)}))
 			}
 			update := func(next string) {
 				testutil.Call(test, testHandler.UpdateProject, withURLParam(newRequest(http.MethodPut, "/api/projects/"+projectID,
@@ -120,16 +135,141 @@ func TestInactiveProjectCloseCancelsRunsAndResumeDoesNotReplay(test *testing.T) 
 			if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != 0 {
 				test.Errorf("closing project left %d uncancelled runs", count)
 			}
+			eventMu.Lock()
+			for _, taskID := range taskIDs {
+				if cancelledEvents[taskID] != 1 {
+					test.Errorf("task %s published %d cancellation events, want 1", taskID, cancelledEvents[taskID])
+				}
+			}
+			eventMu.Unlock()
 			testutil.Call(test, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID,
 				map[string]any{"title": "Member can still edit"}), "id", issueID)).Want(http.StatusOK)
 			update("planned")
-			if tasksOn(test, issueID) != 4 {
-				test.Fatal("resuming the project replayed a trigger")
-			}
 			testutil.Call(test, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments",
 				map[string]any{"content": "[@Agent](mention://agent/" + fixture.agentID + ") new trigger"}), "id", issueID)).Want(http.StatusCreated)
 			if tasksOn(test, issueID) != 5 {
 				test.Error("new trigger after resume did not enqueue exactly one run")
+			}
+		})
+	}
+}
+
+func TestInactiveProjectMoveCancelsRuns(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	for _, status := range []string{"paused", "cancelled", "completed"} {
+		for _, mode := range []string{"single", "description", "batch"} {
+			test.Run(status+"/"+mode, func(test *testing.T) {
+				projectID := inactiveProject(test, status)
+				issueID := fixture.issueFor(test, "", "move active runs")
+				for _, runStatus := range []string{"queued", "dispatched", "running", "waiting_local_directory", "deferred"} {
+					dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID,
+						"status": runStatus, "trigger_comment_id": dbfx.Comment(test, issueID, runStatus)})
+				}
+				body := map[string]any{"project_id": projectID, "suppress_run": true}
+				if mode == "description" {
+					body["description"] = "Member move"
+				}
+				if mode == "batch" {
+					testutil.Call(test, testHandler.BatchUpdateIssues, newRequest(http.MethodPut, "/api/issues/batch",
+						map[string]any{"issue_ids": []string{issueID}, "updates": body})).Want(http.StatusOK)
+				} else {
+					testutil.Call(test, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, body), "id", issueID)).Want(http.StatusOK)
+				}
+				if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != 0 {
+					test.Errorf("moving into %s left %d active runs", status, count)
+				}
+			})
+		}
+	}
+}
+
+func TestInactiveProjectStartRefusesAndSettles(test *testing.T) {
+	for _, status := range []string{"paused", "cancelled", "completed"} {
+		for _, mode := range []string{"legacy", "claim"} {
+			test.Run(status+"/"+mode, func(test *testing.T) {
+				taskID, runtimeID, generation := startClaimFixture(test, "dispatched")
+				projectID := inactiveProject(test, status)
+				dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=(SELECT issue_id FROM agent_task_queue WHERE id=$1)", taskID, projectID)
+				request := startClaimRequest(taskID, runtimeID, generation)
+				if mode == "legacy" {
+					request = withURLParam(newOwnerDaemonRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/start", map[string]any{}), "taskId", taskID)
+				}
+				response := testutil.Call(test, testHandler.StartTask, request)
+				if response.Code != http.StatusForbidden {
+					test.Errorf("inactive project start status = %d, want 403: %s", response.Code, response.Text())
+				} else if response.Map()["reason_code"] != "project_inactive" {
+					test.Errorf("start refusal lacks project_inactive: %s", response.Text())
+				}
+				task, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+				if err != nil {
+					test.Fatal(err)
+				}
+				if task.Status != "cancelled" || task.Error.String != "project_inactive" || task.FailureReason.String != "project_inactive" {
+					test.Errorf("refused start not settled: status=%s error=%s reason=%s", task.Status, task.Error.String, task.FailureReason.String)
+				}
+			})
+		}
+	}
+}
+
+func TestInactiveProjectAgentBatchDelete(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	actorTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "status": "running"})
+	for _, status := range []string{"paused", "cancelled", "completed"} {
+		test.Run(status, func(test *testing.T) {
+			projectID := inactiveProject(test, status)
+			activeIssue := fixture.issueFor(test, "", "active batch peer")
+			issueID := fixture.issueFor(test, "", "inactive batch delete")
+			dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
+			request := newRequest(http.MethodPost, "/api/issues/batch-delete", map[string]any{"issue_ids": []string{activeIssue, issueID}})
+			response := testutil.Call(test, testHandler.BatchDeleteIssues, asAgentActor(request, fixture.agentID, actorTask))
+			response.Want(http.StatusForbidden)
+			if response.Map()["reason_code"] != "project_inactive" {
+				test.Errorf("batch delete refusal lacks project_inactive: %s", response.Text())
+			}
+			if count := dbfx.Count(test, "SELECT count(*) FROM issue WHERE id IN ($1,$2)", activeIssue, issueID); count != 2 {
+				test.Errorf("refused batch deleted issues: %d remain", count)
+			}
+		})
+	}
+}
+
+func TestInactiveProjectStaleStartCannotCancel(test *testing.T) {
+	taskID, runtimeID, generation := startClaimFixture(test, "dispatched")
+	projectID := inactiveProject(test, "paused")
+	dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=(SELECT issue_id FROM agent_task_queue WHERE id=$1)", taskID, projectID)
+	testutil.Call(test, testHandler.StartTask, startClaimRequest(taskID, runtimeID, generation.Add(-time.Microsecond))).Want(http.StatusConflict)
+	task, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if task.Status != "dispatched" || task.Error.Valid {
+		test.Errorf("stale start mutated another claim: status=%s error=%s", task.Status, task.Error.String)
+	}
+}
+
+func TestInactiveProjectCloseSerializesMoveOut(test *testing.T) {
+	for _, destination := range []string{"project", "none"} {
+		test.Run(destination, func(test *testing.T) {
+			source := inactiveProject(test, "in_progress")
+			target := ""
+			var projectValue any
+			if destination == "project" {
+				target = inactiveProject(test, "in_progress")
+				projectValue = target
+			}
+			issueID := dbfx.Issue(test, "move out during project close", testutil.Cols{"project_id": source})
+			response := raceAgainst(test, func(tx pgx.Tx) {
+				if _, err := tx.Exec(context.Background(), "SELECT id FROM project WHERE id=$1 FOR UPDATE", source); err != nil {
+					test.Fatal(err)
+				}
+			}, func() *testutil.Response {
+				return testutil.Call(test, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID,
+					map[string]any{"project_id": projectValue, "suppress_run": true}), "id", issueID))
+			})
+			response.Want(http.StatusOK)
+			if got := issueProject(test, issueID); got != target {
+				test.Errorf("project = %q, want %q", got, target)
 			}
 		})
 	}

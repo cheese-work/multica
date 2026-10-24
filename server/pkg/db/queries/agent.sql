@@ -1015,6 +1015,11 @@ WHERE id = $1 AND runtime_id = $2 AND dispatched_at = $3
   AND status IN ('dispatched', 'waiting_local_directory', 'running')
 FOR UPDATE;
 
+-- name: LockAgentTaskLegacyStart :one
+SELECT * FROM agent_task_queue
+WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
+FOR UPDATE;
+
 -- name: MarkAgentTaskWaitingLocalDirectory :one
 -- Transitions a freshly-dispatched task into 'waiting_local_directory' while
 -- the daemon waits for another in-flight task to release the path lock on a
