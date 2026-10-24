@@ -17,6 +17,15 @@ import enIssues from "../../locales/en/issues.json";
 
 const setActiveSession = vi.fn();
 const archiveMutate = vi.fn();
+const mockPresenceByAgent = new Map<string, { availability: string }>();
+const mockPendingTasks = {
+  tasks: [] as Array<{
+    task_id: string;
+    status: string;
+    chat_session_id: string;
+    created_at?: string;
+  }>,
+};
 
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: ({ actorId }: { actorId: string }) => (
@@ -29,7 +38,7 @@ vi.mock("@multica/core/hooks", () => ({
 }));
 
 vi.mock("@multica/core/agents", () => ({
-  useWorkspacePresenceMap: () => ({ byAgent: new Map() }),
+  useWorkspacePresenceMap: () => ({ byAgent: mockPresenceByAgent }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -51,12 +60,13 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: () => ({ data: { tasks: [] } }),
+    useQuery: () => ({ data: { tasks: mockPendingTasks.tasks } }),
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });
 
 import { ChatThreadList } from "./chat-thread-list";
+import { pickStageKeys } from "./task-status-pill";
 
 const TEST_RESOURCES = { en: { chat: enChat, issues: enIssues } };
 
@@ -299,5 +309,75 @@ describe("ChatThreadList row keyboard semantics", () => {
     );
 
     expect(onSelectSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatThreadList shared DM run-state labels and elapsed time (CHE-1938)", () => {
+  beforeEach(() => {
+    mockPresenceByAgent.clear();
+    mockPendingTasks.tasks = [];
+    vi.useRealTimers();
+  });
+
+  const cases = [
+    { status: "queued", availability: "online" as const },
+    { status: "dispatched", availability: "online" as const },
+    { status: "deferred", availability: "online" as const },
+    { status: "waiting_local_directory", availability: "online" as const },
+    { status: "running", availability: "online" as const },
+    { status: "queued", availability: "offline" as const },
+  ] as const;
+
+  for (const { status, availability } of cases) {
+    it(`renders the same stage label as pickStageKeys for status=${status} availability=${availability}`, () => {
+      mockPresenceByAgent.set("agent-1", { availability });
+      mockPendingTasks.tasks = [
+        { task_id: "t-1", status, chat_session_id: "s1" },
+      ];
+      const expectedStageKey = pickStageKeys(status, [], availability).stageKey;
+      const expectedLabel = enChat.status_pill.stages[expectedStageKey];
+
+      const { container } = render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <ChatThreadList
+            sessions={[sessions[0]!]}
+            agents={[agent]}
+            activeSessionId={null}
+            onSelectSession={vi.fn()}
+            onArchive={vi.fn()}
+          />
+        </I18nProvider>,
+      );
+
+      expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+      expect(screen.queryByText(enChat.list.typing)).not.toBeInTheDocument();
+
+      const spinners = container.querySelectorAll(".animate-spin");
+      if (status === "running") {
+        expect(spinners).toHaveLength(1);
+      } else {
+        expect(spinners).toHaveLength(0);
+      }
+    });
+  }
+
+  it("shows 'Queued 18m' in the list for a queued task created 18 minutes ago", () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-10-21T09:18:00Z");
+    vi.setSystemTime(now);
+    mockPresenceByAgent.set("agent-1", { availability: "online" });
+    mockPendingTasks.tasks = [
+      {
+        task_id: "t-queued-18m",
+        status: "queued",
+        chat_session_id: "s1",
+        created_at: "2026-10-21T09:00:00Z",
+      },
+    ];
+
+    renderList(null, { renderedSessions: [sessions[0]!] });
+
+    expect(screen.getByText("Queued 18m")).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

@@ -1,0 +1,19 @@
+# Shared DM run-state labels and queued elapsed time in the DM conversation list
+# (CHE-1938, implementation CHE-1940). Aligns the list row subtitle with the
+# open DM's TaskStatusPill stage resolution (pickStageKeys + formatElapsedSecs)
+# and restricts the animated spinner to running tasks.
+issue: CHE-1938
+design: waived   # bug-fix parity with TaskStatusPill (CHE-1938 description)
+pages:
+  - id: chat-thread-list-queued
+    url: /<workspace-slug>/chat
+    keep:   []
+    change:
+      - chat-thread-row-status: "shows shared stage label from pickStageKeys plus elapsed time for queued tasks ('Queued 18m') with a static clock icon instead of animated 'Typing…'"
+    remove: []
+  - id: chat-thread-list-running
+    url: /<workspace-slug>/chat
+    keep:   []
+    change:
+      - chat-thread-row-status: "shows neutral running stage label from pickStageKeys ('Thinking') with the animated spinner instead of 'Typing…'"
+    remove: []
