@@ -1332,7 +1332,7 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 
@@ -1523,7 +1523,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 }
 
 func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
-	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	agent, err := queries.GetAgent(ctx, agentID)
@@ -1669,6 +1669,19 @@ func (s *TaskService) EnqueueQuickCreateTaskWithSourceContext(ctx context.Contex
 }
 
 func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, capture *SourceContextCapture) (db.AgentTaskQueue, error) {
+	if err := RequireActiveIssueProject(ctx, s.Queries, parentIssueID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if !projectID.Valid && parentIssueID.Valid {
+		parent, err := s.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: parentIssueID, WorkspaceID: workspaceID})
+		if err != nil {
+			return db.AgentTaskQueue{}, err
+		}
+		projectID = parent.ProjectID
+	}
+	if err := RequireActiveProject(ctx, s.Queries, workspaceID, projectID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
@@ -1831,6 +1844,9 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	quickCreate, ok := s.parseQuickCreateContext(parent)
 	if !ok || quickCreate.SourceContextID == "" || quickCreate.RequesterID != util.UUIDToString(requesterID) {
 		return nil, ErrSourceContextRetryUnavailable
+	}
+	if err := requireActiveTaskProject(ctx, s.Queries, parent); err != nil {
+		return nil, err
 	}
 	contextID, err := util.ParseUUID(quickCreate.SourceContextID)
 	if err != nil {
@@ -4623,6 +4639,13 @@ func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	candidate, err := qtx.GetAgentTask(ctx, claim.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireActiveTaskProject(ctx, qtx, candidate); err != nil {
+		return nil, err
+	}
 	task, err := qtx.LockAgentTaskStartClaim(ctx, claim)
 	if err != nil {
 		return nil, fmt.Errorf("lock task start claim: %w", err)
@@ -5382,6 +5405,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// opens its own transaction and cannot run inside this one).
 	var retryProviderHoldNotice string
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if wantRetry {
+			parent, err := qtx.GetAgentTask(ctx, taskID)
+			if err != nil {
+				return err
+			}
+			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
+				wantRetry = false
+			}
+		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
 		}
@@ -5509,7 +5541,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueNotInTriage(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -6096,8 +6128,14 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
-	if err := guardIssueNotInTriage(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
-		if errors.Is(err, ErrIssueInTriage) {
+	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
+		if IsProjectInactive(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
+		if errors.Is(err, ErrIssueInTriage) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue is in triage",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -6276,6 +6314,9 @@ var ErrRerunProviderHeld = errors.New("rerun: target agent's model provider is o
 // rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
 // from trusted internal callers (tests, backfill) that have already gated.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	if err := RequireActiveIssueProject(ctx, s.Queries, issueID); err != nil {
+		return nil, err
+	}
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("load issue: %w", err)

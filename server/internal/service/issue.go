@@ -256,6 +256,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if p.CreatorType == "agent" {
+		if _, err := qtx.LockWorkspaceForChatSessionCreate(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 
 	properties, err := validateIssueCreateProperties(ctx, tx, qtx, p.WorkspaceID, p.Properties)
 	if err != nil {
@@ -294,6 +299,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// (MUL-6243, MUL-7420)
 	if projectID.Valid || p.WorkflowID.Valid || !issuestatus.IsBuiltIn(p.Status) {
 		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
+	if p.CreatorType == "agent" {
+		if err := RequireActiveProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}

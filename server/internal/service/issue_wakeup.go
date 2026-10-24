@@ -827,7 +827,11 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
+		reason := err.Error()
+		if IsProjectInactive(err) {
+			reason = ErrProjectInactive.Error()
+		}
+		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
 		cancel()
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
@@ -966,6 +970,9 @@ func (s *IssueWakeupService) systemRuleRunWaiting(ctx context.Context, q *db.Que
 }
 
 func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) error {
+	if held, err := s.settleInactiveProject(ctx, prev); held || err != nil {
+		return err
+	}
 	// A rule gets at most two seconds including credentials and SQL. Lock waits
 	// below are shorter: even 100 contended rules consume only ~5s of the 45s
 	// batch budget, leaving time to dispatch unrelated issues.
@@ -1352,7 +1359,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed); err != nil {
 			return err
 		}
 		headSHA := ""

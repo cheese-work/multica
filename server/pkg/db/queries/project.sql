@@ -9,6 +9,37 @@ ORDER BY created_at DESC;
 SELECT * FROM project
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: RequireActiveProject :one
+SELECT lock_active_project(sqlc.narg(project_id)::uuid, sqlc.arg(workspace_id)::uuid)::boolean AS allowed;
+
+-- name: GetIssueProjectStatus :one
+SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
+WHERE i.id=$1;
+
+-- name: LockIssueProjectStatus :one
+SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
+WHERE i.id=$1 FOR SHARE OF p;
+
+-- name: ListProjectWakeups :many
+SELECT w.* FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+WHERE i.project_id=$1 AND i.workspace_id=$2
+ORDER BY w.id FOR UPDATE OF w;
+
+-- name: BumpProjectWakeupRevisions :exec
+UPDATE issue_wakeup w SET revision=revision+1
+FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
+AND i.project_id=$1 AND i.workspace_id=$2;
+
+-- name: CancelProjectAgentTasks :many
+UPDATE agent_task_queue t
+SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
+    cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL
+WHERE t.status IN ('queued','dispatched','running','waiting_local_directory','deferred')
+AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=sqlc.arg(project_id)::uuid AND i.workspace_id=sqlc.arg(workspace_id)::uuid)
+ OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=sqlc.arg(project_id)::uuid AND a.workspace_id=sqlc.arg(workspace_id)::uuid))
+ OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=sqlc.arg(project_id)::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=sqlc.arg(workspace_id)::uuid)))
+RETURNING t.*;
+
 -- name: LockProjectForChatSessionCreate :one
 -- Conflicts with project deletion so a chat session cannot commit a soft
 -- project reference after the delete transaction has swept existing sessions.

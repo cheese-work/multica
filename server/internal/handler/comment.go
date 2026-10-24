@@ -2481,6 +2481,9 @@ func commentBlockedTargetOutcomes(targets []commentMentionTarget) []CommentTrigg
 // infrastructure error that stays an unclassified internal error rather than
 // leaking the raw message.
 func commentEnqueueFailureReason(err error) DispatchReasonCode {
+	if service.IsProjectInactive(err) {
+		return ReasonProjectInactive
+	}
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
@@ -2962,6 +2965,29 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
 	defer func() {
 		triggers, targets = filterCommentAuthorTriggers(triggers, targets, actorType, actorID)
+		if err := service.RequireActiveIssueProject(ctx, h.Queries, issue.ID); err != nil {
+			reason := ReasonInternalError
+			if service.IsProjectInactive(err) {
+				reason = ReasonProjectInactive
+			}
+			if len(targets) == 0 {
+				for _, trigger := range triggers {
+					target := commentMentionTarget{TargetType: "agent", TargetID: uuidToString(trigger.Agent.ID)}
+					if trigger.Squad != nil {
+						target.TargetType, target.TargetID = "squad", uuidToString(trigger.Squad.ID)
+					}
+					targets = append(targets, target)
+				}
+			}
+			triggers = nil
+			for index := range targets {
+				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
+					targets[index].ExecAgentID = ""
+					targets[index].Status = DispatchBlocked
+					targets[index].ReasonCode = reason
+				}
+			}
+		}
 	}()
 
 	// A persisted comment determines its thread; previews use the parent.
@@ -3683,6 +3709,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
+	if _, ok := h.loadIssueForUser(w, r, uuidToString(existing.IssueID)); !ok {
+		return
+	}
 	if bound, err := h.Queries.CommentHasTaskSupplement(r.Context(), db.CommentHasTaskSupplementParams{
 		CommentID: existing.ID, WorkspaceID: wsUUID,
 	}); err != nil {
@@ -4025,6 +4054,9 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 
 	if comment.DeletedAt.Valid {
 		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+	if !h.allowIssueProjectWrite(w, r, issue) {
 		return
 	}
 
@@ -4423,6 +4455,9 @@ func (h *Handler) loadCommentForActor(w http.ResponseWriter, r *http.Request) (d
 		return db.Comment{}, "", "", "", false
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if _, ok := h.loadIssueForUser(w, r, uuidToString(comment.IssueID)); !ok {
+		return db.Comment{}, "", "", "", false
+	}
 	return comment, workspaceID, actorType, actorID, true
 }
 
