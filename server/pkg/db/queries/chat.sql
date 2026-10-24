@@ -92,11 +92,12 @@ ORDER BY message.created_at ASC, message.id ASC;
 -- ids in source order and the (possibly link-rewritten) content and kind.
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
 )
 SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
        (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
-       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via
+       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
+       source.lineage_message_ids || source.id
 FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
@@ -662,7 +663,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via
+    channel_context_revision, id, sent_via, decision_answer_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -680,7 +681,8 @@ VALUES (
     sqlc.narg(channel_context_revision),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
-         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END
+         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
+    sqlc.narg(decision_answer_id)
 )
 RETURNING *;
 
@@ -1498,7 +1500,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized', 'opencode_clock_skew')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
@@ -1515,6 +1517,10 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%could not resolve authentication method%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
+      -- MUL-8188: a runtime that names its own transcript invalid (Kiro panics
+      -- with "invalid conversation history received" on every prompt) replays
+      -- the same failure on every resume. Mirrors taskfailure.UnresumableHistory.
+      AND NOT (COALESCE(error, '') ILIKE '%invalid conversation history%')
     )
   )
   -- MUL-5722, mirroring GetLastTaskSession: an overflowed resume records no

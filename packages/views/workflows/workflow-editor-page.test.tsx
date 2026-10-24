@@ -662,4 +662,3 @@ describe("workflow editor conflict with the mapping dialog open", () => {
     expect(apiMock.updateIssueWorkflow.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-01-b" });
   });
 });
-

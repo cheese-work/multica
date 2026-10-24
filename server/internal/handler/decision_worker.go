@@ -246,6 +246,9 @@ func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
 		worker.handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	worker.handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	if result.Answer.DisclaimedAt.Valid {
+		worker.handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	}
 }
 
 func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID, issueID pgtype.UUID) error {

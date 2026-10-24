@@ -105,7 +105,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
 type CreateDefaultIssueWorkflowParams struct {
@@ -133,6 +133,7 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.IsDefault,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -145,15 +146,16 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 }
 
 const createIssueWorkflow = `-- name: CreateIssueWorkflow :one
-INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps)
+INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id)
 VALUES (
     $1::uuid,
     $2::text,
     $3::text,
     $4::text,
-    $5::jsonb
+    $5::jsonb,
+    $6::uuid
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
 type CreateIssueWorkflowParams struct {
@@ -162,6 +164,7 @@ type CreateIssueWorkflowParams struct {
 	Description      string      `json:"description"`
 	InitialStatusKey string      `json:"initial_status_key"`
 	Steps            []byte      `json:"steps"`
+	OwnerID          pgtype.UUID `json:"owner_id"`
 }
 
 func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkflowParams) (IssueWorkflow, error) {
@@ -171,6 +174,7 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		arg.Description,
 		arg.InitialStatusKey,
 		arg.Steps,
+		arg.OwnerID,
 	)
 	var i IssueWorkflow
 	err := row.Scan(
@@ -183,6 +187,7 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsDefault,
+		&i.OwnerID,
 	)
 	return i, err
 }
@@ -218,7 +223,7 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 }
 
 const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
@@ -236,12 +241,13 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsDefault,
+		&i.OwnerID,
 	)
 	return i, err
 }
 
 const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
@@ -264,6 +270,7 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsDefault,
+		&i.OwnerID,
 	)
 	return i, err
 }
@@ -323,7 +330,7 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 
 const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
@@ -351,6 +358,7 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.IsDefault,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -802,7 +810,7 @@ UPDATE issue_workflow SET
     updated_at = now()
 WHERE id = $5::uuid
   AND workspace_id = $6::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
 type UpdateIssueWorkflowParams struct {
@@ -834,6 +842,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsDefault,
+		&i.OwnerID,
 	)
 	return i, err
 }

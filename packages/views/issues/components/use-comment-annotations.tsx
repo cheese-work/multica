@@ -356,7 +356,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
                   close(true);
                 }}><Trash2 /></Button>}
               <Button size="sm" disabled={!editing.note.trim()}
-                aria-label={confirmLabel} title={confirmLabel} aria-keyshortcuts="Enter"
+                aria-label={confirmLabel} aria-keyshortcuts="Enter"
                 onClick={confirmNote}>{confirmLabel}</Button>
             </div>
             </div> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"

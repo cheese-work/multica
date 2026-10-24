@@ -852,6 +852,79 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 	return items, nil
 }
 
+const listDecisionCards = `-- name: ListDecisionCards :many
+SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
+       answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
+       request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
+       issue.number AS issue_number, workspace.issue_prefix
+FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN issue ON issue.id = request.issue_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1
+  AND (answer.id = ANY($2::uuid[]) OR answer.chat_message_ids && $3::uuid[])
+ORDER BY answer.created_at, answer.id
+`
+
+type ListDecisionCardsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	AnswerIds   []pgtype.UUID `json:"answer_ids"`
+	MessageIds  []pgtype.UUID `json:"message_ids"`
+}
+
+type ListDecisionCardsRow struct {
+	AnswerID            pgtype.UUID        `json:"answer_id"`
+	ChatMessageIds      []pgtype.UUID      `json:"chat_message_ids"`
+	SourceChatSessionID pgtype.UUID        `json:"source_chat_session_id"`
+	IssueCommentID      pgtype.UUID        `json:"issue_comment_id"`
+	EffectiveAt         pgtype.Timestamptz `json:"effective_at"`
+	WokenAt             pgtype.Timestamptz `json:"woken_at"`
+	DisclaimedAt        pgtype.Timestamptz `json:"disclaimed_at"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	EscalationClass     string             `json:"escalation_class"`
+	HumanUserID         pgtype.UUID        `json:"human_user_id"`
+	AskingAgentID       pgtype.UUID        `json:"asking_agent_id"`
+	IssueNumber         int32              `json:"issue_number"`
+	IssuePrefix         string             `json:"issue_prefix"`
+}
+
+// One row per answer that a DM bubble was quoted into, or that a comment/
+// reference message names. Matches on the source messages (GIN index) and on
+// explicit answer ids so one call serves the issue timeline and the DM list.
+func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsParams) ([]ListDecisionCardsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionCards, arg.WorkspaceID, arg.AnswerIds, arg.MessageIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionCardsRow{}
+	for rows.Next() {
+		var i ListDecisionCardsRow
+		if err := rows.Scan(
+			&i.AnswerID,
+			&i.ChatMessageIds,
+			&i.SourceChatSessionID,
+			&i.IssueCommentID,
+			&i.EffectiveAt,
+			&i.WokenAt,
+			&i.DisclaimedAt,
+			&i.IssueID,
+			&i.EscalationClass,
+			&i.HumanUserID,
+			&i.AskingAgentID,
+			&i.IssueNumber,
+			&i.IssuePrefix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many
 SELECT target.decision_intent_id, target.human_user_id, target.consumed_at, target.consumed_by_request_id FROM decision_intent_target target
 JOIN decision_intent intent ON intent.id = target.decision_intent_id
