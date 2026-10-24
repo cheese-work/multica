@@ -5,6 +5,7 @@ import { MessageSquarePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
@@ -318,14 +319,14 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
             pendingMarkerFocus.current = null;
             markerFor(anchor.id)?.focus({ preventScroll: true });
           }}>
-          <Button variant="brandSubtle" size="icon-sm"
+          <IconButton variant="brandSubtle" size="icon-sm"
             aria-expanded={editingId === anchor.id}
-            aria-label={L.edit(index + 1, annotations[index]?.note ?? "")}
+            label={L.edit(index + 1, annotations[index]?.note ?? "")}
             data-testid="annotation-marker" data-annotation-marker={anchor.id} data-active={activeId === anchor.id || editingId === anchor.id}
             className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand data-[active=true]:ring-2 data-[active=true]:ring-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             onMouseEnter={() => setActiveId(anchor.id)} onMouseLeave={() => setActiveId((id) => id === anchor.id ? null : id)}
             onFocus={() => setActiveId(anchor.id)} onBlur={() => setActiveId((id) => id === anchor.id ? null : id)}
-            onClick={() => editAnnotation(anchor.id)}>{index + 1}</Button>
+            onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
         </CommentSelectionBubble>;
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
@@ -348,13 +349,12 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
               }
             }} />
             <div className="flex items-center justify-end gap-1 px-1 pb-1">
-              {editingExisting && <Button variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
-                aria-label={L.remove(editingNumber)}
-                title={L.remove(editingNumber)}
+              {editingExisting && <IconButton variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
+                label={L.remove(editingNumber)}
                 onClick={() => {
                   useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
                   close(true);
-                }}><Trash2 /></Button>}
+                }}><Trash2 /></IconButton>}
               <Button size="sm" disabled={!editing.note.trim()}
                 aria-label={confirmLabel} aria-keyshortcuts="Enter"
                 onClick={confirmNote}>{confirmLabel}</Button>
