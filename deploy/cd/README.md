@@ -280,6 +280,7 @@ bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
 python3 deploy/cd/test-candidate-preflight.py
+python3 deploy/cd/test-deploy-approval.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -569,10 +570,43 @@ result leaves `eligible=false`; `prepare-release-candidate` and the automatic
 admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
 
-An eligible candidate proceeds to the protected preparation job. Preparation
-still records a fresh check snapshot after approval; preflight evidence does
-not replace final admission. Manual dispatch keeps its existing evidence and
-admission requirements and bypasses only the automatic eligibility filter.
+An eligible candidate waits at `approve-c00`, the only job that asks for
+approval (CHE-2027): one prompt per version, on both the automatic and manual
+paths. It runs in the existing `c00-production` environment (required reviewer,
+wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
+`cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
+replaces an older run still waiting for approval. Right after approval the job
+re-checks the candidate against the `main` head (`require-current.sh`); a
+superseded run skips `prepare-release-candidate`, `admission` and `deploy`
+instead of failing. The manual path is exempt: it names an explicit manifest
+and may deploy a non-head ref.
+
+`prepare-release-candidate` and `deploy` use the C00 secrets from the
+`c00-runtime` environment, which has no reviewers or wait timer, so they do not
+ask again. `c00-production` keeps its protection on purpose: runs started by
+the previous workflow, and reruns of their jobs, still use that workflow and
+therefore still stop at it. Secrets are copied to `c00-runtime` and must be
+rotated in both environments until `c00-production` secrets are retired. A
+missing `c00-runtime` environment fails closed: GitHub creates it empty, the
+SSH step has no key and stops. They share the
+job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
+C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
+default queue (`single`) keeps one pending job and cancels it for any newcomer,
+whatever its version, so a stale stage joining late would evict the newest
+candidate. A freshness check made before the join cannot prevent that, because
+check and join are not atomic. `max` holds up to 100 pending jobs and evicts
+none; if the queue is full GitHub cancels the newcomer. A stale stage that
+reaches its turn is skipped: `approve-c00` and `deploy-gate` (after `admission`)
+skip the stages that follow them before they queue, and `deploy` checks again
+once it has the lock. A stale `prepare-release-candidate` that does run is
+read-only and stops at `deploy-gate`. `actionlint` does not know the `queue` key
+yet and reports it; GitHub validates it on the first run. There is no workflow-level lock, since a run waiting for approval would hold it and
+block every newer version.
+
+Preparation still records a fresh check snapshot after approval; preflight
+evidence does not replace final admission. Manual dispatch keeps its existing
+evidence and admission requirements and bypasses only the automatic
+eligibility filter.
 
 The `deploy` job does not check out the repository on C00 — it `scp`'s an
 explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
@@ -591,8 +625,8 @@ which `admission.mjs` refuses. A deployable `release-candidate` additionally
 binds the baseline tuple of the host being deployed to — the fresh Hermes
 configuration digest and migration snapshot described above — which only a
 stage with C00 access can read. `prepare-release-candidate` runs on the
-C00-reachable runner under the same `c00-production` environment as the
-deploy job, reads that baseline over SSH with `capture-tuple.sh`, re-issues
+C00-reachable runner under the same `c00-production` secrets environment as the
+deploy job, after the single `approve-c00` approval, reads that baseline over SSH with `capture-tuple.sh`, re-issues
 D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and
@@ -686,7 +720,8 @@ provable rather than asserted:
    anything, so two `deploy.sh` invocations (e.g. a manually re-triggered
    workflow run) cannot interleave their one-shot migration steps or
    container restarts against each other. `cd-deploy.yml`'s own
-   `concurrency: group: cd-deploy-c00` is the first line of defense for
+   the job-level `concurrency: group: cd-deploy-c00` (on
+   `prepare-release-candidate` and `deploy`) is the first line of defense for
    normal workflow dispatches; the lock is the second, host-local one for
    anyone driving `deploy.sh` by hand.
 
@@ -754,7 +789,7 @@ read was denied to every credential available on C00 — the org/App
 private container package (only repositories can be added to that list).
 The fix is a dedicated registry credential rather than any App/org
 permission change: a `read:packages`-only classic PAT, stored as the
-`GHCR_PULL_TOKEN` environment secret on `c00-production` (scoped there, not
+`GHCR_PULL_TOKEN` environment secret on `c00-runtime` (and still on `c00-production` for the previous workflow; scoped there, not
 as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
 `deploy.sh` logs in to `ghcr.io` with it immediately before the pull step
 and logs out unconditionally on exit — success, rollback, or an early
