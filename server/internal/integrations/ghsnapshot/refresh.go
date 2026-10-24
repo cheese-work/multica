@@ -513,6 +513,7 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 			Status:          c.Status,
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
+			ExternalID:      textOrNull(c.ExternalID),
 			IsStatusContext: c.IsStatusContext,
 		}); err != nil {
 			return false, err

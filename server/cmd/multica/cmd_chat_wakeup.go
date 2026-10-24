@@ -31,7 +31,14 @@ var chatWakeupCreateCmd = &cobra.Command{
 	Long: `Schedule a wakeup. --at takes an RFC3339 time, or HH:MM for the next
 occurrence of that wall-clock time in --timezone (default: this host's zone).
 --after takes a duration such as 20m. Write what to do in --instruction-file;
-you will read it back when the wakeup fires.`,
+you will read it back when the wakeup fires.
+
+With --until-issue the wakeup also waits for a fact, and --at/--after become the
+deadline: the turn starts when the fact holds or at the deadline, whichever comes
+first. Pick one fact: --until-status <status key>, --until-pr checks|merged (the
+issue's linked pull request; checks needs a new finished result), or
+--event comment.created --filter-actor-id <id> [--filter-actor-type member|agent]
+for a new comment on the issue. --until-issue takes a UUID or an identifier.`,
 	Args: cobra.NoArgs,
 	RunE: runChatWakeupCreate,
 }
@@ -54,6 +61,12 @@ func init() {
 	chatWakeupCreateCmd.Flags().String("at", "", "RFC3339 time, or HH:MM (next occurrence in --timezone)")
 	chatWakeupCreateCmd.Flags().String("after", "", "Delay, e.g. 20m")
 	chatWakeupCreateCmd.Flags().String("timezone", "", "IANA zone for HH:MM, e.g. Asia/Ho_Chi_Minh (default: this host's zone)")
+	chatWakeupCreateCmd.Flags().String("until-issue", "", "Issue to watch (UUID or identifier); --at/--after become the deadline")
+	chatWakeupCreateCmd.Flags().String("until-status", "", "Start when the watched issue has this status key")
+	chatWakeupCreateCmd.Flags().String("until-pr", "", "Start on the watched issue's pull request: checks or merged")
+	chatWakeupCreateCmd.Flags().String("event", "", "Start on an event on the watched issue: comment.created")
+	chatWakeupCreateCmd.Flags().String("filter-actor-id", "", "With --event comment.created: the commenter's ID")
+	chatWakeupCreateCmd.Flags().String("filter-actor-type", "member", "With --event comment.created: member or agent")
 	chatWakeupCreateCmd.Flags().String("instruction", "", "What to do when the wakeup fires")
 	chatWakeupCreateCmd.Flags().Bool("instruction-stdin", false, "Read the instruction from stdin")
 	chatWakeupCreateCmd.Flags().String("instruction-file", "", "UTF-8 file with the instruction")
@@ -80,6 +93,51 @@ func parseChatWakeupAt(value string, now time.Time, loc *time.Location) (time.Ti
 		t = t.AddDate(0, 0, 1)
 	}
 	return t, nil
+}
+
+// chatWakeupConditionFromFlags builds the API condition, or nil without
+// --until-issue. It refuses a predicate without an issue and more or fewer than
+// one predicate, before any request.
+func chatWakeupConditionFromFlags(cmd *cobra.Command) (map[string]any, error) {
+	issue, _ := cmd.Flags().GetString("until-issue")
+	status, _ := cmd.Flags().GetString("until-status")
+	pr, _ := cmd.Flags().GetString("until-pr")
+	event, _ := cmd.Flags().GetString("event")
+	actorID, _ := cmd.Flags().GetString("filter-actor-id")
+	actorType, _ := cmd.Flags().GetString("filter-actor-type")
+	predicates := map[string]any{}
+	if status != "" {
+		predicates["status"] = status
+	}
+	switch pr {
+	case "":
+	case "checks":
+		predicates["pr"] = "checks_finished"
+	case "merged":
+		predicates["pr"] = "merged"
+	default:
+		return nil, fmt.Errorf("--until-pr must be checks or merged")
+	}
+	switch {
+	case event == "" && actorID == "":
+	case event != "comment.created":
+		return nil, fmt.Errorf("--event must be comment.created, and it needs --filter-actor-id")
+	case actorID == "":
+		return nil, fmt.Errorf("--event comment.created needs --filter-actor-id")
+	default:
+		predicates["comment_by"] = map[string]any{"type": actorType, "id": actorID}
+	}
+	if issue == "" {
+		if len(predicates) > 0 {
+			return nil, fmt.Errorf("--until-status, --until-pr and --event need --until-issue")
+		}
+		return nil, nil
+	}
+	if len(predicates) != 1 {
+		return nil, fmt.Errorf("--until-issue needs exactly one of --until-status, --until-pr or --event comment.created")
+	}
+	predicates["issue"] = issue
+	return predicates, nil
 }
 
 func runChatWakeupCreate(cmd *cobra.Command, _ []string) error {
@@ -109,6 +167,13 @@ func runChatWakeupCreate(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("--after requires a positive whole-second duration")
 		}
 		body["after_seconds"] = int64(d / time.Second)
+	}
+	condition, err := chatWakeupConditionFromFlags(cmd)
+	if err != nil {
+		return err
+	}
+	if condition != nil {
+		body["condition"] = condition
 	}
 	instruction, _, err := resolveTextFlag(cmd, "instruction")
 	if err != nil {
