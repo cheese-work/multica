@@ -33,6 +33,8 @@ multica chat wakeup cancel <id>
 
 With `--until-issue <id|CHE-n>` the wakeup also waits for a fact, and `--at`/`--after` become the deadline. Pick one: `--until-status <status key>`, `--until-pr checks|merged` (the issue's linked pull request; `checks` needs a new finished result), or `--event comment.created --filter-actor-id <id> [--filter-actor-type member|agent]` (a new comment after the wakeup was set). The turn starts when the fact holds or at the deadline, whichever comes first, and its hidden input says which. Facts are checked on the 30 s tick.
 
+The DM's creator reads and cancels pending wakeups with `GET /api/chat/sessions/{id}/wakeups` and `DELETE /api/chat/sessions/{id}/wakeups/{wakeupId}`. Lists, cancels and the 3-wakeup cap cover the DM and the DMs it was continued from, so a wakeup set before a continuation is still visible and cancellable in the new DM. Agents get the same lineage view from `multica chat wakeup list|cancel`.
+
 The scheduler (30 s tick) starts an ordinary DM turn in the same DM, with its history. The instruction rides in a hidden `wakeup_trigger` message that members never see, and the reply raises the usual unread badge. The turn queues behind a running turn, waits while the DM compacts, and follows a continuation to the new DM. A channel-bound, archived or deleted DM, or an archived agent, expires the wakeup.
 
 ### Saved compact prompt
