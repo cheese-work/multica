@@ -92,11 +92,12 @@ ORDER BY message.created_at ASC, message.id ASC;
 -- ids in source order and the (possibly link-rewritten) content and kind.
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
 )
 SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
        (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
-       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via
+       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
+       source.lineage_message_ids || source.id
 FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
@@ -662,7 +663,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via
+    channel_context_revision, id, sent_via, decision_answer_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -680,7 +681,8 @@ VALUES (
     sqlc.narg(channel_context_revision),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
-         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END
+         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
+    sqlc.narg(decision_answer_id)
 )
 RETURNING *;
 
