@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupportedLocale } from "@multica/core/i18n";
@@ -11,13 +11,15 @@ import { InteractiveLoginBanner } from "./interactive-login-banner";
 
 const mocks = vi.hoisted(() => ({
   logout: vi.fn(),
+  endServerSession: vi.fn(),
   clearSession: vi.fn(),
   push: vi.fn(),
 }));
 
 vi.mock("@multica/core/auth", () => ({
-  useAuthStore: (selector: (state: { logout: () => void }) => unknown) =>
-    selector({ logout: mocks.logout }),
+  useAuthStore: (
+    selector: (state: { logout: () => void; endServerSession: () => Promise<void> }) => unknown,
+  ) => selector({ logout: mocks.logout, endServerSession: mocks.endServerSession }),
 }));
 vi.mock("@multica/core/platform", () => ({
   clearClientSessionData: mocks.clearSession,
@@ -49,7 +51,10 @@ function renderBanner(locale: SupportedLocale = "en") {
 }
 
 describe("InteractiveLoginBanner", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.endServerSession.mockResolvedValue(undefined);
+  });
 
   it.each([
     ["en", "Sign in"],
@@ -57,7 +62,7 @@ describe("InteractiveLoginBanner", () => {
     ["ja", "ログイン"],
     ["ko", "로그인"],
     ["fr", "Se connecter"],
-  ] as const)("starts explicit re-login only after the %s sign-in action", (locale, label) => {
+  ] as const)("starts explicit re-login only after the %s sign-in action", async (locale, label) => {
     const queryClient = renderBanner(locale);
     const button = screen.getByRole("button", { name: label });
     expect(screen.getByRole("alert")).toContainElement(button);
@@ -67,9 +72,10 @@ describe("InteractiveLoginBanner", () => {
 
     fireEvent.click(button);
 
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledExactlyOnceWith("/login"));
+    expect(mocks.endServerSession).toHaveBeenCalledTimes(1);
     expect(mocks.clearSession).toHaveBeenCalledExactlyOnceWith(queryClient);
     expect(mocks.logout).toHaveBeenCalledTimes(1);
-    expect(mocks.push).toHaveBeenCalledExactlyOnceWith("/login");
   });
 
   it("supports explicit keyboard sign-in without automatic logout", async () => {
@@ -81,7 +87,7 @@ describe("InteractiveLoginBanner", () => {
 
     await user.keyboard("{Enter}");
 
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledExactlyOnceWith("/login"));
     expect(mocks.logout).toHaveBeenCalledTimes(1);
-    expect(mocks.push).toHaveBeenCalledExactlyOnceWith("/login");
   });
 });

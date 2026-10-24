@@ -43,6 +43,19 @@ export interface AuthState {
   verifyCode: (email: string, code: string) => Promise<User>;
   loginWithGoogle: (code: string, redirectUri: string) => Promise<User>;
   loginWithToken: (token: string) => Promise<User>;
+  /**
+   * Cookie mode only: ask the server to end the session. Resolves once it has,
+   * rejects when it could not (unreachable, refused, timed out), in which case
+   * the caller must leave the session as it is and let the user retry. Token
+   * mode has no server-held session and resolves at once. Concurrent calls share
+   * one request.
+   */
+  endServerSession: () => Promise<void>;
+  /**
+   * Local teardown: credentials, workspace singleton, analytics, auth state.
+   * Does not wait for or report on the server. A shell that logs a user out
+   * calls `endServerSession` first and stops if it rejects.
+   */
   logout: () => void;
   sessionExpired: () => void;
   setUser: (user: User) => void;
@@ -52,6 +65,11 @@ export interface AuthState {
 export function createAuthStore(options: AuthStoreOptions) {
   const { api, storage, onLogin, onLogout, onSessionExpired, cookieAuth } =
     options;
+
+  // The server end of a cookie-mode logout, shared by concurrent callers, and
+  // whether it already succeeded for the teardown that follows.
+  let endingServerSession: Promise<void> | null = null;
+  let serverSessionEnded = false;
 
   return create<AuthState>((set, get) => ({
     user: null,
@@ -107,11 +125,27 @@ export function createAuthStore(options: AuthStoreOptions) {
       return user;
     },
 
+    endServerSession: () => {
+      if (!cookieAuth) return Promise.resolve();
+      endingServerSession ??= api
+        .logout()
+        .then(() => {
+          serverSessionEnded = true;
+        })
+        .finally(() => {
+          endingServerSession = null;
+        });
+      return endingServerSession;
+    },
+
     logout: () => {
-      if (cookieAuth) {
-        // Clear server-side HttpOnly cookie.
+      // A caller that did not confirm the server end first still gets the old
+      // best-effort request. The shared hook always confirms, so this is the
+      // fallback for any other caller.
+      if (cookieAuth && !serverSessionEnded) {
         api.logout().catch(() => {});
       }
+      serverSessionEnded = false;
       storage.removeItem("multica_token");
       api.setToken(null);
       setCurrentWorkspace(null, null);
