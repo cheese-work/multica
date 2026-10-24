@@ -141,17 +141,23 @@ if [ "\$1" = "login" ]; then
   # ghcr_login (CHE-549), mirroring test-deploy.sh's own mock exactly so
   # both suites exercise the identical login/logout contract.
   password="\$(cat)"
+  effective_docker_config="\${DOCKER_CONFIG:-\$HOME/.docker}"
   if [ -f "\$control_dir/fail-ghcr-login" ]; then
-    printf 'login %s <rejected>\n' "\$2" >>"\$control_dir/registry-auth.log"
+    printf 'login %s <rejected> docker_config=%s\n' "\$2" "\$effective_docker_config" >>"\$control_dir/registry-auth.log"
     echo "mock docker: forced failure (fail-ghcr-login)" >&2
     exit 1
   fi
-  printf 'login %s password=%s\n' "\$2" "\$password" >>"\$control_dir/registry-auth.log"
+  mkdir -p "\$effective_docker_config"
+  mode="\$(stat -c '%a' "\$effective_docker_config" 2>/dev/null || echo unknown)"
+  printf '{"auths":{"%s":{}}}\n' "\$2" >"\$effective_docker_config/config.json"
+  printf 'login %s password=%s docker_config=%s mode=%s\n' "\$2" "\$password" "\$effective_docker_config" "\$mode" >>"\$control_dir/registry-auth.log"
   exit 0
 fi
 
 if [ "\$1" = "logout" ]; then
-  printf 'logout %s\n' "\$2" >>"\$control_dir/registry-auth.log"
+  effective_docker_config="\${DOCKER_CONFIG:-\$HOME/.docker}"
+  rm -f "\$effective_docker_config/config.json"
+  printf 'logout %s docker_config=%s\n' "\$2" "\$effective_docker_config" >>"\$control_dir/registry-auth.log"
   exit 0
 fi
 
@@ -189,6 +195,17 @@ if [ "\$1" = "compose" ]; then
           exit 1
         fi
       fi
+      if [ -f "\$control_dir/pause-on-pull" ]; then
+        printf '%s\n' "\${DOCKER_CONFIG:-}" >"\$control_dir/pull-ready"
+        for _ in \$(seq 1 100); do
+          [ -f "\$control_dir/release-pull" ] && break
+          /bin/sleep 0.05
+        done
+      fi
+      if [ -n "\${GHCR_PULL_TOKEN:-}" ] && { [ -z "\${DOCKER_CONFIG:-}" ] || [ ! -f "\${DOCKER_CONFIG}/config.json" ]; }; then
+        echo "mock docker: active DOCKER_CONFIG \${DOCKER_CONFIG:-<unset>}/config.json missing during pull" >&2
+        exit 1
+      fi
       exit 0
       ;;
     run)
@@ -200,8 +217,10 @@ if [ "\$1" = "compose" ]; then
           down) direction="down" ;;
         esac
       done
-      printf 'migrate %s image=%s tag=%s service=%s\n' \\
+      printf 'migrate %s image=%s tag=%s service=%s docker_config=%s ghcr_token=%s docker_config_exists=%s\n' \\
         "\$direction" "\${MULTICA_BACKEND_IMAGE:-}" "\${MULTICA_IMAGE_TAG:-}" "\${*: -2:1}" \\
+        "\${DOCKER_CONFIG:-}" "\${GHCR_PULL_TOKEN:-}" \\
+        "\$(if [ -n "\${DOCKER_CONFIG:-}" ] && [ -e "\${DOCKER_CONFIG}" ]; then echo yes; else echo no; fi)" \\
         >>"\$control_dir/migrate-calls.log"
       fail_if_flagged fail-migrate
       # Genuinely advance the mock ledger on a real "up" run, so the
@@ -965,6 +984,243 @@ if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$sta
   echo "scenario ghcr-login-fails: docker compose pull was invoked despite the ghcr.io login failing" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Scenario 13b (CHE-1924 B1): mktemp / chmod failure inside cutover.sh's
+# `if ! ghcr_login` must also fail closed before `docker login` or any image
+# pull, keep blue active, and leave the shared ~/.docker/config.json untouched.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-login-mktemp-fails)"
+mkdir -p "$state_dir/control" "$state_dir/home/.docker"
+printf '{"auths":{"existing.registry.internal":{}}}\n' >"$state_dir/home/.docker/config.json"
+set +e
+output="$(HOME="$state_dir/home" RUNNER_TEMP="$state_dir/nonexistent-runner-temp" GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" ghcr-login-mktemp-fails
+expect_contains "$output" "ghcr.io login failed" ghcr-login-mktemp-fails
+expect_contains "$output" "blue remains active" ghcr-login-mktemp-fails
+expect_not_contains "$output" "logging in to ghcr.io" ghcr-login-mktemp-fails
+if [ -f "$state_dir/control/registry-auth.log" ] && grep -q "^login " "$state_dir/control/registry-auth.log"; then
+  echo "scenario ghcr-login-mktemp-fails: docker login was invoked despite mktemp failing" >&2
+  exit 1
+fi
+expect_contains "$(cat "$state_dir/home/.docker/config.json")" "existing.registry.internal" ghcr-login-mktemp-fails
+expect_not_contains "$(cat "$state_dir/home/.docker/config.json")" "ghcr.io" ghcr-login-mktemp-fails
+
+# ---------------------------------------------------------------------------
+# Scenario 13c (CHE-1924 Option B): cutover.sh logs out of ghcr.io and removes
+# its temporary DOCKER_CONFIG directory immediately after verify_pulled_digest
+# (before pre-drain checks, incumbent drain, quiescence final-gate, migration,
+# candidate start, health checks, and router switch), unsetting DOCKER_CONFIG
+# and GHCR_PULL_TOKEN, and sweeps any pre-existing stale multica-docker-config.*
+# directory in tmp_base before allocating its own.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir ghcr-logout-before-drain-and-stale-sweep)"
+mkdir -p "$state_dir/control" "$state_dir/runner-temp/multica-docker-config.stale99"
+printf '{"auths":{"ghcr.io":{"auth":"c3RhbGU="}}}\n' >"$state_dir/runner-temp/multica-docker-config.stale99/config.json"
+output="$(RUNNER_TEMP="$state_dir/runner-temp" GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-logout-before-drain-and-stale-sweep
+migrate_log="$(cat "$state_dir/control/migrate-calls.log")"
+expect_contains "$migrate_log" "docker_config= ghcr_token= docker_config_exists=no" ghcr-logout-before-drain-and-stale-sweep
+expect_not_contains "$migrate_log" "super-secret-pat" ghcr-logout-before-drain-and-stale-sweep
+logout_line="$(grep -n '^logout ghcr.io$' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+stop_line="$(grep -n ' stop backend-blue frontend-blue$' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+migrate_line="$(grep -n ' run --rm --no-deps --entrypoint ./migrate ' "$state_dir/control/docker-calls.log" | head -n 1 | cut -d: -f1)"
+if [ -z "$logout_line" ] || [ -z "$stop_line" ] || [ -z "$migrate_line" ] || [ "$logout_line" -ge "$stop_line" ] || [ "$logout_line" -ge "$migrate_line" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: expected docker logout (line ${logout_line:-none}) before drain stop (line ${stop_line:-none}) and migrate (line ${migrate_line:-none})" >&2
+  exit 1
+fi
+if [ -e "$state_dir/runner-temp/multica-docker-config.stale99" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: stale multica-docker-config directory was not swept by ghcr_login" >&2
+  exit 1
+fi
+if [ -n "$(ls -A "$state_dir/runner-temp")" ]; then
+  echo "scenario ghcr-logout-before-drain-and-stale-sweep: runner-temp is not empty after cutover: $(ls -A "$state_dir/runner-temp")" >&2
+  exit 1
+fi
+
+# Manual invocation without RUNNER_TEMP places multica-docker-config.* under
+# $state_dir (never falling back to host /tmp where C00 has PrivateTmp=no).
+state_dir="$(fresh_scenario_dir ghcr-cutover-manual-no-runner-temp-uses-state-dir)"
+mkdir -p "$state_dir/control" "$state_dir/multica-docker-config.stale77"
+unset RUNNER_TEMP
+output="$(TMPDIR=/tmp GHCR_PULL_TOKEN=super-secret-pat run_cutover "$state_dir" 2>&1)"
+status=$?
+expect_exit 0 "$status" ghcr-cutover-manual-no-runner-temp-uses-state-dir
+expect_contains "$(cat "$state_dir/control/registry-auth.log")" "docker_config=$state_dir/multica-docker-config." ghcr-cutover-manual-no-runner-temp-uses-state-dir
+if [ -e "$state_dir/multica-docker-config.stale77" ]; then
+  echo "scenario ghcr-cutover-manual-no-runner-temp-uses-state-dir: stale directory under state_dir was not swept" >&2
+  exit 1
+fi
+
+# Interleaving race: a concurrent manual cutover.sh acquires $state_dir/deploy.lock
+# and creates an active state-root DOCKER_CONFIG while paused mid-pull.
+# Neither workflow cleanup site in cd-deploy.yml may delete that active
+# configuration while deploy.lock is held; once the manual cutover finishes
+# and releases deploy.lock, workflow cleanup removes eligible stale residue.
+post_pipe_cleanup_lines="$(awk '
+  /deploy_status=\$\?/ { capture=1; next }
+  capture && /cp deploy\/cd\/ab-health-check\.sh/ { exit }
+  capture { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$post_pipe_cleanup_lines" ] || { echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock: could not extract post-pipe cleanup from cd-deploy.yml" >&2; exit 1; }
+
+record_outcome_cleanup_lines="$(awk '
+  /- name: Record outcome/ { in_step=1; next }
+  in_step && /run: \|/ { capture=1; next }
+  capture && /if \[ "\$\{\{ job\.status \}\}" = "success" \]; then/ { exit }
+  capture { print }
+' "$root_dir/.github/workflows/cd-deploy.yml")"
+[ -n "$record_outcome_cleanup_lines" ] || { echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock: could not extract Record outcome cleanup from cd-deploy.yml" >&2; exit 1; }
+
+for cleanup_site in post-pipe record-outcome; do
+  state_dir="$(fresh_scenario_dir "ghcr-cutover-workflow-cleanup-race-$cleanup_site")"
+  race_runner_temp="$state_dir/runner-temp"
+  mkdir -p "$state_dir/control" "$race_runner_temp"
+  touch "$state_dir/control/pause-on-pull"
+  (
+    unset RUNNER_TEMP
+    GHCR_PULL_TOKEN=manual-cutover-pat run_cutover "$state_dir" >"$state_dir/manual-cutover.out" 2>&1
+  ) &
+  manual_pid=$!
+
+  for _ in $(seq 1 100); do
+    [ -f "$state_dir/control/pull-ready" ] && break
+    /bin/sleep 0.05
+  done
+  if [ ! -f "$state_dir/control/pull-ready" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): manual cutover never reached pull-ready: $(cat "$state_dir/manual-cutover.out" 2>/dev/null)" >&2
+    exit 1
+  fi
+  active_manual_config="$(cat "$state_dir/control/pull-ready")"
+  if [ -z "$active_manual_config" ] || [ ! -f "$active_manual_config/config.json" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): expected active config.json at '$active_manual_config'" >&2
+    exit 1
+  fi
+
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" C00_STATE_DIR="$state_dir" C00_CUTOVER_STATE_DIR="$state_dir" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+
+  if [ ! -f "$active_manual_config/config.json" ]; then
+    touch "$state_dir/control/release-pull"
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): workflow cleanup deleted active manual DOCKER_CONFIG '$active_manual_config' while deploy.lock was held" >&2
+    exit 1
+  fi
+
+  touch "$state_dir/control/release-pull"
+  set +e
+  wait "$manual_pid"
+  manual_status=$?
+  set -e
+  if [ "$manual_status" -ne 0 ]; then
+    echo "scenario ghcr-cutover-workflow-cleanup-concurrent-manual-lock ($cleanup_site): manual cutover failed with exit $manual_status: $(cat "$state_dir/manual-cutover.out")" >&2
+    exit 1
+  fi
+done
+
+# Distinct-root interleaving in cutover.sh: while a concurrent invocation holds
+# C00_STATE_DIR/deploy.lock (distinct from C00_CUTOVER_STATE_DIR) with an
+# active DOCKER_CONFIG under shared RUNNER_TEMP, neither workflow cleanup site
+# may delete that active DOCKER_CONFIG; and while manual cutover.sh holds
+# C00_CUTOVER_STATE_DIR/deploy.lock with shared RUNNER_TEMP and a distinct
+# C00_STATE_DIR, neither workflow cleanup site may delete its active
+# DOCKER_CONFIG.
+for cleanup_site in post-pipe record-outcome; do
+  state_dir="$(fresh_scenario_dir "ghcr-cutover-distinct-roots-$cleanup_site")"
+  distinct_deploy_state="$state_dir/c00-state-dir"
+  distinct_cutover_state="$state_dir/c00-cutover-state-dir"
+  race_runner_temp="$state_dir/runner-temp"
+  mkdir -p "$distinct_deploy_state" "$distinct_cutover_state/control" "$race_runner_temp"
+  touch "$distinct_cutover_state/control/pause-on-pull"
+
+  # Case A: manual cutover holds C00_CUTOVER_STATE_DIR/deploy.lock while
+  # allocating under shared RUNNER_TEMP and C00_STATE_DIR is distinct.
+  (
+    RUNNER_TEMP="$race_runner_temp" GHCR_PULL_TOKEN=manual-cutover-distinct-pat \
+      run_cutover "$distinct_cutover_state" >"$state_dir/manual-cutover.out" 2>&1
+  ) &
+  manual_pid=$!
+
+  for _ in $(seq 1 100); do
+    [ -f "$distinct_cutover_state/control/pull-ready" ] && break
+    /bin/sleep 0.05
+  done
+  if [ ! -f "$distinct_cutover_state/control/pull-ready" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): manual cutover never reached pull-ready: $(cat "$state_dir/manual-cutover.out" 2>/dev/null)" >&2
+    exit 1
+  fi
+  active_manual_config="$(cat "$distinct_cutover_state/control/pull-ready")"
+  if [ -z "$active_manual_config" ] || [ ! -f "$active_manual_config/config.json" ]; then
+    kill "$manual_pid" 2>/dev/null || true
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): expected active config.json at '$active_manual_config'" >&2
+    exit 1
+  fi
+
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+
+  if [ ! -f "$active_manual_config/config.json" ]; then
+    touch "$distinct_cutover_state/control/release-pull"
+    wait "$manual_pid" 2>/dev/null || true
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): workflow cleanup deleted active cutover DOCKER_CONFIG '$active_manual_config' while C00_CUTOVER_STATE_DIR/deploy.lock was held" >&2
+    exit 1
+  fi
+
+  touch "$distinct_cutover_state/control/release-pull"
+  set +e
+  wait "$manual_pid"
+  manual_status=$?
+  set -e
+  if [ "$manual_status" -ne 0 ]; then
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): manual cutover failed with exit $manual_status: $(cat "$state_dir/manual-cutover.out")" >&2
+    exit 1
+  fi
+
+  # Case B: concurrent process holds C00_STATE_DIR/deploy.lock (distinct from
+  # C00_CUTOVER_STATE_DIR) with an active DOCKER_CONFIG in shared RUNNER_TEMP.
+  active_deploy_config="$race_runner_temp/multica-docker-config.active-deploy-$cleanup_site"
+  mkdir -p "$active_deploy_config"
+  printf '{"auths":{"ghcr.io":{}}}\n' >"$active_deploy_config/config.json"
+  exec 8>"$distinct_deploy_state/deploy.lock"
+  flock 8
+  if [ "$cleanup_site" = "post-pipe" ]; then
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; deploy_status=9; $post_pipe_cleanup_lines; [ \"\$deploy_status\" -eq 9 ]"
+  else
+    MULTICA_CLEANUP_LOCK_WAIT_SECONDS=0 RUNNER_TEMP="$race_runner_temp" \
+      C00_STATE_DIR="$distinct_deploy_state" C00_CUTOVER_STATE_DIR="$distinct_cutover_state" \
+      bash -c "set -euo pipefail; $record_outcome_cleanup_lines"
+  fi
+  exec 8>&-
+  if [ ! -f "$active_deploy_config/config.json" ]; then
+    echo "scenario ghcr-cutover-distinct-roots ($cleanup_site): workflow cleanup deleted active deploy DOCKER_CONFIG '$active_deploy_config' while C00_STATE_DIR/deploy.lock was held (distinct from C00_CUTOVER_STATE_DIR)" >&2
+    exit 1
+  fi
+  rm -rf "$active_deploy_config"
+done
 
 # ---------------------------------------------------------------------------
 # Scenario 14: the reviewed controller runs from a disposable relocated
