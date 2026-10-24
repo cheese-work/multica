@@ -572,8 +572,8 @@ candidate SHA and the skip reason. API or tooling errors still fail closed.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual
-paths. It runs in the `c00-approval` environment (required reviewer, wait
-timer, `main` branch policy) and holds no secrets. Its concurrency group
+paths. It runs in the existing `c00-production` environment (required reviewer,
+wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
 `cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
 replaces an older run still waiting for approval. Right after approval the job
 re-checks the candidate against the `main` head (`require-current.sh`); a
@@ -581,12 +581,23 @@ superseded run skips `prepare-release-candidate`, `admission` and `deploy`
 instead of failing. The manual path is exempt: it names an explicit manifest
 and may deploy a non-head ref.
 
-The C00 secrets live on `c00-production`, which has no reviewers or wait timer,
-so `prepare-release-candidate` and `deploy` do not ask again. They share the
+`prepare-release-candidate` and `deploy` use the C00 secrets from the
+`c00-runtime` environment, which has no reviewers or wait timer, so they do not
+ask again. `c00-production` keeps its protection on purpose: runs started by
+the previous workflow, and reruns of their jobs, still use that workflow and
+therefore still stop at it. Secrets are copied to `c00-runtime` and must be
+rotated in both environments until `c00-production` secrets are retired. A
+missing `c00-runtime` environment fails closed: GitHub creates it empty, the
+SSH step has no key and stops. They share the
 job-level lock `cd-deploy-c00` with `cancel-in-progress: false`: one C00 stage
 at a time, and a started deploy is never cancelled. A `deploy` that queued
-behind a running one repeats the `main` check when it gets the lock. There is
-no workflow-level lock, since a run waiting for approval would hold it and
+behind a running one repeats the `main` check when it gets the lock. A job that
+joins a concurrency group evicts the group's pending job whatever its version,
+so a stale stage must not join at all: `approve-c00` guards `prepare-release-candidate`
+and `deploy-gate` (after `admission`) guards `deploy`; both stale stages are
+skipped before they queue. The seconds between the check and the join stay
+open; an eviction there cancels the newer run, which fails safe and needs a
+re-run. There is no workflow-level lock, since a run waiting for approval would hold it and
 block every newer version.
 
 Preparation still records a fresh check snapshot after approval; preflight
@@ -775,7 +786,7 @@ read was denied to every credential available on C00 — the org/App
 private container package (only repositories can be added to that list).
 The fix is a dedicated registry credential rather than any App/org
 permission change: a `read:packages`-only classic PAT, stored as the
-`GHCR_PULL_TOKEN` environment secret on `c00-production` (scoped there, not
+`GHCR_PULL_TOKEN` environment secret on `c00-runtime` (and still on `c00-production` for the previous workflow; scoped there, not
 as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
 `deploy.sh` logs in to `ghcr.io` with it immediately before the pull step
 and logs out unconditionally on exit — success, rollback, or an early

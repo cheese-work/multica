@@ -61,13 +61,21 @@ permissions:
 # hold it and block every newer version behind it. Instead the approval gate
 # below is replaced by a newer version, and the two jobs that touch C00
 # (prepare-release-candidate, deploy) share one never-cancelled lock group.
+#
+# A job entering a concurrency group evicts the group's pending job, whichever
+# version it belongs to. So no stale stage may reach the lock: each job that
+# joins it runs only if an earlier job (approve-c00, deploy-gate) found its
+# candidate still current, so a stale stage is skipped before it can queue.
 jobs:
   # ---------------------------------------------------------------------------
-  # The ONE approval per version. Holds no secrets: the C00 secrets live on
-  # c00-production, which carries no reviewers, so the jobs that use them do not
-  # ask again. A newer version entering this group cancels an older one that is
-  # still waiting for approval. Nothing in this group touches C00, so
-  # cancelling it can never interrupt a deploy.
+  # The ONE approval per version. It uses c00-production, the protected
+  # environment (required reviewer, wait timer) the C00 jobs always used, and
+  # holds no secrets. The jobs that use the C00 secrets run in c00-runtime,
+  # which has no reviewers, so they do not ask again. c00-production keeps its
+  # protection on purpose: runs started by the previous workflow, and reruns of
+  # their jobs, still use it. A newer version entering this group cancels an
+  # older one that is still waiting for approval. Nothing in this group touches
+  # C00, so cancelling it can never interrupt a deploy.
   # ---------------------------------------------------------------------------
   approve-c00:
     needs: candidate-preflight
@@ -75,7 +83,7 @@ jobs:
     # just because that job did not run.
     if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: ubuntu-latest
-    environment: c00-approval
+    environment: c00-production
     concurrency:
       group: cd-deploy-c00-approval
       cancel-in-progress: true
@@ -134,8 +142,8 @@ jobs:
   # release-candidate by binding it to C00's CURRENT baseline tuple.
   #
   # This job needs C00 SSH access to read that baseline, so it runs on the
-  # same C00-reachable runner and the same secrets environment as the deploy
-  # job. Approval was already given at approve-c00. It reads and writes nothing on C00 beyond a temp file it
+  # same C00-reachable runner and the same secrets environment (c00-runtime)
+  # as the deploy job. Approval was already given at approve-c00. It reads and writes nothing on C00 beyond a temp file it
   # removes: capture-tuple.sh inspects containers and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
@@ -148,7 +156,7 @@ jobs:
     # Up to 60 minutes waiting for CI's required checks plus the original
     # 15-minute budget for the baseline read and evidence issue.
     timeout-minutes: 80
-    environment: c00-production
+    environment: c00-runtime
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
     steps:
@@ -454,15 +462,40 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  deploy:
+  # Last freshness check before the lock. Admission can finish long after
+  # approval; a stale candidate must not queue for the lock, because queueing
+  # would evict a newer candidate waiting there. No concurrency group, no
+  # secrets, nothing on C00.
+  deploy-gate:
     needs: admission
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.guard.outputs.current || 'true' }}
+    steps:
+      - name: Checkout the workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Skip if a newer main candidate arrived during admission
+        id: guard
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
+
+  deploy:
+    needs: [admission, deploy-gate]
+    if: needs.deploy-gate.outputs.current == 'true'
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
     # whichever self-hosted runner has network access to C00.
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
-    environment: c00-production
+    environment: c00-runtime
     # Shared with prepare-release-candidate: one C00 stage at a time. Never
     # cancelled, so a newer version cannot interrupt a deploy that has started.
     concurrency:
@@ -470,8 +503,9 @@ jobs:
       cancel-in-progress: false
     steps:
       # A deploy can wait in the lock behind a running one. Re-check as soon
-      # as it gets the lock: a newer main candidate replaces it, and nothing
-      # below runs. The manual path may name a non-head ref and is exempt.
+      # as it gets the lock (deploy-gate only covers the time before it
+      # queued): a newer main candidate replaces it, and nothing below runs.
+      # The manual path may name a non-head ref and is exempt.
       - name: Checkout the workflow revision
         if: github.event_name == 'workflow_run'
         uses: actions/checkout@v6

@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SHA = "c689a72ae" + "1" * 31
 NEW_HEAD = "93ac2140b" + "2" * 31
 GATE = "approve-c00"
+STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
+PROTECTED = "c00-production"  # reviewer + wait timer; legacy runs and reruns keep hitting it
+RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
 
 
 def needs(job):
@@ -36,8 +39,13 @@ class DeployApprovalTests(unittest.TestCase):
         return seen
 
     def test_exactly_one_job_asks_for_approval(self):
-        gated = [n for n, j in self.jobs.items() if j.get("environment") == "c00-approval"]
+        gated = [n for n, j in self.jobs.items() if j.get("environment") == PROTECTED]
         self.assertEqual(gated, [GATE])
+
+    def test_protected_environment_is_never_given_up(self):
+        # Removing its reviewer would leave old runs and downstream-job reruns,
+        # which still use the old workflow, with no approval at all.
+        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME})
 
     def test_every_c00_job_runs_only_after_the_approval(self):
         for name in ["prepare-release-candidate", "admission", "deploy"]:
@@ -49,10 +57,27 @@ class DeployApprovalTests(unittest.TestCase):
     def test_secret_jobs_do_not_ask_again(self):
         for name in ["prepare-release-candidate", "deploy"]:
             with self.subTest(job=name):
-                self.assertEqual(self.jobs[name]["environment"], "c00-production")
+                self.assertEqual(self.jobs[name]["environment"], RUNTIME)
+
+    def test_stale_stage_never_enters_the_lock(self):
+        # A job entering a concurrency group evicts the group's pending job, so
+        # a stale stage entering late would evict the newest candidate. Every
+        # job that joins the lock is therefore skipped, before it can queue, by
+        # a freshness check made in an earlier job.
+        self.assertIn("admission", needs(self.jobs[STALE_GATE]))
+        self.assertNotIn("concurrency", self.jobs[STALE_GATE])
+        self.assertEqual(self.jobs[STALE_GATE]["outputs"]["current"], "${{ steps.guard.outputs.current || 'true' }}")
+        self.assertIn(STALE_GATE, needs(self.jobs["deploy"]))
+        self.assertIn("needs.deploy-gate.outputs.current == 'true'", self.jobs["deploy"]["if"])
+        self.assertIn("needs.approve-c00.outputs.current == 'true'", self.jobs["prepare-release-candidate"]["if"])
+        for name, job in self.jobs.items():
+            if job.get("concurrency", {}).get("group") == LOCK:
+                with self.subTest(job=name):
+                    self.assertIn("outputs.current == 'true'", job["if"])
 
     def test_gate_holds_no_secrets(self):
-        self.assertNotIn("secrets.C00", yaml.safe_dump(self.jobs[GATE]))
+        for name in [GATE, STALE_GATE]:
+            self.assertNotIn("secrets.C00", yaml.safe_dump(self.jobs[name]))
 
     def test_waiting_approval_is_replaced_by_a_newer_version(self):
         gate = self.jobs[GATE]["concurrency"]
@@ -79,6 +104,49 @@ class DeployApprovalTests(unittest.TestCase):
         mutate_at = names.index("Deploy to C00 over SSH")
         self.assertLess(guard_at, mutate_at)
         self.assertIn("steps.guard.outputs.current != 'false'", steps[mutate_at]["if"])
+
+
+class LockModel:
+    """GitHub's documented concurrency rule for cancel-in-progress: false:
+    one running job, one pending job; a job that joins evicts the pending one."""
+
+    def __init__(self):
+        self.running, self.pending, self.evicted = None, None, []
+
+    def join(self, job):
+        if self.running is None:
+            self.running = job
+        else:
+            if self.pending is not None:
+                self.evicted.append(self.pending)
+            self.pending = job
+
+    def release(self):
+        self.running, self.pending = self.pending, None
+
+
+class StaleStageEvictionTests(unittest.TestCase):
+    """Reviewer scenario: three approved versions; the oldest finishes
+    admission late, after the middle one holds the lock and the newest queued."""
+
+    def run_scenario(self, stale_stage_may_join):
+        lock = LockModel()
+        main_head = "newest"
+        lock.join("middle:prepare")
+        lock.join("newest:prepare")
+        if stale_stage_may_join("oldest", main_head):
+            lock.join("oldest:deploy")
+        return lock
+
+    def test_without_the_freshness_gate_the_newest_candidate_is_evicted(self):
+        lock = self.run_scenario(lambda version, head: True)
+        self.assertEqual(lock.evicted, ["newest:prepare"])
+
+    def test_the_freshness_gate_keeps_the_newest_candidate_queued(self):
+        # deploy-gate's rule: join the lock only if the candidate is the main head.
+        lock = self.run_scenario(lambda version, head: version == head)
+        self.assertEqual(lock.evicted, [])
+        self.assertEqual(lock.pending, "newest:prepare")
 
 
 class RequireCurrentTests(unittest.TestCase):

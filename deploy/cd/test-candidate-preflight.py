@@ -58,7 +58,7 @@ else:
 
     def approval_state(self, heads, checks=None, files=None, wait_seconds="60"):
         protected = self.workflow["jobs"]["approve-c00"]
-        self.assertEqual(protected["environment"], "c00-approval")
+        self.assertEqual(protected["environment"], "c00-production")
         dependencies = protected.get("needs", [])
         if isinstance(dependencies, str):
             dependencies = [dependencies]
