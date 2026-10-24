@@ -901,6 +901,9 @@ func systemWakeupIssueActive(ctx context.Context, q *db.Queries, issue db.Issue,
 // outcome. It mirrors dispatch: the same lock order, receipts, runaway
 // protection and timeline entries.
 func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWakeup) error {
+	if held, err := s.settleInactiveProject(ctx, prev); held || err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Resolve the target and optional credentials before taking locks, then
@@ -1437,7 +1440,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)

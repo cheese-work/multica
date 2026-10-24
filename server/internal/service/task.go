@@ -40,6 +40,11 @@ import (
 )
 
 type TaskService struct {
+	// RecordMemberActivity enables the member_delegation_day ledger, which
+	// only feeds self-host telemetry. Off unless the server enables telemetry
+	// at startup, so DO_NOT_TRACK stops collection, not just delivery.
+	RecordMemberActivity bool
+
 	Queries   *db.Queries
 	TxStarter TxStarter
 	Hub       *realtime.Hub
@@ -488,6 +493,7 @@ func (s *TaskService) attributionFromComment(ctx context.Context, comment db.Com
 		CommentID:  comment.ID,
 		AuthorType: comment.AuthorType,
 		AuthorID:   comment.AuthorID,
+		CreatedAt:  comment.CreatedAt,
 	}
 	// For an agent-authored comment, walk comment.source_task_id → parent task →
 	// parent.originator_user_id (set by every agent comment-write path since
@@ -846,6 +852,26 @@ func attributionCreateParams(attr attribution.Result) (source pgtype.Text, deleg
 	evidenceKind = pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""}
 	evidenceRef = attr.EvidenceRefID
 	return
+}
+
+// RecordHumanDelegation notes that attr's member personally started an agent
+// run, for the self-host telemetry "delegating member" counts. Call it once the
+// run row (or the fold into a queued row) is committed, with the attribution
+// that row was written with. Runs that only inherit a human (retries, system
+// wakeups, delegation, autopilot) carry HumanAction=false and are skipped.
+//
+// Best-effort and outside any caller transaction: a failed write costs one
+// activity mark, never the run.
+func (s *TaskService) RecordHumanDelegation(ctx context.Context, attr attribution.Result) {
+	if s == nil || !s.RecordMemberActivity || s.Queries == nil || !attr.HumanAction || !attr.UserID.Valid {
+		return
+	}
+	if err := s.Queries.RecordMemberDelegationDay(ctx, db.RecordMemberDelegationDayParams{
+		UserID:  attr.UserID,
+		ActedAt: attr.HumanActedAt,
+	}); err != nil {
+		slog.Warn("record member delegation day failed", "error", err)
+	}
 }
 
 // OriginatorForIssueTask exposes resolveOriginatorForIssueTask to callers
@@ -1291,34 +1317,37 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	task, err := s.enqueueIssueTaskWithQueries(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
-	if err == nil && !fireAt.Valid {
-		s.PublishTaskEnqueued(ctx, task)
+	task, attr, err := s.enqueueIssueTaskWithQueries(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
+	if err == nil {
+		s.RecordHumanDelegation(ctx, attr)
+		if !fireAt.Valid {
+			s.PublishTaskEnqueued(ctx, task)
+		}
 	}
 	return task, err
 }
 
-func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
-		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
-		return db.AgentTaskQueue{}, err
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 
 	agent, err := queries.GetAgent(ctx, issue.AssigneeID)
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
-		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("load agent: %w", err)
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent is archived")
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
-		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent has no runtime")
 	}
 
 	// The issue assignee reacting to an agent-authored comment is a
@@ -1332,7 +1361,7 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
-		return db.AgentTaskQueue{}, err
+		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
@@ -1402,10 +1431,10 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 		// path in enqueueMentionTaskWithCommentPlan.
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
-			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+			return db.AgentTaskQueue{}, attribution.Result{}, ErrDuplicatePendingTask
 		}
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
-		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("create task: %w", err)
 	}
 
 	slog.Info("task enqueued",
@@ -1414,14 +1443,16 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 		"agent_id", util.UUIDToString(issue.AssigneeID),
 		"force_fresh_session", forceFreshSession,
 	)
-	return task, nil
+	return task, attr, nil
 }
 
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
 	if squadID.Valid {
-		return s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+		return task, err
 	}
-	return s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return task, err
 }
 
 func (s *TaskService) PublishTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
@@ -1483,29 +1514,30 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	task, err := s.enqueueMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
+	task, attr, err := s.enqueueMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
 	if err == nil {
+		s.RecordHumanDelegation(ctx, attr)
 		s.PublishTaskEnqueued(ctx, task)
 	}
 	return task, err
 }
 
-func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	if err := guardIssueNotInTriage(ctx, queries, issue.ID, origin); err != nil {
-		return db.AgentTaskQueue{}, err
+func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	agent, err := queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
-		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("load agent: %w", err)
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent is archived")
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent has no runtime")
 	}
 
 	// An explicit mention / thread-parent / squad-leader hop from an
@@ -1518,7 +1550,7 @@ func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.AgentTaskQueue{}, err
+		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
@@ -1558,14 +1590,14 @@ func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries
 		// 500 that leaks the raw constraint name (#5914).
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+			return db.AgentTaskQueue{}, attribution.Result{}, ErrDuplicatePendingTask
 		}
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
-		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
+		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("create task: %w", err)
 	}
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
-	return task, nil
+	return task, attr, nil
 }
 
 // QuickCreateContext is the JSON payload stored on a quick-create task's
@@ -1637,6 +1669,19 @@ func (s *TaskService) EnqueueQuickCreateTaskWithSourceContext(ctx context.Contex
 }
 
 func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, capture *SourceContextCapture) (db.AgentTaskQueue, error) {
+	if err := RequireActiveIssueProject(ctx, s.Queries, parentIssueID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if !projectID.Valid && parentIssueID.Valid {
+		parent, err := s.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: parentIssueID, WorkspaceID: workspaceID})
+		if err != nil {
+			return db.AgentTaskQueue{}, err
+		}
+		projectID = parent.ProjectID
+	}
+	if err := RequireActiveProject(ctx, s.Queries, workspaceID, projectID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
@@ -1775,6 +1820,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// cycle. Without this the user perceives "quick create never
 	// triggered" because the modal closes immediately and the task
 	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
+	s.RecordHumanDelegation(ctx, attr)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
@@ -1798,6 +1844,9 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	quickCreate, ok := s.parseQuickCreateContext(parent)
 	if !ok || quickCreate.SourceContextID == "" || quickCreate.RequesterID != util.UUIDToString(requesterID) {
 		return nil, ErrSourceContextRetryUnavailable
+	}
+	if err := requireActiveTaskProject(ctx, s.Queries, parent); err != nil {
+		return nil, err
 	}
 	contextID, err := util.ParseUUID(quickCreate.SourceContextID)
 	if err != nil {
@@ -2222,6 +2271,12 @@ func (s *TaskService) enqueueChatTaskTx(
 
 // FinalizeChatTaskEnqueue performs only post-commit effects.
 func (s *TaskService) FinalizeChatTaskEnqueue(ctx context.Context, task db.AgentTaskQueue) {
+	// Every chat enqueue path stamps the message sender as a direct_human
+	// originator (DirectHumanRun); an unresolved sender is unattributed or
+	// owner_fallback and is skipped here.
+	if task.OriginatorSource.String == string(attribution.SourceDirectHuman) && !task.RetryOfTaskID.Valid {
+		s.RecordHumanDelegation(ctx, attribution.Result{UserID: task.OriginatorUserID, HumanAction: true})
+	}
 	if task.Status == "deferred" {
 		slog.Info("chat task deferred for channel media",
 			"task_id", util.UUIDToString(task.ID),
@@ -2414,6 +2469,7 @@ func (s *TaskService) SendDirectChatMessage(
 			"error", err)
 		return nil, err
 	}
+	s.RecordHumanDelegation(ctx, plan.Attribution)
 	s.NotifyDirectChatSent(ctx, out.Task)
 	return &out, nil
 }
@@ -2422,7 +2478,7 @@ func (s *TaskService) SendDirectChatMessage(
 // resolved before a transaction opens.
 type DirectChatSendPlan struct {
 	overlay          runtimeMCPOverlayData
-	attr             attribution.Result
+	Attribution      attribution.Result
 	attrSource       pgtype.Text
 	attrEvidenceKind pgtype.Text
 	attrEvidenceRef  pgtype.UUID
@@ -2444,7 +2500,7 @@ func (s *TaskService) PlanDirectChatSend(ctx context.Context, sessionID pgtype.U
 	if err != nil {
 		return plan, err
 	}
-	plan.attr = attr
+	plan.Attribution = attr
 	plan.attrSource, _, plan.attrEvidenceKind, plan.attrEvidenceRef = attributionCreateParams(attr)
 	return plan, nil
 }
@@ -2483,7 +2539,7 @@ func (s *TaskService) sendDirectChatMessageTx(
 	sentVia string,
 	wakeup bool,
 ) (DirectChatSendResult, error) {
-	overlay, attr := plan.overlay, plan.attr
+	overlay, attr := plan.overlay, plan.Attribution
 	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
 	err := func() error {
@@ -3526,6 +3582,53 @@ func (s *TaskService) RebroadcastCancelledTask(ctx context.Context, taskID pgtyp
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
 }
 
+// RetireCancelledTaskSession records, on a CANCELLED task, a session the daemon
+// judged undrivable: the run resumed it and produced no output at all before
+// it was cancelled (MUL-8188). It is the cancel-ack's counterpart of the
+// retired_session_id the complete/fail callbacks carry, and it has the same
+// two effects: the (agent, issue) resume lookups stop selecting the session,
+// and a chat pointer still naming it is cleared so the next turn starts fresh.
+//
+// The status CAS in SetAgentTaskRetiredSessionIDIfCancelled makes a late or
+// replayed ack against a completed/failed row a no-op; the chat pointer is
+// only touched when that write applied, so a stale ack can never clear a
+// healthy pointer.
+func (s *TaskService) RetireCancelledTaskSession(ctx context.Context, taskID pgtype.UUID, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	return s.runInTx(ctx, func(qtx *db.Queries) error {
+		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
+			return err
+		}
+		rows, err := qtx.SetAgentTaskRetiredSessionIDIfCancelled(ctx, db.SetAgentTaskRetiredSessionIDIfCancelledParams{
+			ID:               taskID,
+			RetiredSessionID: pgtype.Text{String: sessionID, Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("record retired session on cancelled task: %w", err)
+		}
+		if rows == 0 {
+			return nil
+		}
+		t, err := qtx.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("load cancelled task: %w", err)
+		}
+		if !t.ChatSessionID.Valid {
+			return nil
+		}
+		if err := qtx.ClearChatSessionSessionIfMatches(ctx, db.ClearChatSessionSessionIfMatchesParams{
+			ID:        t.ChatSessionID,
+			SessionID: pgtype.Text{String: sessionID, Valid: true},
+			RuntimeID: t.RuntimeID,
+		}); err != nil {
+			return fmt.Errorf("clear retired chat session resume pointer: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID pgtype.UUID) bool {
 	var (
 		task    db.AgentTaskQueue
@@ -3689,7 +3792,7 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 // ClaimTask atomically claims the next queued task for an agent on its current
 // runtime, respecting max_concurrent_tasks.
 func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.AgentTaskQueue, error) {
-	return s.claimTask(ctx, agentID, pgtype.UUID{})
+	return s.claimTask(ctx, agentID, pgtype.UUID{}, claimScope{claimPath: claimPathAgent})
 }
 
 // agentBlockedByProviderHold reports whether agent's model currently resolves
@@ -3729,14 +3832,16 @@ func agentBlockedByProviderHold(ctx context.Context, qtx *db.Queries, metrics *o
 // agent's currently bound runtime. Scoping the SQL claim itself prevents an
 // offline candidate on runtime A from causing the same agent's task on runtime
 // B to be dispatched and then dropped by the caller's runtime guard.
-func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.UUID) (*db.AgentTaskQueue, error) {
+func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.UUID, scope claimScope) (*db.AgentTaskQueue, error) {
 	start := time.Now()
 	outcome := "unknown"
 	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
 	var claimed *db.AgentTaskQueue
 	var reclaimCheckAfter time.Time
+	var decisionDetail claimDecisionDetail
 	defer func() {
 		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
+		s.recordClaimDecision(agentID, runtimeID, outcome, scope, decisionDetail)
 	}()
 
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -3812,7 +3917,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("count running tasks: %w", err)
 		}
 		if running >= int64(agent.MaxConcurrentTasks) {
-			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "max", agent.MaxConcurrentTasks)
+			decisionDetail = claimDecisionDetail{running: running, maxConcurrent: int64(agent.MaxConcurrentTasks)}
 			outcome = "no_capacity"
 			return nil
 		}
@@ -3828,7 +3933,6 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				slog.Debug("task claim: no tasks available", "agent_id", util.UUIDToString(agentID))
 				outcome = "no_tasks"
 				return nil
 			}
@@ -3928,6 +4032,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	runtimeKey := util.UUIDToString(runtimeID)
 	if err := s.PromoteDueDeferredTasksForRuntime(ctx, runtimeID); err != nil {
 		outcome = "error_promote_deferred"
+		s.recordClaimDecision(pgtype.UUID{}, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 		return nil, err
 	}
 
@@ -3952,6 +4057,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 			)
 			s.trackTaskForReclaim(stale, reclaimCheckAfter)
 			outcome = "reclaimed_dispatched"
+			s.recordClaimDecision(stale.AgentID, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 			claimedFlag = true
 			slog.Info("stale dispatched task reclaimed",
 				"task_id", util.UUIDToString(stale.ID),
@@ -3962,6 +4068,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			outcome = "error_reclaim_dispatched"
+			s.recordClaimDecision(pgtype.UUID{}, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 			return nil, fmt.Errorf("reclaim stale dispatched task: %w", err)
 		}
 		s.ReclaimCheck.MarkChecked(
@@ -3974,6 +4081,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 
 	if s.EmptyClaim.IsEmpty(ctx, runtimeKey) {
 		outcome = "empty_cache_hit"
+		s.recordClaimDecision(pgtype.UUID{}, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 		return nil, nil
 	}
 
@@ -3991,17 +4099,26 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	listCount = len(tasks)
 	if err != nil {
 		outcome = "error_list"
+		s.recordClaimDecision(pgtype.UUID{}, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 		return nil, fmt.Errorf("list queued claim candidates: %w", err)
 	}
 
 	if len(tasks) == 0 {
 		s.EmptyClaim.MarkEmpty(ctx, runtimeKey, preSelectVersion)
 		outcome = "empty_db"
+		s.recordClaimDecision(pgtype.UUID{}, runtimeID, outcome, claimScope{claimPath: claimPathRuntime}, claimDecisionDetail{})
 		return nil, nil
 	}
 
 	loopStart := time.Now()
 	triedAgents := map[string]struct{}{}
+	// Candidate rows per agent, counted before the loop so each claimTask call
+	// can report whether the runtime saw work for that agent (the #8551
+	// attribution split between candidates_blocked and no_candidates).
+	candidatesByAgent := make(map[string]int, len(tasks))
+	for i := range tasks {
+		candidatesByAgent[util.UUIDToString(tasks[i].AgentID)]++
+	}
 	var claimed *db.AgentTaskQueue
 	for _, candidate := range tasks {
 		agentKey := util.UUIDToString(candidate.AgentID)
@@ -4011,7 +4128,10 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		triedAgents[agentKey] = struct{}{}
 		tried++
 
-		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID)
+		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID, claimScope{
+			claimPath:  claimPathRuntime,
+			candidates: candidatesByAgent[agentKey],
+		})
 		if err != nil {
 			loopMs = time.Since(loopStart).Milliseconds()
 			outcome = "error_claim"
@@ -4026,6 +4146,15 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	if claimed != nil {
 		claimedFlag = true
 		outcome = "claimed"
+	} else if len(tasks) > 0 {
+		// Work was visible for at least one agent but every claim attempt lost
+		// (capacity cap, SQL serialization fence, or runtime binding). This is
+		// the key signal for attributing queue waits to a fence rather than to
+		// an empty queue (#8551).
+		slog.Debug("claim poll exhausted candidates without a claim",
+			"runtime_id", runtimeKey,
+			"candidates", len(tasks),
+		)
 	}
 
 	return claimed, nil
@@ -4098,7 +4227,16 @@ func (s *TaskService) FinalizeTaskClaim(
 			if err := qtx.DeleteExpiredDaemonTokens(ctx); err != nil {
 				return fmt.Errorf("delete expired daemon tokens: %w", err)
 			}
-			if _, err := qtx.CreateDaemonToken(ctx, daemonTokens[0]); err != nil {
+			// Bind the credential to the same owner the task token was just
+			// minted for (the locked runtime owner, set by authorize), so it
+			// can never reach a runtime another member later registers under
+			// this daemon_id (MUL-8154).
+			daemonToken := daemonTokens[0]
+			daemonToken.OwnerID = token.UserID
+			if !daemonToken.OwnerID.Valid {
+				return fmt.Errorf("create remote MCP daemon token: runtime owner required")
+			}
+			if _, err := qtx.CreateDaemonToken(ctx, daemonToken); err != nil {
 				return fmt.Errorf("create remote MCP daemon token: %w", err)
 			}
 		}
@@ -4228,6 +4366,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		slog.Info("promote deferred tasks (batch): slot taken by a concurrent enqueue, skipping this tick")
 		promoted = nil
 	} else if err != nil {
+		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_promote_deferred", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		return nil, fmt.Errorf("promote deferred tasks: %w", err)
 	}
 	for _, task := range promoted {
@@ -4263,6 +4402,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			MaxTasks:          int32(maxTasks),
 		})
 		if err != nil {
+			s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_reclaim_dispatched", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 			return nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
 		}
 		// The UPDATE's fixed setup/locking cost dominates array width. Query and
@@ -4278,6 +4418,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range reclaimed {
 		s.trackTaskForReclaim(reclaimed[i], reclaimCheckAfter)
 		claimed = append(claimed, reclaimed[i])
+		s.recordClaimDecision(reclaimed[i].AgentID, reclaimed[i].RuntimeID, "reclaimed_dispatched", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		slog.Info("stale dispatched task reclaimed (batch)",
 			"task_id", util.UUIDToString(reclaimed[i].ID),
 			"runtime_id", util.UUIDToString(reclaimed[i].RuntimeID),
@@ -4300,12 +4441,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		nonEmpty = append(nonEmpty, rid)
 	}
 	if len(nonEmpty) == 0 {
+		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "empty_cache_hit", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
+		slog.Debug("batch claim: all runtimes empty-cached", "runtimes", len(uniqueIDs))
 		return claimed, nil
 	}
 
 	// 4. One candidate SELECT across the non-empty set.
 	candidates, err := s.Queries.ListQueuedClaimCandidatesByRuntimes(ctx, nonEmpty)
 	if err != nil {
+		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_list", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		// Steps 2/6 commit reclaimed/claimed tasks in their own transactions,
 		// so `claimed` may already hold tasks dispatched server-side. Dropping
 		// them with a 500 makes the daemon HTTP-fall-back and claim a SECOND
@@ -4336,12 +4480,30 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			s.EmptyClaim.MarkEmpty(ctx, key, versions[key])
 		}
 	}
+	if len(candidates) == 0 {
+		// Poll-level decision: the candidate query saw nothing claimable for
+		// any runtime in the batch (it already filters wakeup validity and
+		// agent/runtime binding, so this is about visible candidates, not
+		// about the queue being empty).
+		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "empty_db", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
+		return claimed, nil
+	}
 
 	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
 	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
 	triedAgents := make(map[string]struct{}, len(candidates))
+	// Candidate rows per agent for the claim-decision scope; see the singular
+	// path above for why it is counted before the loop.
+	candidatesByAgent := make(map[string]int, len(candidates))
+	for i := range candidates {
+		candidatesByAgent[util.UUIDToString(candidates[i].AgentID)]++
+	}
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
+			slog.Debug("batch claim: reached max tasks",
+				"claimed", len(claimed),
+				"candidates_remaining", len(candidates)-i,
+			)
 			break
 		}
 		agentKey := util.UUIDToString(candidates[i].AgentID)
@@ -4350,7 +4512,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		}
 		triedAgents[agentKey] = struct{}{}
 
-		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID)
+		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID, claimScope{
+			claimPath:  claimPathBatch,
+			candidates: candidatesByAgent[agentKey],
+		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
 			// iterations (and step-2 reclaims) are already dispatched
@@ -4371,6 +4536,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		// a defensive contract check so a future query change cannot route work
 		// to a runtime this daemon does not host.
 		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
+			slog.Debug("batch claim: skipping claimed task outside requested runtime set",
+				"task_id", util.UUIDToString(task.ID),
+				"runtime_id", util.UUIDToString(task.RuntimeID),
+			)
 			continue
 		}
 		claimed = append(claimed, *task)
@@ -4460,26 +4629,9 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 }
 
 // StartTask transitions a dispatched task to running.
-// Issue status is NOT changed here — the agent manages it via the CLI.
+// Local agents manage issue status via the CLI; Qoder runs use guarded server transitions.
 func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
-	enableTaskSupplement := len(supplementSupport) > 0 && supplementSupport[0]
-	var task db.AgentTaskQueue
-	err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
-			TaskID:               taskID,
-			EnableTaskSupplement: enableTaskSupplement,
-		})
-		if err != nil {
-			return err
-		}
-		return clearSquadLeaderFailureMarker(ctx, qtx, task)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("start task: %w", err)
-	}
-	s.taskStarted(ctx, task)
-	return &task, nil
+	return s.startTask(ctx, taskID, nil, len(supplementSupport) > 0 && supplementSupport[0])
 }
 
 // StartTaskForClaim serializes the ownership check and transition with reclaim,
@@ -4489,32 +4641,66 @@ func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentT
 	if !claim.ID.Valid || !claim.RuntimeID.Valid || !claim.DispatchedAt.Valid {
 		return nil, fmt.Errorf("start task: incomplete claim")
 	}
-	tx, err := s.TxStarter.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin task start: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := s.Queries.WithTx(tx)
-	task, err := qtx.LockAgentTaskStartClaim(ctx, claim)
-	if err != nil {
-		return nil, fmt.Errorf("lock task start claim: %w", err)
-	}
-	replay := task.Status == "running"
-	if !replay {
+	return s.startTask(ctx, claim.ID, &claim, len(supplementSupport) > 0 && supplementSupport[0])
+}
+
+func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *db.LockAgentTaskStartClaimParams, enableTaskSupplement bool) (*db.AgentTaskQueue, error) {
+	var task db.AgentTaskQueue
+	var change *qoderIssueChange
+	var replay, refused bool
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		candidate, err := qtx.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		admissionErr := lockTaskProjectForStart(ctx, qtx, candidate)
+		if admissionErr != nil && !IsProjectInactive(admissionErr) {
+			return admissionErr
+		}
+		if claim != nil {
+			task, err = qtx.LockAgentTaskStartClaim(ctx, *claim)
+		} else {
+			task, err = qtx.LockAgentTaskLegacyStart(ctx, taskID)
+		}
+		if err != nil {
+			return err
+		}
+		if IsProjectInactive(admissionErr) {
+			task, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+				ID: task.ID, Error: pgtype.Text{String: ErrProjectInactive.Error(), Valid: true},
+				FailureReason: pgtype.Text{String: ErrProjectInactive.Error(), Valid: true},
+			})
+			if err != nil {
+				return err
+			}
+			refused = true
+			return SettleTerminalTaskState(ctx, qtx, task)
+		}
+		replay = task.Status == "running"
+		if replay {
+			return nil
+		}
 		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
 			TaskID:               task.ID,
-			EnableTaskSupplement: len(supplementSupport) > 0 && supplementSupport[0],
+			EnableTaskSupplement: enableTaskSupplement,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("start claimed task: %w", err)
+			return fmt.Errorf("start claimed task: %w", err)
 		}
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
-			return nil, err
+			return err
 		}
+		change, err = syncQoderIssue(ctx, qtx, task, false)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start task: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit task start: %w", err)
+	if refused {
+		s.BroadcastCancelledTasks(ctx, s.ResolveTaskWorkspaceID(ctx, task), []db.AgentTaskQueue{task})
+		return nil, ErrProjectInactive
 	}
+	s.publishQoderIssueChange(ctx, change)
 	if !replay {
 		s.taskStarted(ctx, task)
 	}
@@ -4696,6 +4882,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		contextWindow = pgtype.Int8{Int64: runContext.Window, Valid: true}
 	}
 	var task db.AgentTaskQueue
+	var change *qoderIssueChange
 	// chatAssistantMsg is the single assistant outcome row written for a chat
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
@@ -4723,6 +4910,10 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			return err
 		}
 		task = t
+		change, err = syncQoderIssue(ctx, qtx, t, true)
+		if err != nil {
+			return err
+		}
 
 		// Atomic with the status flip: a crash between the two would leave a
 		// finished obligation looking pending forever.
@@ -4815,6 +5006,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		return nil, false, fmt.Errorf("complete task: %w", err)
 	}
 
+	s.publishQoderIssueChange(ctx, change)
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
 
@@ -5240,6 +5432,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// opens its own transaction and cannot run inside this one).
 	var retryProviderHoldNotice string
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if wantRetry {
+			parent, err := qtx.GetAgentTask(ctx, taskID)
+			if err != nil {
+				return err
+			}
+			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
+				wantRetry = false
+			}
+		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
 		}
@@ -5367,7 +5568,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueNotInTriage(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -5698,7 +5899,7 @@ func resumeUnsafeFailureReason(reason string) bool {
 	// codex_resume_oversized is the strongest member of this set: a codex
 	// rollout only ever grows, so a thread whose resume response already
 	// overflowed the reader will overflow on every future attempt too.
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow", "codex_resume_oversized":
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow", "codex_resume_oversized", "opencode_clock_skew":
 		return true
 	default:
 		return false
@@ -5954,8 +6155,14 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
-	if err := guardIssueNotInTriage(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
-		if errors.Is(err, ErrIssueInTriage) {
+	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
+		if IsProjectInactive(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
+		if errors.Is(err, ErrIssueInTriage) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue is in triage",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -6134,6 +6341,9 @@ var ErrRerunProviderHeld = errors.New("rerun: target agent's model provider is o
 // rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
 // from trusted internal callers (tests, backfill) that have already gated.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	if err := RequireActiveIssueProject(ctx, s.Queries, issueID); err != nil {
+		return nil, err
+	}
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("load issue: %w", err)
@@ -6643,9 +6853,9 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 // task and isn't being retried) resetting the issue back to todo so the
 // daemon can pick it up again.
 //
-// All callers that surface a task as failed — sweepers, FailTask,
-// recover-orphans — funnel through here so the same UI-consistency
-// guarantees apply on every code path.
+// The bulk failure paths — sweepers and recover-orphans — funnel through
+// here so the same UI-consistency guarantees apply on each of them.
+// FailTaskWithTransition runs its own failure side effects.
 func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTaskQueue) int {
 	if len(tasks) == 0 {
 		return 0
@@ -6674,6 +6884,11 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 					"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
 					"error", err,
 				)
+			}
+			// Same terminal-failure comment FailTaskWithTransition posts, so
+			// swept tasks are not silent on their issue.
+			if t.IssueID.Valid && t.Error.String != "" {
+				s.createAgentComment(ctx, t.IssueID, t.AgentID, redact.Text(t.Error.String), "system", t.TriggerCommentID, t.ID)
 			}
 		}
 
@@ -8427,6 +8642,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		// row with no live mark; IssueToMapResolved resolves it for the rest.
 		"duplicate_of":     nil,
 		"project_id":       util.UUIDToPtr(issue.ProjectID),
+		"workflow_id":      util.UUIDToPtr(issue.WorkflowID),
 		"position":         issue.Position,
 		"stage":            util.Int4ToPtr(issue.Stage),
 		"start_date":       util.DateToPtr(issue.StartDate),

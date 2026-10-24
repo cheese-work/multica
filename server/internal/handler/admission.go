@@ -54,6 +54,7 @@ type DispatchReasonCode = dispatch.ReasonCode
 
 const (
 	ReasonQueued                = dispatch.ReasonQueued
+	ReasonProjectInactive       = dispatch.ReasonProjectInactive
 	ReasonCoalesced             = dispatch.ReasonCoalesced
 	ReasonDeferred              = dispatch.ReasonDeferred
 	ReasonJevRouted             = dispatch.ReasonJevRouted

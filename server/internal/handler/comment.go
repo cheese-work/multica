@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/governance/receipt"
@@ -1443,6 +1444,7 @@ type CreateCommentRequest struct {
 	DecisionRecord   bool     `json:"decision_record"`
 	DecisionVeto     bool     `json:"decision_veto"`
 	MessageIDs       []string `json:"message_ids"`
+	ContextMessageID string   `json:"context_message_id"`
 	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
 	ParentID         *string  `json:"parent_id"`
@@ -1718,8 +1720,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		h.createDecisionRecordComment(w, r, issue, req)
 		return
 	}
-	if len(req.MessageIDs) != 0 || req.EscalationClass != "" {
-		writeError(w, http.StatusBadRequest, "message_ids and escalation_class require decision_record")
+	if len(req.MessageIDs) != 0 || req.ContextMessageID != "" || req.EscalationClass != "" {
+		writeError(w, http.StatusBadRequest, "message_ids, context_message_id and escalation_class require decision_record")
 		return
 	}
 
@@ -2479,6 +2481,9 @@ func commentBlockedTargetOutcomes(targets []commentMentionTarget) []CommentTrigg
 // infrastructure error that stays an unclassified internal error rather than
 // leaking the raw message.
 func commentEnqueueFailureReason(err error) DispatchReasonCode {
+	if service.IsProjectInactive(err) {
+		return ReasonProjectInactive
+	}
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
@@ -2597,7 +2602,7 @@ func commentMergeTerminalOutcome(result commentMergeResult) (status DispatchStat
 func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) commentMergeResult {
 	// Re-attribute the coalescing run to the new comment's human atomically: the
 	// whole attribution snapshot moves, not just the person columns (MUL-4302).
-	params, err := h.commentMergeParams(ctx, issue, trigger, newTriggerCommentID, headSha)
+	params, attr, err := h.commentMergeParams(ctx, issue, trigger, newTriggerCommentID, headSha)
 	if err != nil {
 		// The new comment cannot be re-attributed. REFUSE the merge — keep the
 		// existing queued task on its original (precise) snapshot rather than
@@ -2637,17 +2642,18 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"agent_id", uuidToString(trigger.Agent.ID),
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
+	h.TaskService.RecordHumanDelegation(ctx, attr)
 	return commentMergeSucceeded
 }
 
 // commentMergeParams computes the re-attribution a fold stamps on the run. An
 // issue-assignee reaction is comment_source; a mention / thread-parent /
 // conversation hop is delegation (MUL-4302).
-func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) (db.MergeCommentIntoPendingTaskParams, error) {
+func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newTriggerCommentID pgtype.UUID, headSha pgtype.Text) (db.MergeCommentIntoPendingTaskParams, attribution.Result, error) {
 	isMention := trigger.Source != commentTriggerSourceIssueAssignee
 	attr, err := h.TaskService.AttributionForMergedComment(ctx, issue.WorkspaceID, newTriggerCommentID, isMention, trigger.Agent)
 	if err != nil {
-		return db.MergeCommentIntoPendingTaskParams{}, err
+		return db.MergeCommentIntoPendingTaskParams{}, attribution.Result{}, err
 	}
 	overlay, connectedApps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, trigger.Agent)
 	return db.MergeCommentIntoPendingTaskParams{
@@ -2665,7 +2671,7 @@ func (h *Handler) commentMergeParams(ctx context.Context, issue db.Issue, trigge
 		NewRuntimeMcpOverlay:    overlay,
 		NewRuntimeConnectedApps: connectedApps,
 		HeadSha:                 headSha,
-	}, nil
+	}, attr, nil
 }
 
 // foldCommentIntoQueuedIssueTask folds the comment into the agent's queued run
@@ -2682,7 +2688,7 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 	if err != nil || !pending {
 		return false
 	}
-	params, err := h.commentMergeParams(ctx, issue, trigger, commentID, headSha)
+	params, attr, err := h.commentMergeParams(ctx, issue, trigger, commentID, headSha)
 	if err != nil {
 		return false
 	}
@@ -2722,6 +2728,7 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 		"agent_id", uuidToString(trigger.Agent.ID),
 		"new_trigger_comment_id", uuidToString(commentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
+	h.TaskService.RecordHumanDelegation(ctx, attr)
 	return true
 }
 
@@ -2958,6 +2965,29 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
 	defer func() {
 		triggers, targets = filterCommentAuthorTriggers(triggers, targets, actorType, actorID)
+		if err := service.RequireActiveIssueProject(ctx, h.Queries, issue.ID); err != nil {
+			reason := ReasonInternalError
+			if service.IsProjectInactive(err) {
+				reason = ReasonProjectInactive
+			}
+			if len(targets) == 0 {
+				for _, trigger := range triggers {
+					target := commentMentionTarget{TargetType: "agent", TargetID: uuidToString(trigger.Agent.ID)}
+					if trigger.Squad != nil {
+						target.TargetType, target.TargetID = "squad", uuidToString(trigger.Squad.ID)
+					}
+					targets = append(targets, target)
+				}
+			}
+			triggers = nil
+			for index := range targets {
+				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
+					targets[index].ExecAgentID = ""
+					targets[index].Status = DispatchBlocked
+					targets[index].ReasonCode = reason
+				}
+			}
+		}
 	}()
 
 	// A persisted comment determines its thread; previews use the parent.
@@ -3744,6 +3774,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if !h.allowIssueProjectWrite(w, r, issueForSource) {
+		return
+	}
 	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {
 		return
 	}
@@ -4021,6 +4054,9 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 
 	if comment.DeletedAt.Valid {
 		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+	if !h.allowIssueProjectWrite(w, r, issue) {
 		return
 	}
 
@@ -4419,6 +4455,9 @@ func (h *Handler) loadCommentForActor(w http.ResponseWriter, r *http.Request) (d
 		return db.Comment{}, "", "", "", false
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if _, ok := h.loadIssueForUser(w, r, uuidToString(comment.IssueID)); !ok {
+		return db.Comment{}, "", "", "", false
+	}
 	return comment, workspaceID, actorType, actorID, true
 }
 

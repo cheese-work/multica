@@ -6,7 +6,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // A green head wakes the owner (pr_checks_passed) and, in a project
@@ -114,6 +116,19 @@ func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 	snap := newGreenSnapshot("green-adv-a")
 	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
 	status := func() string { s, _, _ := issueStatusAndAssignee(t, fx.child.ID); return s }
+	var mu sync.Mutex
+	var handoffs []map[string]string
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		p, ok := e.Payload.(map[string]any)
+		if !ok || p["source"] != "ci_green_advance" {
+			return
+		}
+		if h, ok := p["workflow_handoff"].(map[string]string); ok {
+			mu.Lock()
+			handoffs = append(handoffs, h)
+			mu.Unlock()
+		}
+	})
 
 	snap.set(t, prNumber, "green-adv-a", "FAILURE")
 	refresh()
@@ -130,6 +145,14 @@ func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 	if n := countPendingTasksForAgent(t, fx.child.ID, reviewer); n != 1 {
 		t.Fatalf("handoff queued %d runs for the next step's handler, want 1", n)
 	}
+	mu.Lock()
+	if len(handoffs) != 1 || handoffs[0]["run"] != "true" || handoffs[0]["to_id"] != reviewer {
+		t.Fatalf("ci_green_advance workflow_handoff payloads = %v, want one run=true to %s", handoffs, reviewer)
+	}
+	if _, ok := handoffs[0]["run_reason"]; ok {
+		t.Fatalf("ci_green_advance payload carries run_reason %q; the advance never suppresses a run", handoffs[0]["run_reason"])
+	}
+	mu.Unlock()
 
 	refresh()
 	if got := status(); got != "in_review" {
