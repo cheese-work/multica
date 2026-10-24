@@ -51,7 +51,7 @@ RETURNING *;
 -- no attachments).
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND (
     btrim(message.content, E' \t\r\n') <> ''
     OR COALESCE(message.failure_reason, '') <> ''
@@ -957,7 +957,7 @@ RETURNING task.*;
 DELETE FROM chat_message
 WHERE task_id = $1
   AND role = 'user'
-  AND message_kind <> 'onboarding_kickoff'
+  AND message_kind NOT IN ('onboarding_kickoff', 'wakeup_trigger')
 RETURNING *;
 
 -- name: ReleaseOnboardingKickoffFromTask :exec
@@ -1307,7 +1307,7 @@ LIMIT $2;
 -- ListChatMessagesPage and to the DM search predicate in chat_search.go.
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND NOT (
     message.role = 'user'
     AND EXISTS (
@@ -1602,11 +1602,13 @@ SELECT
     -- StatusPill can say why it is not moving. Stale on any other status; the
     -- renderer reads it only for the waiting one.
     task.wait_reason,
+    task.task_kind,
     message.id AS message_id,
-    COALESCE(message.content, '')::text AS content
+    -- A wakeup turn's input is the agent's own hidden instruction: never a preview.
+    (CASE WHEN message.message_kind = 'wakeup_trigger' THEN '' ELSE COALESCE(message.content, '') END)::text AS content
 FROM agent_task_queue AS task
 LEFT JOIN LATERAL (
-    SELECT input.id, input.content
+    SELECT input.id, input.content, input.message_kind
     FROM chat_message AS input
     WHERE input.task_id = COALESCE(task.chat_input_task_id, task.id)
       AND input.role = 'user'

@@ -111,6 +111,9 @@ cleared_draft_restores AS (
     DELETE FROM chat_draft_restore
     WHERE chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 ),
+cleared_chat_wakeups AS (
+    DELETE FROM chat_wakeup WHERE workspace_id = $1
+),
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM ws_installations)
 ),

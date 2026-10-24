@@ -860,7 +860,7 @@ const deleteUserChatMessageByTask = `-- name: DeleteUserChatMessageByTask :one
 DELETE FROM chat_message
 WHERE task_id = $1
   AND role = 'user'
-  AND message_kind <> 'onboarding_kickoff'
+  AND message_kind NOT IN ('onboarding_kickoff', 'wakeup_trigger')
 RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
 `
 
@@ -2561,7 +2561,7 @@ func (q *Queries) ListChatMessages(ctx context.Context, chatSessionID pgtype.UUI
 const listChatMessagesForFork = `-- name: ListChatMessagesForFork :many
 SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND (
     btrim(message.content, E' \t\r\n') <> ''
     OR COALESCE(message.failure_reason, '') <> ''
@@ -2719,7 +2719,7 @@ func (q *Queries) ListChatMessagesForLegacyTask(ctx context.Context, chatSession
 const listChatMessagesNewerPage = `-- name: ListChatMessagesNewerPage :many
 SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
 WHERE message.chat_session_id = $1
-  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff', 'wakeup_trigger')
   AND NOT (
     message.role = 'user'
     AND EXISTS (
@@ -3302,11 +3302,13 @@ SELECT
     -- StatusPill can say why it is not moving. Stale on any other status; the
     -- renderer reads it only for the waiting one.
     task.wait_reason,
+    task.task_kind,
     message.id AS message_id,
-    COALESCE(message.content, '')::text AS content
+    -- A wakeup turn's input is the agent's own hidden instruction: never a preview.
+    (CASE WHEN message.message_kind = 'wakeup_trigger' THEN '' ELSE COALESCE(message.content, '') END)::text AS content
 FROM agent_task_queue AS task
 LEFT JOIN LATERAL (
-    SELECT input.id, input.content
+    SELECT input.id, input.content, input.message_kind
     FROM chat_message AS input
     WHERE input.task_id = COALESCE(task.chat_input_task_id, task.id)
       AND input.role = 'user'
@@ -3332,6 +3334,7 @@ type ListPendingChatTasksForSessionRow struct {
 	Status     string             `json:"status"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	WaitReason pgtype.Text        `json:"wait_reason"`
+	TaskKind   pgtype.Text        `json:"task_kind"`
 	MessageID  pgtype.UUID        `json:"message_id"`
 	Content    string             `json:"content"`
 }
@@ -3358,6 +3361,7 @@ func (q *Queries) ListPendingChatTasksForSession(ctx context.Context, chatSessio
 			&i.Status,
 			&i.CreatedAt,
 			&i.WaitReason,
+			&i.TaskKind,
 			&i.MessageID,
 			&i.Content,
 		); err != nil {
