@@ -220,6 +220,7 @@ describe("StatusPicker in a project that uses a workflow", () => {
       name: "Delivery",
       description: "",
       is_default: false,
+      owner_id: null,
       steps: [
         { status_key: "todo", handler: { type: "none" }, instructions: "" },
         { status_key: "qa", handler: { type: "agent", id: "agent-1" }, instructions: "" },
@@ -315,7 +316,7 @@ describe("StatusPicker confirmed handoff", () => {
   it("sends the previewed binding with the status change", () => {
     catalogEntries = [IN_REVIEW];
     projectWorkflow = {
-      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, project_ids: [],
+      id: "wf", workspace_id: "workspace-1", name: "Delivery", description: "", is_default: false, owner_id: null, project_ids: [],
       created_at: "", updated_at: "",
       steps: [
         { status_key: "todo", handler: { type: "none" }, instructions: "" },
@@ -352,6 +353,7 @@ describe("StatusPicker on an issue outside any project (MUL-8121)", () => {
     name: "Default",
     description: "",
     is_default: true,
+    owner_id: null,
     steps: [
       { status_key: "todo", handler: { type: "none" }, instructions: "" },
       // A handoff on Default never fires outside a project, so it is not hinted.

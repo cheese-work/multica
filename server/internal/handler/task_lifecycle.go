@@ -213,6 +213,9 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	if writeProjectAdmissionError(w, err) {
+		return
+	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return

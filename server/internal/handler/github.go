@@ -1732,6 +1732,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	if p.Action == "closed" && p.PullRequest.Merged {
+		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	}
 	if p.PullRequest.Merged {
 		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
 			errs = append(errs, err)

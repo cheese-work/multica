@@ -27,6 +27,7 @@ export {
   useCreateIssueWorkflow,
   useUpdateIssueWorkflow,
   useDeleteIssueWorkflow,
+  useSetIssueWorkflow,
   useSetProjectWorkflow,
   useSetWorkflowHandoff,
 } from "./mutations";
