@@ -1,0 +1,48 @@
+# DRAFT admit sheet for Cheese. Not approved. Admits no build slice by itself.
+# Design: Direction A, selected by Cheese on CHE-1811 (comment 01a14243-3674-7796-aaf2-b9354a94065e).
+# Approved by the merge of PR #277 (merge commit 7c1261d6ff775a889d8e0a46a8d43685f1c5544f, read from GitHub).
+# Element ids are proposals: apps/mobile has no testID today. The UI PR adds every id named here.
+# Carried limits: accessibility scored 4 of 10 (switch labels, 32x18 px targets, chips need native validation);
+# current screens NOT-CAPTURED; native behavior and visual diff NOT-RUN.
+# DM defaults, CHE-1848 (PR #303, merged as 3ae6189563bbfe705d6baf1a0be0492969b7f510): both Direct messages switches
+# are OFF by default; only Inbox In-app is on. The mockup cell "Default / all on" (A.html) predates this and is superseded
+# for the Direct messages row: the first-run state is the "DM In-app off" cell. DM replies reach the Inbox only after an
+# opt-in. Decision pings from issue agents are a separate record and are not affected.
+# Verified against merged N2 (PR #276, merge commit 6c92e0c6820c9ae3512a0b5b38ad701bc0089a1e): the dm_reply inbox item stores
+# the DM title in its title field (server/internal/dmnotify/dmnotify.go:58), body stays empty, so a row can show the DM title.
+issue: CHE-1797
+design: design/dm-notifications-mobile/rev-1/A.html @ 7c1261d6ff775a889d8e0a46a8d43685f1c5544f
+pages:
+  - id: settings-notifications
+    url: /<workspace-slug>/more/settings/notifications   # mobile route; base and build, no web preview
+    keep:
+      - notif-group-assignments
+      - notif-group-status-changes
+      - notif-group-comments
+      - notif-group-mentions
+      - notif-group-updates
+      - notif-group-agent-activity
+      - notif-system-notifications
+    change:
+      - notif-inbox-section: "title stays 'Inbox notifications'; gains an In-app switch row at the top"
+      - notif-inbox-inapp-switch: "new: In-app switch for Inbox; off dims and locks the six event rows; save failure reverts the switch"
+      - notif-dm-section: "new section 'Direct messages'"
+      - notif-dm-inapp-switch: "new: In-app switch for DMs; OFF by default (CHE-1848), so the first-run state is the 'DM In-app off' mockup cell; helper line when off says DM replies won't reach the Inbox"
+      - notif-offline-banner: "new: warning banner and locked switches while disconnected"
+    remove: []
+  - id: inbox-tab
+    url: /<workspace-slug>/inbox   # mobile route, Inbox tab
+    keep:
+      - inbox-row
+      - inbox-row-swipe-archive
+      - inbox-header-menu
+      - inbox-header-search
+      - inbox-header-create
+      - inbox-empty-state
+      - inbox-tab-badge
+    change:
+      - inbox-filter-chips: "new: All, Unread, Direct messages under the header"
+      - inbox-dm-row: "new: dm_reply row with chat glyph where the status icon sits; shows the DM title from the item's title field; second line New reply / N new replies / Decision needed; tap opens the DM and marks it read; appears only after the user turns DM In-app on"
+      - inbox-filter-empty-state: "new: 'No direct messages' when the DM filter has no rows"
+      - inbox-offline-banner: "new: warning banner over saved items while disconnected"
+    remove: []
