@@ -277,11 +277,11 @@ func (s *TaskService) forgetTaskReclaim(task db.AgentTaskQueue) {
 // later returned in claim / task-history responses, so a foreign comment UUID
 // reaching an enqueue/merge path must NOT leak another workspace's text even in
 // truncated form (MUL-4252).
-func (s *TaskService) buildCommentTriggerSummary(ctx context.Context, workspaceID, commentID pgtype.UUID) pgtype.Text {
+func (s *TaskService) buildCommentTriggerSummary(ctx context.Context, queries *db.Queries, workspaceID, commentID pgtype.UUID) pgtype.Text {
 	if !commentID.Valid {
 		return pgtype.Text{}
 	}
-	comment, err := s.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+	comment, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
 		ID:          commentID,
 		WorkspaceID: workspaceID,
 	})
@@ -334,7 +334,7 @@ func (s *TaskService) AttributionForMergedComment(ctx context.Context, workspace
 // path (MUL-4195) to refresh a coalesced task's trigger_summary to the newest
 // trigger comment's snapshot. workspaceID scopes the lookup (MUL-4252).
 func (s *TaskService) BuildCommentTriggerSummary(ctx context.Context, workspaceID, commentID pgtype.UUID) pgtype.Text {
-	return s.buildCommentTriggerSummary(ctx, workspaceID, commentID)
+	return s.buildCommentTriggerSummary(ctx, s.Queries, workspaceID, commentID)
 }
 
 // BuildRuntimeMCPOverlayForMerge recomputes the Composio MCP overlay +
@@ -1374,7 +1374,7 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
 		CoalescedCommentIds:  coalescedCommentIDs,
-		TriggerSummary:       s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
+		TriggerSummary:       s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID),
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 		HandoffNote:          pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
 		OriginatorUserID:     originatorUserID,
@@ -1465,6 +1465,11 @@ func (s *TaskService) PublishTaskEnqueued(ctx context.Context, task db.AgentTask
 // deriving it from the issue assignee.
 func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, origin)
+}
+
+func (s *TaskService) EnqueueTaskForMentionInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, triggerCommentID, actorUserID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, origin)
+	return task, err
 }
 
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
@@ -1563,7 +1568,7 @@ func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
 		CoalescedCommentIds:  coalescedCommentIDs,
-		TriggerSummary:       s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
+		TriggerSummary:       s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID),
 		IsLeaderTask:         pgtype.Bool{Bool: isLeader, Valid: isLeader},
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 		HandoffNote:          pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
@@ -7495,7 +7500,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 
 		if merged, err := s.Queries.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
 			CommentID:      target.comment.ID,
-			TriggerSummary: s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
+			TriggerSummary: s.buildCommentTriggerSummary(ctx, s.Queries, target.issue.WorkspaceID, target.comment.ID),
 			IssueID:        target.issue.ID,
 			AgentID:        target.agent.ID,
 		}); err == nil {
@@ -7525,7 +7530,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			IssueID:              target.issue.ID,
 			Priority:             priorityToInt(target.issue.Priority),
 			TriggerCommentID:     target.comment.ID,
-			TriggerSummary:       s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
+			TriggerSummary:       s.buildCommentTriggerSummary(ctx, s.Queries, target.issue.WorkspaceID, target.comment.ID),
 			IsLeaderTask:         pgtype.Bool{Bool: target.source.IsLeaderTask, Valid: target.source.IsLeaderTask},
 			SquadID:              target.source.SquadID,
 			OriginatorUserID:     originator,
