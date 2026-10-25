@@ -57,7 +57,7 @@ else:
         stub.chmod(0o755)
 
     def approval_state(self, heads, checks=None, files=None, wait_seconds="60"):
-        protected = self.workflow["jobs"]["prepare-release-candidate"]
+        protected = self.workflow["jobs"]["approve-c00"]
         self.assertEqual(protected["environment"], "c00-production")
         dependencies = protected.get("needs", [])
         if isinstance(dependencies, str):
@@ -68,6 +68,7 @@ else:
         preflight = self.workflow["jobs"]["candidate-preflight"]
         self.assertNotIn("environment", preflight)
         self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", protected["if"])
+        self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", self.workflow["jobs"]["prepare-release-candidate"]["if"])
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
         output = self.directory / "output"
         summary = self.directory / "summary"

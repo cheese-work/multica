@@ -57,15 +57,60 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  # One deploy at a time, repo-wide: a second dispatch while one is running
-  # queues instead of racing a second SSH session against the same compose
-  # stack. deploy.sh's own flock on C00 is the second, host-local layer of
-  # the same guarantee for anyone who runs it by hand outside this workflow.
-  group: cd-deploy-c00
-  cancel-in-progress: false
-
+# No workflow-level concurrency (CHE-2027): a run waiting for approval would
+# hold it and block every newer version behind it. Instead the approval gate
+# below is replaced by a newer version, and the two jobs that touch C00
+# (prepare-release-candidate, deploy) share one never-cancelled lock group.
+#
+# The lock uses `queue: max`. The default (`single`) keeps ONE pending job and
+# cancels it for any newcomer, whatever its version, so a stale stage joining
+# late would evict the newest candidate; a freshness check made before the join
+# cannot close that gap, since check and join are not atomic. `max` queues up
+# to 100 pending jobs FIFO and evicts none. A stale stage that reaches its turn
+# is skipped by the checks below, or runs read-only (prepare-release-candidate)
+# and stops at deploy-gate. `cancel-in-progress` stays off (the default): it
+# cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
+  # ---------------------------------------------------------------------------
+  # The ONE approval per version. It uses c00-production, the protected
+  # environment (required reviewer, wait timer) the C00 jobs always used, and
+  # holds no secrets. The jobs that use the C00 secrets run in c00-runtime,
+  # which has no reviewers, so they do not ask again. c00-production keeps its
+  # protection on purpose: runs started by the previous workflow, and reruns of
+  # their jobs, still use it. A newer version entering this group cancels an
+  # older one that is still waiting for approval. Nothing in this group touches
+  # C00, so cancelling it can never interrupt a deploy.
+  # ---------------------------------------------------------------------------
+  approve-c00:
+    needs: candidate-preflight
+    # The manual path skips candidate-preflight, so this must not be skipped
+    # just because that job did not run.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    runs-on: ubuntu-latest
+    environment: c00-production
+    concurrency:
+      group: cd-deploy-c00-approval
+      cancel-in-progress: true
+    outputs:
+      current: ${{ steps.guard.outputs.current || 'true' }}
+    steps:
+      # Approval can arrive hours after the run started. Re-check right after
+      # it, before any C00 job runs. The manual path deploys an explicit
+      # manifest and may legitimately name a non-head ref, so it is exempt.
+      - name: Checkout the workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Skip if a newer main candidate arrived while waiting
+        id: guard
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
+
   candidate-preflight:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, cheese-x99]
@@ -101,18 +146,21 @@ jobs:
   # release-candidate by binding it to C00's CURRENT baseline tuple.
   #
   # This job needs C00 SSH access to read that baseline, so it runs on the
-  # same C00-reachable runner and the same protected environment as the
-  # deploy job. It reads and writes nothing on C00 beyond a temp file it
+  # same C00-reachable runner and the same secrets environment (c00-runtime)
+  # as the deploy job. Approval was already given at approve-c00. It reads and writes nothing on C00 beyond a temp file it
   # removes: capture-tuple.sh inspects containers and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    needs: candidate-preflight
-    if: needs.candidate-preflight.outputs.eligible == 'true'
+    needs: [candidate-preflight, approve-c00]
+    if: needs.candidate-preflight.outputs.eligible == 'true' && needs.approve-c00.outputs.current == 'true'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
     # Up to 60 minutes waiting for CI's required checks plus the original
     # 15-minute budget for the baseline read and evidence issue.
     timeout-minutes: 80
-    environment: c00-production
+    environment: c00-runtime
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
     steps:
@@ -317,11 +365,12 @@ jobs:
     # Admission is a read-only evidence check — it never touches C00 — so it
     # can run on a regular GitHub-hosted runner. Only the deploy job below
     # needs the dedicated C00-reachable runner and secrets.
-    needs: prepare-release-candidate
+    needs: [approve-c00, prepare-release-candidate]
     # The manual path skips prepare-release-candidate entirely (its caller
     # supplies an already-issued manifest), so this must not be skipped just
-    # because that job did not run.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
+    # because that job did not run. Nothing runs without the approval, and a
+    # superseded candidate stops here.
+    if: always() && needs.approve-c00.result == 'success' && needs.approve-c00.outputs.current == 'true' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
@@ -417,29 +466,81 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  deploy:
+  # Freshness check before the lock. Admission can finish long after approval;
+  # a stale candidate is skipped here instead of waiting in the queue for its
+  # turn. Not atomic with the join, so deploy checks again once it has the lock.
+  # No concurrency group, no secrets, nothing on C00.
+  deploy-gate:
     needs: admission
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.guard.outputs.current || 'true' }}
+    steps:
+      - name: Checkout the workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Skip if a newer main candidate arrived during admission
+        id: guard
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
+
+  deploy:
+    needs: [admission, deploy-gate]
+    if: needs.deploy-gate.outputs.current == 'true'
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
     # whichever self-hosted runner has network access to C00.
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
-    environment: c00-production
+    environment: c00-runtime
+    # Shared with prepare-release-candidate: one C00 stage at a time, queued
+    # FIFO. Never cancelled and never evicted, so a newer version can neither
+    # interrupt a deploy that has started nor displace a queued newer one.
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
     steps:
+      # A deploy can wait in the lock behind a running one. Re-check as soon
+      # as it gets the lock (deploy-gate only covers the time before it
+      # queued): a newer main candidate replaces it, and nothing below runs.
+      # The manual path may name a non-head ref and is exempt.
+      - name: Checkout the workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Skip if a newer main candidate arrived while queued
+        id: guard
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
+
       - name: Checkout
+        if: steps.guard.outputs.current != 'false'
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.admission.outputs.ref }}
           fetch-depth: 1
 
       - name: Download exact cutover input layout
+        if: steps.guard.outputs.current != 'false'
         uses: actions/download-artifact@v4
         with:
           name: cd-deploy-admitted-input
           path: cutover-input
 
       - name: Deploy to C00 over SSH
+        if: steps.guard.outputs.current != 'false'
         shell: bash
         env:
           # The only C00 credentials in this repository. Scoped to this
@@ -581,7 +682,7 @@ jobs:
           exit "$deploy_status"
 
       - name: Record outcome
-        if: always()
+        if: always() && steps.guard.outputs.current != 'false'
         shell: bash
         run: |
           if [ "${{ job.status }}" = "success" ]; then
