@@ -485,6 +485,13 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
     environment: c00-runtime
+    # A job-level block replaces the workflow-level one, so contents and
+    # actions are repeated. packages: read lets the job's own token pull the
+    # private images; only this job gets it.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     # Shared with prepare-release-candidate: one C00 stage at a time, queued
     # FIFO. Never cancelled and never evicted, so a newer version can neither
     # interrupt a deploy that has started nor displace a queued newer one.
@@ -553,13 +560,16 @@ jobs:
           # as the real absolute path, not the shorthand this comment used
           # before.
           C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
-          # read:packages-only PAT (CHE-549) — C00 has no ambient registry
-          # credential, so deploy.sh logs in to ghcr.io with this immediately
-          # before its pull step and logs out unconditionally afterwards (see
-          # deploy.sh's own comment). Forwarded to the cutover shell as an
-          # exported var, never interpolated into the command line, so it
-          # never appears in a process listing or shell history on C00.
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          # This job's own token, read-only for packages (CHE-549, CHE-2027):
+          # C00 has no ambient registry credential, so deploy.sh logs in to
+          # ghcr.io with this immediately before its pull step and logs out
+          # unconditionally afterwards (see deploy.sh's own comment). It
+          # expires with the job, so no personal access token is stored. The
+          # package must grant this repository read access (Manage Actions
+          # access). Forwarded to the cutover shell as an exported var, never
+          # interpolated into the command line, so it never appears in a
+          # process listing or shell history on C00.
+          GHCR_PULL_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           manifest_path="cutover-input/manifest.json"

@@ -777,10 +777,14 @@ read was denied to every credential available on C00 — the org/App
 `packages: read` permission governs the GitHub API, not an unauthenticated
 `docker pull`, and there is no per-package "add an App" control for a
 private container package (only repositories can be added to that list).
-The fix is a dedicated registry credential rather than any App/org
-permission change: a `read:packages`-only classic PAT, stored as the
-`GHCR_PULL_TOKEN` environment secret on `c00-runtime` (and still on `c00-production` for the previous workflow; scoped there, not
-as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
+The fix is a registry credential rather than any App/org permission change.
+CHE-549 first used a `read:packages`-only classic PAT stored as the
+`GHCR_PULL_TOKEN` environment secret. CHE-2027 replaced it: the `deploy` job
+now has `packages: read` and passes its own `${{ github.token }}` as
+`GHCR_PULL_TOKEN`, so no PAT is stored, rotated or revoked. This needs each
+package (`multica-backend`, `multica-web`) to list `cheese-work/multica` under
+Package settings, Manage Actions access, with role Read. The token is scoped
+to the job, so D1's `cd-qualification.yml` stays credential-free.
 `deploy.sh` and `cutover.sh` (`deploy-lib.sh`) log in to `ghcr.io` with it
 immediately before the pull step using an isolated run-scoped `0700`
 `DOCKER_CONFIG` temporary directory allocated under `RUNNER_TEMP` (or
