@@ -42,21 +42,32 @@ if endpoint.endswith("git/ref/heads/main"):
     counter.write_text(str(index + 1))
     heads = json.loads(os.environ["STUB_HEADS"])
     print(heads[min(index, len(heads) - 1)])
+elif "/compare/" in endpoint:
+    if endpoint.endswith("per_page=1"):
+        print("ahead")
+    else:
+        print("\\n".join(json.loads(os.environ["STUB_NEWER"])))
+elif "/check-runs?" in endpoint and endpoint.split("/commits/")[1].split("/")[0] != os.environ["SOURCE_SHA"]:
+    # A newer main commit, read by the freshness guard.
+    for name, conclusion in json.loads(os.environ["STUB_NEWER_CHECKS"]).items():
+        print(json.dumps({"name": name, "conclusion": conclusion, "id": 1}))
 elif "/check-runs?" in endpoint:
     counter = state / "check-reads"
     index = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(index + 1))
     polls = json.loads(os.environ["STUB_CHECKS"])
-    for name, conclusion in polls[min(index, len(polls) - 1)].items():
-        print(json.dumps({"name": name, "conclusion": conclusion}))
-elif endpoint.endswith("commits/" + os.environ["SOURCE_SHA"]):
+    poll = polls[min(index, len(polls) - 1)]
+    runs = poll if isinstance(poll, list) else [{"name": n, "conclusion": c, "id": 1} for n, c in poll.items()]
+    for run in runs:
+        print(json.dumps(run))
+elif "/commits/" in endpoint:
     print(json.dumps({"files": json.loads(os.environ["STUB_FILES"]), "truncated": False}))
 else:
     sys.exit("unexpected API request: " + endpoint)
 ''')
         stub.chmod(0o755)
 
-    def approval_state(self, heads, checks=None, files=None, wait_seconds="60"):
+    def approval_state(self, heads, checks=None, files=None, wait_seconds="60", newer_checks=SUCCESS):
         protected = self.workflow["jobs"]["approve-c00"]
         self.assertEqual(protected["environment"], "c00-production")
         dependencies = protected.get("needs", [])
@@ -82,6 +93,8 @@ else:
             "STUB_STATE": str(self.directory),
             "STUB_HEADS": json.dumps(heads),
             "STUB_CHECKS": json.dumps(checks if checks is not None else [SUCCESS]),
+            "STUB_NEWER": json.dumps([NEW_HEAD]),
+            "STUB_NEWER_CHECKS": json.dumps(newer_checks),
             "STUB_FILES": json.dumps(files if files is not None else ["server/only.go"]),
             "CHECKS_WAIT_SECONDS": wait_seconds,
             "CHECKS_POLL_SECONDS": "0",
@@ -99,6 +112,10 @@ else:
         state, reason = self.approval_state([NEW_HEAD], [{**SUCCESS, "backend": "cancelled"}])
         self.assertEqual(state, "skipped", reason)
         self.assertFalse((self.directory / "check-reads").exists())
+
+    def test_newer_commit_that_cannot_deploy_does_not_hide_the_candidate(self):
+        state, reason = self.approval_state([NEW_HEAD], newer_checks={**SUCCESS, "backend": "failure"})
+        self.assertEqual(state, "waiting", reason)
 
     def test_candidate_superseded_while_checks_settle_skips(self):
         state, reason = self.approval_state(
@@ -119,6 +136,28 @@ else:
                     [SOURCE_SHA], [{**SUCCESS, "backend": conclusion}], wait_seconds="0",
                 )
                 self.assertEqual(state, "skipped", reason)
+
+    def test_rerun_that_passed_replaces_the_earlier_failure(self):
+        # GitHub lists check runs newest first; the earlier failed run of a
+        # flaky job must not hide the green re-run (CHE-2027).
+        rerun = [
+            {"name": "backend", "conclusion": "success", "id": 20},
+            {"name": "backend", "conclusion": "failure", "id": 10},
+            {"name": "frontend", "conclusion": "success", "id": 11},
+            {"name": "cd-qualification", "conclusion": "success", "id": 12},
+        ]
+        state, reason = self.approval_state([SOURCE_SHA], [rerun], wait_seconds="0")
+        self.assertEqual(state, "waiting", reason)
+
+    def test_later_failure_still_blocks_after_an_earlier_pass(self):
+        rerun = [
+            {"name": "backend", "conclusion": "failure", "id": 20},
+            {"name": "backend", "conclusion": "success", "id": 10},
+            {"name": "frontend", "conclusion": "success", "id": 11},
+            {"name": "cd-qualification", "conclusion": "success", "id": 12},
+        ]
+        state, reason = self.approval_state([SOURCE_SHA], [rerun], wait_seconds="0")
+        self.assertEqual(state, "skipped", reason)
 
     def test_missing_required_mobile_check_is_not_excused(self):
         state, reason = self.approval_state([SOURCE_SHA], files=["apps/mobile/app.tsx"], wait_seconds="0")
