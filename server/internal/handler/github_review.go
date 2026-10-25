@@ -194,7 +194,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 }
 
 func githubReviewContent(mention string, pull db.GithubPullRequest, payload *ghReviewPayload, comments []ghsnapshot.ReviewComment) string {
-	neutralize := func(text string) string { return strings.ReplaceAll(text, "mention://", "mention&#58;//") }
+	neutralize := func(text string) string { return strings.ReplaceAll(text, "mention://", "mention: //") }
 	pullURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pull.RepoOwner, pull.RepoName, pull.PrNumber)
 	var content strings.Builder
 	fmt.Fprintf(&content, "%s\n\nGitHub PR review by %s (%s): %s#pullrequestreview-%d\n\n%s", mention, neutralize(payload.Review.User.Login), payload.Review.State, pullURL, payload.Review.ID, neutralize(payload.Review.Body))
@@ -207,6 +207,10 @@ func githubReviewContent(mention string, pull db.GithubPullRequest, payload *ghR
 func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, authorID, userID, pullID pgtype.UUID, reviewID int64, content string) error {
 	key := githubReviewKey(issue.ID, pullID, reviewID)
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
+	params, err := h.TaskService.PrepareTaskForMention(ctx, issue, authorID, commentID, userID, service.OriginDerived)
+	if err != nil {
+		return err
+	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -229,7 +233,7 @@ func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, 
 	if err != nil {
 		return err
 	}
-	task, err := h.TaskService.EnqueueTaskForMentionInTx(ctx, queries, issue, authorID, commentID, userID, service.OriginDerived)
+	task, err := h.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
 	if err != nil {
 		return err
 	}

@@ -16,9 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/yuin/goldmark"
 )
 
 type githubReviewTransport func(*http.Request) (*http.Response, error)
@@ -146,10 +150,15 @@ func TestGitHubPRReviewSubmittedUsesExplicitAuthorBindingForLegacyPR(t *testing.
 }
 
 func (fixture githubReviewFixture) post(event, secret, delivery string) *httptest.ResponseRecorder {
+	return fixture.postContext(context.Background(), event, secret, delivery)
+}
+
+func (fixture githubReviewFixture) postContext(ctx context.Context, event, secret, delivery string) *httptest.ResponseRecorder {
 	body, _ := json.Marshal(fixture.payload)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	request := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(body))
+	request = request.WithContext(ctx)
 	request.Header.Set("X-GitHub-Event", event)
 	request.Header.Set("X-GitHub-Delivery", delivery)
 	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
@@ -255,10 +264,24 @@ func TestGitHubPRReviewSubmittedWakesOnceForEachReview(t *testing.T) {
 
 func TestGitHubPRReviewSubmittedConcurrentRedelivery(t *testing.T) {
 	fixture := newGitHubReviewFixture(t)
+	config := testPool.Config().Copy()
+	config.MaxConns = 1
+	config.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	queries := db.New(pool)
+	fixture.handler.Queries = queries
+	fixture.handler.TxStarter = pool
+	fixture.handler.TaskService = service.NewTaskService(queries, pool, fixture.handler.Hub, fixture.handler.Bus, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var workers sync.WaitGroup
 	statuses := make(chan int, 6)
 	for delivery := 0; delivery < 6; delivery++ {
-		workers.Go(func() { statuses <- fixture.post("pull_request_review", fixture.secret, "concurrent").Code })
+		workers.Go(func() { statuses <- fixture.postContext(ctx, "pull_request_review", fixture.secret, "concurrent").Code })
 	}
 	workers.Wait()
 	close(statuses)
@@ -272,6 +295,25 @@ func TestGitHubPRReviewSubmittedConcurrentRedelivery(t *testing.T) {
 	}
 	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 1 {
 		t.Fatalf("concurrent review comments = %d, want 1", count)
+	}
+}
+
+func TestGitHubPRReviewContentDoesNotRenderExternalMentionChips(t *testing.T) {
+	payload := &ghReviewPayload{}
+	payload.Review.Body = "[@Other](mention://agent/other)"
+	content := githubReviewContent("[@Author](mention://agent/author)", db.GithubPullRequest{}, payload,
+		[]ghsnapshot.ReviewComment{{Body: "[@Inline](mention://agent/inline)"}})
+	var rendered bytes.Buffer
+	if err := goldmark.Convert([]byte(content), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), `href="mention://agent/author"`) {
+		t.Fatal("trusted author mention did not render")
+	}
+	for _, target := range []string{"other", "inline"} {
+		if strings.Contains(rendered.String(), `href="mention://agent/`+target+`"`) {
+			t.Errorf("external %s mention rendered as a chip link: %s", target, rendered.String())
+		}
 	}
 }
 
