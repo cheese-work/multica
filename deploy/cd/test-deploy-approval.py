@@ -206,6 +206,13 @@ elif "/compare/" in endpoint:
     if endpoint.endswith("per_page=1"):
         print(os.environ.get("STUB_STATUS", "ahead"))
     else:
+        failing = os.environ.get("STUB_API_ERROR")
+        if failing == "list-first":
+            sys.exit("simulated GitHub API failure")
+        if failing == "list-later":
+            # --paginate prints the pages it got before a later page fails.
+            print("\\n".join(newer[:-1]))
+            sys.exit("simulated GitHub API failure")
         print("\\n".join(newer))
 elif "/check-runs?" in endpoint:
     sha = endpoint.split("/commits/")[1].split("/")[0]
@@ -281,10 +288,13 @@ else:
         self.assertEqual(output.strip(), "current=false")
 
     def test_api_failure_fails_closed(self):
-        for failing in ["all", "compare"]:
+        # list-later: the newest commit, which would supersede, is on the page
+        # that fails; the older broken one on the first page alone says current.
+        checks = {MIDDLE: BROKEN, NEW_HEAD: SUCCESS}
+        for failing in ["all", "compare", "list-first", "list-later"]:
             with self.subTest(failing=failing):
                 result, output, _ = self.run_guard(
-                    NEW_HEAD, [NEW_HEAD], {NEW_HEAD: BROKEN}, api_error=failing,
+                    NEW_HEAD, [MIDDLE, NEW_HEAD], checks, api_error=failing,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(output.strip(), "")

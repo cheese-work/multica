@@ -33,7 +33,9 @@ status="$(gh api "${compare}?per_page=1" --jq '.status')"
 [ "$status" = "ahead" ] || superseded_by "$main_sha"
 
 # Oldest first; the API stops at 250 commits, too far behind to trust.
-mapfile -t newer < <(gh api "${compare}?per_page=100" --paginate --jq '.commits[].sha')
+# Read into a variable first: mapfile would hide a failed or partial listing.
+history="$(gh api "${compare}?per_page=100" --paginate --jq '.commits[].sha')"
+mapfile -t newer <<< "$history"
 [ "${#newer[@]}" -lt 250 ] || superseded_by "$main_sha"
 
 work_dir="$(mktemp -d)"
