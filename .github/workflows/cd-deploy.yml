@@ -103,6 +103,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Setup Node
+        if: github.event_name == 'workflow_run'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the YAML parser the guard's check reader needs
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
       - name: Skip if a newer main candidate arrived while waiting
         id: guard
         if: github.event_name == 'workflow_run'
@@ -482,6 +493,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Setup Node
+        if: github.event_name == 'workflow_run'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the YAML parser the guard's check reader needs
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
       - name: Skip if a newer main candidate arrived during admission
         id: guard
         if: github.event_name == 'workflow_run'
@@ -523,6 +545,17 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+
+      - name: Setup Node
+        if: github.event_name == 'workflow_run'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the YAML parser the guard's check reader needs
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
 
       - name: Skip if a newer main candidate arrived while queued
         id: guard
