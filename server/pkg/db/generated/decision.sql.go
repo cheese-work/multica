@@ -11,6 +11,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const attachDecisionAskToComment = `-- name: AttachDecisionAskToComment :one
+UPDATE comment SET decision_request_id = $1, decision_comment_kind = 'ask'
+WHERE workspace_id = $2 AND id = $3
+RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind
+`
+
+type AttachDecisionAskToCommentParams struct {
+	DecisionRequestID pgtype.UUID `json:"decision_request_id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	CommentID         pgtype.UUID `json:"comment_id"`
+}
+
+func (q *Queries) AttachDecisionAskToComment(ctx context.Context, arg AttachDecisionAskToCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, attachDecisionAskToComment, arg.DecisionRequestID, arg.WorkspaceID, arg.CommentID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.DecisionRequestID,
+		&i.DecisionAnswerID,
+		&i.DecisionIntentID,
+		&i.DecisionCommentKind,
+	)
+	return i, err
+}
+
 const cancelWithdrawnDecisionRequest = `-- name: CancelWithdrawnDecisionRequest :one
 UPDATE decision_request SET status = 'cancelled', cancel_reason = $1,
     cancel_notice_posted_at = clock_timestamp()
@@ -599,6 +643,28 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 	return i, err
 }
 
+const getLastAssistantMessageBefore = `-- name: GetLastAssistantMessageBefore :one
+SELECT id FROM chat_message
+WHERE chat_session_id = $1 AND role = 'assistant' AND message_kind = 'message'
+  AND created_at < $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLastAssistantMessageBeforeParams struct {
+	SessionID pgtype.UUID        `json:"session_id"`
+	Before    pgtype.Timestamptz `json:"before"`
+}
+
+// The agent's own last reply before a message: the options a bare reply chose
+// between, attestable with --context-message.
+func (q *Queries) GetLastAssistantMessageBefore(ctx context.Context, arg GetLastAssistantMessageBeforeParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLastAssistantMessageBefore, arg.SessionID, arg.Before)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
 WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
 UPDATE decision_answer answer SET
@@ -644,6 +710,219 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const latestDecisionRequestLane = `-- name: LatestDecisionRequestLane :one
+SELECT chat_session_id FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2
+  AND asking_agent_id = $3 AND human_user_id = $4
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestDecisionRequestLaneParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+}
+
+func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecisionRequestLaneParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, latestDecisionRequestLane,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AskingAgentID,
+		arg.HumanUserID,
+	)
+	var chat_session_id pgtype.UUID
+	err := row.Scan(&chat_session_id)
+	return chat_session_id, err
+}
+
+const listChatDecisionContext = `-- name: ListChatDecisionContext :many
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
+       COALESCE(issue.title, '')::text AS issue_title,
+       count(*) OVER ()::bigint AS total
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.chat_session_id = $2
+  AND request.origin = 'asked' AND request.status = 'open'
+  AND ping.created_at < $3
+ORDER BY ping.created_at DESC, request.id DESC
+LIMIT $4
+`
+
+type ListChatDecisionContextParams struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Before        pgtype.Timestamptz `json:"before"`
+	RowLimit      int32              `json:"row_limit"`
+}
+
+type ListChatDecisionContextRow struct {
+	ID             pgtype.UUID `json:"id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
+	PingMessageID  pgtype.UUID `json:"ping_message_id"`
+	Ask            string      `json:"ask"`
+	IssueKey       string      `json:"issue_key"`
+	IssueTitle     string      `json:"issue_title"`
+	Total          int64       `json:"total"`
+}
+
+// The asks a bare reply in a DM may be answering: open, asked, in this
+// workspace and DM, with the ping before the first reply being claimed. The ping
+// is an assistant row no task produced, so it is in neither the resumed provider
+// session nor the user-only prompt input. total counts every eligible ask in the
+// same snapshot before the display limit, so a limit never turns several asks
+// into one. Answered or cancelled asks, newer pings and decision notes are not
+// eligible and never counted.
+func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionContext,
+		arg.WorkspaceID,
+		arg.ChatSessionID,
+		arg.Before,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatDecisionContextRow{}
+	for rows.Next() {
+		var i ListChatDecisionContextRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueCommentID,
+			&i.PingMessageID,
+			&i.Ask,
+			&i.IssueKey,
+			&i.IssueTitle,
+			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
+SELECT message.content FROM chat_message message
+WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2 AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT $3
+`
+
+type ListChatDecisionReferencesParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+// Server-authored decision notes (cancellations, recorded answers) posted after
+// the session's previous task claimed its input; see ListChatDecisionContext
+// for why the boundary is the claim. They reference a request by text, not by
+// id, so they are read by message rather than through decision_request.
+func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDecisionReferencesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionReferences, arg.ChatSessionID, arg.TaskID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			return nil, err
+		}
+		items = append(items, content)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionCards = `-- name: ListDecisionCards :many
+SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
+       answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
+       request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
+       issue.number AS issue_number, workspace.issue_prefix
+FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN issue ON issue.id = request.issue_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1
+  AND (answer.id = ANY($2::uuid[]) OR answer.chat_message_ids && $3::uuid[])
+ORDER BY answer.created_at, answer.id
+`
+
+type ListDecisionCardsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	AnswerIds   []pgtype.UUID `json:"answer_ids"`
+	MessageIds  []pgtype.UUID `json:"message_ids"`
+}
+
+type ListDecisionCardsRow struct {
+	AnswerID            pgtype.UUID        `json:"answer_id"`
+	ChatMessageIds      []pgtype.UUID      `json:"chat_message_ids"`
+	SourceChatSessionID pgtype.UUID        `json:"source_chat_session_id"`
+	IssueCommentID      pgtype.UUID        `json:"issue_comment_id"`
+	EffectiveAt         pgtype.Timestamptz `json:"effective_at"`
+	WokenAt             pgtype.Timestamptz `json:"woken_at"`
+	DisclaimedAt        pgtype.Timestamptz `json:"disclaimed_at"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	EscalationClass     string             `json:"escalation_class"`
+	HumanUserID         pgtype.UUID        `json:"human_user_id"`
+	AskingAgentID       pgtype.UUID        `json:"asking_agent_id"`
+	IssueNumber         int32              `json:"issue_number"`
+	IssuePrefix         string             `json:"issue_prefix"`
+}
+
+// One row per answer that a DM bubble was quoted into, or that a comment/
+// reference message names. Matches on the source messages (GIN index) and on
+// explicit answer ids so one call serves the issue timeline and the DM list.
+func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsParams) ([]ListDecisionCardsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionCards, arg.WorkspaceID, arg.AnswerIds, arg.MessageIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionCardsRow{}
+	for rows.Next() {
+		var i ListDecisionCardsRow
+		if err := rows.Scan(
+			&i.AnswerID,
+			&i.ChatMessageIds,
+			&i.SourceChatSessionID,
+			&i.IssueCommentID,
+			&i.EffectiveAt,
+			&i.WokenAt,
+			&i.DisclaimedAt,
+			&i.IssueID,
+			&i.EscalationClass,
+			&i.HumanUserID,
+			&i.AskingAgentID,
+			&i.IssueNumber,
+			&i.IssuePrefix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDecisionIntentTargets = `-- name: ListDecisionIntentTargets :many

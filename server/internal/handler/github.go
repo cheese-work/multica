@@ -1407,6 +1407,23 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
+	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+		(pr.State == "open" || pr.State == "draft") {
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		for _, issueID := range issueIDs {
+			// A move that already started the next handler is the wake.
+			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha) {
+				continue
+			}
+			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
+				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				HeadBranch: pr.Branch.String,
+			}); err != nil {
+				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
+			}
+		}
+	}
 	h.publish(protocol.EventPullRequestUpdated, uuidToString(pr.WorkspaceID), "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linked,
@@ -1423,14 +1440,15 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 var identifierRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{0,9})-(\d+)\b`)
 
 // closingIdentifierRe extracts identifiers that appear immediately after a
-// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?"),
-// optionally separated by a colon and whitespace. Matching is intentionally
+// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?") or
+// a plain reference keyword ("refs?", "part of"), optionally separated by a
+// colon and whitespace. Matching is intentionally
 // strict on adjacency — "Fix MUL-1" names MUL-1, but "Fix login MUL-1" does
 // not. It is the one way a PR body links an issue; a bare body mention links
 // nothing. Since MUL-7726 the keyword only links: what a merge does is the
 // workspace's choice, not the PR text's.
 var closingIdentifierRe = regexp.MustCompile(
-	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
 )
 
 // HandleGitHubWebhook (POST /api/webhooks/github) is GitHub's destination for
@@ -1714,6 +1732,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	if p.Action == "closed" && p.PullRequest.Merged {
+		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	}
 	if p.PullRequest.Merged {
 		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
 			errs = append(errs, err)

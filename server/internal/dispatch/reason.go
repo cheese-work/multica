@@ -15,6 +15,7 @@ package dispatch
 type ReasonCode string
 
 const (
+	ReasonProjectInactive ReasonCode = "project_inactive"
 	// ReasonQueued / ReasonCoalesced / ReasonDeferred are the success-path codes.
 	ReasonQueued    ReasonCode = "queued"
 	ReasonCoalesced ReasonCode = "coalesced"

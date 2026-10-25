@@ -98,6 +98,7 @@ type AgentRuntime struct {
 	Visibility     string             `json:"visibility"`
 	ProfileID      pgtype.UUID        `json:"profile_id"`
 	CustomName     pgtype.Text        `json:"custom_name"`
+	SharedWith     []pgtype.UUID      `json:"shared_with"`
 }
 
 type AgentSkill struct {
@@ -541,6 +542,8 @@ type ChatMessage struct {
 	ChannelOutboundMessageIds     []string           `json:"channel_outbound_message_ids"`
 	ChannelTypingSettled          bool               `json:"channel_typing_settled"`
 	SentVia                       pgtype.Text        `json:"sent_via"`
+	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
+	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 }
 
 type ChatPinnedAgent struct {
@@ -598,6 +601,21 @@ type ClientUsageDaily struct {
 	OfflineCount    pgtype.Int4        `json:"offline_count"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CloudAgentConnection struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Provider         string             `json:"provider"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	TokenID          pgtype.UUID        `json:"token_id"`
+	ConfigEncrypted  string             `json:"config_encrypted"`
+	JournalEncrypted string             `json:"journal_encrypted"`
+	Enabled          bool               `json:"enabled"`
+	Revision         int64              `json:"revision"`
+	Status           string             `json:"status"`
+	LastError        string             `json:"last_error"`
+	BusyUntil        pgtype.Timestamptz `json:"busy_until"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Comment struct {
@@ -672,6 +690,7 @@ type DaemonToken struct {
 	DaemonID    string             `json:"daemon_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	OwnerID     pgtype.UUID        `json:"owner_id"`
 }
 
 type DecisionAnswer struct {
@@ -1220,6 +1239,7 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	TriageState        pgtype.Text        `json:"triage_state"`
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID         pgtype.UUID        `json:"workflow_id"`
 }
 
 type IssueCheckpoint struct {
@@ -1251,6 +1271,12 @@ type IssueChildEvent struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
+}
+
+type IssueCiAdvance struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	HeadSha   string             `json:"head_sha"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueDependency struct {
@@ -1510,6 +1536,7 @@ type IssueWorkflow struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
 }
 
 type LarkBindingToken struct {
@@ -1620,6 +1647,11 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type MemberDelegationDay struct {
+	UserID       pgtype.UUID `json:"user_id"`
+	ActivityDate pgtype.Date `json:"activity_date"`
 }
 
 type NotificationChannelPreference struct {
@@ -1846,6 +1878,39 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RunGateEvent struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	Source              string             `json:"source"`
+	EventKey            string             `json:"event_key"`
+	CandidateKey        string             `json:"candidate_key"`
+	Origin              string             `json:"origin"`
+	AuthorType          pgtype.Text        `json:"author_type"`
+	NonLeaderAgentReply bool               `json:"non_leader_agent_reply"`
+	TriggerCommentID    pgtype.UUID        `json:"trigger_comment_id"`
+	SystemRule          pgtype.Text        `json:"system_rule"`
+	WakeupID            pgtype.UUID        `json:"wakeup_id"`
+	WakeupRevision      pgtype.Int8        `json:"wakeup_revision"`
+	ReceiptID           pgtype.UUID        `json:"receipt_id"`
+	AgentID             pgtype.UUID        `json:"agent_id"`
+	SquadID             pgtype.UUID        `json:"squad_id"`
+	IssueRevision       int64              `json:"issue_revision"`
+	IssueStatus         string             `json:"issue_status"`
+	PrHeadSha           pgtype.Text        `json:"pr_head_sha"`
+	EventTime           pgtype.Timestamptz `json:"event_time"`
+	NativeFoldEligible  bool               `json:"native_fold_eligible"`
+	NativeFoldTaskID    pgtype.UUID        `json:"native_fold_task_id"`
+	QueueSnapshot       []byte             `json:"queue_snapshot"`
+	ActiveTaskID        pgtype.UUID        `json:"active_task_id"`
+	AdmissionStatus     pgtype.Text        `json:"admission_status"`
+	AdmissionReason     pgtype.Text        `json:"admission_reason"`
+	AdmissionAt         pgtype.Timestamptz `json:"admission_at"`
+	SeenCount           int32              `json:"seen_count"`
+	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt          pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type RuntimeProfile struct {

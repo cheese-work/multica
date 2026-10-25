@@ -18,7 +18,7 @@ import (
 )
 
 func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, input CreateCommentRequest) {
-	if input.ParentID == nil || strings.TrimSpace(input.Content) == "" || len(input.Content) > maxCommentContentBytes || input.DecisionIntent || input.DecisionRecord || input.Type != "comment" || len(input.MessageIDs) > 0 || input.EscalationClass != "" || len(input.AttachmentIDs) > 0 || len(input.SuppressAgentIDs) > 0 || len(input.SteerTaskIDs) > 0 {
+	if input.ParentID == nil || strings.TrimSpace(input.Content) == "" || len(input.Content) > maxCommentContentBytes || input.DecisionIntent || input.DecisionRecord || input.Type != "comment" || len(input.MessageIDs) > 0 || input.ContextMessageID != "" || input.EscalationClass != "" || len(input.AttachmentIDs) > 0 || len(input.SuppressAgentIDs) > 0 || len(input.SteerTaskIDs) > 0 {
 		writeError(writer, http.StatusBadRequest, "decision veto requires a stamped parent and a reason, without other decision, attachment, steering or suppression inputs")
 		return
 	}
@@ -60,6 +60,7 @@ func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, re
 		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	writeJSON(writer, http.StatusCreated, commentToResponse(result.Comments[0], nil, nil))
 }
 

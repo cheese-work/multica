@@ -126,12 +126,18 @@ describe("AuthInitializer recovery", () => {
     const api = makeApi({
       getConfig: vi.fn().mockResolvedValue({
         attachment_public_url: "https://api.example.test",
+        server_version: "0.6.3",
+        server_build: "20261021-0856",
+        server_commit: "1de8883",
       }),
     });
     renderInitializer({ api });
 
     await waitFor(() => {
       expect(configStore.getState().attachmentPublicUrl).toBe("https://api.example.test");
+      expect(configStore.getState().serverVersion).toBe("0.6.3");
+      expect(configStore.getState().serverBuild).toBe("20261021-0856");
+      expect(configStore.getState().serverCommit).toBe("1de8883");
     });
   });
 

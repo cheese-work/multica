@@ -554,8 +554,11 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 			ChatSessionID: "sess-1",
 			ChatMessage:   "hi",
 		})
-		if strings.Contains(out, "multica chat history") {
-			t.Fatalf("web-only chat prompt should not mention channel history, got:\n%s", out)
+		if strings.Contains(out, "operating inside") {
+			t.Fatalf("web-only chat prompt should not carry the channel block, got:\n%s", out)
+		}
+		if !strings.Contains(out, "decision requests appear in `multica chat history`") {
+			t.Fatalf("web-only chat prompt lacks the decision-request history hint, got:\n%s", out)
 		}
 	})
 
@@ -787,7 +790,9 @@ func TestBuildChatPromptTwoLayerChannelPolicy(t *testing.T) {
 			if got := strings.Contains(out, uploadGuidance); got != tc.wantUpload {
 				t.Errorf("upload guidance present=%v, want %v\n--- output ---\n%s", got, tc.wantUpload, out)
 			}
-			if got := strings.Contains(out, historyGuidance); got != tc.wantHistory {
+			// The web-DM decision-request hint also names the command.
+			channelOut := strings.ReplaceAll(out, "decision requests appear in `multica chat history`", "")
+			if got := strings.Contains(channelOut, historyGuidance); got != tc.wantHistory {
 				t.Errorf("history guidance present=%v, want %v\n--- output ---\n%s", got, tc.wantHistory, out)
 			}
 			for _, phrase := range tc.wantPhrases {
@@ -2274,5 +2279,41 @@ func TestPromptCarriesJoinedWakeups(t *testing.T) {
 	}
 	if out := BuildPrompt(Task{IssueID: "issue-1"}, "claude"); strings.Contains(out, "joined this run") {
 		t.Errorf("prompt without joined wakeups mentions them:\n%s", out)
+	}
+}
+
+// The claim's chat_decision_context must reach the chat prompt ahead of the
+// user's reply, so a bare "A" keeps its subject (CHE-1868). Built from the wire
+// form because that is the contract between server and daemon.
+func TestBuildChatPromptCarriesDecisionContext(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"chat_session_id":"s","chat_message":"A","chat_decision_context":"Open decision request R1 on CHE-1."}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	out := buildChatPrompt(task)
+	ctxAt, msgAt := strings.Index(out, "Open decision request R1 on CHE-1."), strings.Index(out, "User message:")
+	if ctxAt < 0 || msgAt < 0 || ctxAt > msgAt {
+		t.Fatalf("decision context must precede the user message:\n%s", out)
+	}
+}
+
+// A web DM run records a decision from ids in its prompt, with no lookup
+// command (CHE-1958). Built from the wire form: the server/daemon contract.
+func TestBuildChatPromptPrintsTheDecisionCarrierOnce(t *testing.T) {
+	var task Task
+	// An older server may still send the separate id fields; the prompt must
+	// print the one server-rendered carrier and add no second set of ids.
+	if err := json.Unmarshal([]byte(`{"chat_session_id":"s","chat_message":"1","chat_decision_context":"<decision_requests>\nids: m-reply, m-options\n</decision_requests>","chat_message_ids":["m-reply"],"chat_prior_reply_id":"m-options"}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	out := buildChatPrompt(task)
+	if strings.Count(out, "<decision_requests>") != 1 || strings.Count(out, "m-reply") != 1 || strings.Count(out, "m-options") != 1 {
+		t.Errorf("want the carrier and each id exactly once:\n%s", out)
+	}
+	if strings.Index(out, "</decision_requests>") > strings.Index(out, "User message:") {
+		t.Errorf("carrier must precede the user message:\n%s", out)
+	}
+	if strings.Contains(buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi"}), "--decision-record") {
+		t.Error("prompt without a carrier mentions decision records")
 	}
 }

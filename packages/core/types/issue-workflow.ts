@@ -33,6 +33,8 @@ export interface IssueWorkflowStep {
   next_status_key?: string;
   /** Status to send the issue back to when it needs changes. */
   back_status_key?: string;
+  /** Move an issue on this step to its next status when a linked PR's checks pass. */
+  advance_on_ci_green?: boolean;
 }
 
 export interface IssueWorkflow {
@@ -42,6 +44,8 @@ export interface IssueWorkflow {
   description: string;
   /** The workspace Default: used by every project that names no workflow. */
   is_default: boolean;
+  /** The member who owns the workflow and may edit it; null for Default. */
+  owner_id: string | null;
   steps: IssueWorkflowStep[];
   /** Projects currently using this workflow. */
   project_ids: string[];
@@ -151,4 +155,5 @@ export interface SetWorkflowHandoffRequest {
   instructions?: string;
   next_status_key?: string;
   back_status_key?: string;
+  advance_on_ci_green?: boolean;
 }

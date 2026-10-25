@@ -279,6 +279,8 @@
     "field_name": "名前",
     "field_name_placeholder": "コードレビュー",
     "field_target": "実行者",
+    "no_target": "対象なし",
+    "no_target_hint": "誰もメンションせずにメッセージを投稿します。",
     "field_prompt": "プロンプト",
     "field_prompt_placeholder": "このタスクに関連するコードをレビューし、正確性とエッジケースを重点的に確認してください。",
     "prompt_hint": "そのまま送られます。タスクの内容は既に読めます。",
@@ -815,8 +817,7 @@
     },
     "system": {
       "title": "システム通知",
-      "description": "Multica がバックグラウンドにあるときにシステム通知を表示します。",
-      "label": "システム通知を表示"
+      "label": "Multica がバックグラウンドにあるときにシステム通知を表示"
     },
     "browser": {
       "label": "ブラウザ通知",
@@ -1393,6 +1394,15 @@
   "desktop": {
     "tabs": {
       "updates": "アップデート"
+    },
+    "tab_bar": {
+      "pin": "タブをピン留め",
+      "unpin": "タブのピン留めを解除",
+      "close": "タブを閉じる",
+      "close_others": "他のタブを閉じる",
+      "open_window": "新しいウィンドウで開く",
+      "new": "新しいタブ",
+      "pinned_name": "{{title}}（ピン留め）"
     },
     "updates": {
       "title": "アップデート",

@@ -383,6 +383,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		handler.publish(protocol.EventCommentCreated, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID))
+	if snapshot.kind == "" {
+		for _, answer := range snapshot.answers {
+			handler.publishDecisionAnswerUpdated(uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), answer.ID, snapshot.issue.ID, decisionStateEffective)
+		}
+	}
 	return false, nil
 }
 
@@ -446,7 +451,7 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 		return "", empty, nil
 	}
 	if snapshot.task.Status == "queued" {
-		params, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
+		params, _, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
 		if err != nil {
 			return "", empty, err
 		}
