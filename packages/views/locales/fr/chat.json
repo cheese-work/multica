@@ -296,5 +296,11 @@
     "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans une seule réponse, puis réessayez.",
     "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
     "removed": "Commentaire {{number}} supprimé"
+  },
+  "decision": {
+    "quoted_in": "Cité dans {{issue}}",
+    "from_original_dm": "du DM d'origine",
+    "inherited": "Hérité",
+    "message_unavailable": "Ce message n'est plus disponible"
   }
 }

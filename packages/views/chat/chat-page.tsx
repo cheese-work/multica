@@ -101,6 +101,13 @@ export function ChatPage() {
   const urlAgent = searchParams.get("agent") || null;
   // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
   const urlNew = searchParams.get("new") === "1";
+  // `?message=` is a one-shot jump from a decision card; it only applies once
+  // the list shows the session named beside it.
+  const urlMessage = searchParams.get("message") || null;
+  const settleJump = (outcome: "landed" | "missing") => {
+    if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
+    replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
+  };
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -372,6 +379,8 @@ export function ChatPage() {
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
+          jumpToMessageId={urlSession === c.activeSessionId ? urlMessage : null}
+          onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
             !!c.pendingTaskId ||

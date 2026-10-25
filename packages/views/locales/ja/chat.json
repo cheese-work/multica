@@ -290,5 +290,11 @@
     "selection_failed": "選択範囲を取得できませんでした。同じ返信の中で文字を選び直してください。",
     "source_changed": "原文が変更されたか、利用できません。保存した引用は保持されます。",
     "removed": "コメント {{number}} を削除しました"
+  },
+  "decision": {
+    "quoted_in": "{{issue}} に引用",
+    "from_original_dm": "元の DM から",
+    "inherited": "継承",
+    "message_unavailable": "このメッセージは利用できなくなりました"
   }
 }

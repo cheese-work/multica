@@ -3798,32 +3798,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		resp.ChatMessage = strings.Join(parts, "\n\n")
-		if resp.ChatChannelType == "" && !autoCompact && len(unanswered) > 0 {
-			decisionContext, err := chatDecisionContext(r.Context(), h.Queries, cs.WorkspaceID, cs.ID, unanswered[0].CreatedAt)
-			if err != nil {
-				slog.Error("chat claim: load open decision requests failed; preserving task for redelivery",
-					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
-				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
-					outcome: "error_chat_decision_context", status: http.StatusInternalServerError, message: "failed to load decision context",
-				}
-			}
-			resp.ChatDecisionContext = decisionContext
-			resp.ChatMessageIDs = make([]string, len(unanswered))
-			for i, m := range unanswered {
-				resp.ChatMessageIDs[i] = uuidToString(m.ID)
-			}
-			prior, err := h.Queries.GetLastAssistantMessageBefore(r.Context(), db.GetLastAssistantMessageBeforeParams{SessionID: cs.ID, Before: unanswered[0].CreatedAt})
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				slog.Error("chat claim: load prior assistant message failed; preserving task for redelivery",
-					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
-				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
-					outcome: "error_chat_prior_message", status: http.StatusInternalServerError, message: "failed to load prior message",
-				}
-			}
-			if err == nil {
-				resp.ChatPriorReplyID = uuidToString(prior)
-			}
-		}
 		if autoCompact {
 			resp.ChatMessage = "/compact"
 		}
@@ -3858,6 +3832,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				status:  http.StatusInternalServerError,
 				message: "chat task has no user input",
 			}
+		}
+
+		// One carrier for the decision context of a web DM turn: the open asks the
+		// reply may answer, recent decision notes and the ids --decision-record
+		// needs. It travels beside the user's text, never inside it. An
+		// automatic compaction's prompt is /compact and carries none.
+		if resp.ChatChannelType == "" && !autoCompact {
+			decisions, err := h.decisionContextBlock(r.Context(), cs, task.ID, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build decision context failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_decision_context", status: http.StatusInternalServerError, message: "failed to load decision context",
+				}
+			}
+			resp.ChatDecisionContext = decisions
 		}
 
 		if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {

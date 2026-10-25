@@ -64,6 +64,7 @@ import { VersionBadge } from "./deliverables/version-badge";
 import { useRunCommentMotion } from "./use-run-comment-motion";
 import { projectThreadDisplay } from "./thread-disclosure";
 import { WakeupSourceChip } from "./wakeup-source-chip";
+import { DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
 
 const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
@@ -700,6 +701,7 @@ function CommentRow({
   onCreateSubIssue,
   onResolveToggle,
   onCopyLink,
+  onJumpToComment,
 }: {
   runHeader?: ReactNode;
   runMetadata?: ReactNode;
@@ -720,11 +722,13 @@ function CommentRow({
   onCreateSubIssue?: (commentId: string) => void;
   onResolveToggle?: (commentId: string, resolved: boolean) => void;
   onCopyLink?: (commentId: string) => void;
+  onJumpToComment?: (commentId: string) => void;
 }) {
   const { t } = useT("issues");
   const locale = useLocale();
   const timeAgo = useTimeAgo();
   const { getActorName } = useActorName();
+  const shown = decisionDisplayActor(entry);
 
   const edit = useEditAttachmentState(issueId, entry, onEdit);
 
@@ -757,17 +761,17 @@ function CommentRow({
         className="flex items-center gap-2.5 px-4 max-md:px-3 pt-3 pb-1"
       >
         <ActorAvatar
-          actorType={entry.actor_type}
-          actorId={entry.actor_id}
-          name={entry.actor_name}
-          avatarUrl={entry.actor_avatar_url}
+          actorType={shown.actorType}
+          actorId={shown.actorId}
+          name={shown.name}
+          avatarUrl={shown.avatarUrl}
           profileRequiresDirectoryEntry
           size="md"
           enableHoverCard
           showStatusDot
         />
         <span className="cursor-pointer text-body font-medium">
-          {entry.actor_name || getActorName(entry.actor_type, entry.actor_id)}
+          {shown.name || getActorName(shown.actorType, shown.actorId)}
         </span>
         <Tooltip>
           <TooltipTrigger
@@ -785,7 +789,7 @@ function CommentRow({
         <SteerBadge issueId={issueId} entry={entry} />
         {runHeader}
 
-        {entry.actor_type === "agent" && entry.source_task_id && (
+        {shown.actorType === "agent" && entry.source_task_id && (
           <WakeupSourceChip issueId={issueId} taskId={entry.source_task_id} />
         )}
 
@@ -966,7 +970,13 @@ function CommentRow({
           <div tabIndex={currentUserId ? 0 : undefined} role="group"
             aria-label={t(($) => $.reply.annotations.source_label, { name: entry.actor_name || getActorName(entry.actor_type, entry.actor_id) })}
             data-comment-content={entry.id} className="pl-12 pr-4 max-md:pl-3 max-md:pr-3 text-body leading-relaxed text-foreground">
-            <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+            {entry.decision_comment_kind === "quote" ? (
+              <DecisionQuoteCard entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+            ) : entry.decision_comment_kind === "disclaim" ? (
+              <DecisionWithdrawalLine entry={entry} />
+            ) : (
+              <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+            )}
           </div>
           <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-12 pr-4 max-md:pl-3 max-md:pr-3" />
           <div className="pl-12 pr-4 max-md:pl-3 max-md:pr-3">
@@ -1104,6 +1114,7 @@ function CommentCardImpl({
   const locale = useLocale();
   const timeAgo = useTimeAgo();
   const { getActorName } = useActorName();
+  const shown = decisionDisplayActor(entry);
   const replyTarget = useCommentDraftStore((s) => s.drafts[`reply:${issueId}:${entry.id}`]?.replyTarget);
   const replyTargetId = replyTarget?.commentId ?? entry.id;
   // A deleted target's tombstone is as gone as a removed row.
@@ -1273,7 +1284,7 @@ function CommentCardImpl({
             That is what keeps exactly one header pinned at a time: without this
             wrapper the header's containing block is the whole thread and it
             stays stuck behind every reply. */}
-        <div data-comment-block className={cn("transition-colors duration-700", isHighlighted && highlightedCommentBackgroundClass)}>
+        <div data-comment-block data-testid="comment-card" className={cn("transition-colors duration-700", isHighlighted && highlightedCommentBackgroundClass)}>
           {/* Keep the author aligned with replies; thread controls sit on the right. */}
           <StickyHeaderShell
             sticky={stickyHeader}
@@ -1289,17 +1300,17 @@ function CommentCardImpl({
               ) : (
                 <>
                   <ActorAvatar
-                    actorType={entry.actor_type}
-                    actorId={entry.actor_id}
-                    name={entry.actor_name}
-                    avatarUrl={entry.actor_avatar_url}
+                    actorType={shown.actorType}
+                    actorId={shown.actorId}
+                    name={shown.name}
+                    avatarUrl={shown.avatarUrl}
                     profileRequiresDirectoryEntry
                     size="md"
                     enableHoverCard
                     showStatusDot
                   />
                   <span className="shrink-0 cursor-pointer text-body font-medium">
-                    {entry.actor_name || getActorName(entry.actor_type, entry.actor_id)}
+                    {shown.name || getActorName(shown.actorType, shown.actorId)}
                   </span>
                   <Tooltip>
                     <TooltipTrigger
@@ -1316,7 +1327,7 @@ function CommentCardImpl({
 
                   <SteerBadge issueId={issueId} entry={entry} />
                   {renderRuns(entry.id, "header")}
-                  {entry.actor_type === "agent" && entry.source_task_id && (
+                  {shown.actorType === "agent" && entry.source_task_id && (
                     <WakeupSourceChip issueId={issueId} taskId={entry.source_task_id} />
                   )}
                 </>
@@ -1536,7 +1547,13 @@ function CommentCardImpl({
                 <div tabIndex={currentUserId ? 0 : undefined} role="group"
             aria-label={t(($) => $.reply.annotations.source_label, { name: entry.actor_name || getActorName(entry.actor_type, entry.actor_id) })}
             data-comment-content={entry.id} className="pl-8 max-md:pl-0 text-body leading-relaxed text-foreground">
-                  <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                  {entry.decision_comment_kind === "quote" ? (
+                    <DecisionQuoteCard entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+                  ) : entry.decision_comment_kind === "disclaim" ? (
+                    <DecisionWithdrawalLine entry={entry} />
+                  ) : (
+                    <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                  )}
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-8 max-md:pl-0" />
                 <div className="pl-8 max-md:pl-0">
@@ -1631,6 +1648,7 @@ function CommentCardImpl({
                       onCreateSubIssue={onCreateSubIssue}
                       onResolveToggle={onResolveToggle}
                       onCopyLink={onCopyLink}
+                      onJumpToComment={onJumpToComment}
                     />
                   </div>
                 </>
@@ -1740,6 +1758,7 @@ function CommentCardImpl({
                       onCreateSubIssue={onCreateSubIssue}
                       onResolveToggle={onResolveToggle}
                       onCopyLink={onCopyLink}
+                      onJumpToComment={onJumpToComment}
                     />
                   </div>
                 );
@@ -1765,7 +1784,7 @@ function CommentCardImpl({
               )}
 
               {/* Reply input */}
-              <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+              <div data-testid="comment-reply-input" className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
                 <ReplyInput
                   issueId={issueId}
                   parentId={replyTargetId}
