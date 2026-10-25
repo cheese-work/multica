@@ -59,6 +59,22 @@ class DeployApprovalTests(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertEqual(self.jobs[name]["environment"], RUNTIME)
 
+    def test_deploy_pulls_with_the_job_token_not_a_stored_pat(self):
+        # The registry login uses the job's own short-lived token, so no
+        # personal access token has to be stored, rotated or revoked.
+        deploy = self.jobs["deploy"]
+        self.assertNotIn("secrets.GHCR_PULL_TOKEN", yaml.safe_dump(self.workflow))
+        step = next(s for s in deploy["steps"] if s.get("name") == "Deploy to C00 over SSH")
+        self.assertEqual(step["env"]["GHCR_PULL_TOKEN"], "${{ github.token }}")
+        # A job-level block replaces the workflow-level one: keep what the job
+        # already had and add only packages: read.
+        self.assertEqual(deploy["permissions"], {"contents": "read", "actions": "read", "packages": "read"})
+        for name, job in self.jobs.items():
+            if name != "deploy":
+                with self.subTest(job=name):
+                    self.assertNotIn("packages", job.get("permissions", {}))
+        self.assertNotIn("packages", self.workflow["permissions"])
+
     def test_stale_stage_never_enters_the_lock(self):
         # A job entering a concurrency group evicts the group's pending job, so
         # a stale stage entering late would evict the newest candidate. Every
