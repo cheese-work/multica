@@ -739,6 +739,119 @@ func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecis
 	return chat_session_id, err
 }
 
+const listChatDecisionContext = `-- name: ListChatDecisionContext :many
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
+       COALESCE(issue.title, '')::text AS issue_title,
+       count(*) OVER ()::bigint AS total
+FROM decision_request request
+JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.chat_session_id = $2
+  AND request.origin = 'asked' AND request.status = 'open'
+  AND ping.created_at < $3
+ORDER BY ping.created_at DESC, request.id DESC
+LIMIT $4
+`
+
+type ListChatDecisionContextParams struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Before        pgtype.Timestamptz `json:"before"`
+	RowLimit      int32              `json:"row_limit"`
+}
+
+type ListChatDecisionContextRow struct {
+	ID             pgtype.UUID `json:"id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
+	PingMessageID  pgtype.UUID `json:"ping_message_id"`
+	Ask            string      `json:"ask"`
+	IssueKey       string      `json:"issue_key"`
+	IssueTitle     string      `json:"issue_title"`
+	Total          int64       `json:"total"`
+}
+
+// The asks a bare reply in a DM may be answering: open, asked, in this
+// workspace and DM, with the ping before the first reply being claimed. The ping
+// is an assistant row no task produced, so it is in neither the resumed provider
+// session nor the user-only prompt input. total counts every eligible ask in the
+// same snapshot before the display limit, so a limit never turns several asks
+// into one. Answered or cancelled asks, newer pings and decision notes are not
+// eligible and never counted.
+func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionContext,
+		arg.WorkspaceID,
+		arg.ChatSessionID,
+		arg.Before,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatDecisionContextRow{}
+	for rows.Next() {
+		var i ListChatDecisionContextRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueCommentID,
+			&i.PingMessageID,
+			&i.Ask,
+			&i.IssueKey,
+			&i.IssueTitle,
+			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
+SELECT message.content FROM chat_message message
+WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2 AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT $3
+`
+
+type ListChatDecisionReferencesParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+// Server-authored decision notes (cancellations, recorded answers) posted after
+// the session's previous task claimed its input; see ListChatDecisionContext
+// for why the boundary is the claim. They reference a request by text, not by
+// id, so they are read by message rather than through decision_request.
+func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDecisionReferencesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listChatDecisionReferences, arg.ChatSessionID, arg.TaskID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			return nil, err
+		}
+		items = append(items, content)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionCards = `-- name: ListDecisionCards :many
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
@@ -1208,62 +1321,6 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 			&i.ReaskDeliveredAt,
 			&i.ReaskOutcome,
 			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listOpenDecisionRequestsBeforeMessage = `-- name: ListOpenDecisionRequestsBeforeMessage :many
-SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
-    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
-FROM decision_request request
-JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
-LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
-LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = $1 AND request.chat_session_id = $2
-  AND request.status = 'open' AND request.origin = 'asked'
-  AND ping.created_at < $3
-ORDER BY ping.created_at, request.id
-LIMIT 5
-`
-
-type ListOpenDecisionRequestsBeforeMessageParams struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	SessionID   pgtype.UUID        `json:"session_id"`
-	Before      pgtype.Timestamptz `json:"before"`
-}
-
-type ListOpenDecisionRequestsBeforeMessageRow struct {
-	ID             pgtype.UUID `json:"id"`
-	IssueID        pgtype.UUID `json:"issue_id"`
-	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
-	Ask            string      `json:"ask"`
-	IssueKey       string      `json:"issue_key"`
-}
-
-// Open asked requests in a DM whose ping precedes the given message: what a
-// bare reply in that DM is answering.
-func (q *Queries) ListOpenDecisionRequestsBeforeMessage(ctx context.Context, arg ListOpenDecisionRequestsBeforeMessageParams) ([]ListOpenDecisionRequestsBeforeMessageRow, error) {
-	rows, err := q.db.Query(ctx, listOpenDecisionRequestsBeforeMessage, arg.WorkspaceID, arg.SessionID, arg.Before)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListOpenDecisionRequestsBeforeMessageRow{}
-	for rows.Next() {
-		var i ListOpenDecisionRequestsBeforeMessageRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.IssueID,
-			&i.IssueCommentID,
-			&i.Ask,
-			&i.IssueKey,
 		); err != nil {
 			return nil, err
 		}

@@ -384,20 +384,38 @@ WHERE request.workspace_id = sqlc.arg('workspace_id')
   AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[])
 ORDER BY answer.created_at, answer.id;
 
--- name: ListOpenDecisionRequestsBeforeMessage :many
--- Open asked requests in a DM whose ping precedes the given message: what a
--- bare reply in that DM is answering.
-SELECT request.id, request.issue_id, request.issue_comment_id, request.ask,
-    COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+-- name: ListChatDecisionContext :many
+-- The asks a bare reply in a DM may be answering: open, asked, in this
+-- workspace and DM, with the ping before the first reply being claimed. The ping
+-- is an assistant row no task produced, so it is in neither the resumed provider
+-- session nor the user-only prompt input. total counts every eligible ask in the
+-- same snapshot before the display limit, so a limit never turns several asks
+-- into one. Answered or cancelled asks, newer pings and decision notes are not
+-- eligible and never counted.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
+       COALESCE(issue.title, '')::text AS issue_title,
+       count(*) OVER ()::bigint AS total
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('session_id')
-  AND request.status = 'open' AND request.origin = 'asked'
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
+  AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < sqlc.arg('before')
-ORDER BY ping.created_at, request.id
-LIMIT 5;
+ORDER BY ping.created_at DESC, request.id DESC
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatDecisionReferences :many
+-- Server-authored decision notes (cancellations, recorded answers) posted after
+-- the session's previous task claimed its input; see ListChatDecisionContext
+-- for why the boundary is the claim. They reference a request by text, not by
+-- id, so they are read by message rather than through decision_request.
+SELECT message.content FROM chat_message message
+WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind = 'decision_reference'
+  AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id') AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT sqlc.arg('row_limit');
 
 -- name: GetLastAssistantMessageBefore :one
 -- The agent's own last reply before a message: the options a bare reply chose

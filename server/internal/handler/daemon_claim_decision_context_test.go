@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // A decision ping is written by the server, not by an agent run, so no resumed
@@ -100,56 +101,104 @@ func TestClaimChatDoesNotGuessBetweenTwoOpenDecisionRequests(t *testing.T) {
 	}
 }
 
+// The carrier always holds the turn's message ids, so an answered-only DM is no
+// longer an empty block. It must still expose no ask and no binding instruction.
 func TestClaimChatOmitsAnsweredDecisionRequest(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	if block, _ := claimDecisionContext(t, "answered"); block != "" {
-		t.Fatalf("unexpected chat_decision_context:\n%s", block)
+	block, _ := claimDecisionContext(t, "answered")
+	for _, banned := range []string{"Ask number 1?", "--parent", "[request ", "answers it", "Do not guess"} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("answered request reached the carrier (%q):\n%s", banned, block)
+		}
 	}
 }
 
 // A claim re-anchors queued input after the newest assistant row, so a ping
-// newer than the reply cannot be staged through a claim. The filter that keeps
-// such a ping out is the same one the recorder enforces, so test it directly.
-func TestChatDecisionContextOmitsPingNewerThanReply(t *testing.T) {
+// newer than the reply cannot be staged through a claim. Build the carrier from
+// a reply that predates one ping, and check eligibility follows the cutoff,
+// status and kind, not the number of rows.
+func TestChatDecisionContextCountsOnlyEligibleAsks(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "decision context future ping")
-	seedDecisionRequest(t, agentID, sessionID, "Future ask?", "open", "2099-01-01T00:00:00Z")
-	reply := pgtype.Timestamptz{Time: time.Now(), Valid: true}
-	block, err := chatDecisionContext(ctx, testHandler.Queries, parseUUID(testWorkspaceID), parseUUID(sessionID), reply)
-	if err != nil || block != "" {
-		t.Fatalf("ping newer than the reply was offered as context: %q, %v", block, err)
+	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "decision context eligibility")
+	eligibleID, _, _ := seedDMDecision(t, agentID, sessionID, "Eligible ask?", "open", "2 hours")
+	seedDMDecision(t, agentID, sessionID, "Answered ask?", "answered", "3 hours")
+	seedDMDecision(t, agentID, sessionID, "Future ask?", "open", "-1 hour")
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "Decision request cancelled: lane_archived.", "message_kind": "decision_reference", "sent_via": "task_token", "created_at": testutil.Raw("now() - interval '1 hour'")})
+
+	block := carrierFor(t, sessionID, time.Now())
+	for _, want := range []string{"Eligible ask?", eligibleID, "answers it", "lane_archived"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("carrier missing %q:\n%s", want, block)
+		}
+	}
+	for _, banned := range []string{"Answered ask?", "Future ask?", "Do not guess", "Several"} {
+		if strings.Contains(block, banned) {
+			t.Errorf("carrier holds %q although it is not an eligible ask:\n%s", banned, block)
+		}
+	}
+	if strings.Count(block, "[request ") != 1 {
+		t.Errorf("want exactly one request row:\n%s", block)
 	}
 }
 
-// An unprompted decision has no open request, so the claim must still hand the
+// carrierFor builds the carrier for a session as if its first unanswered user
+// message was written at replyAt.
+func carrierFor(t *testing.T, sessionID string, replyAt time.Time) string {
+	t.Helper()
+	ctx := context.Background()
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []db.ChatMessage{{ID: parseUUID(dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "A", "created_at": replyAt.UTC().Format(time.RFC3339Nano)})), ChatSessionID: session.ID, Role: "user", Content: "A", CreatedAt: pgtype.Timestamptz{Time: replyAt, Valid: true}}}
+	block, err := testHandler.decisionContextBlock(ctx, session, pgtype.UUID{}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return block
+}
+
+// An unprompted decision has no open request, so the carrier must still hand the
 // run the ids --decision-record needs: the reply itself and the options message
-// it chose between (CHE-1958).
+// it chose between (CHE-1958). Each id appears once, with and without open asks.
 func TestClaimChatCarriesDecisionRecordIDs(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
-	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "decision ids chat")
-	optionsID := dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "1) Ship\n2) Hold", "created_at": "2020-01-01T00:00:00Z"})
-	sendDirectChat(t, ctx, agentID, sessionID, "1")
-	var replyID string
-	if err := testPool.QueryRow(ctx, `SELECT id::text FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, sessionID).Scan(&replyID); err != nil {
-		t.Fatal(err)
-	}
+	for name, withAsk := range map[string]bool{"no open ask": false, "one open ask": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "decision ids chat")
+			if withAsk {
+				seedDMDecision(t, agentID, sessionID, "Ship or hold?", "open", "5 hours")
+			}
+			optionsID := dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "1) Ship\n2) Hold", "created_at": testutil.Raw("now() - interval '3 hours'")})
+			sendDirectChat(t, ctx, agentID, sessionID, "1")
+			var replyID string
+			if err := testPool.QueryRow(ctx, `SELECT id::text FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, sessionID).Scan(&replyID); err != nil {
+				t.Fatal(err)
+			}
 
-	var resp struct {
-		Task *struct {
-			ChatMessageIDs   []string `json:"chat_message_ids"`
-			ChatPriorReplyID string   `json:"chat_prior_reply_id"`
-		} `json:"task"`
-	}
-	claimForRuntimeExpecting(t, testHandler, runtimeID, daemonID, http.StatusOK).JSON(&resp)
-	if resp.Task == nil || len(resp.Task.ChatMessageIDs) != 1 || resp.Task.ChatMessageIDs[0] != replyID || resp.Task.ChatPriorReplyID != optionsID {
-		t.Fatalf("claim lacks decision record ids (reply %s, options %s): %+v", replyID, optionsID, resp.Task)
+			claimed := claimForkTask(t, runtimeID, daemonID)
+			carrier := claimed.ChatDecisionContext
+			for _, id := range []string{replyID, optionsID} {
+				if strings.Count(carrier, id) != 1 {
+					t.Errorf("id %s appears %d times, want once:\n%s", id, strings.Count(carrier, id), carrier)
+				}
+			}
+			for _, want := range []string{"--decision-record", "--context-message"} {
+				if !strings.Contains(carrier, want) {
+					t.Errorf("carrier lacks %q:\n%s", want, carrier)
+				}
+			}
+			if claimed.ChatMessage != "1" {
+				t.Errorf("the message must stay the user's text, got %q", claimed.ChatMessage)
+			}
+		})
 	}
 }
