@@ -82,6 +82,36 @@ beforeEach(() => {
 });
 
 describe("selection to reply", () => {
+  it.each([true, false])("keeps one editor when a reply marker replaces the footer editor (pointer: %s)", async (pointer) => {
+    useCommentDraftStore.getState().addAnnotation(key, {
+      id: "reply-note", sourceCommentId: "reply", sourceActorName: "Reply", quote: "Selected text",
+      start: 0, prefix: "", suffix: "", note: "Original reply note",
+    });
+    renderWithI18n(<div data-issue-timeline-scroll>
+      <ThreadRowFixture sourceId="reply" />
+      <ThreadRowFixture />
+    </div>);
+    const marker = await screen.findByTestId("annotation-marker");
+    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
+    const footerEditor = await screen.findByRole("textbox", { name: "Comment" });
+    fireEvent.change(footerEditor, { target: { value: "Unsaved stale edit" } });
+    if (pointer) fireEvent.pointerDown(marker);
+    fireEvent.click(marker);
+    await waitFor(() => expect(screen.getAllByTestId("annotation-note")).toHaveLength(1));
+    expect(footerEditor).not.toBeInTheDocument();
+    expect(marker).toHaveAttribute("aria-expanded", "true");
+    fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Updated reply note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Updated reply note");
+
+    fireEvent.click(marker);
+    const markerEditor = await screen.findByRole("textbox", { name: "Comment" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
+    await waitFor(() => expect(screen.getAllByTestId("annotation-note")).toHaveLength(1));
+    expect(markerEditor).not.toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Updated reply note");
+  });
+
   it("edits a reply annotation from a separate footer row and survives source remounts", async () => {
     useCommentDraftStore.getState().addAnnotation(key, {
       id: "reply-note", sourceCommentId: "reply", sourceActorName: "Reply", quote: "Selected text",

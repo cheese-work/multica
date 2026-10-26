@@ -93,6 +93,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   onAddedRef.current = onAdded;
   const anchorKey = annotations.map((a) => a.id).join(",");
   const highlightName = `reply-annotation-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`;
+  const editorOpenEvent = `reply-annotation-open:${draftKey}`;
+  const claimEditor = useCallback(() => {
+    document.dispatchEvent(new CustomEvent(editorOpenEvent, { detail: highlightName }));
+  }, [editorOpenEvent, highlightName]);
 
   const findSource = useCallback((sourceCommentId: string) => {
     const card = cardRef.current;
@@ -127,7 +131,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   }, [enabled, editable]);
   const capture = () => {
     const captured = readSelection();
-    if (captured) { setSelection(captured); setEditor(null); setError(false); }
+    if (captured) { claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
   useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
@@ -135,6 +139,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   // Dismiss on the next press, never on the click completing the opening drag.
   useEffect(() => {
     if (!selection) return;
+    const onEditorOpen = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail === highlightName) return;
+      setSelection(null); setEditor(null); setError(false);
+    };
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Element &&
         event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
@@ -156,12 +164,14 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("focusin", onFocusIn);
+    document.addEventListener(editorOpenEvent, onEditorOpen);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener(editorOpenEvent, onEditorOpen);
     };
-  }, [selection, draftKey, editable]);
+  }, [selection, draftKey, editable, editorOpenEvent, highlightName]);
 
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
@@ -233,6 +243,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
       const element = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       element?.scrollIntoView({ block: "center", behavior: "instant" });
     }
+    claimEditor();
     pendingFocusId.current = id;
     setSelection({ ...annotation, range, root }); setEditor({ annotation, existing: true }); setError(false);
     return true;
@@ -254,6 +265,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
         : Lref.current.countLimit(MAX_REPLY_ANNOTATIONS));
       return false;
     }
+    claimEditor();
     setSelection(captured);
     const next = duplicate ?? {
       id: crypto.randomUUID(), sourceCommentId, sourceActorName: source.name,
@@ -264,7 +276,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     setError(false);
     window.getSelection()?.removeAllRanges();
     return true;
-  }, []);
+  }, [claimEditor]);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
   const confirmNote = () => {
