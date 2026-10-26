@@ -9,9 +9,13 @@ import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floatin
  * popup goes below it. It flips above only when there is no room below, and never
  * slides along the main axis, so it cannot cover the selected text.
  */
-export const NATIVE_MENU_CLEARANCE = 64;
-/** When a touch popup flips above the selection it must clear the native menu stacked there. */
-const touchGap = (placement: string) => (placement.startsWith("top") ? 8 + NATIVE_MENU_CLEARANCE : 8);
+const TOUCH_GAP_BELOW = 28;
+const TOUCH_GAP_ABOVE = 88;
+/**
+ * Measured on a real iPhone: the end-handle knob hangs ~20px below the selection, and the native
+ * menu spans 23..78px above it. Below clears the knob; above (no room below) clears the menu.
+ */
+const touchGap = (placement: string) => (placement.startsWith("top") ? TOUCH_GAP_ABOVE : TOUCH_GAP_BELOW);
 function placementFor(marker: boolean, touch: boolean) {
   if (marker) return "right-start";
   return touch ? "bottom" : "top";
