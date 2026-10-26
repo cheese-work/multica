@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -150,4 +153,34 @@ func TestBlockedStepHandsToAHumanByRole(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A failed lookup is not "no such person": the write must fail, not continue
+// without a requester or a human assignee.
+func TestHumanLookupFailuresAreNotTreatedAsMissingPeople(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	member := requestedByTestUser(t)
+
+	t.Run("explicit requester", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		r := newRequest("POST", "/api/issues", nil).WithContext(canceled)
+		explicit := member
+		if _, ok := testHandler.resolveRequestedBy(w, r, testWorkspaceID, "member", testUserID, &explicit); ok || w.Code != http.StatusInternalServerError {
+			t.Fatalf("ok = %v, status = %d, want a refused create with 500", ok, w.Code)
+		}
+	})
+	t.Run("default requester", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		r := newRequest("POST", "/api/issues", nil).WithContext(canceled)
+		if _, ok := testHandler.resolveRequestedBy(w, r, testWorkspaceID, "member", member, nil); ok || w.Code != http.StatusInternalServerError {
+			t.Fatalf("ok = %v, status = %d, want a refused create with 500", ok, w.Code)
+		}
+	})
+	t.Run("workspace owner", func(t *testing.T) {
+		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
+		if _, err := testHandler.workflowHumans(canceled, step, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
+			t.Fatal("workflowHumans returned no error for a failed owner lookup")
+		}
+	})
 }

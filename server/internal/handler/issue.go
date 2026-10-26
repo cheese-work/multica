@@ -3385,7 +3385,13 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.AssigneeType == nil && req.AssigneeID == nil {
 			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
 				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), h.workflowHumans(r.Context(), step, wsUUID, requestedByID)); ok {
+				humans, err := h.workflowHumans(r.Context(), step, wsUUID, requestedByID)
+				if err != nil {
+					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
+					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+					return
+				}
+				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
 					assigneeType = pgtype.Text{String: t, Valid: true}
 					assigneeID = id
 					if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {

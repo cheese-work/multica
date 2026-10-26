@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -92,7 +94,11 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, h.workflowHumans(ctx, step, prev.WorkspaceID, prev.RequestedByID))
+	humans, err := h.workflowHumans(ctx, step, prev.WorkspaceID, prev.RequestedByID)
+	if err != nil {
+		return nil, err
+	}
+	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
 	if !ok {
 		return nil, nil
 	}
@@ -115,7 +121,11 @@ func (e *createHandoffError) Error() string { return e.message }
 // calls it under the catalog and project locks.
 func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, creatorType, creatorID, h.workflowHumans(ctx, step, project.WorkspaceID, requestedByID))
+		humans, err := h.workflowHumans(ctx, step, project.WorkspaceID, requestedByID)
+		if err != nil {
+			return pgtype.Text{}, pgtype.UUID{}, err
+		}
+		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, creatorType, creatorID, humans)
 		if !ok {
 			return pgtype.Text{}, pgtype.UUID{}, nil
 		}
@@ -476,21 +486,32 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 
 // workflowHumans gathers the people a "human by role" step can resolve to:
 // the issue's requester and the workspace owner. Other handlers need neither,
-// so they skip the owner lookup.
-func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, workspaceID, requestedByID pgtype.UUID) issueworkflow.Humans {
+// so they skip the owner lookup. A workspace with no owner is not an error; a
+// failed lookup is, so the write fails instead of leaving the issue unassigned.
+func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
-		return issueworkflow.Humans{}
+		return issueworkflow.Humans{}, nil
 	}
 	humans := issueworkflow.Humans{Requester: requestedByID}
-	if owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, workspaceID); err == nil {
+	owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, workspaceID)
+	switch {
+	case err == nil:
 		humans.WorkspaceOwner = owner
+	case !errors.Is(err, pgx.ErrNoRows):
+		return issueworkflow.Humans{}, fmt.Errorf("look up workspace owner: %w", err)
 	}
-	return humans
+	return humans, nil
 }
 
 // stepHandlerName describes who a step hands the issue to, for briefs.
 func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project db.Project, step issueworkflow.Step) string {
-	t, id, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID, h.workflowHumans(ctx, step, issue.WorkspaceID, issue.RequestedByID))
+	// A brief only names the handler; on a lookup failure it names the fallbacks
+	// that need no lookup. The write that matters resolves it again and fails.
+	humans, err := h.workflowHumans(ctx, step, issue.WorkspaceID, issue.RequestedByID)
+	if err != nil {
+		slog.Warn("workflow brief: resolve human handler", "issue_id", uuidToString(issue.ID), "error", err)
+	}
+	t, id, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID, humans)
 	if !ok {
 		switch step.Handler.Type {
 		case issueworkflow.HandlerProjectLead:
