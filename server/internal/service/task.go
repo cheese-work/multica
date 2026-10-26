@@ -8629,6 +8629,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"assignee_id":     util.UUIDToPtr(issue.AssigneeID),
 		"creator_type":    issue.CreatorType,
 		"creator_id":      util.UUIDToString(issue.CreatorID),
+		"requested_by_id": util.UUIDToPtr(issue.RequestedByID),
 		"parent_issue_id": util.UUIDToPtr(issue.ParentIssueID),
 		// Mirrors handler.IssueResponse.DuplicateOf. Null is only true for a
 		// row with no live mark; IssueToMapResolved resolves it for the rest.

@@ -77,7 +77,10 @@ type IssueCreateParams struct {
 	ParentIssueID pgtype.UUID
 	ProjectID     pgtype.UUID
 	// WorkflowID is the issue's workflow override; invalid inherits the project's.
-	WorkflowID    pgtype.UUID
+	WorkflowID pgtype.UUID
+	// RequestedByID is the member this issue was created for; the "human by
+	// role" handler hands the issue to them first. Invalid when none.
+	RequestedByID pgtype.UUID
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
@@ -459,6 +462,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 			Stage:         p.Stage,
@@ -483,6 +487,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})

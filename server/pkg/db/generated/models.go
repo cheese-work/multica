@@ -1240,6 +1240,7 @@ type Issue struct {
 	TriageState        pgtype.Text        `json:"triage_state"`
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
 	WorkflowID         pgtype.UUID        `json:"workflow_id"`
+	RequestedByID      pgtype.UUID        `json:"requested_by_id"`
 }
 
 type IssueCheckpoint struct {
