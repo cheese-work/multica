@@ -69,3 +69,22 @@ func TestCommentDecisionHint(test *testing.T) {
 		})
 	}
 }
+
+func TestCommentDecisionHintSingleCall(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	var comment CommentResponse
+	fixture.post(test, "task_token", fixture.taskID, fixture.mention(), map[string]any{"decision_intent": false}).Want(http.StatusCreated).JSON(&comment)
+	if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE id = $1 AND issue_id = $2`, comment.ID, fixture.issueID); count != 1 {
+		test.Fatalf("comment was not persisted: count=%d", count)
+	}
+	wantHint := fmt.Sprintf("If this needs a human answer, prefer a decision request. Use: multica decision request --issue %s --for %s --class CLASS --ask-file ASK.json. A plain mention is for FYI.", fixture.issueID, fixture.humanID)
+	if len(comment.Hints) != 1 || comment.Hints[0] != wantHint {
+		test.Fatalf("hint must recommend the single-call path without an intent-window prerequisite: got %q, want %q", comment.Hints, wantHint)
+	}
+	fixture.details.SourceCommentID = comment.ID
+	var decision map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&decision)
+	if decision["human_user_id"] != fixture.humanID || decision["status"] != "open" {
+		test.Fatalf("hint's single-call request was not created for the mentioned human: %+v", decision)
+	}
+}

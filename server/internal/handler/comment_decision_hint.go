@@ -26,5 +26,5 @@ func commentDecisionHints(comment db.Comment, decisionIntent bool) []string {
 	if len(commands) == 0 {
 		return nil
 	}
-	return []string{"If this needs a human answer, prefer a decision request. Open a --decision-intent window first, then use: " + strings.Join(commands, "; ") + ". A plain mention is for FYI."}
+	return []string{"If this needs a human answer, prefer a decision request. Use: " + strings.Join(commands, "; ") + ". A plain mention is for FYI."}
 }
