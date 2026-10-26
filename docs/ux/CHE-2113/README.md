@@ -36,3 +36,5 @@ Observed behavioral red on the base: `3 failed | 1 passed (4)`. The compact and 
 After implementation, the same command observes `4 passed (4)`. The tests verify self/non-self separation, unchanged case, agent-ID collision, unchanged `@all`, missing current user and reactive viewer changes/logout. The PR body includes the observed output.
 
 The broader `rich-content` suite observes `14 passed` files and `121 passed` tests. Existing jsdom canvas diagnostics remain non-failing. No native-mobile test or Electron-runtime smoke is claimed.
+
+The existing editor table-export fixture initially failed on implementation head `941f098aaddc657c75bed9442a8ca3ff4bc92903`: `Auth store not initialised`. The failure was reproduced locally before correction: `1 failed | 4 passed (5)`. The fixture now supplies a guest Zustand auth store with its callable and `getState` shape. This does not change product auth initialization or table-export behavior.
