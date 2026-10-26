@@ -183,20 +183,59 @@ func TestResolveHandler(t *testing.T) {
 	implement, _ := def.Step("implement")
 	review, _ := def.Step("code_review")
 	todo, _ := def.Step("todo")
-	if typ, id, ok := ResolveHandler(implement, project, "member", creator); !ok || typ != "agent" || id != lead {
+	if typ, id, ok := ResolveHandler(implement, project, "member", creator, Humans{}); !ok || typ != "agent" || id != lead {
 		t.Fatalf("agent handler = %s %v %v", typ, id, ok)
 	}
-	if typ, _, ok := ResolveHandler(review, project, "member", creator); !ok || typ != "member" {
+	if typ, _, ok := ResolveHandler(review, project, "member", creator, Humans{}); !ok || typ != "member" {
 		t.Fatalf("project lead handler = %s %v, want member", typ, ok)
 	}
-	if _, _, ok := ResolveHandler(review, db.Project{}, "member", creator); ok {
+	if _, _, ok := ResolveHandler(review, db.Project{}, "member", creator, Humans{}); ok {
 		t.Fatal("a project without a lead must not resolve a handoff")
 	}
-	if _, _, ok := ResolveHandler(Step{StatusKey: "x", Handler: Handler{Type: HandlerCreator}}, project, "agent", creator); !ok {
+	if _, _, ok := ResolveHandler(Step{StatusKey: "x", Handler: Handler{Type: HandlerCreator}}, project, "agent", creator, Humans{}); !ok {
 		t.Fatal("creator handler should resolve to the issue creator")
 	}
-	if _, _, ok := ResolveHandler(todo, project, "member", creator); ok {
+	if _, _, ok := ResolveHandler(todo, project, "member", creator, Humans{}); ok {
 		t.Fatal("a column without a handoff must not resolve one")
+	}
+}
+
+func TestResolveHumanByRole(t *testing.T) {
+	var requester, lead, owner, agentLead pgtype.UUID
+	_ = requester.Scan("11111111-1111-4111-8111-111111111111")
+	_ = lead.Scan("22222222-2222-4222-8222-222222222222")
+	_ = owner.Scan("33333333-3333-4333-8333-333333333333")
+	_ = agentLead.Scan(testAgentID)
+	step := Step{StatusKey: "blocked", Handler: Handler{Type: HandlerHumanByRole}}
+	memberLead := db.Project{LeadType: pgtype.Text{String: "member", Valid: true}, LeadID: lead}
+	cases := []struct {
+		name    string
+		project db.Project
+		humans  Humans
+		want    pgtype.UUID
+		wantOK  bool
+	}{
+		{"requester wins", memberLead, Humans{Requester: requester, WorkspaceOwner: owner}, requester, true},
+		{"no requester: project lead", memberLead, Humans{WorkspaceOwner: owner}, lead, true},
+		{"no lead: workspace owner", db.Project{}, Humans{WorkspaceOwner: owner}, owner, true},
+		{"lead no longer a member: workspace owner", memberLead, Humans{LeadNotMember: true, WorkspaceOwner: owner}, owner, true},
+		{"agent lead is not human: workspace owner", db.Project{LeadType: pgtype.Text{String: "agent", Valid: true}, LeadID: agentLead}, Humans{WorkspaceOwner: owner}, owner, true},
+		{"nobody to resolve", db.Project{}, Humans{}, pgtype.UUID{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			typ, id, ok := ResolveHandler(step, tc.project, "agent", agentLead, tc.humans)
+			if ok != tc.wantOK || (ok && (typ != "member" || id != tc.want)) {
+				t.Fatalf("ResolveHandler = %s %v %v, want member %v %v", typ, id, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+	if !step.HandsOff() {
+		t.Fatal("human_by_role must hand off")
+	}
+	def := Definition{Steps: stepsFor(ArrangeKeys([]string{"in_progress", "blocked"}))}
+	if err := ValidateHandoff(NormalizeHandoff(step), def); err != nil {
+		t.Fatalf("human_by_role on blocked should validate: %v", err)
 	}
 }
 
