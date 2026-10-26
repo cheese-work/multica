@@ -923,6 +923,44 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubWorkflowJob struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	RunID       int64              `json:"run_id"`
+	RunAttempt  int32              `json:"run_attempt"`
+	JobID       int64              `json:"job_id"`
+	JobName     string             `json:"job_name"`
+	Phase       int32              `json:"phase"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubWorkflowRun struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	RunID          int64              `json:"run_id"`
+	RunAttempt     int32              `json:"run_attempt"`
+	StatusRank     int32              `json:"status_rank"`
+	Status         string             `json:"status"`
+	Conclusion     string             `json:"conclusion"`
+	GhUpdatedAt    pgtype.Timestamptz `json:"gh_updated_at"`
+	GateGeneration int32              `json:"gate_generation"`
+	WorkflowPath   string             `json:"workflow_path"`
+	WorkflowName   string             `json:"workflow_name"`
+	DisplayTitle   string             `json:"display_title"`
+	HeadSha        string             `json:"head_sha"`
+	HeadBranch     string             `json:"head_branch"`
+	Event          string             `json:"event"`
+	HtmlUrl        string             `json:"html_url"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GovernanceAttempt struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
