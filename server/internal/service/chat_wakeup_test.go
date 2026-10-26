@@ -254,3 +254,53 @@ func TestChatWakeupOnlyOwnDMTaskMayManage(t *testing.T) {
 		t.Fatalf("finished-task Create error = %v, want ErrChatWakeupNotOwner", err)
 	}
 }
+
+// An archive that commits after Create read the session as active, but before
+// Create took the session lock, must still refuse the wakeup.
+func TestChatWakeupCreateRefusedWhenArchiveCommitsWhileWaitingForLock(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	ctx := context.Background()
+	archiver, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin archive tx: %v", err)
+	}
+	defer archiver.Rollback(ctx)
+	if _, err := archiver.Exec(ctx, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, f.sessionID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	created := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Create(ctx, ChatWakeupInput{TaskID: f.taskID, At: time.Now().Add(time.Hour), Instruction: "refresh"})
+		created <- err
+	}()
+	// Create has read the session as active and is now blocked on the row lock.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%chat_session%'`).Scan(&waiting); err != nil {
+			t.Fatalf("poll lock waiters: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Create never blocked on the session lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := archiver.Commit(ctx); err != nil {
+		t.Fatalf("commit archive: %v", err)
+	}
+	select {
+	case err := <-created:
+		if !errors.Is(err, ErrChatWakeupNotOwner) {
+			t.Fatalf("Create after archive = %v, want ErrChatWakeupNotOwner", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Create did not return after the archive committed")
+	}
+	var pending int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM chat_wakeup WHERE chat_session_id = $1 AND status = 'pending'`, f.sessionID).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending wakeups on archived DM = %d, %v; want 0", pending, err)
+	}
+}

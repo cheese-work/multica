@@ -96,8 +96,14 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 			return err
 		}
 		// The session lock serializes creators, so the cap cannot be raced past.
-		if _, err := qtx.LockChatSessionForEnqueue(ctx, session.ID); err != nil {
+		// An archive that committed while this waited is only visible on the
+		// locked row, so status is re-checked here.
+		locked, err := qtx.LockChatSessionForEnqueue(ctx, session.ID)
+		if err != nil {
 			return fmt.Errorf("lock chat session: %w", err)
+		}
+		if locked.Status != "active" {
+			return ErrChatWakeupNotOwner
 		}
 		pending, err := qtx.CountPendingChatWakeups(ctx, session.ID)
 		if err != nil {
