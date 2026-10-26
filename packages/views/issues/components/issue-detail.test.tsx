@@ -532,6 +532,12 @@ vi.mock("@multica/core/issues/stores", async () => ({
         drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
         getAnnotations: (draftKey: string) => mockDraftStoreState.getDrafts()[draftKey]?.annotations ?? emptyDraftAttachments,
+        updateAnnotation: (draftKey: string, annotationId: string, note: string) => {
+          const draft = mockDraftStoreState.getDrafts()[draftKey];
+          if (draft) mockDraftStoreState.setDraft(draftKey, {
+            ...draft, annotations: draft.annotations?.map(annotation => annotation.id === annotationId ? { ...annotation, note } : annotation),
+          });
+        },
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
         setDraft: () => {},
@@ -570,7 +576,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
 // layout.
 const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 const scrollToIndexSpy = vi.hoisted(() => vi.fn());
-const virtualWindow = vi.hoisted(() => ({ size: Infinity }));
+const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
@@ -581,7 +587,7 @@ vi.mock("react-virtuoso", () => ({
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(0);
+    const [firstIndex, setFirstIndex] = useState(virtualWindow.initialIndex);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
@@ -606,6 +612,7 @@ vi.mock("react-virtuoso", () => ({
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
   virtualWindow.size = Infinity;
+  virtualWindow.initialIndex = 0;
   Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
   scrollIntoViewSpy.mockClear();
   scrollToIndexSpy.mockClear();
@@ -3528,6 +3535,47 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+    it.each(["root", "reply"])("reveals a virtualized-out %s annotation from the footer and preserves the pending edit", async (sourceKind) => {
+      virtualWindow.size = 1;
+      virtualWindow.initialIndex = 41;
+      const root = { ...mockTimeline[0]!, id: "offscreen-note-root", content: "Root annotation source" };
+      const replies = Array.from({ length: 40 }, (_, index) => ({
+        ...mockTimeline[1]!, id: `offscreen-note-reply-${index}`, parent_id: root.id,
+        content: `Reply annotation source ${index}`, resolved_at: null,
+        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
+      }));
+      const source = sourceKind === "root" ? root : replies[0]!;
+      const draftKey = `reply:issue-1:${root.id}`;
+      mockDraftStoreState.setDraft(draftKey, {
+        content: "", attachments: [], updatedAt: Date.now(), annotations: [{
+          id: "offscreen-note", sourceCommentId: source.id, sourceActorName: "Source author",
+          quote: source.content, start: 0, prefix: "", suffix: "", note: "Original offscreen note",
+        }],
+      });
+      useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
+      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
+      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetail();
+      const footer = await screen.findByTestId("comment-reply-input");
+      expect(document.querySelector(`[data-comment-content="${source.id}"]`)).toBeNull();
+      fireEvent.click(within(footer).getByRole("button", { name: "1 annotation" }));
+      const annotations = await screen.findByRole("dialog", { name: "1 annotation" });
+      fireEvent.click(within(annotations).getByRole("button", { name: "Edit annotation 1" }));
+      const editor = await screen.findByRole("textbox", { name: "Comment" });
+      expect(editor).toHaveValue("Original offscreen note");
+      expect(footer).not.toBeInTheDocument();
+      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: sourceKind === "root" ? 0 : 1 }));
+      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(1);
+      expect(document.getElementById(`comment-${replies[39]!.id}`)).toBeNull();
+      expect(screen.getAllByTestId("annotation-note")).toHaveLength(1);
+      fireEvent.change(editor, { target: { value: "Saved offscreen note" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+      expect(mockDraftStoreState.getDrafts()[draftKey]?.annotations?.[0]?.note).toBe("Saved offscreen note");
+    });
+
     it("opens a saved reply annotation from the virtual footer composer", async () => {
       const root = { ...mockTimeline[0]!, id: "footer-root", content: "Root annotation source" };
       const reply = { ...mockTimeline[1]!, id: "footer-reply", parent_id: root.id, content: "Reply annotation source" };

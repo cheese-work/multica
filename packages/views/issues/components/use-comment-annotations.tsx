@@ -34,11 +34,12 @@ function overlaySlot(root: HTMLElement): HTMLElement | undefined {
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
 type SourceAnchor = { id: string; range: Range; root: HTMLElement };
 
-export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, editable = false, surface = "issue", labels }: {
+export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onRevealSource, editable = false, surface = "issue", labels }: {
   draftKey: CommentDraftKey;
   sources: { id: string; name: string; revision?: number }[];
   enabled: boolean;
   onAdded?: () => void;
+  onRevealSource?: (annotation: ReplyAnnotation) => boolean;
   /** Editable descriptions use their existing toolbar to call addSelection. */
   editable?: boolean;
   /** `chat` renders markers inside the message (reading order) and returns focus to them. */
@@ -237,6 +238,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const editAnnotation = (id: string, scrollToSource = false): boolean => {
     const annotation = annotationsRef.current.find((a) => a.id === id);
     const root = annotation && findSource(annotation.sourceCommentId);
+    if (annotation && !root) return onRevealSource?.(annotation) ?? false;
     const range = root && annotation && annotationRange(root, annotation, editable);
     if (!root || !range || !annotation) return false;
     if (scrollToSource) {

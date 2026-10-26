@@ -173,7 +173,7 @@ export function useInPageFind(options: {
     if (!open || !activeSourceId) return;
     pendingSourceScroll.current = true;
     revealDocumentRef.current?.(activeSourceId);
-  }, [open, activeSourceId, activeSourceOccurrence, activeIndex]);
+  }, [open, query, activeSourceId, activeSourceOccurrence, activeIndex]);
 
   const clearHighlights = useCallback(() => {
     if (!supported) return;

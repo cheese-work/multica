@@ -12,6 +12,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import {
@@ -2634,6 +2635,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
     flashJumpTarget(commentId);
   }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
+  const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
+    rootId: string; sourceCommentId: string; annotationId: string;
+  } | null>(null);
+  useEffect(() => { setPendingAnnotationEdit(null); }, [id]);
+  const revealAnnotation = useCallback((rootId: string, annotation: ReplyAnnotation) => {
+    const sourceCommentId = annotation.sourceCommentId;
+    if (sourceCommentId !== rootId && replyToRoot.get(sourceCommentId) !== rootId) return false;
+    if (!findDocuments.some(document => document.id === `comment-${sourceCommentId}`)) return false;
+    setPendingAnnotationEdit({ rootId, sourceCommentId, annotationId: annotation.id });
+    jumpToComment(sourceCommentId);
+    return true;
+  }, [replyToRoot, findDocuments, jumpToComment]);
+  const completeAnnotationEdit = useCallback((annotationId: string) => {
+    setPendingAnnotationEdit(current => current?.annotationId === annotationId ? null : current);
+  }, []);
   // Header chip jump to a run's block. A run is either its own top-level row
   // or a slot inside the thread it answers, so find that row, undo whatever
   // folds the thread, scroll the row into place, then let the effect below
@@ -3807,6 +3823,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           highlightedId={highlightedId}
           commentProps={reply ? {
             virtualRow: item.row,
+            onRevealAnnotation: revealAnnotation,
+            pendingAnnotationId: pendingAnnotationEdit?.rootId === reply.id && pendingAnnotationEdit.sourceCommentId === (item.row?.id ?? reply.id)
+              ? pendingAnnotationEdit.annotationId : undefined,
+            onAnnotationEditComplete: completeAnnotationEdit,
             issueId: id, entry: reply, replies: timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES,
             currentUserId: user?.id, canModerate: canModerateComments, onReply: submitReply,
             onReplyAccepted: scrollToTimelineBottom, onEdit: editComment, onDelete: deleteComment,
@@ -3844,6 +3864,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         <div className={item.row?.last ? "pb-3" : undefined} id={item.kind === "comment" ? `comment-${item.id}` : undefined}>
           <CommentCard
             virtualRow={item.row}
+            onRevealAnnotation={revealAnnotation}
+            pendingAnnotationId={pendingAnnotationEdit?.rootId === rootId && pendingAnnotationEdit.sourceCommentId === (item.row?.id ?? item.id)
+              ? pendingAnnotationEdit.annotationId : undefined}
+            onAnnotationEditComplete={completeAnnotationEdit}
             issueId={id}
             runs={commentRuns.get(rootId) ?? EMPTY_COMMENT_RUNS}
             enteringRunIds={enteringRunIds}

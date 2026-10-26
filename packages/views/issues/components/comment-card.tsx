@@ -51,6 +51,7 @@ import {
   standaloneAttachmentGroup,
 } from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
 import { CommentsFoldBar } from "./resolved-thread-bar";
 import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
@@ -113,6 +114,9 @@ function StickyHeaderShell({
 
 interface CommentCardProps {
   virtualRow?: CommentThreadRow;
+  onRevealAnnotation?: (rootId: string, annotation: ReplyAnnotation) => boolean;
+  pendingAnnotationId?: string;
+  onAnnotationEditComplete?: (annotationId: string) => void;
   issueId: string;
   runs?: CommentRun[];
   runViewState?: InlineCommentRunState;
@@ -1083,6 +1087,9 @@ export function AgentRunComment({ run, standalone = false, commentProps, enterin
 
 function CommentCardImpl({
   virtualRow,
+  onRevealAnnotation,
+  pendingAnnotationId,
+  onAnnotationEditComplete,
   issueId,
   runs = EMPTY_COMMENT_RUNS,
   runViewState,
@@ -1127,7 +1134,14 @@ function CommentCardImpl({
       .map((e) => ({ id: e.id, name: e.actor_name || getActorName(e.actor_type, e.actor_id), revision: e.revision })),
     enabled: !!currentUserId,
     onAdded: () => { if (replyFolded) onResolvedExpandChange?.(entry.id, true); },
+    onRevealSource: (saved) => onRevealAnnotation?.(entry.id, saved) ?? false,
   });
+  const editAnnotation = annotation.editAnnotation;
+  useEffect(() => {
+    if (!pendingAnnotationId) return;
+    if (!editAnnotation(pendingAnnotationId, true)) toast.error(t(($) => $.reply.annotations.source_changed));
+    onAnnotationEditComplete?.(pendingAnnotationId);
+  }, [pendingAnnotationId, editAnnotation, onAnnotationEditComplete, t]);
   const isCollapsed = useCommentCollapseStore((s) => s.isCollapsed(issueId, entry.id));
   const toggleCollapse = useCommentCollapseStore((s) => s.toggle);
   // `forceThreadExpanded` (caller's find/target/active-interaction pin,
