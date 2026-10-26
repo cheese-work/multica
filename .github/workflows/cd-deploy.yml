@@ -114,12 +114,13 @@ jobs:
         shell: bash
         run: bash deploy/cd/ensure-pyyaml.sh
 
-      - name: Select the newest admissible candidate before C00 approval
+      - name: Select a forward candidate before C00 approval
         id: candidate
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
         run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
 

@@ -7,13 +7,10 @@ checks_path=$2
 echo 'eligible=false' >> "$GITHUB_OUTPUT"
 printf '## C00 deploy candidate `%s`\n\n' "$source_sha" >> "$GITHUB_STEP_SUMMARY"
 
-# Same rule as the guards after approval; see require-current.sh. It writes
-# its own skip reason to the step summary.
 require_current() {
   local result
-  result="$(mktemp)"
-  GITHUB_OUTPUT="$result" bash deploy/cd/require-current.sh "$source_sha"
-  grep -qx 'current=true' "$result" || exit 0
+  result="$(GITHUB_OUTPUT=/dev/stdout bash deploy/cd/require-current.sh "$source_sha")"
+  [ "$result" = 'current=true' ] || exit 0
 }
 
 require_current
@@ -27,5 +24,5 @@ if ! node deploy/cd/admission.mjs checks --checks "$checks_path" --source-sha "$
 fi
 
 echo 'eligible=true' >> "$GITHUB_OUTPUT"
-printf 'Candidate `%s` is current and its required checks passed; requesting C00 approval.\n' \
+printf 'Candidate `%s` moves forward from C00 and its required checks passed; requesting C00 approval.\n' \
   "$source_sha" >> "$GITHUB_STEP_SUMMARY"
