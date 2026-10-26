@@ -544,6 +544,7 @@ type ChatMessage struct {
 	SentVia                       pgtype.Text        `json:"sent_via"`
 	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
+	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
 }
 
 type ChatPinnedAgent struct {
