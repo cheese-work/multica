@@ -3385,7 +3385,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.AssigneeType == nil && req.AssigneeID == nil {
 			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
 				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), step, wsUUID, requestedByID)
+				humans, err := h.workflowHumans(r.Context(), step, createWorkflowProject, wsUUID, requestedByID)
 				if err != nil {
 					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")

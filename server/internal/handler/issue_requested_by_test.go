@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // requestedByTestUser adds a workspace member who is not the fixture owner.
@@ -177,9 +178,23 @@ func TestHumanLookupFailuresAreNotTreatedAsMissingPeople(t *testing.T) {
 			t.Fatalf("ok = %v, status = %d, want a refused create with 500", ok, w.Code)
 		}
 	})
+	t.Run("known requester needs no owner lookup", func(t *testing.T) {
+		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
+		humans, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), parseUUID(member))
+		if err != nil || !humans.Requester.Valid {
+			t.Fatalf("humans = %+v, err = %v, want the requester without a fallback lookup", humans, err)
+		}
+	})
+	t.Run("member project lead needs no owner lookup", func(t *testing.T) {
+		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
+		project := db.Project{LeadType: pgtype.Text{String: "member", Valid: true}, LeadID: parseUUID(member)}
+		if _, err := testHandler.workflowHumans(canceled, step, project, parseUUID(testWorkspaceID), pgtype.UUID{}); err != nil {
+			t.Fatalf("err = %v, want no owner lookup when the lead resolves", err)
+		}
+	})
 	t.Run("workspace owner", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
-		if _, err := testHandler.workflowHumans(canceled, step, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
+		if _, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
 			t.Fatal("workflowHumans returned no error for a failed owner lookup")
 		}
 	})
