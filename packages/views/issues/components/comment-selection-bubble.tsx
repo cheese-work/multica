@@ -4,6 +4,12 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floating-ui/dom";
 
+/** Touch browsers (iOS) put their own selection menu above the selection. */
+function placementFor(marker: boolean) {
+  if (marker) return "right-start";
+  return window.matchMedia?.("(pointer: coarse)").matches ? "bottom" : "top";
+}
+
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
 export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget }: {
   range: Range;
@@ -34,8 +40,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
       // vertically: doing so piles unrelated annotations at the viewport edge.
       computePosition(anchor, element, {
         strategy: "fixed",
-        // Touch browsers (iOS) put their own selection menu above the selection.
-        placement: marker ? "right-start" : window.matchMedia?.("(pointer: coarse)").matches ? "bottom" : "top",
+        placement: placementFor(marker),
         middleware: markerRanges ? [
           offset(({ rects }) => {
             const sorted = markerRanges.map((item) => ({ item, top: item.getBoundingClientRect().top }))
