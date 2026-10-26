@@ -1,5 +1,5 @@
-import { act, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { collectTextMatches, useInPageFind } from "./use-in-page-find";
 
 function makeRoot(html: string): HTMLElement {
@@ -127,6 +127,37 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     await flushFrames();
     expect(result.current.matchCount).toBe(0);
     expect(result.current.activeIndex).toBe(-1);
+  });
+
+  it("counts off-screen source occurrences, wraps navigation and updates after edits", async () => {
+    const revealDocument = vi.fn();
+    const documents = [
+      { id: "first", text: "Needle needle" },
+      { id: "offscreen", text: "A hidden needle" },
+    ];
+    const walker = vi.spyOn(document, "createTreeWalker");
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: 0, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
+    await waitFor(() => expect(result.current.matchCount).toBe(3));
+    expect(result.current.activeDocumentId).toBe("first");
+    expect(walker).not.toHaveBeenCalled();
+
+    act(() => result.current.goPrev());
+    expect(result.current.activeIndex).toBe(2);
+    expect(result.current.activeDocumentId).toBe("offscreen");
+    expect(revealDocument).toHaveBeenLastCalledWith("offscreen");
+    act(() => result.current.goNext());
+    expect(result.current.activeIndex).toBe(0);
+
+    rerender({ entries: [{ id: "offscreen", text: "One needle" }] });
+    await waitFor(() => expect(result.current.matchCount).toBe(1));
+    expect(result.current.activeDocumentId).toBe("offscreen");
+    act(() => result.current.setQuery("absent"));
+    await waitFor(() => expect(result.current.matchCount).toBe(0));
+    expect(result.current.activeDocumentId).toBeNull();
+    walker.mockRestore();
   });
 });
 

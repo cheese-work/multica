@@ -7,14 +7,13 @@ checks_path=$2
 echo 'eligible=false' >> "$GITHUB_OUTPUT"
 printf '## C00 deploy candidate `%s`\n\n' "$source_sha" >> "$GITHUB_STEP_SUMMARY"
 
+# Same rule as the guards after approval; see require-current.sh. It writes
+# its own skip reason to the step summary.
 require_current() {
-  local main_sha
-  main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-  if [ "$source_sha" != "$main_sha" ]; then
-    printf 'Skipped before approval: candidate `%s` is superseded by main `%s`.\n' \
-      "$source_sha" "$main_sha" >> "$GITHUB_STEP_SUMMARY"
-    exit 0
-  fi
+  local result
+  result="$(mktemp)"
+  GITHUB_OUTPUT="$result" bash deploy/cd/require-current.sh "$source_sha"
+  grep -qx 'current=true' "$result" || exit 0
 }
 
 require_current

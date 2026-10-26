@@ -1482,6 +1482,12 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
+	case "pull_request_review":
+		if err := h.handlePullRequestReviewEvent(ctx, body); err != nil {
+			slog.Error("github: pull_request_review event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process pull_request_review event")
+			return
+		}
 	case "pull_request":
 		if err := h.handlePullRequestEvent(ctx, body); err != nil {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.

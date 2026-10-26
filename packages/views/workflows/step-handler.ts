@@ -46,6 +46,8 @@ export function useStepHandlerLabel(
             : t(($) => $.workflows.handler.project_lead);
         case "creator":
           return t(($) => $.workflows.handler.creator);
+        case "human_by_role":
+          return t(($) => $.workflows.handler.human_by_role);
         default:
           return null;
       }

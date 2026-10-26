@@ -724,12 +724,12 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 	// on an ordinary create, resolved under the locks the create takes.
 	var handoffResolver service.CreateHandoffResolver
 	if !assigneeType.Valid && !assigneeID.Valid {
-		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID)
+		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID)
 	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		HandoffResolver: handoffResolver,
 		WorkspaceID:     workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
-		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID,
+		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID, RequestedByID: userID,
 		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, StartDate: startDate, DueDate: dueDate,
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
 		AllowDuplicate: input.AllowDuplicate, SourceContext: &capture,

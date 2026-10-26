@@ -270,6 +270,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible \
   --ask-file ./ask.md [--footer-file ./footer.md] [--parent <comment-id>]
 ```
 
+`--for` accepts the person's user ID or their member ID in the issue's workspace, including workspace owners. The server stores the canonical user ID.
+
 One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
 
 The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
