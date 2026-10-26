@@ -4,11 +4,15 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floating-ui/dom";
 
-/** Touch browsers (iOS) put their own selection menu above the selection. */
-function placementFor(marker: boolean) {
+/**
+ * Touch browsers (iOS) put their own selection menu above the selection, so the
+ * popup goes below it and never flips up; with no room below, shift pins it to the viewport edge.
+ */
+function placementFor(marker: boolean, touch: boolean) {
   if (marker) return "right-start";
-  return window.matchMedia?.("(pointer: coarse)").matches ? "bottom" : "top";
+  return touch ? "bottom" : "top";
 }
+const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
 export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget }: {
@@ -35,12 +39,13 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     let revision = 0;
     const update = () => {
       const currentRevision = ++revision;
+      const touch = isTouch();
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
       computePosition(anchor, element, {
         strategy: "fixed",
-        placement: placementFor(marker),
+        placement: placementFor(marker, touch),
         middleware: markerRanges ? [
           offset(({ rects }) => {
             const sorted = markerRanges.map((item) => ({ item, top: item.getBoundingClientRect().top }))
@@ -56,7 +61,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true }), hide()],
+        ] : [offset(8), ...(touch ? [] : [flip({ padding: 8, altBoundary: true })]), shift({ padding: 8, altBoundary: true, crossAxis: touch }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();

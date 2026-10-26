@@ -42,6 +42,9 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     return this.hasAttribute("data-reply-annotation-overlay") ? new DOMRect(0, 0, 100, 30) : new DOMRect(10, 10, 600, 600);
   });
+  // Floating UI measures the popup with offsetWidth/offsetHeight.
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
   Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 300, 120, 20));
   Range.prototype.getClientRects = vi.fn(() => [] as unknown as DOMRectList);
 });
@@ -76,6 +79,20 @@ describe("annotation note on iOS", () => {
     const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
     await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
     expect(parseFloat(overlay.style.top)).toBeGreaterThanOrEqual(320);
+  });
+
+  it("stays out of the area above the selection on a touch device when there is no room below", async () => {
+    setPointer(true);
+    // Selection at 745..765 in a 768px viewport: a 30px popup does not fit below it.
+    Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 745, 120, 20));
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    const add = await screen.findByRole("button", { name: "Add to reply" });
+    const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
+    await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
+    // Above the selection would be 745 - 30 - 8 = 707.
+    expect(parseFloat(overlay.style.top)).toBeGreaterThan(707);
+    expect(parseFloat(overlay.style.top)).toBeLessThanOrEqual(768 - 30);
   });
 
   it("keeps the popup above the selection with a mouse", async () => {
