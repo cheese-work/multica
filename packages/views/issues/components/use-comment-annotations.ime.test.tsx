@@ -103,6 +103,24 @@ describe("annotation note on iOS", () => {
     expect(top + 30).toBeLessThanOrEqual(745 - NATIVE_MENU_TOP_ABOVE_SELECTION);
   });
 
+  it("never slides vertically into the selection or native menu in a constrained viewport on touch", async () => {
+    setPointer(true);
+    // 100px viewport: neither below (60+28+30 > 100) nor above (40-88 < 0) fits, so a vertical
+    // shift would drag the popup into the selection (40..60), its handle, or the native menu.
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 100 });
+    Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 40, 120, 20));
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    const add = await screen.findByRole("button", { name: "Add to reply" });
+    const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
+    await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
+    const top = parseFloat(overlay.style.top);
+    const bottom = top + 30;
+    const belowClear = top >= 60 + SELECTION_HANDLE_BELOW_SELECTION;
+    const aboveClear = bottom <= 40 - NATIVE_MENU_TOP_ABOVE_SELECTION;
+    expect(belowClear || aboveClear).toBe(true);
+  });
+
   it("keeps the popup above the selection with a mouse", async () => {
     setPointer(false);
     const { container } = renderWithI18n(<Fixture />);
