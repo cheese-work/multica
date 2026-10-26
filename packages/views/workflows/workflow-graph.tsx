@@ -7,6 +7,7 @@ import {
   MarkerType,
   Position,
   ReactFlow,
+  type Dimensions,
   type Edge,
   type Node,
   type NodeChange,
@@ -132,11 +133,21 @@ export function WorkflowGraph({
 
   const editable = !!onChange;
   const [moved, setMoved] = useState<Record<string, XYPosition>>({});
+  // React Flow keeps a controlled node hidden, and draws no edge to it, until
+  // the measured size comes back through `onNodesChange`.
+  const [measured, setMeasured] = useState<Record<string, Dimensions>>({});
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setMoved((m) => {
       const next = { ...m };
       for (const c of changes) {
         if (c.type === "position" && c.position) next[c.id] = c.position;
+      }
+      return next;
+    });
+    setMeasured((m) => {
+      const next = { ...m };
+      for (const c of changes) {
+        if (c.type === "dimensions" && c.dimensions) next[c.id] = c.dimensions;
       }
       return next;
     });
@@ -159,9 +170,10 @@ export function WorkflowGraph({
           editable,
           project,
         },
+        measured: measured[step.status_key],
         draggable: editable,
       })),
-    [workflow.steps, labelOf, handlerLabel, currentStatus, project, editable, moved],
+    [workflow.steps, labelOf, handlerLabel, currentStatus, project, editable, moved, measured],
   );
 
   const flowEdges = useMemo<Edge[]>(
