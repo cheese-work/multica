@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Background,
   Handle,
@@ -9,12 +9,17 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
+  type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { workflowEdges } from "@multica/core/issue-workflows";
+import {
+  addStepEdge,
+  workflowEdges,
+} from "@multica/core/issue-workflows";
 import type {
   IssueWorkflow,
   IssueWorkflowStep,
@@ -36,12 +41,13 @@ type StepNodeData = {
   label: string;
   handler: string | null;
   current: boolean;
+  editable: boolean;
   project: Pick<Project, "lead_type" | "lead_id"> | null;
 };
 
 function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
   const catalog = useIssueStatuses(useWorkspaceId());
-  const { step, label, handler, current, project } = data;
+  const { step, label, handler, current, editable, project } = data;
   const actor = stepHandlerActor(step, project);
   return (
     <div
@@ -54,7 +60,7 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           : "border-surface-border",
       )}
     >
-      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <Handle type="target" position={Position.Left} isConnectable={editable} />
       <div className="flex items-center gap-2">
         <StatusIcon
           status={step.status_key}
@@ -85,7 +91,7 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           <span className="truncate">{handler}</span>
         </div>
       )}
-      <Handle type="source" position={Position.Right} isConnectable={false} />
+      <Handle type="source" position={Position.Right} isConnectable={editable} />
     </div>
   );
 }
@@ -93,44 +99,69 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
 const nodeTypes = { step: StepNode };
 
 /**
- * A read-only flowchart of a workflow (CHE-2150): a node per step, an arrow
- * per exit labelled with its guard. Steps run left to right in column order,
- * staggered so an arrow that skips a step clears it. The exits also render as
- * a list, which is what assistive tech and tests read.
+ * A flowchart of a workflow (CHE-2150): a node per step, an arrow per exit
+ * labelled with its guard. Steps run left to right in column order, staggered
+ * so an arrow that skips a step clears it. The exits also render as a list,
+ * which is what assistive tech and tests read.
+ *
+ * Read-only unless `onChange` is given. Then nodes can be dragged (the layout
+ * is not saved) and a drag from one node's handle to another adds an exit;
+ * everything else is edited in the exits form.
  */
 export function WorkflowGraph({
   workflow,
   currentStatus,
   project,
   className,
+  onChange,
+  onSelectStep,
 }: {
   workflow: Pick<IssueWorkflow, "steps">;
-  /** The status the issue sits on; highlighted. */
+  /** The status the issue sits on, or the step being edited; highlighted. */
   currentStatus?: string;
   project: Pick<Project, "lead_type" | "lead_id"> | null;
   className?: string;
+  /** Makes the graph editable; receives the steps with the new exit. */
+  onChange?: (steps: IssueWorkflowStep[]) => void;
+  onSelectStep?: (statusKey: string) => void;
 }) {
   const { t } = useT("issues");
   const labelOf = useStatusLabel(useWorkspaceId());
   const handlerLabel = useStepHandlerLabel(project);
   const edges = useMemo(() => workflowEdges(workflow), [workflow]);
 
+  const editable = !!onChange;
+  const [moved, setMoved] = useState<Record<string, XYPosition>>({});
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setMoved((m) => {
+      const next = { ...m };
+      for (const c of changes) {
+        if (c.type === "position" && c.position) next[c.id] = c.position;
+      }
+      return next;
+    });
+  }, []);
+
   const nodes = useMemo<Node<StepNodeData>[]>(
     () =>
       workflow.steps.map((step, i) => ({
         id: step.status_key,
         type: "step",
-        position: { x: i * (NODE_WIDTH + COLUMN_GAP), y: (i % 2) * ROW_GAP },
+        position: moved[step.status_key] ?? {
+          x: i * (NODE_WIDTH + COLUMN_GAP),
+          y: (i % 2) * ROW_GAP,
+        },
         data: {
           step,
           label: labelOf(step.status_key),
           handler: handlerLabel(step),
           current: step.status_key === currentStatus,
+          editable,
           project,
         },
-        draggable: false,
+        draggable: editable,
       })),
-    [workflow.steps, labelOf, handlerLabel, currentStatus, project],
+    [workflow.steps, labelOf, handlerLabel, currentStatus, project, editable, moved],
   );
 
   const flowEdges = useMemo<Edge[]>(
@@ -161,9 +192,17 @@ export function WorkflowGraph({
           edges={flowEdges}
           nodeTypes={nodeTypes}
           fitView
-          nodesDraggable={false}
-          nodesConnectable={false}
-          elementsSelectable={false}
+          nodesDraggable={editable}
+          nodesConnectable={editable}
+          elementsSelectable={editable}
+          onNodesChange={onNodesChange}
+          onNodeClick={(_, node) => onSelectStep?.(node.id)}
+          onEdgeClick={(_, edge) => onSelectStep?.(edge.source)}
+          onConnect={({ source, target }) => {
+            if (onChange && source && target && source !== target) {
+              onChange(addStepEdge(workflow.steps, source, target));
+            }
+          }}
           proOptions={{ hideAttribution: false }}
         >
           <Background />

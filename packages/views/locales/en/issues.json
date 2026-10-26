@@ -1779,7 +1779,27 @@
       "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them.",
       "graph_label": "Workflow graph",
       "exits_label": "Workflow exits",
-      "exit_item": "{{from}} to {{to}} when {{guard}}"
+      "exit_item": "{{from}} to {{to}} when {{guard}}",
+      "edit": {
+        "title": "Exits from {{step}}",
+        "pick": "Select a step to edit its exits.",
+        "empty": "No exits.",
+        "group": "Exit {{n}}: {{to}}",
+        "guard": "Guard",
+        "target": "Goes to",
+        "timeout": "Timeout",
+        "on_timeout": "On timeout",
+        "add": "Add exit",
+        "remove": "Remove exit",
+        "issues": {
+          "too_many_edges": "{{from}} has more than {{max}} exits.",
+          "missing_target": "An exit of {{from}} goes to a missing step.",
+          "bad_guard": "An exit of {{from}} has an unknown guard.",
+          "bad_timeout": "An exit of {{from}} needs a timeout between 1m and 720h, e.g. 72h.",
+          "bad_on_timeout": "An exit of {{from}} needs a valid On timeout step.",
+          "no_exit": "{{from}} hands off but has no exit."
+        }
+      }
     },
     "templates": {
       "delivery": {

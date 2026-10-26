@@ -1707,7 +1707,27 @@
       "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。",
       "graph_label": "ワークフロー図",
       "exits_label": "ワークフローの出口",
-      "exit_item": "{{guard}} のとき {{from}} から {{to}} へ"
+      "exit_item": "{{guard}} のとき {{from}} から {{to}} へ",
+      "edit": {
+        "title": "{{step}} からの遷移",
+        "pick": "ステップを選ぶと遷移を編集できます。",
+        "empty": "遷移はありません。",
+        "group": "遷移 {{n}}: {{to}}",
+        "guard": "条件",
+        "target": "遷移先",
+        "timeout": "タイムアウト",
+        "on_timeout": "タイムアウト時",
+        "add": "遷移を追加",
+        "remove": "遷移を削除",
+        "issues": {
+          "too_many_edges": "{{from}} の遷移が {{max}} 件を超えています。",
+          "missing_target": "{{from}} の遷移先が存在しません。",
+          "bad_guard": "{{from}} の遷移に不明な条件があります。",
+          "bad_timeout": "{{from}} の遷移には 1m〜720h のタイムアウトが必要です（例: 72h）。",
+          "bad_on_timeout": "{{from}} の遷移には有効なタイムアウト時のステップが必要です。",
+          "no_exit": "{{from}} は引き継ぎますが、遷移がありません。"
+        }
+      }
     },
     "templates": {
       "delivery": {
