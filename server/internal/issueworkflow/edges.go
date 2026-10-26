@@ -139,6 +139,9 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
+		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
+			return invalid("issues in %q cannot advance on CI green", s.StatusKey)
+		}
 		if !g.needsTimeout() {
 			continue
 		}

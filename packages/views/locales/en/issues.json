@@ -449,6 +449,7 @@
     "prop_labels": "Labels",
     "add_property_action": "Add property",
     "prop_created_by": "Created by",
+    "prop_requested_by": "Requested by",
     "prop_created": "Created",
     "prop_updated": "Updated",
     "activity_section": "Activity",
@@ -1531,7 +1532,8 @@
       "member": "Member",
       "project_lead": "Project lead",
       "creator": "Issue creator",
-      "project_lead_named": "{{name}} (project lead)"
+      "project_lead_named": "{{name}} (project lead)",
+      "human_by_role": "Human by role"
     },
     "settings": {
       "title": "Workflows",
@@ -1747,6 +1749,7 @@
       "mode_member": "Hand to a member",
       "mode_member_hint": "Changes the assignee; nothing runs",
       "project_lead_hint": "If the project lead is an agent, it starts a run.",
+      "human_by_role_hint": "Requester, then project lead, then workspace owner.",
       "pick_agent": "Choose an agent",
       "pick_member": "Choose a member",
       "search_agents": "Search agents",

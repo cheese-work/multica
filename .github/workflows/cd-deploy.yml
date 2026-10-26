@@ -66,9 +66,7 @@ permissions:
 # cancels it for any newcomer, whatever its version, so a stale stage joining
 # late would evict the newest candidate; a freshness check made before the join
 # cannot close that gap, since check and join are not atomic. `max` queues up
-# to 100 pending jobs FIFO and evicts none. A stale stage that reaches its turn
-# is skipped by the checks below, or runs read-only (prepare-release-candidate)
-# and stops at deploy-gate. `cancel-in-progress` stays off (the default): it
+# to 100 pending jobs FIFO and evicts none. `cancel-in-progress` stays off (the default): it
 # cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
   # ---------------------------------------------------------------------------
@@ -91,36 +89,9 @@ jobs:
     concurrency:
       group: cd-deploy-c00-approval
       cancel-in-progress: true
-    outputs:
-      current: ${{ steps.guard.outputs.current || 'true' }}
     steps:
-      # Approval can arrive hours after the run started. Re-check right after
-      # it, before any C00 job runs. The manual path deploys an explicit
-      # manifest and may legitimately name a non-head ref, so it is exempt.
-      - name: Checkout the workflow revision
-        if: github.event_name == 'workflow_run'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Setup Node
-        if: github.event_name == 'workflow_run'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install the YAML parser the guard's check reader needs
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        run: bash deploy/cd/ensure-pyyaml.sh
-
-      - name: Skip if a newer main candidate arrived while waiting
-        id: guard
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
+      - name: Approval granted
+        run: echo "C00 deployment approved."
 
   candidate-preflight:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
@@ -163,7 +134,7 @@ jobs:
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
     needs: [candidate-preflight, approve-c00]
-    if: needs.candidate-preflight.outputs.eligible == 'true' && needs.approve-c00.outputs.current == 'true'
+    if: needs.candidate-preflight.outputs.eligible == 'true'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
@@ -225,85 +196,7 @@ jobs:
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
-          chmod 600 ~/.ssh/c00_deploy_key
-          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
-          remote_dir="${C00_STATE_DIR%/}/cd-baseline-$(date +%s)"
-
-          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
-
-          # Resolve the deployed commit HERE, on the runner, and pass it in —
-          # but ONLY when the image cannot speak for itself.
-          #
-          # Precedence, highest first:
-          #   1. the image's own org.opencontainers.image.revision label
-          #   2. this workflow's tag-based git resolution
-          #
-          # The label is authoritative: it is what the image was actually built
-          # from, recorded at build time by D1. A tag is a name someone chose
-          # and can be wrong or reused. So when the label is present we pass
-          # nothing and let capture-tuple.sh read it directly; passing
-          # --application-sha would unconditionally override the label, which
-          # inverts this precedence and lets a tag-guess beat the truth.
-          #
-          # The tag path exists because C00 may still be running images not
-          # built by D1, which carry no label — only a short SHA tag. Expanding
-          # that needs a git checkout, and the script runs on C00 from a bare
-          # scp'd temp directory with no repository, so the runner (which has
-          # the checkout) does the lookup.
-          #
-          # Never substitute this workflow's own commit — that would record a
-          # baseline claiming C00 runs something it does not.
-          # The live C00 stack is A/B: the base backend/frontend services are
-          # stopped and the router points at one colour-specific pair. Read
-          # the router's active generation and ask capture-tuple.sh for that
-          # exact Compose service pair; inspecting the stopped base service
-          # yields no container id and therefore no config-hash.
-          active_colour="$("${ssh_cmd[@]}" "node -e 'const fs=require(\"node:fs\"); const p=\"${C00_CUTOVER_STATE_DIR%/}/cutover-state.json\"; const c=JSON.parse(fs.readFileSync(p,\"utf8\")).active_colour; if(!/^(blue|green)\$/.test(c)) process.exit(1); process.stdout.write(c)'" | tr -d '[:space:]')"
-          echo "C00 router reports active colour ${active_colour}; capturing backend-${active_colour}/frontend-${active_colour}"
-
-          baseline_sha=""
-          deployed_label="$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \"\$(cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml ps -q backend-${active_colour})\"" 2>/dev/null | tr -d '[:space:]' || true)"
-
-          if [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "C00's backend image carries revision label ${deployed_label}; deferring to it (no --application-sha)"
-          else
-            deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml images backend-${active_colour} --format json" 2>/dev/null \
-              | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(d||"[]");const x=Array.isArray(r)?r[0]:r;process.stdout.write(x&&x.Tag?String(x.Tag):"")}catch{process.stdout.write("")}})' || true)"
-            candidate="${deployed_tag#sha-}"
-            if [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
-              baseline_sha="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
-            fi
-          fi
-
-          capture_args=(--compose-dir "'${C00_COMPOSE_DIR}'" --output "'${remote_dir}/baseline-tuple.json'" --compose-service-suffix "'${active_colour}'")
-          if [[ "$baseline_sha" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "no usable revision label; resolved C00's deployed image tag '${deployed_tag}' to commit ${baseline_sha}"
-            capture_args+=(--application-sha "'${baseline_sha}'")
-          elif ! [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "could not resolve C00's deployed tag '${deployed_tag:-<none>}' to a commit; capture-tuple.sh will fail loudly with its own diagnostic"
-          fi
-
-          set +e
-          "${ssh_cmd[@]}" "bash '${remote_dir}/capture-tuple.sh' ${capture_args[*]}"
-          capture_status=$?
-          set -e
-
-          if [ "$capture_status" -eq 0 ]; then
-            scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-              "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/baseline-tuple.json" \
-              baseline-tuple.json
-          fi
-          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
-          exit "$capture_status"
+        run: bash deploy/cd/capture-remote-baseline.sh baseline-tuple.json
 
       - name: Issue the release-candidate manifest
         id: evidence
@@ -379,9 +272,8 @@ jobs:
     needs: [approve-c00, prepare-release-candidate]
     # The manual path skips prepare-release-candidate entirely (its caller
     # supplies an already-issued manifest), so this must not be skipped just
-    # because that job did not run. Nothing runs without the approval, and a
-    # superseded candidate stops here.
-    if: always() && needs.approve-c00.result == 'success' && needs.approve-c00.outputs.current == 'true' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
+    # because that job did not run. Nothing runs without the approval.
+    if: always() && needs.approve-c00.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
@@ -477,44 +369,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Freshness check before the lock. Admission can finish long after approval;
-  # a stale candidate is skipped here instead of waiting in the queue for its
-  # turn. Not atomic with the join, so deploy checks again once it has the lock.
-  # No concurrency group, no secrets, nothing on C00.
-  deploy-gate:
-    needs: admission
-    runs-on: ubuntu-latest
-    outputs:
-      current: ${{ steps.guard.outputs.current || 'true' }}
-    steps:
-      - name: Checkout the workflow revision
-        if: github.event_name == 'workflow_run'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Setup Node
-        if: github.event_name == 'workflow_run'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install the YAML parser the guard's check reader needs
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        run: bash deploy/cd/ensure-pyyaml.sh
-
-      - name: Skip if a newer main candidate arrived during admission
-        id: guard
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
-
   deploy:
-    needs: [admission, deploy-gate]
-    if: needs.deploy-gate.outputs.current == 'true'
+    needs: admission
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
@@ -536,53 +392,28 @@ jobs:
       group: cd-deploy-c00
       queue: max
     steps:
-      # A deploy can wait in the lock behind a running one. Re-check as soon
-      # as it gets the lock (deploy-gate only covers the time before it
-      # queued): a newer main candidate replaces it, and nothing below runs.
-      # The manual path may name a non-head ref and is exempt.
-      - name: Checkout the workflow revision
-        if: github.event_name == 'workflow_run'
+      - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.admission.outputs.ref }}
+          fetch-depth: 0
 
       - name: Setup Node
-        if: github.event_name == 'workflow_run'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install the YAML parser the guard's check reader needs
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        run: bash deploy/cd/ensure-pyyaml.sh
-
-      - name: Skip if a newer main candidate arrived while queued
-        id: guard
-        if: github.event_name == 'workflow_run'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash deploy/cd/require-current.sh "${{ github.event.workflow_run.head_sha }}"
-
-      - name: Checkout
-        if: steps.guard.outputs.current != 'false'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.admission.outputs.ref }}
-          fetch-depth: 1
-
       - name: Download exact cutover input layout
-        if: steps.guard.outputs.current != 'false'
         uses: actions/download-artifact@v4
         with:
           name: cd-deploy-admitted-input
           path: cutover-input
 
       - name: Deploy to C00 over SSH
-        if: steps.guard.outputs.current != 'false'
+        id: deploy
         shell: bash
         env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
           # The only C00 credentials in this repository. Scoped to this
           # workflow/job only — cd-qualification.yml (D1) has none of these
           # and must stay that way (see its own header comment).
@@ -645,10 +476,12 @@ jobs:
               ;;
           esac
 
-          mkdir -p ~/.ssh
-          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
-          chmod 600 ~/.ssh/c00_deploy_key
-          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          bash deploy/cd/capture-remote-baseline.sh live-baseline-tuple.json
+          decision="$(node deploy/cd/verify-deploy-baseline.mjs "$SOURCE_SHA" "$baseline_path" live-baseline-tuple.json)"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          if [ "$decision" = "skip" ]; then
+            exit 0
+          fi
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
@@ -725,7 +558,7 @@ jobs:
           exit "$deploy_status"
 
       - name: Record outcome
-        if: always() && steps.guard.outputs.current != 'false'
+        if: always() && steps.deploy.outputs.decision != 'skip'
         shell: bash
         run: |
           if [ "${{ job.status }}" = "success" ]; then

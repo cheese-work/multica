@@ -33,6 +33,20 @@ issue; NOWAIT task/member/source rows; intent; targets; request; answer. The
 queries do not authorize a caller or validate its task status, assignee,
 mentions, expiry or source authorship. Those checks belong to later slices.
 
+Structured requests retain their original source comment ID and text snapshot.
+Their task-scoped content fingerprint makes retries return the original request
+without creating another ask or ping. Explicit withdrawal uses the request's
+existing cancellation state and records its reason and authenticated task or
+human identity. It only accepts an open unanswered ask.
+
+Asked records can quote an attested message from another DM of the named human,
+or one member comment by that human. A DM record locks its actual source session
+so the existing hard-delete retention fence remains effective. An issue-comment
+record has `source_comment_id`, no source session, and an empty message array.
+The quote is immutable application provenance; later source edits do not change
+it, and source deletion follows the existing answer-retraction path. Request and
+answer transactions serialize their final state change on the request row.
+
 Calling tasks use `FOR SHARE NOWAIT`, delivery tasks `FOR UPDATE NOWAIT`, asking
 agents `FOR SHARE NOWAIT`, and members/source messages `FOR KEY SHARE NOWAIT`.
 Task and source-message scope joins lock only the selected task/message, not

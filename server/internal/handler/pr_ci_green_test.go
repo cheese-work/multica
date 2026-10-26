@@ -238,6 +238,41 @@ func TestCIGreenEdgeAdvancesToItsTarget(t *testing.T) {
 	}
 }
 
+// A ready PR with green checks satisfies pr.ready and pr.checks_green; the
+// first edge in list order wins, as in the ordered evaluator.
+func TestCIGreenAdvanceFollowsEdgeOrder(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	const installationID int64 = 1966005
+	const prNumber int32 = 196605
+	fx := newPRMergeWebhookFixture(t, installationID)
+	wf := createTestWorkflowSteps(t, "CI edge order "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "blocked", "guard": "pr.ready", "timeout": "72h"},
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CI edge order project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-order-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	snap := newGreenSnapshot("green-order-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	snap.set(t, prNumber, "green-order-a", "SUCCESS")
+	refresh()
+	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "blocked" {
+		t.Fatalf("green head moved the issue to %s, want blocked (the first matching edge, pr.ready)", got)
+	}
+}
+
 // The handoff form knows nothing of edges, so saving a handoff through it
 // keeps the edges the step already has; an invalid edge is refused on write.
 func TestHandoffSaveKeepsEdgesAndValidatesThem(t *testing.T) {

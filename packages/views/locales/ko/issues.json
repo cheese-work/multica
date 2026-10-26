@@ -443,6 +443,7 @@
     "prop_labels": "라벨",
     "add_property_action": "속성 추가",
     "prop_created_by": "생성자",
+    "prop_requested_by": "요청자",
     "prop_created": "생성일",
     "prop_updated": "수정일",
     "activity_section": "활동",
@@ -1478,7 +1479,8 @@
       "member": "멤버",
       "project_lead": "프로젝트 리드",
       "creator": "태스크 작성자",
-      "project_lead_named": "{{name}} (프로젝트 리드)"
+      "project_lead_named": "{{name}} (프로젝트 리드)",
+      "human_by_role": "역할별 담당자"
     },
     "settings": {
       "title": "워크플로",
@@ -1676,6 +1678,7 @@
       "mode_member": "멤버에게 넘기기",
       "mode_member_hint": "담당자만 바뀌고 자동으로 실행되지 않습니다",
       "project_lead_hint": "프로젝트 리드가 에이전트라면 실행을 시작합니다.",
+      "human_by_role_hint": "요청자, 프로젝트 리드, 워크스페이스 소유자 순서입니다.",
       "pick_agent": "에이전트 선택",
       "pick_member": "멤버 선택",
       "search_agents": "에이전트 검색",

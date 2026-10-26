@@ -20,7 +20,7 @@ func readCancelMessages(test *testing.T, issueID, sessionID string, dmsBefore in
 		arg  string
 	}{
 		{`SELECT content FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'cancel' ORDER BY created_at, id`, &messages.comments, issueID},
-		{`SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference' ORDER BY created_at, id OFFSET ` + strconv.Itoa(dmsBefore), &messages.dms, sessionID},
+		{`SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind IN ('decision_reference', 'decision_cancel_notice') ORDER BY created_at, id OFFSET ` + strconv.Itoa(dmsBefore), &messages.dms, sessionID},
 	} {
 		rows, err := testPool.Query(context.Background(), query.sql, query.arg)
 		if err != nil {
@@ -41,7 +41,7 @@ func readCancelMessages(test *testing.T, issueID, sessionID string, dmsBefore in
 // closeAndCancel closes the issue, runs the worker and returns the DM notes that existed before.
 func closeAndCancel(test *testing.T, fixture requestCoreFixture) int {
 	test.Helper()
-	before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference'`, fixture.sessionID)
+	before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind IN ('decision_reference', 'decision_cancel_notice')`, fixture.sessionID)
 	resetDecisionLease(test)
 	issueID := fixture.issueID
 	dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, issueID)
