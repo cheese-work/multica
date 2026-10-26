@@ -224,7 +224,14 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	return Definition{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps}, nil
+	def := Definition{
+		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
+		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+	}
+	if row.RunBudgetSince.Valid {
+		def.RunBudgetSince = row.RunBudgetSince.Time
+	}
+	return def, nil
 }
 
 // DecodeSteps parses a stored steps array, normalizing a missing handler to
@@ -494,7 +501,7 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, nil
+			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys()), IncludeChildPRs: true}, nil
 		}
 		return Definition{}, err
 	}
