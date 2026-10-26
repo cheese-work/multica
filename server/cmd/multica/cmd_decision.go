@@ -33,7 +33,7 @@ func init() {
 	}
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
-	decisionRequestCmd.Flags().String("for", "", "Named person's user ID (required unless an open intent names the person)")
+	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 file containing the exact ask")

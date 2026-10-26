@@ -64,6 +64,19 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
+	if input.HumanUserID.Valid {
+		member, err := handler.Queries.GetMemberByUserAndWorkspace(request.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: input.HumanUserID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			member, err = handler.Queries.GetMember(request.Context(), input.HumanUserID)
+		}
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && member.WorkspaceID != issue.WorkspaceID {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "named person is not an active workspace member: " + uuidToString(input.HumanUserID)}
+		}
+		if err != nil {
+			return empty, err
+		}
+		input.HumanUserID = member.UserID
+	}
 	intent, err := handler.Queries.GetDecisionIntentForTask(request.Context(), db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, AgentID: agentID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
