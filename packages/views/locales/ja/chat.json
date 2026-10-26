@@ -292,6 +292,10 @@
     "removed": "コメント {{number}} を削除しました"
   },
   "decision": {
+    "request_title": "判断の依頼",
+    "request_label": "判断の依頼：{{state}}",
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
     "from_original_dm": "元の DM から",
     "inherited": "継承",

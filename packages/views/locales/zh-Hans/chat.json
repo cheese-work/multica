@@ -292,6 +292,10 @@
     "removed": "已移除评论 {{number}}"
   },
   "decision": {
+    "request_title": "决策请求",
+    "request_label": "决策请求：{{state}}",
+    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
+    "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
     "from_original_dm": "来自原始私信",
     "inherited": "继承",

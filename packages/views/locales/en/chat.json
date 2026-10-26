@@ -298,6 +298,10 @@
     "removed": "Comment {{number}} removed"
   },
   "decision": {
+    "request_title": "Decision request",
+    "request_label": "Decision request: {{state}}",
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
+    "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",

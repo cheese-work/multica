@@ -64,6 +64,7 @@ import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
+import { DecisionRequestCard } from "./decision-request-card";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -429,13 +430,15 @@ export function ChatMessageList({
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
+    const updatedRequests = new Set(messages.flatMap((message) => message.decision_requests ?? []).map((card) => card.id));
     const items: ChatRenderItem[] = messages
       .filter(
         (message) =>
           message.message_kind !== "onboarding_kickoff" &&
           // The quote card replaces the plain "Decision recorded" line; one
           // without a card (legacy row) still renders as text.
-          !(message.message_kind === "decision_reference" && message.decision_ref),
+          !(message.message_kind === "decision_reference" && message.decision_ref) &&
+          !(message.decision_request && updatedRequests.has(message.decision_request.id)),
       )
       .map((message, i, visible) => ({
         key: messageRowKey(message),
@@ -779,6 +782,14 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   const { message } = item;
+
+  if (message.decision_requests?.length) {
+    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionRequestCard key={card.id} card={card} />)}</div>;
+  }
+
+  if (message.decision_request) {
+    return <DecisionRequestCard card={message.decision_request} />;
+  }
 
   if (message.message_kind === "continuation_summary") {
     return <ContinuationSummary message={message} />;

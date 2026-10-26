@@ -102,11 +102,23 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 			return result, err
 		}
 		if len(noteRequests) > 0 {
-			note, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: decisionCancelNote(reason, cancelled, noteRequests), MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+			note, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: decisionCancelNote(reason, cancelled, noteRequests), MessageKind: pgtype.Text{String: protocol.ChatMessageKindDecisionCancelNotice, Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
 			if err != nil {
 				return result, err
 			}
+			requestIDs := make([]pgtype.UUID, len(noteRequests))
+			for index, noted := range noteRequests {
+				requestIDs[index] = noted.ID
+			}
+			if err := queries.StampDecisionCancelMessageRequests(ctx, db.StampDecisionCancelMessageRequestsParams{ID: note.ID, ChatSessionID: session.ID, RequestIds: requestIDs}); err != nil {
+				return result, err
+			}
 			if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+				return result, err
+			}
+		} else {
+			note, err = queries.GetDecisionCancelMessageForRequest(ctx, db.GetDecisionCancelMessageForRequestParams{ChatSessionID: session.ID, RequestID: current.ID})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return result, err
 			}
 		}
