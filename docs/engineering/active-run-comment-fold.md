@@ -52,7 +52,7 @@ sequenceDiagram
     T-->>X: run ends failed or cancelled, supplement not delivered
     X->>R: replay comment through normal triggers for A
     R->>R: queued fold or fresh enqueue (one run, deduped)
-    X->>X: set released_at
+    X->>X: write task_comment_release row
 ```
 
 ### Bind guards
