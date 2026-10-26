@@ -98,18 +98,18 @@ type IssueWorkflowResponse struct {
 	OwnerID     *string                    `json:"owner_id"`
 	Steps       []IssueWorkflowStepPayload `json:"steps"`
 	ProjectIDs  []string                   `json:"project_ids"`
-	// MaxRunsPerIssue is the run cap the workflow sets; null means the
-	// platform default applies (issueworkflow.DefaultMaxRunsPerIssue).
-	MaxRunsPerIssue *int `json:"max_runs_per_issue"`
-	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
-	// its direct children.
-	IncludeChildPRs bool   `json:"include_child_prs"`
-	CreatedAt       string `json:"created_at"`
+	CreatedAt   string                     `json:"created_at"`
 	UpdatedAt   string                     `json:"updated_at"`
 	// Version is updated_at at full precision. updated_at has one-second
 	// resolution, which two quick saves can share. A save names the version it
 	// edited in expected_version.
 	Version string `json:"version"`
+	// MaxRunsPerIssue is the run cap the workflow sets; null means the
+	// platform default applies (issueworkflow.DefaultMaxRunsPerIssue).
+	MaxRunsPerIssue *int `json:"max_runs_per_issue"`
+	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
+	// its direct children.
+	IncludeChildPRs bool `json:"include_child_prs"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
