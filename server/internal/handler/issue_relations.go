@@ -53,59 +53,99 @@ func (handler *Handler) GetIssueRelations(writer http.ResponseWriter, request *h
 	writeJSON(writer, http.StatusOK, graph)
 }
 
-const issueRelationsSQL = `
-WITH RECURSIVE
-workspace_issues AS NOT MATERIALIZED (
- SELECT id,number,title,status,description,parent_issue_id,duplicate_of_issue_id,stage
- FROM issue WHERE workspace_id=$1
+const issueRelationsEdgesSQL = `
+forward_mentions AS MATERIALIZED (
+ SELECT i.id AS source,lower(ref[1]) AS target
+ FROM frontier i
+ CROSS JOIN LATERAL regexp_matches(i.description,'mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})','g') ref
+ UNION ALL
+ SELECT i.id,lower(ref[1])
+ FROM frontier i JOIN comment c ON c.issue_id=i.id
+ CROSS JOIN LATERAL regexp_matches(c.content,'mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})','g') ref
 ), raw_edges AS (
  SELECT parent_issue_id AS source,id AS target,'parent'::text AS type
- FROM workspace_issues WHERE parent_issue_id IS NOT NULL
+ FROM frontier WHERE parent_issue_id IS NOT NULL
  UNION ALL
- SELECT id,duplicate_of_issue_id,'duplicate' FROM workspace_issues
+ SELECT i.parent_issue_id,i.id,'parent'
+ FROM workspace_issues i JOIN frontier ON i.parent_issue_id=frontier.id
+ UNION ALL
+ SELECT id,duplicate_of_issue_id,'duplicate' FROM frontier
  WHERE duplicate_of_issue_id IS NOT NULL AND status='cancelled'
+ UNION ALL
+ SELECT i.id,i.duplicate_of_issue_id,'duplicate'
+ FROM workspace_issues i JOIN frontier ON i.duplicate_of_issue_id=frontier.id
+ WHERE i.status='cancelled'
  UNION ALL
  SELECT watched.id,w.issue_id,'wakeup'
  FROM issue_wakeup w
  JOIN workspace_issues watched ON watched.id::text=w.condition->>'issue_id'
  WHERE w.workspace_id=$1 AND w.agent_id=ANY($4::uuid[]) AND w.enabled
   AND w.disabled_at IS NULL AND w.condition->>'type'='other_issue'
+  AND (watched.id IN (SELECT id FROM frontier) OR w.issue_id IN (SELECT id FROM frontier))
  UNION ALL
  SELECT child.id,w.issue_id,'children_done'
  FROM issue_wakeup w JOIN workspace_issues child ON child.parent_issue_id=w.issue_id
  WHERE w.workspace_id=$1 AND w.agent_id=ANY($4::uuid[]) AND w.enabled
   AND w.disabled_at IS NULL AND w.condition->>'type'='children_done'
   AND (w.condition->>'stage' IS NULL OR child.stage::text=w.condition->>'stage')
+  AND (child.id IN (SELECT id FROM frontier) OR w.issue_id IN (SELECT id FROM frontier))
+ UNION ALL
+ SELECT mention.source,target.id,'mention'
+ FROM forward_mentions mention JOIN workspace_issues target ON target.id::text=mention.target
  UNION ALL
  SELECT i.id,target.id,'mention'
- FROM workspace_issues i
- CROSS JOIN LATERAL regexp_matches(i.description,'mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})','g') ref
- JOIN workspace_issues target ON target.id::text=lower(ref[1])
+ FROM workspace_issues i JOIN frontier target
+  ON strpos(lower(i.description),'mention://issue/'||target.id::text)>0
  UNION ALL
  SELECT i.id,target.id,'mention'
  FROM workspace_issues i JOIN comment c ON c.issue_id=i.id
- CROSS JOIN LATERAL regexp_matches(c.content,'mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})','g') ref
- JOIN workspace_issues target ON target.id::text=lower(ref[1])
+ JOIN frontier target ON strpos(lower(c.content),'mention://issue/'||target.id::text)>0
  UNION ALL
- SELECT first.issue_id,second.issue_id,'shared_pr'
- FROM issue_pull_request first JOIN issue_pull_request second
-  ON first.pull_request_id=second.pull_request_id AND first.issue_id<second.issue_id
+ SELECT least(first.issue_id,second.issue_id),greatest(first.issue_id,second.issue_id),'shared_pr'
+ FROM frontier JOIN issue_pull_request first ON first.issue_id=frontier.id
+ JOIN issue_pull_request second
+  ON first.pull_request_id=second.pull_request_id AND first.issue_id<>second.issue_id
  JOIN github_pull_request pr ON pr.id=first.pull_request_id AND pr.workspace_id=$1
-), edges AS MATERIALIZED (
+), edges AS (
  SELECT DISTINCT e.source,e.target,e.type FROM raw_edges e
  JOIN workspace_issues source ON source.id=e.source
  JOIN workspace_issues target ON target.id=e.target
  WHERE e.source<>e.target
-), walk(id,hops) AS (
- SELECT $2::uuid,0
- UNION
- SELECT CASE WHEN e.source=walk.id THEN e.target ELSE e.source END,walk.hops+1
- FROM walk JOIN edges e ON e.source=walk.id OR e.target=walk.id
- WHERE walk.hops<$3
+)
+`
+
+const issueRelationsSQL = `
+WITH RECURSIVE
+workspace_issues AS NOT MATERIALIZED (
+ SELECT id,number,title,status,description,parent_issue_id,duplicate_of_issue_id,stage
+ FROM issue WHERE workspace_id=$1
+), walk(ids,seen,hops) AS (
+ SELECT ARRAY[$2::uuid],ARRAY[$2::uuid],0
+ UNION ALL
+ SELECT neighbors.ids,walk.seen||neighbors.ids,walk.hops+1
+ FROM walk CROSS JOIN LATERAL (
+  WITH frontier AS MATERIALIZED (
+   SELECT * FROM workspace_issues WHERE id=ANY(walk.ids)
+  ), ` + issueRelationsEdgesSQL + `
+  SELECT coalesce(array_agg(id),'{}'::uuid[]) AS ids
+  FROM (SELECT source AS id FROM edges UNION SELECT target FROM edges) candidates
+  WHERE NOT (id=ANY(walk.seen))
+ ) neighbors
+ WHERE walk.hops<$3 AND cardinality(walk.ids)>0
 ), reachable AS (
- SELECT id,min(hops) AS hops FROM walk GROUP BY id
+ SELECT expanded.id,min(walk.hops) AS hops
+ FROM walk CROSS JOIN LATERAL unnest(walk.ids) expanded(id) GROUP BY expanded.id
 ), selected AS MATERIALIZED (
  SELECT id,hops FROM reachable ORDER BY hops,id LIMIT 40
+), selected_issues AS MATERIALIZED (
+ SELECT i.* FROM workspace_issues i JOIN selected ON selected.id=i.id
+), edges AS MATERIALIZED (
+ WITH workspace_issues AS NOT MATERIALIZED (
+  SELECT * FROM selected_issues
+ ), frontier AS MATERIALIZED (
+  SELECT * FROM workspace_issues
+ ), ` + issueRelationsEdgesSQL + `
+ SELECT * FROM edges
 )
 SELECT jsonb_build_object(
  'nodes',(SELECT coalesce(jsonb_agg(jsonb_build_object(

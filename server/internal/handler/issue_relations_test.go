@@ -1,10 +1,14 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -153,4 +157,80 @@ func TestIssueRelationsHidesPrivateWakeupsAndRejectsNonmembers(t *testing.T) {
 	req = withURLParam(newRequest("GET", "/api/issues/"+root+"/relations", nil), "id", root)
 	req.Header.Set("X-User-ID", outsider)
 	testutil.Call(t, testHandler.GetIssueRelations, req).Want(http.StatusNotFound)
+}
+
+func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
+	root := dbfx.Issue(t, "bounded relations root")
+	neighbor := dbfx.Issue(t, "bounded relations neighbor", testutil.Cols{"description": "[root](mention://issue/" + root + ")"})
+	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, root, "[neighbor](mention://issue/"+neighbor+")")
+	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": neighbor, "author_type": "member", "author_id": testUserID, "content": "[root](mention://issue/" + root + ")"})
+	measure := func(depth int) int {
+		t.Helper()
+		var planJSON []byte
+		err := testPool.QueryRow(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+issueRelationsSQL,
+			parseUUID(testWorkspaceID), parseUUID(root), depth, []pgtype.UUID{}, "TEST").Scan(&planJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		type queryPlan struct {
+			Function string      `json:"Function Name"`
+			Loops    int         `json:"Actual Loops"`
+			Plans    []queryPlan `json:"Plans"`
+		}
+		var plans []struct{ Plan queryPlan }
+		if err := json.Unmarshal(planJSON, &plans); err != nil {
+			t.Fatal(err)
+		}
+		var count func(queryPlan) int
+		count = func(plan queryPlan) int {
+			work := 0
+			if plan.Function == "regexp_matches" {
+				work = plan.Loops
+			}
+			for _, child := range plan.Plans {
+				work += count(child)
+			}
+			return work
+		}
+		work := count(plans[0].Plan)
+		if work == 0 {
+			t.Fatal("EXPLAIN did not observe mention extraction work")
+		}
+		return work
+	}
+	before := []int{measure(1), measure(2)}
+	for index := 0; index < 80; index++ {
+		unrelated := dbfx.Issue(t, fmt.Sprintf("unrelated relations %d", index))
+		content := "[self](mention://issue/" + unrelated + ")"
+		dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, unrelated, content)
+		dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": unrelated, "author_type": "member", "author_id": testUserID, "content": content})
+	}
+	for depth := 1; depth <= 2; depth++ {
+		after := measure(depth)
+		t.Logf("depth %d: regexp_matches invocations before=%d after=%d with 80 unrelated issues/comments", depth, before[depth-1], after)
+		if after > before[depth-1]+8 {
+			t.Errorf("depth %d: mention extraction work grew with workspace size: %d -> %d", depth, before[depth-1], after)
+		}
+	}
+}
+
+func TestIssueRelationsKeepsBoundaryEdgesAndMixedCaseMentions(t *testing.T) {
+	root := dbfx.Issue(t, "boundary root")
+	child := dbfx.Issue(t, "boundary child", testutil.Cols{"parent_issue_id": root})
+	first := dbfx.Issue(t, "boundary first", testutil.Cols{"parent_issue_id": child})
+	second := dbfx.Issue(t, "boundary second", testutil.Cols{"parent_issue_id": child})
+	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, first, "[second](mention://issue/"+strings.ToUpper(second)+")")
+	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": second, "author_type": "member", "author_id": testUserID, "content": "[first](mention://issue/" + strings.ToUpper(first) + ")"})
+	for _, rootID := range []string{root, first, second} {
+		graph := readRelations(t, rootID, "?depth=2")
+		mentions := map[string]bool{}
+		for _, edge := range graph.Edges {
+			if edge.Type == "mention" {
+				mentions[edge.Source+"/"+edge.Target] = true
+			}
+		}
+		if !mentions[first+"/"+second] || !mentions[second+"/"+first] {
+			t.Fatalf("root %s: missing edges between boundary nodes or mixed-case reverse mentions: %+v", rootID, graph)
+		}
+	}
 }
