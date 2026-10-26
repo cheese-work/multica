@@ -40,6 +40,9 @@ const (
 	HandlerMember      = "member"
 	HandlerProjectLead = "project_lead"
 	HandlerCreator     = "creator"
+	// HandlerHumanByRole hands the issue to a person, by role: the issue's
+	// requester, then the project lead, then the workspace owner.
+	HandlerHumanByRole = "human_by_role"
 )
 
 const (
@@ -184,7 +187,7 @@ type Definition struct {
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole:
 		return true
 	}
 	return false
@@ -427,7 +430,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -541,10 +544,21 @@ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definit
 	return &def, nil
 }
 
+// Humans are the people a human-by-role handler can fall back to, looked up by
+// the caller: the member an agent created the issue for, and the workspace
+// owner. An invalid id means nobody holds that role. The caller sets Requester
+// only for a current member, and LeadNotMember when the project's member lead
+// has left the workspace.
+type Humans struct {
+	Requester      pgtype.UUID
+	LeadNotMember  bool
+	WorkspaceOwner pgtype.UUID
+}
+
 // ResolveHandler turns a step's handler into a concrete assignee for one
 // issue. ok is false when the step does not hand off, or when a relative
-// handler (project lead, creator) has nobody to resolve to.
-func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
+// handler (project lead, creator, human by role) has nobody to resolve to.
+func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
 		var id pgtype.UUID
@@ -562,6 +576,17 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return issueCreatorType, issueCreatorID, true
+	case HandlerHumanByRole:
+		// Always a member: an agent project lead is not a human, so the chain
+		// moves on to the workspace owner.
+		switch {
+		case humans.Requester.Valid:
+			return "member", humans.Requester, true
+		case project.LeadType.String == "member" && project.LeadID.Valid && !humans.LeadNotMember:
+			return "member", project.LeadID, true
+		case humans.WorkspaceOwner.Valid:
+			return "member", humans.WorkspaceOwner, true
+		}
 	}
 	return "", pgtype.UUID{}, false
 }
