@@ -263,3 +263,29 @@ func createMetadataTestIssue(t *testing.T, title string) string {
 	}
 	return issue.ID
 }
+
+// CHE-2070: the reserved status_summary key is a short string. A long or
+// non-string value would break the one-glance line shown above the issue.
+func TestIssueMetadataStatusSummary(t *testing.T) {
+	issueID := createMetadataTestIssue(t, "Status summary")
+	put := func(rawBody string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/status_summary", json.RawMessage(rawBody))
+		req = withURLParams(req, "id", issueID, "key", "status_summary")
+		testHandler.SetIssueMetadataKey(w, req)
+		return w
+	}
+
+	if w := put(`{"value":"PR #394 ready; waiting on review"}`); w.Code != http.StatusOK {
+		t.Fatalf("short string: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	for name, body := range map[string]string{
+		"number": `{"value":42}`,
+		"bool":   `{"value":true}`,
+		"long":   `{"value":"` + strings.Repeat("x", maxStatusSummaryRunes+1) + `"}`,
+	} {
+		if w := put(body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}

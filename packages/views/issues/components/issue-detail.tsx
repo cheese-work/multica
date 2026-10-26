@@ -53,6 +53,7 @@ import {
 import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
+import { StatusSummary, statusSummaryOf } from "./status-summary";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -4300,6 +4301,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               }}
             />
           )}
+
+          <StatusSummary summary={statusSummaryOf(issue.metadata)} />
 
           <div
             {...descDropZoneProps}
