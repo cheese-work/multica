@@ -5126,7 +5126,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
-			if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) {
+			if writeIssueStatusRaceError(w, err) {
 				return
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)

@@ -86,12 +86,30 @@ func TestAgentIssueStatusGuard(t *testing.T) {
 					if withDescription {
 						body["description"] = "status guard description"
 					}
-					response := writer.write(t, issueID, body, headers).Want(testCase.wantCode)
+					wantCode := testCase.wantCode
+					if writer.name == "batch" {
+						wantCode = http.StatusOK
+					}
+					response := writer.write(t, issueID, body, headers).Want(wantCode)
+					if writer.name == "batch" {
+						var result struct {
+							Updated    int      `json:"updated"`
+							UpdatedIDs []string `json:"updated_ids"`
+						}
+						response.JSON(&result)
+						if testCase.wantCode == http.StatusOK {
+							if result.Updated != 1 || len(result.UpdatedIDs) != 1 || result.UpdatedIDs[0] != issueID {
+								t.Fatalf("allowed batch write must report issue %s as updated: %+v", issueID, result)
+							}
+						} else if result.Updated != 0 || len(result.UpdatedIDs) != 0 {
+							t.Fatalf("denied batch write must report no updates: %+v", result)
+						}
+					}
 					if testCase.wantCode != http.StatusOK {
-						if prURL != "" && !strings.Contains(response.Text(), prURL) {
+						if writer.name == "single" && prURL != "" && !strings.Contains(response.Text(), prURL) {
 							t.Fatalf("error must identify the blocking PR %s: %s", prURL, response.Text())
 						}
-						if testCase.target == "approved" && !strings.Contains(response.Text(), "only members") {
+						if writer.name == "single" && testCase.target == "approved" && !strings.Contains(response.Text(), "only members") {
 							t.Fatalf("approval error must identify member-only control: %s", response.Text())
 						}
 						wantIssueStatus(t, issueID, "in_progress")
@@ -103,6 +121,51 @@ func TestAgentIssueStatusGuard(t *testing.T) {
 						return
 					}
 					wantIssueStatus(t, issueID, testCase.target)
+				})
+			}
+		}
+	}
+}
+
+func TestAgentIssueStatusGuardMixedBatch(t *testing.T) {
+	agentID := dbfx.Agent(t, "mixed batch status guard actor", testRuntimeID)
+	for _, provider := range []string{"github", "forgejo"} {
+		for _, blockedFirst := range []bool{false, true} {
+			for _, withDescription := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/blocked_first=%t/description=%t", provider, blockedFirst, withDescription), func(t *testing.T) {
+					cleanID := dbfx.Issue(t, "mixed batch clean", testutil.Cols{"status": "in_progress"})
+					blockedID := dbfx.Issue(t, "mixed batch blocked", testutil.Cols{
+						"status": "in_progress", "description": "mixed batch original",
+					})
+					linkStatusGuardPR(t, blockedID, provider, "open", false)
+					issueIDs := []string{cleanID, blockedID}
+					if blockedFirst {
+						issueIDs = []string{blockedID, cleanID}
+					}
+					updates := map[string]any{"status": "done", "title": "mixed batch changed", "suppress_run": true}
+					if withDescription {
+						updates["description"] = "mixed batch changed"
+					}
+					request := newRequest(http.MethodPost, "/api/issues/batch?workspace_id="+testWorkspaceID, map[string]any{
+						"issue_ids": issueIDs, "updates": updates,
+					})
+					request.Header.Set("X-Actor-Source", "task_token")
+					request.Header.Set("X-Agent-ID", agentID)
+					var result struct {
+						Updated    int      `json:"updated"`
+						UpdatedIDs []string `json:"updated_ids"`
+					}
+					testutil.Call(t, testHandler.BatchUpdateIssues, request).Want(http.StatusOK).JSON(&result)
+					if result.Updated != 1 || len(result.UpdatedIDs) != 1 || result.UpdatedIDs[0] != cleanID {
+						t.Fatalf("mixed batch must report only clean issue %s as updated: %+v", cleanID, result)
+					}
+					wantIssueStatus(t, cleanID, "done")
+					wantIssueStatus(t, blockedID, "in_progress")
+					var title, description string
+					dbfx.QueryRow(t, "SELECT title, description FROM issue WHERE id = $1", blockedID).Scan(&title, &description)
+					if title != "mixed batch blocked" || description != "mixed batch original" {
+						t.Fatalf("denied issue changed: title=%q description=%q", title, description)
+					}
 				})
 			}
 		}
