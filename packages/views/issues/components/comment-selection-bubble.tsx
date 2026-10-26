@@ -6,7 +6,8 @@ import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floatin
 
 /**
  * Touch browsers (iOS) put their own selection menu above the selection, so the
- * popup goes below it and never flips up; with no room below, shift pins it to the viewport edge.
+ * popup goes below it. It flips above only when there is no room below, and never
+ * slides along the main axis, so it cannot cover the selected text.
  */
 function placementFor(marker: boolean, touch: boolean) {
   if (marker) return "right-start";
@@ -61,7 +62,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(8), ...(touch ? [] : [flip({ padding: 8, altBoundary: true })]), shift({ padding: 8, altBoundary: true, crossAxis: touch }), hide()],
+        ] : [offset(8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true, mainAxis: !touch, crossAxis: touch }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();

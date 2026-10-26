@@ -81,7 +81,7 @@ describe("annotation note on iOS", () => {
     expect(parseFloat(overlay.style.top)).toBeGreaterThanOrEqual(320);
   });
 
-  it("stays out of the area above the selection on a touch device when there is no room below", async () => {
+  it("never overlaps the selected text on a touch device when there is no room below", async () => {
     setPointer(true);
     // Selection at 745..765 in a 768px viewport: a 30px popup does not fit below it.
     Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 745, 120, 20));
@@ -90,9 +90,10 @@ describe("annotation note on iOS", () => {
     const add = await screen.findByRole("button", { name: "Add to reply" });
     const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
     await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
-    // Above the selection would be 745 - 30 - 8 = 707.
-    expect(parseFloat(overlay.style.top)).toBeGreaterThan(707);
-    expect(parseFloat(overlay.style.top)).toBeLessThanOrEqual(768 - 30);
+    const top = parseFloat(overlay.style.top);
+    // Falls back to above the selection (745 - 30 - 8 = 707): popup bottom stays clear of the selection top.
+    expect(top).toBe(707);
+    expect(top + 30).toBeLessThanOrEqual(745);
   });
 
   it("keeps the popup above the selection with a mouse", async () => {
