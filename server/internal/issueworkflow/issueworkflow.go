@@ -171,6 +171,9 @@ type Step struct {
 	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
 	// when the checks of a linked PR pass on the current head.
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	// Edges are the step's exits, each taken when its guard holds. Without
+	// them the exits derive from the fields above (see EdgesOf).
+	Edges []Edge `json:"edges,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -199,6 +202,7 @@ type storedStep struct {
 	NextStatusKey string   `json:"next_status_key,omitempty"`
 	BackStatusKey string   `json:"back_status_key,omitempty"`
 	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge   `json:"edges,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -230,6 +234,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			BackStatusKey: s.BackStatusKey,
 
 			AdvanceOnCIGreen: s.AdvanceOnCI,
+			Edges:            s.Edges,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -251,7 +256,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -417,6 +422,7 @@ func NormalizeHandoff(s Step) Step {
 	}
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
+	s.Edges = normalizeEdges(s.Edges)
 	return s
 }
 
@@ -453,7 +459,7 @@ func ValidateHandoff(s Step, def Definition) error {
 	if s.AdvanceOnCIGreen && (!AcceptsHandoff(s.StatusKey) || s.StatusKey == issuestatus.Blocked) {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
-	return nil
+	return validateEdges(s, def)
 }
 
 // Querier is the read surface workflow resolution needs.

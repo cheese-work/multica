@@ -15,8 +15,8 @@ import (
 )
 
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
-// linked PR pass on headSHA and the issue's current step asks for it
-// (advance_on_ci_green). It reports whether the move started a run for the next
+// linked PR pass on headSHA and the issue's current step has a
+// pr.checks_green edge (advance_on_ci_green stands for one to the next status). It reports whether the move started a run for the next
 // step's handler, so the caller does not wake the same owner twice.
 //
 // The write is the one a person's status change makes: the project's workflow
@@ -43,9 +43,14 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		}
 		return false
 	}
-	step, ok := def.Step(issue.Status)
-	next := def.NextStatus(issue.Status)
-	if !ok || !step.AdvanceOnCIGreen || next == "" {
+	next := ""
+	for _, e := range def.EdgesOf(issue.Status) {
+		if e.Guard == issueworkflow.GuardPRChecksGreen {
+			next = e.To
+			break
+		}
+	}
+	if next == "" {
 		return false
 	}
 	claimed, err := h.Queries.ClaimIssueCIAdvance(ctx, db.ClaimIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA})

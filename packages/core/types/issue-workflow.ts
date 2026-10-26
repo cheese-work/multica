@@ -35,6 +35,16 @@ export interface IssueWorkflowStep {
   back_status_key?: string;
   /** Move an issue on this step to its next status when a linked PR's checks pass. */
   advance_on_ci_green?: boolean;
+  /** Guarded exits; the first whose guard holds is taken. */
+  edges?: IssueWorkflowEdge[];
+}
+
+/** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
+export interface IssueWorkflowEdge {
+  to: string;
+  guard: string;
+  timeout?: string;
+  on_timeout?: string;
 }
 
 export interface IssueWorkflow {
@@ -156,4 +166,5 @@ export interface SetWorkflowHandoffRequest {
   next_status_key?: string;
   back_status_key?: string;
   advance_on_ci_green?: boolean;
+  edges?: IssueWorkflowEdge[];
 }

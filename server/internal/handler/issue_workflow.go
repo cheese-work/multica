@@ -85,6 +85,8 @@ type IssueWorkflowStepPayload struct {
 	// AdvanceOnCIGreen moves an issue on this step to its next status when a
 	// linked PR's checks pass on the current head.
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	// Edges are the step's guarded exits; see issueworkflow.Edge.
+	Edges []issueworkflow.Edge `json:"edges,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -135,6 +137,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		BackStatusKey: s.BackStatusKey,
 
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
+		Edges:            s.Edges,
 	}
 }
 
@@ -147,6 +150,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		BackStatusKey: in.BackStatusKey,
 
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
+		Edges:            in.Edges,
 	}
 }
 
@@ -335,7 +339,8 @@ type IssueWorkflowStepInput struct {
 	NextStatusKey string                       `json:"next_status_key,omitempty"`
 	BackStatusKey string                       `json:"back_status_key,omitempty"`
 	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
-	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	AdvanceOnCIGreen bool                 `json:"advance_on_ci_green,omitempty"`
+	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -386,6 +391,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			BackStatusKey: in.BackStatusKey,
 
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
+			Edges:            in.Edges,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -1202,6 +1208,12 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read workflow")
 		return
+	}
+	// The handoff form knows nothing of edges: keep the step's own.
+	if step.Edges == nil {
+		if stored, ok := def.Step(step.StatusKey); ok {
+			step.Edges = stored.Edges
+		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", err.Error())

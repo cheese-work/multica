@@ -40,7 +40,8 @@ var workflowUpdateCmd = &cobra.Command{
 	Short: "Replace a workflow's steps from a JSON file (owner/admin only)",
 	Long: `Replace a workflow's steps with the JSON array in --steps-file. The array uses
 the same shape "workflow get --output json" prints under "steps": status_key,
-handler, instructions, next_status_key, back_status_key. Prints the server's
+handler, instructions, next_status_key, back_status_key, edges (guarded exits:
+[{"to","guard","timeout","on_timeout"}]; PR guards need a timeout). Prints the server's
 readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
