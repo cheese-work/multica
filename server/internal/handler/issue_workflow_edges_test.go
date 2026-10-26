@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -323,7 +324,7 @@ func TestRunBudgetRefusesDerivedRunAndBlocksIssue(t *testing.T) {
 		}
 		finish()
 	}
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err == nil || err != service.ErrRunBudgetExhausted {
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
 		t.Fatalf("third run = %v, want ErrRunBudgetExhausted", err)
 	}
 	// The block runs after the refusal: status, then reason, then the
