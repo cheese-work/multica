@@ -2317,3 +2317,27 @@ func TestBuildChatPromptPrintsTheDecisionCarrierOnce(t *testing.T) {
 		t.Error("prompt without a carrier mentions decision records")
 	}
 }
+
+// CHE-2070: an agent mention must hand the target run the triggering thread,
+// not only the one message, so the agent need not scroll the issue.
+func TestBuildCommentPromptEmbedsTriggerThreadContext(t *testing.T) {
+	task := Task{
+		IssueID:               "issue-thread-1",
+		TriggerCommentID:      "reply-3",
+		TriggerThreadID:       "root-1",
+		TriggerCommentContent: "please check the migration",
+		TriggerAuthorType:     "agent",
+		TriggerAuthorName:     "Sol",
+		TriggerThreadContext:  "Cheese: root question text\nOpus: earlier reply text",
+	}
+	out := BuildPrompt(task, "codex")
+	for _, want := range []string{"root question text", "earlier reply text", "root-1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, out)
+		}
+	}
+	task.TriggerThreadContext = ""
+	if strings.Contains(BuildPrompt(task, "codex"), "Thread context") {
+		t.Fatal("empty thread context must render no section")
+	}
+}
