@@ -54,35 +54,6 @@ func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.U
 	return created_at, err
 }
 
-const listChildStatuses = `-- name: ListChildStatuses :many
-SELECT status FROM issue WHERE parent_issue_id = $1::uuid AND workspace_id = $2::uuid
-`
-
-type ListChildStatusesParams struct {
-	ParentID    pgtype.UUID `json:"parent_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) ListChildStatuses(ctx context.Context, arg ListChildStatusesParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listChildStatuses, arg.ParentID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var status string
-		if err := rows.Scan(&status); err != nil {
-			return nil, err
-		}
-		items = append(items, status)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listEdgePullRequests = `-- name: ListEdgePullRequests :many
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,

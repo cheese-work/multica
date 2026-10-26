@@ -14,3 +14,8 @@ func (d Definition) EffectiveMaxRuns() int {
 	}
 	return DefaultMaxRunsPerIssue
 }
+
+// BlockedReasonRunBudget is the blocked_reason metadata the engine sets when
+// it blocks an issue that spent its run budget. A trigger on issue.status
+// clears it when the issue leaves blocked.
+const BlockedReasonRunBudget = "run-budget"

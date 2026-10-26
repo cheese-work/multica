@@ -26,9 +26,6 @@ FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);
 
--- name: ListChildStatuses :many
-SELECT status FROM issue WHERE parent_issue_id = sqlc.arg('parent_id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid;
-
 -- name: CountIssueRunsSince :one
 -- Runs that count against an issue's run budget: every task created after the
 -- window start, whatever became of it.
