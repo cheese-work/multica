@@ -729,6 +729,20 @@ type DecisionClassChange struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type DecisionExpiryDigest struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	HumanUserID pgtype.UUID        `json:"human_user_id"`
+	DigestDay   pgtype.Date        `json:"digest_day"`
+	InboxItemID pgtype.UUID        `json:"inbox_item_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigestRequest struct {
+	RequestID pgtype.UUID `json:"request_id"`
+	DigestID  pgtype.UUID `json:"digest_id"`
+}
+
 type DecisionIntent struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`

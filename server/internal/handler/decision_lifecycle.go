@@ -86,6 +86,9 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	}
 	cancelled := decisionCancelIssueFor(issue, workspace, closedAt.Time)
 	content := decisionCancelComment(reason, cancelled, current)
+	if reason == "expired" {
+		content = decisionExpiryExplanation
+	}
 	created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: current.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: current.AskingAgentID, Type: "comment", Content: content, DecisionRequestID: current.ID, DecisionCommentKind: pgtype.Text{String: "cancel", Valid: true}})
 	if err != nil {
 		return result, err
@@ -96,7 +99,7 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return result, err
 	}
-	if err == nil && session.Status != "archived" {
+	if err == nil && session.Status != "archived" && reason != "expired" {
 		noteRequests, err := decisionCancelNoteRequests(ctx, queries, reason, current, closedAt)
 		if err != nil {
 			return result, err
