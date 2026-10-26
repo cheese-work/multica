@@ -51,6 +51,53 @@ func (fixture singleCallFixture) counts(test *testing.T) (comments, messages, pi
 	return comments, messages, pings
 }
 
+func TestDecisionSingleCallOwnerRecipientIDs(test *testing.T) {
+	for _, identifier := range []string{"user", "member"} {
+		for _, lane := range []string{"default", "session", "new_dm", "intent"} {
+			test.Run(identifier+"/"+lane, func(test *testing.T) {
+				fixture := newSingleCallFixture(test)
+				var memberID string
+				dbfx.QueryRow(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2 RETURNING id`, testWorkspaceID, fixture.humanID).Scan(&memberID)
+				body := fixture.body()
+				if identifier == "member" {
+					body["for"] = memberID
+				}
+				if lane == "session" {
+					body["session_id"] = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Owner decisions"})
+				} else if lane == "new_dm" || lane == "intent" {
+					body["new_dm"] = true
+				}
+				if lane == "intent" {
+					openLaneIntent(test, fixture.intentFixture, fixture.mention())
+				}
+				var created map[string]any
+				testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated).JSON(&created)
+				if created["human_user_id"] != fixture.humanID {
+					test.Fatalf("recipient = %v, want user ID %s", created["human_user_id"], fixture.humanID)
+				}
+				wantComments := 1
+				if lane == "intent" {
+					wantComments++
+				}
+				if comments, messages, pings := fixture.counts(test); comments != wantComments || messages != 1 || pings != 1 {
+					test.Fatalf("comments=%d messages=%d pings=%d, want %d/1/1", comments, messages, pings, wantComments)
+				}
+			})
+		}
+	}
+}
+
+func TestDecisionSingleCallRejectsForeignMemberID(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	workspaceID := dbfx.Workspace(test, "Foreign workspace", "foreign-"+fixture.agentID)
+	body := fixture.body()
+	body["for"] = dbfx.Member(test, workspaceID, fixture.humanID, "owner")
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusBadRequest)
+	if comments, messages, pings := fixture.counts(test); comments != 0 || messages != 0 || pings != 0 {
+		test.Fatalf("refused request wrote comments=%d messages=%d pings=%d", comments, messages, pings)
+	}
+}
+
 func TestDecisionSingleCallWritesOneCommentOneMessageOnePing(test *testing.T) {
 	fixture := newSingleCallFixture(test)
 	var created map[string]any
