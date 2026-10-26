@@ -26,3 +26,13 @@ func TestCheckUpdateFreeze(t *testing.T) {
 		t.Fatalf("error should name the file and its reason, got %v", err)
 	}
 }
+
+func TestCheckUpdateFreeze_NoHomeFailsClosed(t *testing.T) {
+	t.Setenv(UpdateFreezeFileEnv, "")
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("home", "")
+	if err := CheckUpdateFreeze(); err == nil {
+		t.Fatal("no home and no override: want error, got nil")
+	}
+}
