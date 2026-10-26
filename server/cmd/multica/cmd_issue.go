@@ -750,9 +750,10 @@ func init() {
 
 	// issue comment add
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
-	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record this DM human's decision from attested messages (running chat tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's decision from attested DM messages or a member comment")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
+	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
 	issueCommentAddCmd.Flags().String("context-message", "", "Earlier assistant DM message UUID that offered the options; quoted as \"Options offered\" above the reply (requires --decision-record)")
 	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
@@ -2925,8 +2926,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
-	if decisionRecord && (decisionIntent || len(messageIDs) == 0) || !decisionRecord && (len(messageIDs) > 0 || escalationClass != "" || contextMessage != "") {
-		return fmt.Errorf("--decision-record requires --message and cannot combine with --decision-intent; --message, --context-message and --class require --decision-record")
+	sourceComment, _ := cmd.Flags().GetString("source-comment")
+	parent, _ := cmd.Flags().GetString("parent")
+	if decisionRecord && (decisionIntent || (len(messageIDs) > 0) == (sourceComment != "") || sourceComment != "" && (parent == "" || contextMessage != "")) || !decisionRecord && (len(messageIDs) > 0 || sourceComment != "" || escalationClass != "" || contextMessage != "") {
+		return fmt.Errorf("--decision-record requires --message or --source-comment, not both; --source-comment requires --parent and excludes --context-message; decision sources and --class require --decision-record, not --decision-intent")
 	}
 	content, hasContent, err := resolveTextFlag(cmd, "content")
 	if err != nil {
@@ -3001,6 +3004,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionRecord {
 		body["decision_record"] = true
 		body["message_ids"] = messageIDs
+		if sourceComment != "" {
+			body["source_comment_id"] = sourceComment
+		}
 		if contextMessage != "" {
 			body["context_message_id"] = contextMessage
 		}
