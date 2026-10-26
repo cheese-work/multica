@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
@@ -92,13 +94,13 @@ jobs:
 
       - name: Filter paths
         id: filter
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group'
         uses: dorny/paths-filter@v3
         with:
           # Pushes compare before/head SHAs. PRs use the pull-request file API;
           # paths-filter ignores base/ref for pull_request events.
-          base: ${{ github.event_name == 'push' && github.event.before || github.base_ref }}
-          ref: ${{ github.sha }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || (github.event_name == 'push' && github.event.before || github.base_ref) }}
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           filters: .github/ci-paths.json
 
       - name: Decide
