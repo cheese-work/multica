@@ -1,5 +1,28 @@
 import type { TimelineEntry } from "@multica/core/types";
 import type { CommentRun } from "./comment-runs";
+import { orderThreadWithRuns } from "./comment-runs";
+import { isDeletedComment } from "@multica/core/issues/comment-deletion";
+
+export function projectCommentThread(
+  root: TimelineEntry,
+  replies: TimelineEntry[],
+  runs: CommentRun[],
+  expanded: boolean,
+) {
+  const rootRunReplyIds = new Set(runs.filter((run) => run.anchorCommentId === root.id && run.hasReply && run.commentId)
+    .map((run) => run.commentId!));
+  const hiddenFromThreadWindow = new Set(rootRunReplyIds);
+  for (const reply of replies) {
+    if (isDeletedComment(reply)) hiddenFromThreadWindow.add(reply.id);
+  }
+  const projection = projectThreadDisplay(replies, runs.filter((run) => run.anchorCommentId !== root.id), expanded, hiddenFromThreadWindow);
+  const selectedReplyIds = new Set(projection.slots.flatMap((slot) => slot.kind === "comment" ? [slot.comment.id] : []));
+  const rows = orderThreadWithRuns(root, replies.filter((reply) => selectedReplyIds.has(reply.id) || rootRunReplyIds.has(reply.id)), [
+    ...runs.filter((run) => run.anchorCommentId === root.id),
+    ...projection.slots.flatMap((slot) => slot.kind === "run" ? [slot.run] : []),
+  ]);
+  return { projection, rows, canShowLess: replies.length - hiddenFromThreadWindow.size > 3 };
+}
 
 /** A published reply's own chronological slot; anchor association is metadata only. */
 export interface ThreadCommentSlot {

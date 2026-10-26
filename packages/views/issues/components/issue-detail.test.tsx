@@ -571,6 +571,10 @@ const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 const scrollToIndexSpy = vi.hoisted(() => vi.fn());
 const virtualWindow = vi.hoisted(() => ({ size: Infinity }));
 
+function virtualRow(element: Element): HTMLElement {
+  return element.closest<HTMLElement>("[data-virtual-row]")!;
+}
+
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
     { data, itemContent, computeItemKey }: {
@@ -594,7 +598,7 @@ vi.mock("react-virtuoso", () => ({
     return (
       <div data-testid="virtuoso-mock">
         {data.slice(firstIndex, firstIndex + virtualWindow.size).map((item, offset) => (
-          <div key={computeItemKey(firstIndex + offset, item)}>{itemContent(firstIndex + offset, item) as React.ReactElement}</div>
+          <div data-virtual-row key={computeItemKey(firstIndex + offset, item)}>{itemContent(firstIndex + offset, item) as React.ReactElement}</div>
         ))}
       </div>
     );
@@ -1524,7 +1528,7 @@ describe("IssueDetail (shared)", () => {
     const agentBlock = container.querySelector(`[data-run-comment-id="${taskId}"]`)!;
     expect(agentBlock).not.toBeNull();
     expect(userBlock.contains(agentBlock)).toBe(false);
-    expect(agentBlock.parentElement).toBe(userBlock.parentElement);
+    expect(agentBlock.closest("[data-thread-root]")).toHaveAttribute("data-thread-root", root.id);
     expect(agentBlock.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
     const running: AgentTask = { ...task, status: "running", started_at: task.created_at, delivered_comment_ids: [root.id] };
     act(() => client.setQueryData(issueKeys.tasks("issue-1"), [running]));
@@ -1592,8 +1596,8 @@ describe("IssueDetail (shared)", () => {
     const firstComment = container.querySelector(`#comment-${first.id}`);
     expect(latestComment).not.toBeNull();
     expect(firstComment).not.toBeNull();
-    expect(latestComment!.nextElementSibling).toBe(run);
-    expect(firstComment!.nextElementSibling).not.toBe(run);
+    expect(virtualRow(latestComment!).nextElementSibling).toBe(virtualRow(run));
+    expect(virtualRow(firstComment!).nextElementSibling).not.toBe(virtualRow(run));
   });
 
   it("keeps the running block after its delivered comment and one queued block after later replies", async () => {
@@ -1635,7 +1639,7 @@ describe("IssueDetail (shared)", () => {
     expect(rootContent!.compareDocumentPosition(runningBlock!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(runningBlock!.compareDocumentPosition(firstComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(firstComment!.compareDocumentPosition(latestComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(latestComment!.nextElementSibling).toBe(queuedBlock);
+    expect(virtualRow(latestComment!).nextElementSibling).toBe(virtualRow(queuedBlock!));
     expect(container.querySelectorAll(`[data-run-comment-id="${queued.id}"]`)).toHaveLength(1);
   });
 
@@ -1682,8 +1686,8 @@ describe("IssueDetail (shared)", () => {
     const replyBlock = container.querySelector("#comment-assignment-reply")!;
     const parentBlock = container.querySelector("#comment-comment-1")!;
     if (parentId) {
-      expect(parentBlock).toContainElement(replyBlock as HTMLElement);
-      expect(parentBlock.querySelector(`[data-run-slot-id="${task.id}"]`)).not.toBeNull();
+      expect(replyBlock.closest("[data-thread-root]")).toHaveAttribute("data-thread-root", parentId);
+      expect(container.querySelector(`[data-thread-root="${parentId}"] [data-run-slot-id="${task.id}"]`)).not.toBeNull();
     } else {
       expect(parentBlock).not.toContainElement(replyBlock as HTMLElement);
       expect(container.querySelector(`[data-run-slot-id="${task.id}"]`)).toBe(assignmentSlot);
@@ -2382,7 +2386,7 @@ describe("IssueDetail (shared)", () => {
     // the reply composer's placeholder input itself, before any typing.
     // The composer starts as a lazy shell; activate it first so the real
     // editor mounts.
-    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const threadWrapper = container.querySelector(`[data-thread-root="${root.id}"] [data-testid="comment-reply-input"]`) as HTMLElement;
     fireEvent.click(within(threadWrapper).getByTestId("reply-composer-shell"));
     const replyBox = await within(threadWrapper).findByPlaceholderText("Leave a reply...");
     act(() => {
@@ -2417,7 +2421,7 @@ describe("IssueDetail (shared)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
     await screen.findByRole("button", { name: "Show less" });
 
-    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const threadWrapper = container.querySelector("#comment-sel-reply-3") as HTMLElement;
     const textNode = within(threadWrapper).getByText("Sel reply 3").firstChild as Node;
     const range = document.createRange();
     range.selectNodeContents(textNode);
@@ -2460,7 +2464,7 @@ describe("IssueDetail (shared)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
     await screen.findByRole("button", { name: "Show less" });
 
-    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const threadWrapper = container.querySelector("#comment-boundary-reply-3") as HTMLElement;
     const otherWrapper = container.querySelector(`#comment-${otherRoot.id}`) as HTMLElement;
     const anchorNode = within(threadWrapper).getByText("Boundary reply 3").firstChild as Node;
     const focusNode = within(otherWrapper).getByText("Other root").firstChild as Node;
@@ -2528,7 +2532,7 @@ describe("IssueDetail (shared)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Show \d+ more repl/ }));
     const showLess = await screen.findByRole("button", { name: "Show less" });
 
-    const threadWrapper = container.querySelector(`#comment-${root.id}`) as HTMLElement;
+    const threadWrapper = container.querySelector("#comment-caret-reply-3") as HTMLElement;
     const textNode = within(threadWrapper).getByText("Caret reply 3").firstChild as Node;
     const range = document.createRange();
     range.setStart(textNode, 0);
@@ -2658,9 +2662,9 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(container.querySelectorAll('[data-run-slot-id]')).toHaveLength(3));
     const slots = tasks.map((task) => container.querySelector(`[data-run-slot-id="${task.id}"]`)!);
     const [secondRow, thirdRow] = [second, third].map((request) => container.querySelector(`#comment-${request.id}`)!);
-    expect(secondRow!.previousElementSibling).toBe(slots[0]);
-    expect(secondRow!.nextElementSibling).toBe(slots[1]);
-    expect(thirdRow!.nextElementSibling).toBe(slots[2]);
+    expect(virtualRow(secondRow!).previousElementSibling).toBe(virtualRow(slots[0]!));
+    expect(virtualRow(secondRow!).nextElementSibling).toBe(virtualRow(slots[1]!));
+    expect(virtualRow(thirdRow!).nextElementSibling).toBe(virtualRow(slots[2]!));
     fireEvent.click(within(slots[0] as HTMLElement).getByRole("button", { name: /View activity/ }));
     await within(slots[0] as HTMLElement).findByText("No activity recorded yet.");
     for (const index of [0, 1]) {
@@ -2706,9 +2710,9 @@ describe("IssueDetail (shared)", () => {
     expect(within(slots[0] as HTMLElement).queryByRole("button", { name: /View activity/ })).not.toBeInTheDocument();
     // Answers land at their own time, after the requests; the queued run
     // stays with its request.
-    expect(thirdRow!.nextElementSibling).toBe(slots[2]);
-    expect(slots[2]!.nextElementSibling).toBe(slots[0]);
-    expect(slots[0]!.nextElementSibling).toBe(slots[1]);
+    expect(virtualRow(thirdRow!).nextElementSibling).toBe(virtualRow(slots[2]!));
+    expect(virtualRow(slots[2]!).nextElementSibling).toBe(virtualRow(slots[0]!));
+    expect(virtualRow(slots[0]!).nextElementSibling).toBe(virtualRow(slots[1]!));
     expect(container.querySelector(`[data-run-slot-id="${tasks[2]!.id}"]`)).toBe(slots[2]);
     expect(within(slots[2] as HTMLElement).getByText("Waiting for an available agent.")).toBeInTheDocument();
   });
@@ -2726,7 +2730,8 @@ describe("IssueDetail (shared)", () => {
     const { container } = renderIssueDetail();
     await screen.findByText(answer.content);
     await waitFor(() => expect(container.querySelectorAll(`[data-run-id="${second.id}"]`)).toHaveLength(1));
-    expect(container.querySelector(`#comment-${root.id}`)?.querySelector(`[data-run-id="${second.id}"]`)).not.toBeNull();
+    expect(container.querySelector(`[data-run-id="${second.id}"]`)?.closest("[data-thread-root]"))
+      .toHaveAttribute("data-thread-root", root.id);
   });
 
   // MUL-7628: Elon was asked first but replied last; his review used to render
@@ -2783,7 +2788,7 @@ describe("IssueDetail (shared)", () => {
     const userReply = container.querySelector("#comment-user-reply")!;
     const agentBlock = container.querySelector(`[data-run-comment-id="${task.id}"]`)!;
     expect(userReply.contains(agentBlock)).toBe(false);
-    expect(userReply.nextElementSibling).toBe(agentBlock);
+    expect(virtualRow(userReply).nextElementSibling).toBe(virtualRow(agentBlock));
     expect(within(agentBlock as HTMLElement).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
     expect(container.querySelectorAll(`[data-run-id="${task.id}"]`)).toHaveLength(1);
   });
@@ -3524,6 +3529,25 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+    it("virtualizes replies individually when landing inside one long thread", async () => {
+      virtualWindow.size = 2;
+      const root = { ...mockTimeline[0]!, id: "long-thread-root" };
+      const replies = Array.from({ length: 60 }, (_, index) => ({
+        ...mockTimeline[1]!, id: `long-thread-reply-${index}`, parent_id: root.id,
+        content: `Long thread body ${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 16, 1, index)).toISOString(),
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetailWithHighlight(replies[45]!.id);
+
+      await waitFor(() => expect(hasHighlightedCommentBackground(
+        document.getElementById(`comment-${replies[45]!.id}`),
+      )).toBe(true));
+      expect(screen.queryByText("Long thread body 0")).not.toBeInTheDocument();
+      expect(document.querySelectorAll('[id^="comment-long-thread-reply-"]').length).toBeLessThanOrEqual(2);
+      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 46 }));
+    });
+
     it("keeps a bounded virtual window when landing on an off-screen deep link", async () => {
       virtualWindow.size = 2;
       const comments = Array.from({ length: 60 }, (_, index) => ({
@@ -3564,7 +3588,7 @@ describe("IssueDetail (shared)", () => {
 
         await waitFor(() => expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument());
         await screen.findByText("Unique hidden needle");
-        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 30 }));
+        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 31 }));
         expect(screen.queryByText("Search root 0")).not.toBeInTheDocument();
         expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
         expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
@@ -3574,7 +3598,7 @@ describe("IssueDetail (shared)", () => {
         fireEvent.keyDown(input, { key: "Enter" });
         await screen.findByText("2/2");
         await waitFor(() => expect(document.getElementById("comment-second-offscreen-reply")).not.toBeNull());
-        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 35 }));
+        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 36 }));
         fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
         await screen.findByText("1/2");
         await waitFor(() => expect(document.getElementById("comment-offscreen-reply")).not.toBeNull());
@@ -3612,8 +3636,8 @@ describe("IssueDetail (shared)", () => {
       </I18nProvider>);
       await waitFor(() => expect(container.querySelector(`#comment-${target.id}`))
         .toHaveClass(highlightedCommentBackgroundClass));
-      expect(container.querySelector(`#comment-${root.id}`))
-        .toContainElement(container.querySelector(`#comment-${target.id}`) as HTMLElement);
+      expect(container.querySelector(`#comment-${target.id}`)?.closest("[data-thread-root]"))
+        .toHaveAttribute("data-thread-root", root.id);
       expect(screen.getAllByText(target.content)).toHaveLength(1);
       expect(container.querySelectorAll(`[data-run-id="${run.id}"]`)).toHaveLength(1);
       expect(within(container.querySelector(`#comment-${target.id}`) as HTMLElement)
@@ -5111,7 +5135,7 @@ describe("IssueDetail (shared)", () => {
     expect(container.querySelector('[data-run-slot-id="initial-assignment"]')).toBe(initialSlot);
     const mentionBlock = container.querySelector("#comment-later-mention")!;
     expect(initialSlot.compareDocumentPosition(mentionBlock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(mentionBlock.querySelector('[data-run-id="mentioned-run"]')).not.toBeNull();
+    expect(virtualRow(mentionBlock).nextElementSibling?.querySelector('[data-run-id="mentioned-run"]')).not.toBeNull();
   });
 
   // MUL-7211 regression: a standalone run's published reply belongs at the

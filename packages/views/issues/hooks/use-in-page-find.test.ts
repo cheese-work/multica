@@ -159,6 +159,23 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(result.current.activeDocumentId).toBeNull();
     walker.mockRestore();
   });
+
+  it("does not reveal the same source match again after an unrelated document update", async () => {
+    const revealDocument = vi.fn();
+    const documents = [{ id: "target", text: "needle needle" }];
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: entries.length, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => result.current.openFind());
+    act(() => result.current.setQuery("needle"));
+    await waitFor(() => expect(result.current.matchCount).toBe(2));
+    revealDocument.mockClear();
+    rerender({ entries: [...documents, { id: "unrelated", text: "new reply" }] });
+    await flushFrames();
+    expect(revealDocument).not.toHaveBeenCalled();
+    act(() => result.current.goNext());
+    await waitFor(() => expect(revealDocument).toHaveBeenCalledWith("target"));
+  });
 });
 
 // 01-DESIGN "Find and target reveal lifecycle": the readiness predicate is
