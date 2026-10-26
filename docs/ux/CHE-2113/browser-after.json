@@ -1,0 +1,65 @@
+{
+  "phase": "after",
+  "results": [
+    {
+      "theme": "light",
+      "width": 1440,
+      "mentions": 12,
+      "selfMentions": 3,
+      "fontWeight": "700",
+      "radius": "6px",
+      "padding": "4px",
+      "text": "@Cheese",
+      "contrast": 16.123007094346903,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-light-1440-after.png",
+      "errors": []
+    },
+    {
+      "theme": "light",
+      "width": 390,
+      "mentions": 12,
+      "selfMentions": 3,
+      "fontWeight": "700",
+      "radius": "6px",
+      "padding": "4px",
+      "text": "@Cheese",
+      "contrast": 16.123007094346903,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-light-390-after.png",
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "mentions": 12,
+      "selfMentions": 3,
+      "fontWeight": "700",
+      "radius": "6px",
+      "padding": "4px",
+      "text": "@Cheese",
+      "contrast": 12.610182305775876,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-dark-1440-after.png",
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 390,
+      "mentions": 12,
+      "selfMentions": 3,
+      "fontWeight": "700",
+      "radius": "6px",
+      "padding": "4px",
+      "text": "@Cheese",
+      "contrast": 12.610182305775876,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-dark-390-after.png",
+      "errors": []
+    }
+  ],
+  "mermaidValidation": {
+    "parsed": true,
+    "rendered": true
+  }
+}

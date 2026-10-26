@@ -69,6 +69,7 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatTaskActions } from "./use-chat-task-actions";
 import { useChatInputFocus } from "./use-chat-input-focus";
+import { useQuoteRequest } from "./use-quote-request";
 import { ChatWindowMessages } from "./chat-window-messages";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 import { useChatAnnotations } from "./use-chat-annotations";
@@ -164,6 +165,7 @@ export function ChatWindow() {
   // chat starts (⊕ or switching agent), and whenever the window itself opens.
   const windowRef = useRef<HTMLDivElement>(null);
   const { focusRequest, requestInputFocus } = useChatInputFocus(isOpen, windowRef);
+  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const [conversationStarterRequest, setConversationStarterRequest] = useState<{
     id: number;
     content: string;
@@ -935,6 +937,7 @@ export function ChatWindow() {
               noAgent
             }
             quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+            onQuoteMessage={quote}
           >
             <EmptyState
               agent={activeAgent}
@@ -988,6 +991,8 @@ export function ChatWindow() {
         onRename={handleRename}
         onFork={canForkSession(currentSession) ? handleFork : undefined}
         restoreDraftRequest={restoreDraftRequest}
+        quoteRequest={quoteRequest}
+        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
         onRestoreDraftApplied={handleRestoreDraftApplied}

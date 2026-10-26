@@ -64,6 +64,8 @@ import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
+import { PredecessorDms } from "./predecessor-dms";
+import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -79,6 +81,8 @@ interface ChatMessageListProps {
   /** Last message copied from the source DM; the "Forked from" divider sits below it. */
   forkLastMessageId?: string | null;
   forkMessageCount?: number | null;
+  /** Puts a predecessor DM's message into the composer as a quote. Without it, earlier DMs have no quote action. */
+  onQuoteMessage?: (content: string) => void;
   /**
    * Session list cache (includes archived), the title source for fork links.
    * Leave undefined while it is loading so a source isn't mistaken for deleted.
@@ -142,6 +146,9 @@ const JUMP_AIM_MS = 1000;
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
   continuedFromSessionId?: string | null;
+  /** Earlier DMs of the continuation chain, oldest first; empty while the session list is unknown. */
+  predecessors: ChatSession[];
+  onQuoteMessage?: (content: string) => void;
   continuedIntoSessionId?: string | null;
   showForkHint: boolean;
   showStatusPill: boolean;
@@ -185,6 +192,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
     <div className={cn(CHAT_COLUMN, "pt-4")}>
       {context?.continuedFromSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
+      )}
+      {context && context.predecessors.length > 0 && (
+        <PredecessorDms sessions={context.predecessors} onQuoteMessage={context.onQuoteMessage} />
       )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
@@ -339,6 +349,7 @@ export function ChatMessageList({
   forkedFromSessionId,
   forkLastMessageId,
   forkMessageCount,
+  onQuoteMessage,
   sessions,
   pendingTask,
   availability,
@@ -555,9 +566,19 @@ export function ChatMessageList({
   const showForkHint = !!forkLastMessageId
     && !messages.slice(forkPointIndex + 1).some((m) => m.role === "user");
 
+  // Earlier DMs sit above the oldest loaded message, like the link to them.
+  const predecessors = useMemo(
+    () => (!hasOlderMessages && continuedFromSessionId && sessions
+      ? predecessorChain(sessions, continuedFromSessionId)
+      : []),
+    [hasOlderMessages, sessions, continuedFromSessionId],
+  );
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
+    predecessors,
+    onQuoteMessage,
     continuedIntoSessionId,
     showForkHint,
     showStatusPill,

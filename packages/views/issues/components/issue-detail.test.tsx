@@ -569,6 +569,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
 // layout.
 const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 const scrollToIndexSpy = vi.hoisted(() => vi.fn());
+const virtualWindow = vi.hoisted(() => ({ size: Infinity }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
@@ -579,17 +580,21 @@ vi.mock("react-virtuoso", () => ({
     },
     ref: any,
   ) {
+    const [firstIndex, setFirstIndex] = useState(0);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
       // real DOM node, not Virtuoso's imperative API.
       scrollIntoView: vi.fn(),
-      scrollToIndex: scrollToIndexSpy,
+      scrollToIndex: (location: { index: number }) => {
+        scrollToIndexSpy(location);
+        if (Number.isFinite(virtualWindow.size)) setFirstIndex(location.index);
+      },
     }));
     return (
       <div data-testid="virtuoso-mock">
-        {data.map((item, i) => (
-          <div key={computeItemKey(i, item)}>{itemContent(i, item) as React.ReactElement}</div>
+        {data.slice(firstIndex, firstIndex + virtualWindow.size).map((item, offset) => (
+          <div key={computeItemKey(firstIndex + offset, item)}>{itemContent(firstIndex + offset, item) as React.ReactElement}</div>
         ))}
       </div>
     );
@@ -599,6 +604,8 @@ vi.mock("react-virtuoso", () => ({
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
+  virtualWindow.size = Infinity;
+  Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
   scrollIntoViewSpy.mockClear();
   scrollToIndexSpy.mockClear();
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -2103,7 +2110,7 @@ describe("IssueDetail (shared)", () => {
       expect(screen.queryByText("Find reply 0")).not.toBeInTheDocument();
 
       fireEvent.keyDown(document, { key: "f", ctrlKey: true });
-      // find.open forces the thread flat/open for searchability.
+      fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Find reply 0" } });
       await screen.findByText("Find reply 0");
       // The pin is doing the work here — nothing has latched yet.
       expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
@@ -2158,6 +2165,7 @@ describe("IssueDetail (shared)", () => {
 
       const restoreGetClientRects = await openFind();
       try {
+        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Resolved root body" } });
         await screen.findByText("Resolved root body — findable sentinel");
         // Row 58: find never writes the resolved-expand preference.
         expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("resolved-root")).toBeFalsy();
@@ -2199,6 +2207,7 @@ describe("IssueDetail (shared)", () => {
 
       const restoreGetClientRects = await openFind();
       try {
+        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: "Hidden middle reply" } });
         await screen.findByText("Hidden middle reply — findable sentinel");
         expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(root.id)).toBeFalsy();
 
@@ -2224,6 +2233,7 @@ describe("IssueDetail (shared)", () => {
 
       const restoreGetClientRects = await openFind();
       try {
+        fireEvent.change(screen.getByPlaceholderText("Find in issue..."), { target: { value: root.content } });
         await waitFor(() => expect(collapseButton()).toBeDisabled());
         expect(collapseButton()).toHaveAttribute(
           "title",
@@ -3514,6 +3524,69 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+    it("keeps a bounded virtual window when landing on an off-screen deep link", async () => {
+      virtualWindow.size = 2;
+      const comments = Array.from({ length: 60 }, (_, index) => ({
+        ...mockTimeline[0]!, id: `virtual-comment-${index}`, content: `Virtual body ${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
+      }));
+      mockApiObj.listTimeline.mockResolvedValue(comments);
+      renderIssueDetailWithHighlight(comments[45]!.id);
+
+      await waitFor(() => expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument());
+      await waitFor(() => expect(hasHighlightedCommentBackground(
+        document.getElementById(`comment-${comments[45]!.id}`),
+      )).toBe(true));
+      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 45 }));
+      expect(screen.queryByText("Virtual body 0")).not.toBeInTheDocument();
+      expect(document.querySelectorAll('[id^="comment-virtual-comment-"]').length).toBeLessThanOrEqual(2);
+    });
+
+    it("finds a folded off-screen reply without mounting unrelated threads", async () => {
+      virtualWindow.size = 2;
+      const comments = Array.from({ length: 40 }, (_, index) => ({
+        ...mockTimeline[0]!, id: `find-root-${index}`, content: `Search root ${index}`,
+        resolved_at: index === 30 ? "2026-01-17T00:00:00Z" : null,
+        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
+      }));
+      const reply = { ...mockTimeline[1]!, id: "offscreen-reply", parent_id: comments[30]!.id,
+        content: "Unique hidden needle", created_at: "2026-01-16T01:00:00Z" };
+      const secondReply = { ...reply, id: "second-offscreen-reply", parent_id: comments[35]!.id };
+      mockApiObj.listTimeline.mockResolvedValue([...comments, reply, secondReply]);
+      useCommentCollapseStore.getState().toggle("issue-1", comments[30]!.id);
+      const rects = vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ width: 1, height: 1 }] as unknown as DOMRectList);
+      try {
+        renderIssueDetail();
+        await screen.findByText("Search root 0");
+        fireEvent.keyDown(document, { key: "f", ctrlKey: true });
+        expect(screen.queryByText("Unique hidden needle")).not.toBeInTheDocument();
+        fireEvent.change(await screen.findByPlaceholderText("Find in issue..."), { target: { value: "Unique hidden needle" } });
+
+        await waitFor(() => expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument());
+        await screen.findByText("Unique hidden needle");
+        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 30 }));
+        expect(screen.queryByText("Search root 0")).not.toBeInTheDocument();
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
+        expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
+        expect(document.querySelectorAll('[id^="comment-find-root-"]').length).toBeLessThanOrEqual(2);
+        await screen.findByText("1/2");
+        const input = screen.getByPlaceholderText("Find in issue...");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await screen.findByText("2/2");
+        await waitFor(() => expect(document.getElementById("comment-second-offscreen-reply")).not.toBeNull());
+        expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 35 }));
+        fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+        await screen.findByText("1/2");
+        await waitFor(() => expect(document.getElementById("comment-offscreen-reply")).not.toBeNull());
+        fireEvent.keyDown(input, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
+        expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
+      } finally {
+        rects.mockRestore();
+      }
+    });
+
     it("folds an assignment reply with its resolved parent and unfolds that thread for a notification", async () => {
       const run: AgentTask = { id: "ba2e8d1c-7f9b-4e2a-9c1d-123456789abc", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
         kind: "direct", status: "completed", priority: 0, created_at: "2026-01-16T00:00:00Z", started_at: null, dispatched_at: null,
