@@ -4,6 +4,24 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floating-ui/dom";
 
+/**
+ * Touch browsers (iOS) put their own selection menu above the selection, so the
+ * popup goes below it. It flips above only when there is no room below, and only
+ * shifts horizontally (shift's default), never vertically, so it cannot cover the selected text.
+ */
+const TOUCH_GAP_BELOW = 28;
+const TOUCH_GAP_ABOVE = 88;
+/**
+ * Measured on a real iPhone: the end-handle knob hangs ~20px below the selection, and the native
+ * menu spans 23..78px above it. Below clears the knob; above (no room below) clears the menu.
+ */
+const touchGap = (placement: string) => (placement.startsWith("top") ? TOUCH_GAP_ABOVE : TOUCH_GAP_BELOW);
+function placementFor(marker: boolean, touch: boolean) {
+  if (marker) return "right-start";
+  return touch ? "bottom" : "top";
+}
+const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
+
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
 export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget }: {
   range: Range;
@@ -29,12 +47,13 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     let revision = 0;
     const update = () => {
       const currentRevision = ++revision;
+      const touch = isTouch();
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
       computePosition(anchor, element, {
         strategy: "fixed",
-        placement: marker ? "right-start" : "top",
+        placement: placementFor(marker, touch),
         middleware: markerRanges ? [
           offset(({ rects }) => {
             const sorted = markerRanges.map((item) => ({ item, top: item.getBoundingClientRect().top }))
@@ -50,7 +69,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true }), hide()],
+        ] : [offset(touch ? ({ placement }) => touchGap(placement) : 8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();
