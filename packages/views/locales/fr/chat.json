@@ -301,6 +301,10 @@
     "removed": "Commentaire {{number}} supprimé"
   },
   "decision": {
+    "request_title": "Demande de décision",
+    "request_label": "Demande de décision : {{state}}",
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
+    "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
     "from_original_dm": "du DM d'origine",
     "inherited": "Hérité",
