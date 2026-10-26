@@ -192,3 +192,20 @@ func TestFirstMatchPRReadyClosedChildrenAndIssueGuards(t *testing.T) {
 		}
 	}
 }
+
+// A pr.checks_green edge is advance_on_ci_green under another name, so it
+// keeps that rule: CI green never moves an issue out of a closed, parked or
+// blocked status.
+func TestChecksGreenEdgeKeepsTheCIAdvanceRule(t *testing.T) {
+	def := devDefinition()
+	for _, key := range []string{"backlog", "blocked", "done", "cancelled"} {
+		step := Step{StatusKey: key, Handler: Handler{Type: HandlerNone}, Edges: []Edge{{To: "implement", Guard: GuardPRChecksGreen, Timeout: "72h", OnTimeout: "code_review"}}}
+		if err := ValidateHandoff(step, def); err == nil || !strings.Contains(err.Error(), "CI green") {
+			t.Errorf("%s: pr.checks_green edge error = %v, want a CI green refusal", key, err)
+		}
+	}
+	step := Step{StatusKey: "code_review", Handler: Handler{Type: HandlerNone}, Edges: []Edge{{To: "done", Guard: GuardPRChecksGreen, Timeout: "72h"}}}
+	if err := ValidateHandoff(step, def); err != nil {
+		t.Fatalf("code_review pr.checks_green edge: %v", err)
+	}
+}

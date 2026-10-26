@@ -140,6 +140,18 @@ in transit, not a compromised server.
 **macOS limitation.** The darwin builds are cross-compiled on Linux and are
 not signed or notarized. Running one on a Mac is not covered by CI.
 
+### Freezing updates (CHE-2056)
+
+Create `~/.multica/UPDATE_FREEZE` (contents = the reason, e.g. the pending
+owner packet) to stop `multica update`, the daemon auto-update poller and the
+Runtimes-page updater. Each refuses with the file path and reason, and the
+daemon reports the refusal to the server. Delete the file when the packet
+closes; the next poll resumes. `MULTICA_UPDATE_FREEZE_FILE` overrides the path.
+
+The freeze does not stop `scripts/install-cli-from-ref.sh` or any other out of
+band binary replacement; the daemon's auto-reload still follows such a binary.
+Do not run either while the file exists.
+
 ## Quick Start
 
 ```bash
