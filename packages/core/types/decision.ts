@@ -1,5 +1,17 @@
 export type DecisionState = "pending" | "effective" | "disclaimed";
 
+export interface DecisionRequestCard {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  source_comment_id?: string | null;
+  ask: string;
+  state: "open" | "answered" | "withdrawn";
+  created_at: string;
+  withdrawn_at?: string | null;
+  reason?: string;
+}
+
 export type DecisionCommentKind = "ask" | "quote" | "disclaim" | "delivery" | "cancel" | "veto";
 
 /** Display state of one decision answer, carried by the DM bubble it quotes. */
