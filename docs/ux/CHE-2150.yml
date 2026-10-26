@@ -1,0 +1,11 @@
+issue: CHE-2150
+design: "none: no approved design revision or recorded waiver; Cheese reviews the captures on the PR"
+scope: "A3b workflow graph editor (drag nodes, draw edges, exits form, pre-save validation). A3a read-only graph is PR #417."
+capture: "X99 Chromium (Playwright) against the real WorkflowEditorPage with a synthetic 7-step workflow and a stubbed save API; not an authenticated product-route run."
+pages:
+  - id: workflow-editor
+    url: "workflow settings, editor page"
+    keep: [workflow-graph]
+    change:
+      - workflow-graph: "Nodes drag, a handle-to-handle drag adds an exit, and the exits form below edits guard and target."
+    remove: []
