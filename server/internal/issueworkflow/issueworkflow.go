@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -185,6 +186,15 @@ type Definition struct {
 	Name      string
 	IsDefault bool
 	Steps     []Step
+	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
+	// (see EffectiveMaxRuns).
+	MaxRunsPerIssue int
+	// IncludeChildPRs makes the PRs of an issue's direct children count as
+	// its own for edge guards.
+	IncludeChildPRs bool
+	// RunBudgetSince is when the budget starts counting: runs before it are
+	// free, so issues in flight when the budget shipped start fresh.
+	RunBudgetSince time.Time
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
