@@ -37,6 +37,15 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(parsed.workflows[0]?.project_ids).toEqual(["project-1"]);
   });
 
+  it("keeps step edges so a save does not drop them (CHE-2030)", () => {
+    const edges = [{ to: "done", guard: "pr.merged", timeout: "72h", on_timeout: "blocked" }];
+    const parsed = IssueWorkflowSchema.parse({
+      ...baseWorkflow,
+      steps: [{ status_key: "code_review", handler: { type: "none" }, instructions: "", edges }],
+    });
+    expect(parsed.steps[0]?.edges).toEqual(edges);
+  });
+
   it("degrades an unknown handler type to a manual step", () => {
     const parsed = IssueWorkflowSchema.parse({
       ...baseWorkflow,

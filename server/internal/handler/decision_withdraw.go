@@ -169,8 +169,11 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	}
 	var message db.ChatMessage
 	if session.Status == "active" {
-		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: "Decision withdrawn: " + reason + "\n\nOriginal ask:\n" + current.Ask, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: "Decision withdrawn: " + reason + "\n\nOriginal ask:\n" + current.Ask, MessageKind: pgtype.Text{String: protocol.ChatMessageKindDecisionCancelNotice, Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
 		if err != nil {
+			return empty, err
+		}
+		if err := queries.StampDecisionCancelMessageRequests(ctx, db.StampDecisionCancelMessageRequestsParams{ID: message.ID, ChatSessionID: session.ID, RequestIds: []pgtype.UUID{current.ID}}); err != nil {
 			return empty, err
 		}
 		if err := queries.TouchChatSession(ctx, session.ID); err != nil {

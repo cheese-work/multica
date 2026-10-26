@@ -278,7 +278,9 @@ const (
 	ChatMessageKindOnboardingKickoff = "onboarding_kickoff"
 	// ChatMessageKindDecisionReference is the server-authored note that a
 	// decision was recorded from this DM. Its decision_answer_id names the card.
-	ChatMessageKindDecisionReference = "decision_reference"
+	ChatMessageKindDecisionReference    = "decision_reference"
+	ChatMessageKindDecisionRequest      = "decision_request"
+	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this

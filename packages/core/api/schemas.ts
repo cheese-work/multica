@@ -557,6 +557,13 @@ const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
 ]);
 
+const IssueWorkflowEdgeSchema = z.object({
+  to: z.string(),
+  guard: z.string(),
+  timeout: z.string().optional(),
+  on_timeout: z.string().optional(),
+});
+
 const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
   handler: IssueWorkflowHandlerSchema.default({ type: "none" }),
@@ -564,6 +571,7 @@ const IssueWorkflowStepSchema = z.object({
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
+  edges: z.array(IssueWorkflowEdgeSchema).optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -984,6 +992,18 @@ const DecisionCardSchema = z.object({
   inherited: z.boolean().catch(false).default(false),
 }).loose();
 
+const DecisionRequestCardSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string().default(""),
+  source_comment_id: z.string().nullish().catch(undefined),
+  ask: z.string(),
+  state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
+  created_at: z.string(),
+  withdrawn_at: z.string().nullish().catch(undefined),
+  reason: z.string().optional().catch(undefined),
+}).loose();
+
 export const ChatMessageSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -995,11 +1015,13 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference", "decision_request", "decision_cancel_notice"])
     .catch("message")
     .optional(),
   decision_quotes: z.array(DecisionCardSchema).optional().catch(undefined),
   decision_ref: DecisionCardSchema.optional().catch(undefined),
+  decision_request: DecisionRequestCardSchema.optional().catch(undefined),
+  decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),

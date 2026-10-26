@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageSquarePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
@@ -29,6 +29,50 @@ export interface AnnotationLabels {
 /** A chat message renders its markers in its own slot so Tab reaches them in reading order. */
 function overlaySlot(root: HTMLElement): HTMLElement | undefined {
   return root.closest("[data-annotation-overlay-host]")?.querySelector<HTMLElement>(":scope > [data-annotation-overlay-slot]") ?? undefined;
+}
+
+/**
+ * The note keeps its own text: a keystroke (and every IME composition update)
+ * re-renders only this editor, never the chat or issue page that hosts the hook.
+ */
+function AnnotationNoteEditor({ inputRef, initialNote, label, showLabel, placeholder, confirmLabel, removeLabel, onEdit, onConfirm, onCancel, onRemove }: {
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  initialNote: string;
+  label: string;
+  showLabel: boolean;
+  placeholder: string;
+  confirmLabel: string;
+  removeLabel?: string;
+  onEdit?: () => void;
+  onConfirm: (note: string) => void;
+  onCancel: () => void;
+  onRemove: () => void;
+}) {
+  const [note, setNote] = useState(initialNote);
+  return <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1">
+    {showLabel && <p className="px-2 pt-1 text-caption text-muted-foreground">{label}</p>}
+    <textarea ref={inputRef} value={note} rows={Math.min(4, Math.max(1, note.split("\n").length))}
+      aria-label={label}
+      data-testid="annotation-note"
+      placeholder={placeholder}
+      className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none field-sizing-content rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
+      onChange={(event) => { setNote(event.target.value); onEdit?.(); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !isImeComposing(event) &&
+          !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+          event.preventDefault(); event.stopPropagation(); onConfirm(note);
+        } else if (event.key === "Escape" && !isImeComposing(event)) {
+          event.preventDefault(); event.stopPropagation(); onCancel();
+        }
+      }} />
+    <div className="flex items-center justify-end gap-1 px-1 pb-1">
+      {removeLabel && <IconButton variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
+        label={removeLabel} onClick={onRemove}><Trash2 /></IconButton>}
+      <Button size="sm" disabled={!note.trim()}
+        aria-label={confirmLabel} aria-keyshortcuts="Enter"
+        onClick={() => onConfirm(note)}>{confirmLabel}</Button>
+    </div>
+  </div>;
 }
 
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
@@ -281,11 +325,11 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   }, [claimEditor]);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
-  const confirmNote = () => {
-    if (!editing?.note.trim()) return;
+  const confirmNote = (note: string) => {
+    if (!editing || !note.trim()) return;
     const store = useCommentDraftStore.getState();
-    if (editingExisting) store.updateAnnotation(draftKey, editing.id, editing.note);
-    else if (!store.addAnnotation(draftKey, editing)) {
+    if (editingExisting) store.updateAnnotation(draftKey, editing.id, note);
+    else if (!store.addAnnotation(draftKey, { ...editing, note })) {
       setError(true);
       return;
     }
@@ -361,35 +405,15 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1">{chat && editingExisting && <p className="px-2 pt-1 text-caption text-muted-foreground">{L.noteLabel(editingNumber)}</p>}<textarea ref={inputRef} value={editing.note} rows={Math.min(4, Math.max(1, editing.note.split("\n").length))}
-            aria-label={L.noteLabel(editingNumber)}
-            data-testid="annotation-note"
-            placeholder={L.notePlaceholder}
-            className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none field-sizing-content rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
-            onChange={(event) => {
-              setEditor({ annotation: { ...editing, note: event.target.value }, existing: editingExisting });
-              setError(false);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !isImeComposing(event) &&
-                !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
-                event.preventDefault(); event.stopPropagation(); confirmNote();
-              } else if (event.key === "Escape" && !isImeComposing(event)) {
-                event.preventDefault(); event.stopPropagation(); close(true);
-              }
-            }} />
-            <div className="flex items-center justify-end gap-1 px-1 pb-1">
-              {editingExisting && <IconButton variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
-                label={L.remove(editingNumber)}
-                onClick={() => {
-                  useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
-                  close(true);
-                }}><Trash2 /></IconButton>}
-              <Button size="sm" disabled={!editing.note.trim()}
-                aria-label={confirmLabel} aria-keyshortcuts="Enter"
-                onClick={confirmNote}>{confirmLabel}</Button>
-            </div>
-            </div> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"
+          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={editing.note}
+              label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
+              confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
+              onEdit={error ? () => setError(false) : undefined} onConfirm={confirmNote}
+              onCancel={() => close(true)}
+              onRemove={() => {
+                useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
+                close(true);
+              }} /> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"
               onMouseDown={(event) => event.preventDefault()} onClick={() => add(selection)}>
               <MessageSquarePlus />{L.add}
             </Button>}
