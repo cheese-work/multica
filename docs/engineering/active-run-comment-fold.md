@@ -88,7 +88,7 @@ Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enque
    - `CompleteTask` keeps the full reconcile and inserts the release row after it, so the sweeper skips that run.
    - The window stays `planned_only` on failed and cancelled runs. A failed run does not replay every member comment posted during it. Retry belongs to CHE-1126.
 7. `ClaimNextTaskSupplement`: resolve the author name for agent authors (today it joins `"user"` only and prints "a user").
-8. Trigger outcome: report `coalesced` with a new reason `coalesced_active_run`. Do not add a status.
+8. Trigger outcome: report `coalesced` with a new reason `coalesced_active_run`. Do not add a status. The client allowlist (`packages/core/issues/comment-trigger-outcomes.ts:77`) and the RHC-2 admission check (`dotfiles-agents/scripts/check-handoff-links.sh`, status list `queued | coalesced | deferred`) both accept `coalesced`.
 
 ### Cancellation sources
 
@@ -141,9 +141,8 @@ Each runs against the handler test database, like `comment_issue_fold_test.go`.
 
 ## Open questions for the reviewer
 
-1. **Outcome status.** The client allowlist accepts `coalesced` (`packages/core/issues/comment-trigger-outcomes.ts:77`). The RHC-2 wrapper's server-side admission check is not yet read. Step 0 of the code work reads it. If it rejects `coalesced`, report `steered` instead.
-2. **Replay window.** A repeat after a crash between replay and release row can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
-3. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row.
+1. **Replay window.** A repeat after a crash between replay and release row can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
+2. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row.
 
 The `task_supplement` primary key is `(comment_id, task_id)` (migration 549), so one comment can fold into several agents' runs. No index change is needed.
 
