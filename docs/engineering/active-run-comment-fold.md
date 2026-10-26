@@ -69,14 +69,38 @@ Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enque
 
 ### Changes
 
-1. Migration: `task_supplement.mode TEXT NOT NULL DEFAULT 'explicit' CHECK (mode IN ('explicit','auto'))` and `released_at TIMESTAMPTZ`. Additive, no foreign keys, matches the existing table rules.
+1. Migration, additive, no foreign keys:
+   - `task_supplement.mode TEXT NOT NULL DEFAULT 'explicit' CHECK (mode IN ('explicit','auto'))`.
+   - New table `task_comment_release (task_id UUID NOT NULL, released_at TIMESTAMPTZ NOT NULL DEFAULT now())` with a unique index on `task_id`, built `CONCURRENTLY` in its own migration. It is a side table because `agent_task_queue` is a hot `SELECT *` table (migration 538 note). One row means "this run's undelivered inputs were handed back to routing".
 2. `BindAutoCommentTaskSupplement` query: `BindCommentTaskSupplement` plus the head and role guards, writes `mode='auto'`.
 3. `foldCommentIntoRunningTurn` in `handler/comment.go`, wired as above. Notifies the daemon with `NotifyTaskSupplementAvailable`.
-4. `ListReconcilableCommentsForIssueSince`: the exclusion becomes `mode='explicit' OR status='delivered'`. An undelivered auto supplement replays on `CompleteTask` through the existing reconcile.
-5. Release for the other terminal paths: extract the per-comment replay body of `reconcileCommentsOnCompletion` into `replayCommentForAgent`. New `releaseUndeliveredAutoSupplements(task)` replays each auto supplement of the run with `status <> 'delivered' AND released_at IS NULL`, then sets `released_at`. Replay comes before the mark, so a crash repeats the replay. The repeat is absorbed by the pending-task fold.
-6. Call sites: `FailTask` and `CancelTask` handlers. Plus a runtime-sweeper tick (`cmd/server`) that releases any terminal-run leftovers, which covers offline-runtime failure, bulk cancel and a crash between commit and release.
+4. `ListReconcilableCommentsForIssueSince`:
+   - The supplement exclusion becomes `mode='explicit' OR status='delivered'`. An undelivered auto supplement is replayable.
+   - The explicit-cancel acknowledgement also matches a comment bound to the cancelled run by a supplement, not only by `trigger_comment_id` or `coalesced_comment_ids`.
+   - New argument `planned_only`. When true, only `c.id = ANY(planned_comment_ids)` qualifies. The thread and `created_at > since` window is off.
+5. Termination release. Extract the per-comment replay body of `reconcileCommentsOnCompletion` into `replayCommentForAgent`. New `releaseInputsOnTermination(task)`:
+   - Builds the run's **undelivered inputs**: `coalesced_comment_ids` plus the trigger comment, minus `delivered_comment_ids`, plus every auto supplement of the run that is not `delivered`.
+   - Runs the existing reconcile with `planned_only=true` over that set. A planned input (a comment registered on a `dispatched` run by `registerPlannedCommentForActiveTask`) and an auto supplement take the same path.
+   - Replays first, then inserts the `task_comment_release` row (`ON CONFLICT DO NOTHING`). A crash between the two repeats the replay. The pending-task fold absorbs the repeat.
+6. Call sites for `releaseInputsOnTermination`:
+   - `FailTask` and `CancelTask` handlers.
+   - A runtime-sweeper tick (`cmd/server`). It selects failed, cancelled and completed runs with `completed_at` in the last 24h, no release row, and at least one undelivered input. It covers offline-runtime failure, the `CancelTasksForIssue`, `CancelTasksForAgent` and archived-agent cancels, and a crash between commit and release.
+   - `CompleteTask` keeps the full reconcile and inserts the release row after it, so the sweeper skips that run.
+   - The window stays `planned_only` on failed and cancelled runs. A failed run does not replay every member comment posted during it. Retry belongs to CHE-1126.
 7. `ClaimNextTaskSupplement`: resolve the author name for agent authors (today it joins `"user"` only and prints "a user").
 8. Trigger outcome: report `coalesced` with a new reason `coalesced_active_run`. Do not add a status.
+
+### Cancellation sources
+
+The existing reconcile already splits cancels by `cancelled_by_type` (`ListReconcilableCommentsForIssueSince`, explicit-cancel clause). The release reuses that predicate without change in meaning.
+
+| Cancel source | `cancelled_by_type` | Undelivered inputs |
+| --- | --- | --- |
+| A member or an agent cancels this run (`CancelAgentTaskByUser`) | `member` or `agent` | Acknowledged. No replay. |
+| Server-initiated: stale plan, claim failure, offline runtime, archived agent (`CancelAgentTask`, `CancelAgentTaskWithReason`) | `system` | Replayed through normal triggers. Routing, permissions and agent state are re-checked, so an archived agent yields a blocked outcome, not a run. |
+| Issue deletion (`CancelAgentTasksByIssue`) | `system` | Nothing replays: the issue is gone, so the replay finds no issue and the release row is written. |
+
+There is no member-level "cancel all" path. A member stops runs one task at a time, which is the explicit row. So replay never recreates work right after an intentional stop.
 
 ### What does not change
 
@@ -86,15 +110,17 @@ Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enque
 
 ## Acceptance 3 check
 
-| End of T | Supplement state | Result |
+| End of T | Input state | Result |
 | --- | --- | --- |
-| Completed, delivered | `delivered` | Nothing more. |
-| Completed, not delivered | `failed turn_ended` | Reconcile replays: one follow-up run. |
-| Failed or cancelled | `failed turn_ended` | Release hook replays: one follow-up run. |
-| Any terminal, hook missed | `failed`, `released_at` null | Sweeper replays. |
-| Provider rejects the input | `failed` (ack) | Release replays when T ends. |
+| Completed, delivered | auto supplement `delivered` | Nothing more. |
+| Completed, not delivered | supplement `failed turn_ended` | Full reconcile replays: one follow-up run. |
+| Failed | auto supplement undelivered, or planned input from `dispatched` | Release replays: one follow-up run. |
+| Cancelled by `system` | same | Release replays: one follow-up run. |
+| Cancelled by a member or an agent | same | Acknowledged: no run. |
+| Any terminal, hook missed | no release row | Sweeper replays once. |
+| Provider rejects the input | supplement `failed` (ack) | Release replays when T ends. |
 
-A follow-up after a failed run is not a regression. Today the `queued` successor already exists in that case.
+A follow-up after a failed run is not a regression. Today the `queued` successor already exists for a `running` run. For a `dispatched` run the comment is lost on failure today.
 
 ## Tests first (red, then green)
 
@@ -103,21 +129,24 @@ Each runs against the handler test database, like `comment_issue_fold_test.go`.
 1. Comment for A while A's task is `running` with capability: no new `queued` row, one `task_supplement` with `mode='auto'`, outcome `coalesced_active_run`. Red today: a second `queued` row appears.
 2. Dispatched assignment run starts within the same second, then the dispatch comment arrives: one run total after the start.
 3. Guard misses each keep the old behavior: no capability row, different head, different squad role, wakeup task.
-4. Run fails with the supplement `pending`: one follow-up run for the comment. Red today: none.
-5. Run is cancelled (single task): one follow-up run.
-6. Run completes with the supplement `delivered`: no follow-up.
-7. Sweeper releases a failed run's leftover once. A second tick adds nothing.
-8. Agent-authored comment shows the agent name at claim.
-9. Explicit steering test suite stays green (`comment_steer_test.go`, `task_supplement_test.go`).
+4. Running run fails with the auto supplement `pending`: one follow-up run for the comment. Red today: none.
+5. **Dispatched run fails** with a comment registered as a planned input: one follow-up run. Red today: none.
+6. **System cancel** of a `running` run (auto supplement) and of a `dispatched` run (planned input): one follow-up run each.
+7. **Explicit cancel** by a member and by an agent, for both input kinds: no follow-up run. Separate test from 6.
+8. Run completes with the supplement `delivered`: no follow-up.
+9. Sweeper releases a failed run's leftover once. A second tick adds nothing. A crash between replay and the release row leaves one pending run after the retry.
+10. A failed run does not replay a member comment that was neither planned nor supplemented.
+11. Agent-authored comment shows the agent name at claim.
+12. Explicit steering test suite stays green (`comment_steer_test.go`, `task_supplement_test.go`).
 
 ## Open questions for the reviewer
 
-1. **Bulk cancel** (`CancelTasksForIssue`, `CancelTasksForAgent`, archived agent) also cancels queued successors today. Plan: replay anyway through the normal pipeline, which re-checks routing and agent state. Alternative: mark `released_at` without replay. Which one?
-2. **Outcome status.** Plan keeps `coalesced` so the RHC-2 wrapper's `trigger_outcomes` admission check passes unchanged. Confirm the wrapper accepts `coalesced`, or require `steered`.
-3. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row. The reviewer may re-check.
+1. **Outcome status.** The client allowlist accepts `coalesced` (`packages/core/issues/comment-trigger-outcomes.ts:77`). The RHC-2 wrapper's server-side admission check is not yet read. Step 0 of the code work reads it. If it rejects `coalesced`, report `steered` instead.
+2. **Replay window.** A repeat after a crash between replay and release row can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
+3. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row.
 
 The `task_supplement` primary key is `(comment_id, task_id)` (migration 549), so one comment can fold into several agents' runs. No index change is needed.
 
 ## Size
 
-About 4h: migration and queries 45min, bind and wiring 1h, release and sweeper 1h30, tests alongside.
+About 5h: migrations and queries 1h, bind and wiring 1h, release, sweeper and cancel rules 2h, tests alongside. Over the 4h guide because planned inputs now share the release path.
