@@ -429,6 +429,12 @@ func NormalizeHandoff(s Step) Step {
 	return s
 }
 
+// CanAdvanceOnCIGreen reports whether CI green may move an issue out of a
+// status: never out of a closed, parked or blocked one.
+func CanAdvanceOnCIGreen(key string) bool {
+	return AcceptsHandoff(key) && key != issuestatus.Blocked
+}
+
 // ValidateHandoff checks one normalized handoff against its workflow.
 // Handler ids are checked by the caller, which owns the workspace lookups.
 func ValidateHandoff(s Step, def Definition) error {
@@ -459,7 +465,7 @@ func ValidateHandoff(s Step, def Definition) error {
 			return invalid("%q is not another status of this workflow", ref)
 		}
 	}
-	if s.AdvanceOnCIGreen && (!AcceptsHandoff(s.StatusKey) || s.StatusKey == issuestatus.Blocked) {
+	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
 	return validateEdges(s, def)
