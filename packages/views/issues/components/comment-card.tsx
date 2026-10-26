@@ -53,16 +53,15 @@ import {
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { useT } from "../../i18n";
 import { CommentsFoldBar } from "./resolved-thread-bar";
-import { deriveThreadResolution } from "./thread-utils";
+import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
 import { InlineCommentRun, PlacedInlineCommentRun, useInlineCommentRunState, type InlineCommentRunState } from "./inline-comment-run";
-import { EMPTY_COMMENT_RUNS, isRunFailureNotice, orderThreadWithRuns, showCommentRunInHeader, type CommentRun } from "./comment-runs";
+import { EMPTY_COMMENT_RUNS, isRunFailureNotice, showCommentRunInHeader, type CommentRun } from "./comment-runs";
 import { descriptionPreview } from "./description-preview";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { useAttachmentVersions } from "./deliverables/attachment-versions";
 import { VersionBadge } from "./deliverables/version-badge";
 import { useRunCommentMotion } from "./use-run-comment-motion";
-import { projectThreadDisplay } from "./thread-disclosure";
 import { WakeupSourceChip } from "./wakeup-source-chip";
 import { DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
 
@@ -113,6 +112,7 @@ function StickyHeaderShell({
 // Types
 
 interface CommentCardProps {
+  virtualRow?: CommentThreadRow;
   issueId: string;
   runs?: CommentRun[];
   runViewState?: InlineCommentRunState;
@@ -1082,6 +1082,7 @@ export function AgentRunComment({ run, standalone = false, commentProps, enterin
 // Provenance still lives on `quick_action_id`; it is data, not decoration.
 
 function CommentCardImpl({
+  virtualRow,
   issueId,
   runs = EMPTY_COMMENT_RUNS,
   runViewState,
@@ -1185,67 +1186,16 @@ function CommentCardImpl({
   // replies fold behind a bar and the resolution stays visible (root-resolution
   // is handled one level up in issue-detail's resolved-bar, so kind "root" here
   // renders the normal full thread under the Collapse header).
-  const resolution = deriveThreadResolution(entry, allNestedReplies);
-  const replyResolutionId = resolution.kind === "reply" ? resolution.resolutionId : null;
   const threadExpanded = !!expandedResolvedIds?.has(entry.id);
-  const replyFolded = replyResolutionId != null && !threadExpanded;
-  const foldedReplies = replyResolutionId
-    ? visibleReplies.filter((r) => r.id !== replyResolutionId)
-    : visibleReplies;
-  const resolutionReply = replyResolutionId
-    ? allNestedReplies.find((r) => r.id === replyResolutionId) ?? null
-    : null;
-  // Effective order (01-DESIGN "Effective order"): reply-resolution folding
-  // (priority 4, `replyFolded` above) fully owns display when active — the
-  // projection below only applies to the normal, non-reply-folded branch
-  // (priority 6, unresolved length preference). `forceThreadLengthExpanded`
-  // is the caller's find/target/active-interaction pin (priority 1), MINUS a
-  // bare focus/selection-only reason (CHE-554, see its doc comment on
-  // `CommentCardProps`) — it opens the full list regardless of the durable
-  // length choice, without writing it.
   const lengthExpanded = forceThreadLengthExpanded || threadLengthExpanded;
-  // Runs anchored directly to the ROOT keep the pre-existing AgentRunComment
-  // rendering identity (below) so a run's DOM node survives the "queued, no
-  // reply yet" -> "reply landed" transition without remounting — including
-  // when its reply publishes as an out-of-thread top-level comment that
-  // comment-runs.ts projects onto this root ("root-reply runs stay with the
-  // root", 01-DESIGN). projectThreadDisplay only owns genuinely nested
-  // (non-root-anchored) reply chains, which is its actual acceptance-tested
-  // domain (the r1..r10 anchor matrices).
-  const nestedRuns = runs.filter((run) => run.anchorCommentId !== entry.id);
-  // A reply already embedded under a root-anchored run above (rendered via
-  // AgentRunComment) must not ALSO consume a slot in this thread's own
-  // compact/expanded window or its hiddenCount — but a downstream run
-  // anchored to it (e.g. a follow-up queued run triggered by this very
-  // reply) must still resolve, so it stays in the replies list and is only
-  // excluded from the visible-window selection via `excludeFromVisible`.
-  const rootRunReplyIds = new Set(
-    runs.filter((run): run is CommentRun & { commentId: string } =>
-      run.anchorCommentId === entry.id && run.hasReply && !!run.commentId)
-      .map((run) => run.commentId),
+  const { replyResolutionId, replyFolded, foldedReplies, resolutionReply,
+    threadProjection, canShowLess, threadRows } = projectCommentThread(
+    entry, allNestedReplies, runs, lengthExpanded, threadExpanded, open,
   );
-  // Tombstones are excluded from the projection's visible window on exactly the
-  // same terms as a root-anchored reply: no row, no place in the compact/
-  // expanded window, no hiddenCount — but still resolvable as an anchor target,
-  // so a run anchored to a deleted reply keeps its run-only slot instead of
-  // silently vanishing with the body. `excludeFromVisible` is the projection's
-  // own name for that distinction, so tombstone suppression rides it rather
-  // than filtering the input list (which would break anchor resolution).
-  const hiddenFromThreadWindow = new Set(rootRunReplyIds);
-  for (const reply of allNestedReplies) {
-    if (isDeletedComment(reply)) hiddenFromThreadWindow.add(reply.id);
-  }
-  const threadProjection = projectThreadDisplay(allNestedReplies, nestedRuns, lengthExpanded, hiddenFromThreadWindow);
-  const canShowLess = allNestedReplies.length - hiddenFromThreadWindow.size > 3;
-  const selectedReplyIds = new Set(threadProjection.slots.flatMap((slot) => slot.kind === "comment" ? [slot.comment.id] : []));
-  const threadRows = orderThreadWithRuns(
-    entry,
-    allNestedReplies.filter((reply) => selectedReplyIds.has(reply.id) || rootRunReplyIds.has(reply.id)),
-    [
-      ...runs.filter((run) => run.anchorCommentId === entry.id),
-      ...threadProjection.slots.flatMap((slot) => slot.kind === "run" ? [slot.run] : []),
-    ],
-  );
+  const renderRoot = !virtualRow || virtualRow.kind === "root";
+  const renderControls = !virtualRow || virtualRow.kind === "controls";
+  const renderFooter = !virtualRow || virtualRow.kind === "footer" || (virtualRow.kind === "root" && virtualRow.last);
+  const renderReply = (commentId: string) => !virtualRow || (virtualRow.kind === "reply" && virtualRow.id === commentId);
 
   // Pin the root comment's header to the timeline's scroll parent while the
   // thread is open, so a LONG root comment keeps its author + actions visible
@@ -1264,7 +1214,12 @@ function CommentCardImpl({
     // overflow-clip (not -hidden) clips the rounded corners WITHOUT creating a
     // scroll container, so the sticky collapse affordances below resolve to the
     // timeline's scroll parent instead of this card. See PR #3623.
-    <Card ref={annotation.cardRef} {...annotation.captureProps} className="!py-0 !gap-0 overflow-clip transition-colors duration-700">
+    <Card data-thread-root={entry.id} ref={renderRoot ? annotation.cardRef : undefined} {...(renderRoot ? annotation.captureProps : {})}
+      className={cn("!py-0 !gap-0 overflow-clip transition-colors duration-700", virtualRow && open && (
+        renderRoot ? !virtualRow.last && "!rounded-b-none !border-b-0 !shadow-none" : virtualRow.last
+          ? "!rounded-t-none !border-t-0 !shadow-none" : "!rounded-none !border-y-0 !shadow-none"
+      ))}>
+      {renderRoot && <>
       {annotation.popup}
       {onCollapseResolved && (
         <button
@@ -1581,6 +1536,7 @@ function CommentCardImpl({
         )}
         </div>
 
+        </>}
         {/* Replies + reply input — rendered OUTSIDE root-section so the root
             header's sticky containing block ends with the body. Gated on `open`
             to mirror the body Panel's collapse visibility. */}
@@ -1595,7 +1551,7 @@ function CommentCardImpl({
               thread's own nested replies, AgentRunComment embeds it via
               CommentRow; otherwise (root-level publish target, or no reply
               yet) it renders a run-only summary. */}
-          {replyFolded && runs.filter((run) => run.anchorCommentId === entry.id
+          {replyFolded && runs.filter((run) => renderReply(run.task.id) && run.anchorCommentId === entry.id
             && !(replyFolded && run.hasReply))
             .map((run) => {
               const reply = run.hasReply ? allNestedReplies.find((r) => r.id === run.commentId) : undefined;
@@ -1615,7 +1571,7 @@ function CommentCardImpl({
           {replyFolded ? (
             <>
               {/* reply-mode folded: other replies behind a bar, resolution pinned below */}
-              {foldedReplies.length > 0 && (
+              {renderControls && foldedReplies.length > 0 && (
                 <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
                   <CommentsFoldBar
                     replies={foldedReplies}
@@ -1623,7 +1579,7 @@ function CommentCardImpl({
                   />
                 </div>
               )}
-              {resolutionReply && (
+              {resolutionReply && renderReply(resolutionReply.id) && (
                 <>
                   <div
                     id={`comment-${resolutionReply.id}`}
@@ -1657,7 +1613,7 @@ function CommentCardImpl({
           ) : (
             <>
               {/* reply-mode expanded: a Collapse affordance to fold back */}
-              {replyResolutionId != null && onResolvedExpandChange && (
+              {renderControls && replyResolutionId != null && onResolvedExpandChange && (
                 <button
                   type="button"
                   onClick={() => onResolvedExpandChange(entry.id, false)}
@@ -1677,7 +1633,7 @@ function CommentCardImpl({
                   that pressing this exact button doesn't unmount it out from
                   under its own gesture — see `forceThreadLengthExpanded`'s
                   doc comment on `CommentCardProps`. */}
-              {!lengthExpanded && threadProjection.hiddenCount > 0 && (
+              {renderControls && !lengthExpanded && threadProjection.hiddenCount > 0 && (
                 <button
                   type="button"
                   onClick={() => onThreadLengthExpandChange?.(entry.id, true)}
@@ -1693,6 +1649,7 @@ function CommentCardImpl({
                   published reply attaches a run-only slot after its own
                   visible anchor — never recursively under an unrelated body. */}
               {threadRows.map((row, rowIndex) => {
+                if (!renderReply("run" in row ? row.reply?.id ?? row.run.task.id : row.id)) return null;
                 if ("run" in row) return (
                   <AgentRunComment key={row.run.task.id} run={row.run} entering={enteringRunIds?.has(row.run.task.id)}
                     highlightedId={highlightedCommentId}
@@ -1773,7 +1730,7 @@ function CommentCardImpl({
                   does NOT detect bare focus/selection with no unsaved change
                   yet — that produces no signal issue-detail.tsx can read
                   today (see its rootIdsWithActiveReplyDraft comment). */}
-              {lengthExpanded && canShowLess && !forceThreadExpanded && (
+              {renderFooter && lengthExpanded && canShowLess && !forceThreadExpanded && (
                 <button
                   type="button"
                   onClick={() => onThreadLengthExpandChange?.(entry.id, false)}
@@ -1784,7 +1741,7 @@ function CommentCardImpl({
               )}
 
               {/* Reply input */}
-              <div data-testid="comment-reply-input" className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+              {renderFooter && <div data-testid="comment-reply-input" className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
                 <ReplyInput
                   issueId={issueId}
                   parentId={replyTargetId}
@@ -1799,7 +1756,7 @@ function CommentCardImpl({
                   onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => replyTargetMissing ? Promise.resolve(false) : onReply(replyTargetId, content, attachmentIds, suppressAgentIds, steerTaskIds)}
                   onAccepted={onReplyAccepted}
                 />
-              </div>
+              </div>}
             </>
           )}
           </>

@@ -129,6 +129,22 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(result.current.activeIndex).toBe(-1);
   });
 
+  it("does not reveal an unchanged match after a timeline refresh", async () => {
+    const revealDocument = vi.fn();
+    const documents = [{ id: "first", text: "needle needle" }];
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: 0, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
+    await waitFor(() => expect(result.current.matchCount).toBe(2));
+    revealDocument.mockClear();
+    rerender({ entries: [...documents.map(entry => ({ ...entry })), { id: "new", text: "unrelated" }] });
+    await flushFrames();
+    expect(revealDocument).not.toHaveBeenCalled();
+    act(() => result.current.goNext());
+    expect(revealDocument).toHaveBeenCalledWith("first");
+  });
+
   it("counts off-screen source occurrences, wraps navigation and updates after edits", async () => {
     const revealDocument = vi.fn();
     const documents = [
