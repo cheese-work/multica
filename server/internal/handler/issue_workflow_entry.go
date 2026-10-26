@@ -485,18 +485,35 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 }
 
 // workflowHumans gathers the people a "human by role" step can resolve to:
-// the issue's requester and the workspace owner. Other handlers need neither,
-// so they skip the owner lookup. A workspace with no owner is not an error; a
-// failed lookup is, so the write fails instead of leaving the issue unassigned.
+// the issue's requester and the workspace owner. A requester or member project
+// lead who has left the workspace is absent: the chain moves on, since the
+// stored ids outlive the member row. Other handlers need none of this, so they
+// skip the lookups. A workspace with no owner is not an error; a failed lookup
+// is, so the write fails instead of leaving the issue unassigned.
 func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
 		return issueworkflow.Humans{}, nil
 	}
-	humans := issueworkflow.Humans{Requester: requestedByID}
-	// The owner is the last resort: skip the lookup when the requester or a
-	// member project lead already resolves, so its failure cannot block them.
-	if requestedByID.Valid || (project.LeadType.String == "member" && project.LeadID.Valid) {
-		return humans, nil
+	var humans issueworkflow.Humans
+	if requestedByID.Valid {
+		member, err := h.isWorkspaceMember(ctx, uuidToString(requestedByID), uuidToString(workspaceID))
+		if err != nil {
+			return issueworkflow.Humans{}, fmt.Errorf("look up requester membership: %w", err)
+		}
+		if member {
+			humans.Requester = requestedByID
+			return humans, nil
+		}
+	}
+	if project.LeadType.String == "member" && project.LeadID.Valid {
+		member, err := h.isWorkspaceMember(ctx, uuidToString(project.LeadID), uuidToString(workspaceID))
+		if err != nil {
+			return issueworkflow.Humans{}, fmt.Errorf("look up project lead membership: %w", err)
+		}
+		if member {
+			return humans, nil
+		}
+		humans.LeadNotMember = true
 	}
 	owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, workspaceID)
 	switch {

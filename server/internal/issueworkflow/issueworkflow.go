@@ -546,9 +546,12 @@ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definit
 
 // Humans are the people a human-by-role handler can fall back to, looked up by
 // the caller: the member an agent created the issue for, and the workspace
-// owner. An invalid id means nobody holds that role.
+// owner. An invalid id means nobody holds that role. The caller sets Requester
+// only for a current member, and LeadNotMember when the project's member lead
+// has left the workspace.
 type Humans struct {
 	Requester      pgtype.UUID
+	LeadNotMember  bool
 	WorkspaceOwner pgtype.UUID
 }
 
@@ -579,7 +582,7 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 		switch {
 		case humans.Requester.Valid:
 			return "member", humans.Requester, true
-		case project.LeadType.String == "member" && project.LeadID.Valid:
+		case project.LeadType.String == "member" && project.LeadID.Valid && !humans.LeadNotMember:
 			return "member", project.LeadID, true
 		case humans.WorkspaceOwner.Valid:
 			return "member", humans.WorkspaceOwner, true

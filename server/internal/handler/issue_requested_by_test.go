@@ -30,6 +30,18 @@ func requestedByTestUser(t *testing.T) string {
 	return userID
 }
 
+// formerMemberTestUser is a user whose member row is gone: an id that can
+// still sit in issue.requested_by_id or project.lead_id after removal.
+func formerMemberTestUser(t *testing.T) string {
+	t.Helper()
+	userID := requestedByTestUser(t)
+	if _, err := testPool.Exec(context.Background(),
+		`DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, userID); err != nil {
+		t.Fatal(err)
+	}
+	return userID
+}
+
 // agentCreateIssue posts a create the way a task-token agent run does.
 func agentCreateIssue(t *testing.T, agentID, taskID string, body map[string]any) *testutil.Response {
 	t.Helper()
@@ -112,6 +124,7 @@ func TestBlockedStepHandsToAHumanByRole(t *testing.T) {
 	syncIssueCounter(t)
 	requester := requestedByTestUser(t)
 	lead := requestedByTestUser(t)
+	former := formerMemberTestUser(t)
 	wf := createTestWorkflow(t, "Human by role "+workflowTestSuffix(), "in_progress")
 	setWorkflowHandoff(t, wf.ID, "blocked", map[string]any{
 		"handler": map[string]any{"type": "human_by_role"}, "instructions": "A person decides.",
@@ -128,6 +141,8 @@ func TestBlockedStepHandsToAHumanByRole(t *testing.T) {
 		{"requester first", requester, lead, requester},
 		{"no requester: project lead", "", lead, lead},
 		{"no lead: workspace owner", "", "", testUserID},
+		{"former-member requester: project lead", former, lead, lead},
+		{"former-member requester and lead: workspace owner", former, former, testUserID},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,18 +193,17 @@ func TestHumanLookupFailuresAreNotTreatedAsMissingPeople(t *testing.T) {
 			t.Fatalf("ok = %v, status = %d, want a refused create with 500", ok, w.Code)
 		}
 	})
-	t.Run("known requester needs no owner lookup", func(t *testing.T) {
+	t.Run("requester membership", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
-		humans, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), parseUUID(member))
-		if err != nil || !humans.Requester.Valid {
-			t.Fatalf("humans = %+v, err = %v, want the requester without a fallback lookup", humans, err)
+		if _, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), parseUUID(member)); err == nil {
+			t.Fatal("workflowHumans returned no error for a failed membership lookup")
 		}
 	})
-	t.Run("member project lead needs no owner lookup", func(t *testing.T) {
+	t.Run("member project lead membership", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
 		project := db.Project{LeadType: pgtype.Text{String: "member", Valid: true}, LeadID: parseUUID(member)}
-		if _, err := testHandler.workflowHumans(canceled, step, project, parseUUID(testWorkspaceID), pgtype.UUID{}); err != nil {
-			t.Fatalf("err = %v, want no owner lookup when the lead resolves", err)
+		if _, err := testHandler.workflowHumans(canceled, step, project, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
+			t.Fatal("workflowHumans returned no error for a failed membership lookup")
 		}
 	})
 	t.Run("workspace owner", func(t *testing.T) {

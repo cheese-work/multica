@@ -218,6 +218,7 @@ func TestResolveHumanByRole(t *testing.T) {
 		{"requester wins", memberLead, Humans{Requester: requester, WorkspaceOwner: owner}, requester, true},
 		{"no requester: project lead", memberLead, Humans{WorkspaceOwner: owner}, lead, true},
 		{"no lead: workspace owner", db.Project{}, Humans{WorkspaceOwner: owner}, owner, true},
+		{"lead no longer a member: workspace owner", memberLead, Humans{LeadNotMember: true, WorkspaceOwner: owner}, owner, true},
 		{"agent lead is not human: workspace owner", db.Project{LeadType: pgtype.Text{String: "agent", Valid: true}, LeadID: agentLead}, Humans{WorkspaceOwner: owner}, owner, true},
 		{"nobody to resolve", db.Project{}, Humans{}, pgtype.UUID{}, false},
 	}
