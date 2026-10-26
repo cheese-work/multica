@@ -15,16 +15,17 @@ import (
 )
 
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
-// linked PR pass on headSHA and the issue's current step has a
-// pr.checks_green edge (advance_on_ci_green stands for one to the next status). It reports whether the move started a run for the next
-// step's handler, so the caller does not wake the same owner twice.
+// linked PR pass on headSHA and the issue's current step has an edge that
+// fact satisfies (advance_on_ci_green stands for a pr.checks_green edge to the
+// next status); the first such edge in list order is taken. It reports whether
+// the move started a run for the next step's handler, so the caller does not wake the same owner twice.
 //
 // The write is the one a person's status change makes: the project's workflow
 // decides the handoff, and the run starts through the same trigger predicate.
 // What differs is the actor: the platform, on a step whose handler a workflow
 // admin already validated when saving it, so the invoke gate a request-bound
 // assignee pick passes is not asked again.
-func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID, headSHA string) (ranHandler bool) {
+func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID, headSHA, prState string) (ranHandler bool) {
 	issue, err := h.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -43,16 +44,15 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		}
 		return false
 	}
-	next := ""
-	for _, e := range def.EdgesOf(issue.Status) {
-		if e.Guard == issueworkflow.GuardPRChecksGreen {
-			next = e.To
-			break
-		}
-	}
-	if next == "" {
+	// The caller saw a fresh head with green checks on an open or draft PR;
+	// the first edge that fact satisfies, in list order, is the move.
+	edge, ok := issueworkflow.FirstMatch(def.EdgesOf(issue.Status), issueworkflow.Facts{
+		PRs: []issueworkflow.PRFact{{State: prState, ChecksRollup: "SUCCESS", HeadFresh: true}},
+	})
+	if !ok {
 		return false
 	}
+	next := edge.To
 	claimed, err := h.Queries.ClaimIssueCIAdvance(ctx, db.ClaimIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA})
 	if err != nil || claimed == 0 {
 		if err != nil {
