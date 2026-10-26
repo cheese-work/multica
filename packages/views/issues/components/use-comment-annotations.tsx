@@ -94,6 +94,21 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const anchorKey = annotations.map((a) => a.id).join(",");
   const highlightName = `reply-annotation-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`;
 
+  const findSource = useCallback((sourceCommentId: string) => {
+    const card = cardRef.current;
+    if (!card) return undefined;
+    const local = findAnnotationSource(card, sourceCommentId);
+    if (local) return local;
+    const timeline = card.closest("[data-issue-timeline-scroll]");
+    if (!timeline) return undefined;
+    for (const scope of timeline.querySelectorAll<HTMLElement>("[data-annotation-thread]")) {
+      if (scope.dataset.annotationThread !== draftKey) continue;
+      const source = findAnnotationSource(scope, sourceCommentId);
+      if (source) return source;
+    }
+    return undefined;
+  }, [draftKey]);
+
   const markerFor = (id: string) =>
     cardRef.current?.querySelector<HTMLElement>(`[data-annotation-marker="${id}"]`) ?? null;
   const close = (restoreFocus = false) => {
@@ -177,9 +192,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
           a.start === current.start && a.quote === current.quote);
         const anchor = saved && next.find((a) => a.id === saved.id);
         if (anchor) return { ...current, root: anchor.root, range: anchor.range };
-        const pending = editingRef.current;
-        if (!saved && pending?.sourceCommentId === current.sourceCommentId) {
-          const root = findAnnotationSource(card, pending.sourceCommentId);
+        const pending = saved ?? editingRef.current;
+        if (pending?.sourceCommentId === current.sourceCommentId) {
+          const root = findSource(pending.sourceCommentId);
           const range = root && annotationRange(root, pending, editable);
           return root && range ? { ...current, root, range } : null;
         }
@@ -198,9 +213,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
             (node.matches("[data-comment-content]") || node.querySelector("[data-comment-content]")));
       })) update();
     });
-    observer.observe(card, { childList: true, subtree: true, characterData: true });
+    observer.observe(editingId ? card.closest("[data-issue-timeline-scroll]") ?? card : card,
+      { childList: true, subtree: true, characterData: true });
     return () => { observer.disconnect(); if (canHighlight) CSS.highlights.delete(highlightName); };
-  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId]);
+  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId, findSource]);
 
   useEffect(() => {
     if (!selection || (editor?.existing && !annotations.some((a) => a.id === editingId))) {
@@ -210,7 +226,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
 
   const editAnnotation = (id: string, scrollToSource = false): boolean => {
     const annotation = annotationsRef.current.find((a) => a.id === id);
-    const root = cardRef.current && annotation && findAnnotationSource(cardRef.current, annotation.sourceCommentId);
+    const root = annotation && findSource(annotation.sourceCommentId);
     const range = root && annotation && annotationRange(root, annotation, editable);
     if (!root || !range || !annotation) return false;
     if (scrollToSource) {

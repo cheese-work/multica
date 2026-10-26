@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -48,7 +49,7 @@ const emptyDraftAttachments = vi.hoisted(() => [] as unknown[]);
 // that on its own, so this backs the mock hook with a genuine
 // useSyncExternalStore subscription, matching what real Zustand provides.
 const mockDraftStoreState = vi.hoisted(() => {
-  type Draft = { content: string; attachments: { status: string }[]; updatedAt: number };
+  type Draft = { content: string; attachments: { status: string }[]; updatedAt: number; annotations?: ReplyAnnotation[] };
   let drafts: Record<string, Draft> = {};
   const listeners = new Set<() => void>();
   return {
@@ -513,7 +514,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
       const state = {
         drafts,
         getDraft: () => undefined,
-        getAnnotations: () => emptyDraftAttachments,
+        getAnnotations: (draftKey: string) => drafts[draftKey]?.annotations ?? emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
         setDraft: () => {},
@@ -530,7 +531,7 @@ vi.mock("@multica/core/issues/stores", async () => ({
       getState: () => ({
         drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
-        getAnnotations: () => emptyDraftAttachments,
+        getAnnotations: (draftKey: string) => mockDraftStoreState.getDrafts()[draftKey]?.annotations ?? emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
         setDraft: () => {},
@@ -3527,6 +3528,75 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+    it("opens a saved reply annotation from the virtual footer composer", async () => {
+      const root = { ...mockTimeline[0]!, id: "footer-root", content: "Root annotation source" };
+      const reply = { ...mockTimeline[1]!, id: "footer-reply", parent_id: root.id, content: "Reply annotation source" };
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "", attachments: [], updatedAt: Date.now(), annotations: [{
+          id: "footer-note", sourceCommentId: reply.id, sourceActorName: "Reply author",
+          quote: reply.content, start: 0, prefix: "", suffix: "", note: "Edit this reply note",
+        }],
+      });
+      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
+      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
+      mockApiObj.listTimeline.mockResolvedValue([root, reply]);
+      renderIssueDetail();
+      const footer = await screen.findByTestId("comment-reply-input");
+      expect(footer.closest("[data-annotation-thread]")).toHaveAttribute("data-annotation-thread", `reply:issue-1:${root.id}`);
+      fireEvent.click(within(footer).getByRole("button", { name: "1 annotation" }));
+      const annotations = await screen.findByRole("dialog", { name: "1 annotation" });
+      fireEvent.click(within(annotations).getByRole("button", { name: "Edit annotation 1" }));
+      expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Edit this reply note");
+      expect(scrollIntoViewSpy).toHaveBeenCalled();
+      expect(screen.getAllByTestId("annotation-marker")).toHaveLength(1);
+    });
+
+    it("captures annotation selections in a virtual reply row", async () => {
+      const root = { ...mockTimeline[0]!, id: "annotation-root", content: "Root annotation source" };
+      const reply = { ...mockTimeline[1]!, id: "annotation-reply", parent_id: root.id, content: "Reply annotation source" };
+      mockApiObj.listTimeline.mockResolvedValue([root, reply]);
+      renderIssueDetail();
+      await screen.findByText(reply.content);
+      const source = document.querySelector<HTMLElement>(`[data-comment-content="${reply.id}"]`)!;
+      expect(source.closest("[data-annotation-thread]")).toHaveAttribute("data-annotation-thread", `reply:issue-1:${root.id}`);
+      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
+      Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
+      const range = document.createRange();
+      range.selectNodeContents(source);
+      act(() => {
+        window.getSelection()!.removeAllRanges();
+        window.getSelection()!.addRange(range);
+      });
+      fireEvent.pointerUp(source);
+      expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+    });
+
+    it("mounts only nearby comment rows after a minimap jump into a long thread", async () => {
+      virtualWindow.size = 2;
+      const first = { ...mockTimeline[0]!, id: "minimap-first", content: "Minimap starting thread" };
+      const root = { ...first, id: "minimap-root", content: "Minimap long thread" };
+      const replies = Array.from({ length: 40 }, (_, index) => ({
+        ...mockTimeline[1]!, id: `minimap-reply-${index}`, parent_id: root.id,
+        content: `Minimap reply body ${index}`, resolved_at: null,
+        created_at: new Date(Date.UTC(2026, 0, 16, 0, index)).toISOString(),
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([first, root, ...replies]);
+      renderIssueDetail();
+      await screen.findByText(first.content);
+      const rail = await screen.findByRole("navigation", { name: "Jump to comment thread" });
+      fireEvent.click(within(rail).getByRole("button", { name: /Minimap reply body 30/ }));
+      await waitFor(() => expect(document.getElementById(`comment-${replies[30]!.id}`)).toBeInTheDocument());
+      expect(scrollToIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 32 }));
+      expect(document.querySelectorAll("[data-comment-block]")).toHaveLength(2);
+      expect(document.getElementById(`comment-${root.id}`)).toBeNull();
+      expect(document.getElementById(`comment-${replies[0]!.id}`)).toBeNull();
+      expect(document.getElementById(`comment-${replies[31]!.id}`)).toBeInTheDocument();
+    });
+
     it("virtualizes replies as individual rows when landing inside a long thread", async () => {
       virtualWindow.size = 1;
       const root = { ...mockTimeline[0]!, id: "row-root", content: "Root outside reply viewport" };

@@ -35,6 +35,17 @@ function DescriptionFixture({ issueId = "issue", loaded = true }: { issueId?: st
   </div>;
 }
 
+function ThreadRowFixture({ sourceId, sourceKey = "initial" }: { sourceId?: string; sourceKey?: string }) {
+  const annotation = useCommentAnnotations({
+    draftKey: key, sources: [{ id: "root", name: "Root" }, { id: "reply", name: "Reply" }], enabled: true,
+  });
+  return <div ref={annotation.cardRef} {...annotation.captureProps}>
+    {annotation.popup}
+    {sourceId ? <div key={sourceKey} data-comment-content={sourceId} tabIndex={0}>Selected text</div>
+      : <button onClick={() => annotation.editAnnotation("reply-note", true)}>Edit from footer</button>}
+  </div>;
+}
+
 function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse") {
   const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
   if (input === "mouse") {
@@ -71,6 +82,28 @@ beforeEach(() => {
 });
 
 describe("selection to reply", () => {
+  it("edits a reply annotation from a separate footer row and survives source remounts", async () => {
+    useCommentDraftStore.getState().addAnnotation(key, {
+      id: "reply-note", sourceCommentId: "reply", sourceActorName: "Reply", quote: "Selected text",
+      start: 0, prefix: "", suffix: "", note: "Original reply note",
+    });
+    const rows = (sourceKey: string) => <div data-issue-timeline-scroll>
+      <ThreadRowFixture sourceId="root" />
+      <ThreadRowFixture sourceId="reply" sourceKey={sourceKey} />
+      <ThreadRowFixture />
+    </div>;
+    const { rerender } = renderWithI18n(rows("initial"));
+    expect(await screen.findAllByTestId("annotation-marker")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Original reply note");
+    rerender(rows("remounted"));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Original reply note");
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Updated reply note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Updated reply note");
+    expect(await screen.findAllByTestId("annotation-marker")).toHaveLength(1);
+  });
+
   it.each([false, true])("does not rerender the host when unannotated source text changes (description: %s)", async (description) => {
     const onRender = vi.fn();
     const { container } = renderWithI18n(<Profiler id="host" onRender={onRender}>

@@ -1214,13 +1214,13 @@ function CommentCardImpl({
     // overflow-clip (not -hidden) clips the rounded corners WITHOUT creating a
     // scroll container, so the sticky collapse affordances below resolve to the
     // timeline's scroll parent instead of this card. See PR #3623.
-    <Card data-thread-root={entry.id} ref={renderRoot ? annotation.cardRef : undefined} {...(renderRoot ? annotation.captureProps : {})}
+    <Card data-thread-root={entry.id} ref={annotation.cardRef} {...annotation.captureProps}
       className={cn("!py-0 !gap-0 overflow-clip transition-colors duration-700", virtualRow && open && (
         renderRoot ? !virtualRow.last && "!rounded-b-none !border-b-0 !shadow-none" : virtualRow.last
           ? "!rounded-t-none !border-t-0 !shadow-none" : "!rounded-none !border-y-0 !shadow-none"
       ))}>
-      {renderRoot && <>
       {annotation.popup}
+      {renderRoot && <>
       {onCollapseResolved && (
         <button
           type="button"
