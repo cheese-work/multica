@@ -80,6 +80,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"daemon_token":                       workspaceDelete,
 	"decision_answer":                    workspaceDeleteWorker,
 	"decision_class_change":              workspaceDeleteWorker,
+	"decision_expiry_digest":             workspaceDelete, // workspace_id FK ON DELETE CASCADE removes the day digests with the workspace.
+	"decision_expiry_digest_request":     workspaceDelete, // cascades from its digest and from decision_request (worker orphan cleanup).
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
