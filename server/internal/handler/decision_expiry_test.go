@@ -130,6 +130,7 @@ func expireDecisionFixture(test *testing.T, fixture askedRecordFixture) {
 }
 
 func TestDecisionExpiryDigestGroupingAndNextDay(test *testing.T) {
+	test.Setenv("MULTICA_APP_URL", "https://multica.test")
 	newFixture := func() askedRecordFixture {
 		fixture := newAskedRecordFixture(test)
 		dbfx.Exec(test, `UPDATE agent SET name = name || '-' || id::text WHERE id = $1`, fixture.agentID)
