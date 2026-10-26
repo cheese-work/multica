@@ -22,6 +22,7 @@ export {
   workflowHandoffPreviewOptions,
   handoffStepCount,
 } from "./queries";
+export { workflowEdges, type WorkflowGraphEdge } from "./graph";
 export { useIssueWorkflows, useProjectWorkflow, useProjectWithWorkflow } from "./hooks";
 export {
   useCreateIssueWorkflow,

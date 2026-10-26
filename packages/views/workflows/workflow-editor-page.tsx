@@ -76,6 +76,7 @@ import { useT } from "../i18n";
 import { BriefPreviewDialog, HandoffFields, savedHandoff } from "./handoff-form";
 import { stepHandlerActor, useStepHandlerLabel } from "./step-handler";
 import { WORKFLOW_TEMPLATES, type WorkflowTemplateId } from "./templates";
+import { WorkflowGraph } from "./workflow-graph";
 import { WorkflowMappingDialog } from "./workflow-mapping-dialog";
 
 /**
@@ -655,6 +656,11 @@ export function WorkflowEditorPage({
           </div>
         )}
       </div>
+
+      <WorkflowGraph
+        workflow={{ steps: columns.flatMap((c) => ("status_key" in c ? [{ status_key: c.status_key, ...(draft.handoffs[c.id] ?? NO_HANDOFF) }] : [])) }}
+        project={null}
+      />
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
         <div className="min-w-0">

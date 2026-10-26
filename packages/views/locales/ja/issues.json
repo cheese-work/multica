@@ -1656,7 +1656,8 @@
       "override_follow_project": "プロジェクトのワークフローに従う",
       "override_error": "ワークフローを変更できませんでした",
       "no_workflow": "ワークフローなし",
-      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う"
+      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
+      "flowchart": "フローチャート"
     },
     "list_separator": "、",
     "handoff": {
@@ -1703,7 +1704,10 @@
       "title": "ワークフロー「{{workflow}}」",
       "scope_own": "このワークフローを使用しているのはこのプロジェクトだけです。",
       "no_handoff_here": "引き継ぎなし",
-      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。"
+      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。",
+      "graph_label": "ワークフロー図",
+      "exits_label": "ワークフローの出口",
+      "exit_item": "{{guard}} のとき {{from}} から {{to}} へ"
     },
     "templates": {
       "delivery": {

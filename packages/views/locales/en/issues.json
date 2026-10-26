@@ -1727,7 +1727,8 @@
       "override_follow_project": "Follow the project’s workflow",
       "override_error": "Couldn’t change the workflow",
       "no_workflow": "No workflow",
-      "card_title": "{{workflow}} · from {{project}}"
+      "card_title": "{{workflow}} · from {{project}}",
+      "flowchart": "Flowchart"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1775,7 +1776,10 @@
       "scope_own": "Only this project uses this workflow.",
       "no_handoff_here": "No handoff",
       "scope_shared_one": "{{count}} project uses this workflow. Its handoffs apply to every project using it.",
-      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them."
+      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them.",
+      "graph_label": "Workflow graph",
+      "exits_label": "Workflow exits",
+      "exit_item": "{{from}} to {{to}} when {{guard}}"
     },
     "templates": {
       "delivery": {

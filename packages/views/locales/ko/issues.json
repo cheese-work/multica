@@ -1656,7 +1656,8 @@
       "override_follow_project": "프로젝트 워크플로 따르기",
       "override_error": "워크플로를 변경할 수 없습니다",
       "no_workflow": "워크플로 없음",
-      "card_title": "“{{workflow}}” · “{{project}}” 기준"
+      "card_title": "“{{workflow}}” · “{{project}}” 기준",
+      "flowchart": "플로차트"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1703,7 +1704,10 @@
       "title": "“{{workflow}}” 워크플로",
       "scope_own": "이 워크플로는 이 프로젝트만 사용합니다.",
       "no_handoff_here": "인계 없음",
-      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다."
+      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다.",
+      "graph_label": "워크플로 그래프",
+      "exits_label": "워크플로 출구",
+      "exit_item": "{{guard}} 일 때 {{from}}에서 {{to}}로"
     },
     "templates": {
       "delivery": {

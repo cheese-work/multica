@@ -1656,7 +1656,8 @@
       "override_follow_project": "跟随项目的工作流",
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
-      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」"
+      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
+      "flowchart": "流程图"
     },
     "list_separator": "、",
     "handoff": {
@@ -1703,7 +1704,10 @@
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有这个项目使用这个工作流。",
       "no_handoff_here": "不交接",
-      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。"
+      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。",
+      "graph_label": "工作流图",
+      "exits_label": "工作流出口",
+      "exit_item": "{{guard}} 时，从 {{from}} 到 {{to}}"
     },
     "templates": {
       "delivery": {

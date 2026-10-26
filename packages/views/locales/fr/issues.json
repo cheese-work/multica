@@ -1727,7 +1727,8 @@
       "override_follow_project": "Suivre le workflow du projet",
       "override_error": "Impossible de modifier le workflow",
       "no_workflow": "Aucun workflow",
-      "card_title": "{{workflow}} · selon {{project}}"
+      "card_title": "{{workflow}} · selon {{project}}",
+      "flowchart": "Organigramme"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1775,7 +1776,10 @@
       "scope_own": "Seul ce projet utilise ce workflow.",
       "no_handoff_here": "Pas de relais",
       "scope_shared_one": "{{count}} projet utilise ce workflow. Ses transferts s’appliquent à chaque projet qui l’utilise.",
-      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous."
+      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous.",
+      "graph_label": "Graphe du workflow",
+      "exits_label": "Sorties du workflow",
+      "exit_item": "De {{from}} vers {{to}} quand {{guard}}"
     },
     "templates": {
       "delivery": {
