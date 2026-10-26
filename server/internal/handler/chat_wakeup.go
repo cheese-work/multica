@@ -78,6 +78,9 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	case (req.AfterSeconds > 0) == (req.At != ""):
 		writeError(w, http.StatusBadRequest, "exactly one of after_seconds or at is required")
 		return
+	case req.AfterSeconds > int64(service.MaxChatWakeupDelay/time.Second):
+		writeError(w, http.StatusBadRequest, service.ErrChatWakeupTooFar.Error())
+		return
 	case req.At != "":
 		parsed, err := time.Parse(time.RFC3339, req.At)
 		if err != nil {
