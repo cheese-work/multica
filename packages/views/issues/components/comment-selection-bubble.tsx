@@ -34,7 +34,8 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
       // vertically: doing so piles unrelated annotations at the viewport edge.
       computePosition(anchor, element, {
         strategy: "fixed",
-        placement: marker ? "right-start" : "top",
+        // Touch browsers (iOS) put their own selection menu above the selection.
+        placement: marker ? "right-start" : window.matchMedia?.("(pointer: coarse)").matches ? "bottom" : "top",
         middleware: markerRanges ? [
           offset(({ rects }) => {
             const sorted = markerRanges.map((item) => ({ item, top: item.getBoundingClientRect().top }))

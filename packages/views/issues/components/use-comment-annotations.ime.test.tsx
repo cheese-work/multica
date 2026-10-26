@@ -1,0 +1,90 @@
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { renderWithI18n } from "../../test/i18n";
+import { useCommentAnnotations } from "./use-comment-annotations";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+
+const key = "reply:issue:root" as const;
+
+const hostRenders = vi.fn();
+
+function Fixture() {
+  hostRenders();
+  const annotation = useCommentAnnotations({ draftKey: key, sources: [{ id: "root", name: "agent" }], enabled: true });
+  return <div ref={annotation.cardRef} {...annotation.captureProps}>
+    {annotation.popup}
+    <div data-comment-content="root" tabIndex={0}>Selected text</div>
+  </div>;
+}
+
+function selectText(container: HTMLElement) {
+  const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+  fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
+  const range = document.createRange();
+  range.selectNodeContents(source);
+  act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+  fireEvent.pointerUp(source);
+}
+
+function setPointer(coarse: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({ matches: query.includes("coarse") ? coarse : !coarse, media: query }),
+  });
+}
+
+beforeEach(() => {
+  useCommentDraftStore.setState({ drafts: {} });
+  Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+  Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-reply-annotation-overlay") ? new DOMRect(0, 0, 100, 30) : new DOMRect(10, 10, 600, 600);
+  });
+  Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 300, 120, 20));
+  Range.prototype.getClientRects = vi.fn(() => [] as unknown as DOMRectList);
+});
+afterEach(() => { vi.restoreAllMocks(); });
+
+describe("annotation note on iOS", () => {
+  it("types a Vietnamese Telex sentence without rerendering the host per keystroke", async () => {
+    setPointer(false);
+    hostRenders.mockClear();
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    const input = await screen.findByRole("textbox", { name: "Comment" });
+    const count = hostRenders.mock.calls.length;
+    // Telex: each keystroke replaces the composed run, as iOS reports it.
+    fireEvent.compositionStart(input);
+    for (const text of ["T", "Ti", "Tiê", "Tiế", "Tiếng", "Tiếng V", "Tiếng Vi", "Tiếng Việ", "Tiếng Việt"]) {
+      fireEvent.change(input, { target: { value: text } });
+    }
+    fireEvent.compositionEnd(input);
+    expect(hostRenders.mock.calls.length).toBe(count);
+    expect(input).toHaveValue("Tiếng Việt");
+    fireEvent.click(screen.getByRole("button", { name: "Add annotation" }));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Tiếng Việt"));
+  });
+
+  it("places the popup below the selection on a touch device so the system menu above it cannot cover it", async () => {
+    setPointer(true);
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    const add = await screen.findByRole("button", { name: "Add to reply" });
+    const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
+    await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
+    expect(parseFloat(overlay.style.top)).toBeGreaterThanOrEqual(320);
+  });
+
+  it("keeps the popup above the selection with a mouse", async () => {
+    setPointer(false);
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    const add = await screen.findByRole("button", { name: "Add to reply" });
+    const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
+    await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
+    expect(parseFloat(overlay.style.top)).toBeLessThan(300);
+  });
+});
