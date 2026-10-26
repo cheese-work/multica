@@ -2,7 +2,7 @@
 
 Plan only. No code ships until a different-lab reviewer returns PASS (CHE-1442 acceptance 1).
 
-Hindsight (`multica-org`): reflect: unavailable. Calls at 2026-10-26 11:48 ICT (two) and 12:27 ICT (one) returned `503 No available accounts`. No memory is cited.
+Hindsight (`multica-org`): reflect: unavailable. Calls at 2026-10-26 11:48 ICT (two), 12:27 ICT (one) and 12:39 ICT (one) returned `503 No available accounts`. No memory is cited.
 
 ## Problem
 
@@ -49,7 +49,7 @@ sequenceDiagram
         T->>D: ClaimNextTaskSupplement
         D-->>T: ack delivered
         Note over T: delivered, excluded from reconcile
-    else any guard fails
+    else any guard fails (includes no capability row)
         R->>R: enqueue successor (existing path)
     end
     T-->>X: run ends (completed, failed or cancelled)
@@ -72,12 +72,35 @@ sequenceDiagram
 All must hold. Any miss falls through to the existing path, so the change can only remove a successor run.
 
 - Trigger routing already chose agent A. Who is woken, and by which mention, does not change.
-- A has a `running` task T on this issue with a `task_supplement_capability` row (old daemons and unsupported providers have none).
+- A has a `running` task T on this issue with a `task_supplement_capability` row (old daemons and unsupported providers have none; measured in *Capability coverage* below).
 - T has the same head SHA and the same squad role (`is_leader_task`, `squad_id`) as the trigger, as in `MergeCommentIntoQueuedIssueTask`.
 - T is not a wakeup task (`context->>'wakeup_id' IS NULL`).
 - The bind locks T's row, so a terminal transition that wins the race binds nothing.
 
 Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enqueue.
+
+### Capability coverage (measured 2026-10-26 12:36 ICT)
+
+**Code.** The capability row is written in one place: `StartAgentTaskWithSupplement` (`queries/supplement.sql:1-30`), when a task moves from `dispatched` to `running`. It writes `task-supplement-v1` only when all of these hold:
+
+- The daemon advertised `task-supplement-v1` for this task (`daemon/daemon.go:8505-8510`). Daemon builds before `93ae552ba` (MUL-7565, 2026-09-23) never advertise it.
+- `agent.SupportsTaskSupplement(provider, version)` (`pkg/agent/version.go:131-159`): `codex` >= 0.100.0, `claude` >= 2.1.110, `grok` >= 1.0.14, `kiro` >= 2.33.0, `cursor` >= 2026.10.14. Every other provider returns false.
+- `cursor` only: not Windows, not a local directory or local worktree, hooks installable (`daemon/daemon.go:291-303`).
+- The task has an issue, and the server's provider list matches (`provider IN ('codex','claude','grok','cursor','kiro')`).
+
+**Live data.** Source: `multica runtime list` and `multica agent tasks <agent> --limit 200` (field `supplement_capability`) for all 24 active agents. Daemon builds in use: `46346f79` (MBP, C00, contains `93ae552ba`) and `0.7.0-20261025-2356` (X99, built 2026-10-25).
+
+| Group | Runtimes | Issue runs started since 2026-10-19 without a capability row |
+| --- | --- | --- |
+| `claude` 2.1.295-2.1.308 and `codex` 0.155.1-0.162.1 on X99, C00, MBP (21 agents) | 6 | 0 |
+| `hermes` (`c00-hermes-devops`) | Hermes (congvc-c00) | 178 of 178 |
+| `antigravity` (`x99-agy-gemini`) | Antigravity (congvc-X99); Antigravity (congvc-c00) has no active agent | 83 of 83; 1 running at 12:36 ICT |
+| `opencode` (`x99-opencode-gpt-6.1-sol`) | Opencode (congvc-X99) | 0 of 0 (3 older runs, all without) |
+| `cursor` 2026.01.23, `grok` 0.2.118, `openclaw` (MBP) | 3 | No active agent. `cursor` and `grok` are below the minimum version, `openclaw` is unsupported. |
+
+Older runs without a row on `claude` and `codex` agents (for example `mbp-codex-luna`, 141 of 151 since 2026-09-05) predate the daemon upgrade. None occurred since 2026-10-19.
+
+**Gap.** It is real and named: `c00-hermes-devops`, `x99-agy-gemini` and `x99-opencode-gpt-6.1-sol`, plus any future agent on `cursor` < 2026.10.14, `grok` < 1.0.14, `openclaw`, or an older daemon. For these agents a comment during a `running` task still gets today's single successor run. No comment is lost on that path (the successor owns it), but the CHE-1442 outcome "adds no new run" is not met for them. Open question 4 asks Cheese to choose the scope.
 
 ### Changes
 
@@ -90,7 +113,7 @@ Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enque
 3. `foldCommentIntoRunningTurn` in `handler/comment.go`, wired as above. Notifies the daemon with `NotifyTaskSupplementAvailable`.
 4. `ListReconcilableCommentsForIssueSince`:
    - The supplement exclusion becomes `mode='explicit' OR status='delivered'`. An undelivered auto supplement is replayable.
-   - The explicit-cancel acknowledgement also matches a comment bound to the cancelled run by a supplement, not only by `trigger_comment_id` or `coalesced_comment_ids`.
+   - The explicit-cancel acknowledgement also matches a comment bound to the cancelled run by a supplement, not only by `trigger_comment_id` or `coalesced_comment_ids`. New argument `ack_author_only`, true in the release path: the acknowledgement then also requires `c.author_id = cancelled.cancelled_by_id` (see *Cancellation sources*).
    - New argument `planned_only`. When true, only `c.id = ANY(planned_comment_ids)` qualifies. The thread and `created_at > since` window is off.
 5. Release. Extract the per-comment replay body of `reconcileCommentsOnCompletion` into `replayCommentForAgent(...) error`. `reconcileCommentsOnCompletion` is replaced by `releaseTaskInputs(ctx, taskID) error`:
    - Loads the task. Builds the run's **undelivered inputs**: `coalesced_comment_ids` plus the trigger comment, minus `delivered_comment_ids`, plus every auto supplement of the run that is not `delivered`.
@@ -153,19 +176,28 @@ Each path below ends either in a run that owns the comment, in an explicit decis
 | Database down for a long time | Pending rows wait. Processing resumes with the database. |
 | Input delivered to the run (`delivered_comment_ids` or supplement `delivered`), then the run fails | The run received the comment, same as its own trigger comment today. Retry of the failed run belongs to CHE-1126. |
 | Runs that end after the migration but on an old application build | Pending row from the trigger. The old build also runs today's completion reconcile. The new build's sweeper replays again: the pending-task fold or the delivered set absorbs it, or one extra follow-up runs (open question 1). |
+| Run T hangs with no output | Daemon alive: the idle watchdog (`DefaultAgentIdleWatchdog`, `daemon/config.go`) force-stops it. Daemon dead: `FailStaleTasks` (`queries/agent.sql:1276`, `sweepStaleTasks` in `cmd/server/runtime_sweeper.go:593`) fails it after the reconnect grace. Either way the trigger opens the row. A run that keeps emitting events is alive and can still claim the supplement. |
+| Bind succeeds, daemon notify (`NotifyTaskSupplementAvailable`) is lost | Supplement stays `pending` until the daemon claims it or T ends. If T ends first, migration 538 sets `failed turn_ended` and the release replays it. |
+| Daemon claimed the supplement (`delivering`), then crashed | T ends through the offline-runtime path. Migration 538 sets `failed turn_ended`. The release replays it. A duplicate delivery is possible, a loss is not. |
+| Bind loses the race with a terminal transition | The bind locks T and binds nothing. The comment takes the existing enqueue path. |
+| T has no capability row (*Capability coverage*) | Existing successor run owns the comment. No loss. Outcome gap: open question 4. |
+| Explicit cancel by Y, input written by X | Replayed (*Cancellation sources*). |
+| Explicit cancel by Y, input written by Y | Acknowledged: Y withdrew Y's own input. |
 | Runs that ended before the migration | No row. They keep today's behavior (`CompleteTask` reconcile already ran, failed and cancelled runs had none). Not backfilled. |
 
 ### Cancellation sources
 
-The existing reconcile already splits cancels by `cancelled_by_type` (`ListReconcilableCommentsForIssueSince`, explicit-cancel clause). The release reuses that predicate without change in meaning.
+The existing reconcile already splits cancels by `cancelled_by_type` (`ListReconcilableCommentsForIssueSince`, explicit-cancel clause). The release reuses that predicate and narrows the explicit-cancel acknowledgement to inputs written by the canceller (`ack_author_only`).
+
+Why narrow it: with an auto bind, a comment by author X sits on T as an input. If member Y cancels T and the release acknowledges X's comment, nothing ever acts on it. Today X's comment has its own successor run, which Y's cancel of T does not touch. Without the narrowing the plan would add a loss path.
 
 | Cancel source | `cancelled_by_type` | Undelivered inputs |
 | --- | --- | --- |
-| A member or an agent cancels this run (`CancelAgentTaskByUser`) | `member` or `agent` | Acknowledged. No replay. |
+| A member or an agent cancels this run (`CancelAgentTaskByUser`) | `member` or `agent` | An input written by the canceller is acknowledged, no replay. An input written by anyone else is replayed through normal triggers, as today's successor run would have run it. |
 | Server-initiated: stale plan, claim failure, offline runtime, archived agent (`CancelAgentTask`, `CancelAgentTaskWithReason`) | `system` | Replayed through normal triggers. Routing, permissions and agent state are re-checked, so an archived agent yields a blocked outcome, not a run. |
 | Issue deletion (`CancelAgentTasksByIssue`) | `system` | Nothing replays: the issue is gone, so the replay finds no issue and the obligation is released. |
 
-There is no member-level "cancel all" path. A member stops runs one task at a time, which is the explicit row. So replay never recreates work right after an intentional stop.
+There is no member-level "cancel all" path. A member stops runs one task at a time, which is the explicit row. Replay after an explicit cancel recreates work only for another author's input, which today's successor run would also have run. The canceller's own inputs are never replayed.
 
 ### What does not change
 
@@ -182,7 +214,8 @@ There is no member-level "cancel all" path. A member stops runs one task at a ti
 | Completed, not delivered | supplement `failed turn_ended` | Full reconcile replays: one follow-up run. |
 | Failed | auto supplement undelivered, or planned input from `dispatched` | Release replays: one follow-up run. |
 | Cancelled by `system` | same | Release replays: one follow-up run. |
-| Cancelled by a member or an agent | same | Acknowledged: no run. |
+| Cancelled by a member or an agent | same, written by the canceller | Acknowledged: no run. |
+| Cancelled by a member or an agent | same, written by someone else | Release replays: one follow-up run. |
 | Any terminal path without handler code | pending obligation row (trigger) | Sweeper replays once and marks released. |
 | Any terminal, release returned an error | row stays pending | Retried with back-off until a release succeeds. No cutoff. |
 | Provider rejects the input | supplement `failed` (ack) | Release replays when T ends. |
@@ -195,11 +228,11 @@ Each runs against the handler test database, like `comment_issue_fold_test.go`.
 
 1. Comment for A while A's task is `running` with capability: no new `queued` row, one `task_supplement` with `mode='auto'`, outcome `coalesced_active_run`. Red today: a second `queued` row appears.
 2. Dispatched assignment run starts within the same second, then the dispatch comment arrives: one run total after the start.
-3. Guard misses each keep the old behavior: no capability row, different head, different squad role, wakeup task.
+3. Guard misses each keep the old behavior: no capability row, different head, different squad role, wakeup task. The no-capability case asserts the current scope. It changes if Cheese picks path (a) in open question 4.
 4. Running run fails with the auto supplement `pending`: one follow-up run for the comment. Red today: none.
 5. **Dispatched run fails** with a comment registered as a planned input: one follow-up run. Red today: none.
 6. **System cancel** of a `running` run (auto supplement) and of a `dispatched` run (planned input): one follow-up run each.
-7. **Explicit cancel** by a member and by an agent, for both input kinds: no follow-up run. Separate test from 6.
+7. **Explicit cancel** by a member and by an agent, for both input kinds. An input written by the canceller: no follow-up run. An input written by another member or agent: one follow-up run. Separate test from 6.
 8. Run completes with the supplement `delivered`: no follow-up.
 9. Sweeper releases a failed run's leftover once and marks the row released. A second tick adds nothing. An expired lease (crash between replay and mark) leaves one pending run after the retry.
 10. A failed run does not replay a member comment that was neither planned nor supplemented.
@@ -216,9 +249,13 @@ Each runs against the handler test database, like `comment_issue_fold_test.go`.
 1. **Replay window.** A repeat after a crash between replay and the released mark can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
 2. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row.
 3. **Cutoff, for Cheese.** The plan has no cutoff: a pending obligation is retried until it succeeds, as acceptance 3 requires. Cost: a permanently failing row is retried every 15 minutes and logs at `Error` from attempt 10. If Cheese wants a cutoff (for example, stop after N days and post a blocker comment on the issue), that is an acceptance change and needs Cheese's decision. The plan does not rely on a cutoff.
+4. **Capability scope, for Cheese.** Three active agents run without the supplement capability: `c00-hermes-devops` (hermes, 178 issue runs in 7 days), `x99-agy-gemini` (antigravity, 83) and `x99-opencode-gpt-6.1-sol` (opencode, 0). For them a comment during a running task still adds one successor run. This is an acceptance-scope choice. Only Cheese can decide it. The plan does not treat it as decided.
+   - **(a) Supported in-run path for these providers.** Each provider needs its own verified mid-turn input hook and a `SupportsTaskSupplement` entry with a minimum version, as Codex (`turn/steer`), Claude (`PreToolUse` hook), Grok, Kiro and Cursor have today. `pkg/agent/hermes.go`, `antigravity.go` and `opencode*.go` contain no supplement, steer or interject handling today. OpenCode would need its session API checked for mid-turn input. Cost: about 1-2 days per provider for adapter, version probe and live verification, in separate issues. CHE-1442 stays open until all three land.
+   - **(b) Explicit scope limit.** The three named agents, and any agent below the provider minimums above, keep today's successor run. Cost: one extra run per mid-run comment for those agents. No comment is lost, because the successor owns it. A follow-up issue per provider can add (a) later.
+   - **Recommendation: (b)** for this plan, with one follow-up issue per provider. The fix covers 21 of 24 active agents now, and the remaining path loses no comment.
 
 The `task_supplement` primary key is `(comment_id, task_id)` (migration 549), so one comment can fold into several agents' runs. No index change is needed.
 
 ## Size
 
-About 7h: migrations, trigger and queries 1.5h, bind and wiring 1h, release, obligation claim, sweeper and cancel rules 2h, error-returning lookups in the replay path 1h, fault-injection wrapper and tests 1.5h. Over the 4h guide. Split for code: layer 1 obligation table, trigger, release and sweeper (tests 4-10, 13-17); layer 2 auto-supplement bind (tests 1-3, 11-12).
+About 7h: migrations, trigger and queries 1.5h, bind and wiring 1h, release, obligation claim, sweeper and cancel rules 2h, error-returning lookups in the replay path 1h, fault-injection wrapper and tests 1.5h. Over the 4h guide. Split for code: layer 1 obligation table, trigger, release and sweeper (tests 4-10, 13-17); layer 2 auto-supplement bind (tests 1-3, 11-12). Path (a) in open question 4 is not in this size.
