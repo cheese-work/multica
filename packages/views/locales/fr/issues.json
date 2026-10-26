@@ -1797,7 +1797,7 @@
           "bad_guard": "Une sortie de {{from}} a une condition inconnue.",
           "bad_timeout": "Une sortie de {{from}} exige un délai entre 1m et 720h, par ex. 72h.",
           "bad_on_timeout": "Une sortie de {{from}} exige une étape valide à l’expiration.",
-          "no_exit": "{{from}} transmet le travail mais n’a aucune sortie."
+          "ci_green_source": "{{from}} ne peut pas avancer quand la CI est verte."
         }
       }
     },

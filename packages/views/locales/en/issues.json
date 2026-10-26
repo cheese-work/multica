@@ -1797,7 +1797,7 @@
           "bad_guard": "An exit of {{from}} has an unknown guard.",
           "bad_timeout": "An exit of {{from}} needs a timeout between 1m and 720h, e.g. 72h.",
           "bad_on_timeout": "An exit of {{from}} needs a valid On timeout step.",
-          "no_exit": "{{from}} hands off but has no exit."
+          "ci_green_source": "{{from}} cannot advance on CI green."
         }
       }
     },

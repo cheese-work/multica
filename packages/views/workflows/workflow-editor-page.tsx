@@ -557,8 +557,8 @@ export function WorkflowEditorPage({
     setSelected(key);
   };
   const removeColumn = (column: DraftColumn) => {
-    // Exits into the removed column go with it, and a timeout that fell back to
-    // it is left for the form to flag.
+    // Exits into the removed column go with it, legacy next/back included, and
+    // a timeout that fell back to it is left for the form to flag.
     const key = columnKey(column);
     setDraft((d) => ({
       ...d,
@@ -566,9 +566,12 @@ export function WorkflowEditorPage({
       handoffs: Object.fromEntries(
         Object.entries(d.handoffs).map(([id, h]) => [
           id,
-          h.edges
-            ? { ...h, edges: h.edges.filter((e) => e.to !== key).map((e) => (e.on_timeout === key ? { ...e, on_timeout: undefined } : e)) }
-            : h,
+          {
+            ...h,
+            next_status_key: h.next_status_key === key ? undefined : h.next_status_key,
+            back_status_key: h.back_status_key === key ? undefined : h.back_status_key,
+            ...(h.edges && { edges: h.edges.filter((e) => e.to !== key).map((e) => (e.on_timeout === key ? { ...e, on_timeout: undefined } : e)) }),
+          },
         ]),
       ),
     }));

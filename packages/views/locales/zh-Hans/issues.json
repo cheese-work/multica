@@ -1725,7 +1725,7 @@
           "bad_guard": "{{from}} 的某个出口含有未知条件。",
           "bad_timeout": "{{from}} 的某个出口需要 1m 到 720h 之间的超时，例如 72h。",
           "bad_on_timeout": "{{from}} 的某个出口需要有效的超时后步骤。",
-          "no_exit": "{{from}} 会交接但没有出口。"
+          "ci_green_source": "{{from}} 不能在 CI 通过时推进。"
         }
       }
     },

@@ -27,6 +27,7 @@ export {
   EDITABLE_GUARDS,
   MAX_EDGES_PER_STEP,
   addStepEdge,
+  canAdvanceOnCIGreen,
   guardNeedsTimeout,
   removeStepEdge,
   stepEdges,

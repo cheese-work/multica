@@ -83,6 +83,25 @@ describe("WorkflowEdgeEditor", () => {
     );
   });
 
+  it("offers pr.checks_green only from a status CI green may leave", async () => {
+    const user = userEvent.setup();
+    const open = async (stepKey: string, from: string) => {
+      renderEditor({
+        stepKey,
+        steps: steps.map((s) =>
+          s.status_key === from ? { ...s, edges: [{ to: "done", guard: "agent_done" }] } : s,
+        ),
+      });
+      await user.click(screen.getByRole("combobox", { name: "Guard" }));
+      return screen.findByRole("option", { name: "pr.merged" });
+    };
+    await open("in_progress", "in_progress");
+    expect(screen.queryByRole("option", { name: "pr.checks_green" })).not.toBeNull();
+    cleanup();
+    await open("blocked", "blocked");
+    expect(screen.queryByRole("option", { name: "pr.checks_green" })).toBeNull();
+  });
+
   it("edits the timeout of a PR guard", () => {
     const onChange = renderEditor({
       steps: steps.map((s) =>

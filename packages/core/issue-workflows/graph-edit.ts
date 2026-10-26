@@ -45,7 +45,13 @@ const UNIT_MS: Record<string, number> = {
   m: 60_000,
   h: 3_600_000,
 };
-const TERMINAL = new Set(["done", "cancelled"]);
+/** Statuses CI green may not move an issue out of (`CanAdvanceOnCIGreen`). */
+const NO_CI_ADVANCE = new Set(["backlog", "blocked", "done", "cancelled"]);
+
+/** Whether a `pr.checks_green` exit is allowed from this status. */
+export function canAdvanceOnCIGreen(statusKey: string): boolean {
+  return !NO_CI_ADVANCE.has(statusKey);
+}
 
 export type GraphIssueCode =
   | "too_many_edges"
@@ -53,7 +59,7 @@ export type GraphIssueCode =
   | "bad_guard"
   | "bad_timeout"
   | "bad_on_timeout"
-  | "no_exit";
+  | "ci_green_source";
 
 export interface GraphIssue {
   code: GraphIssueCode;
@@ -105,6 +111,13 @@ export function stepEdges(
   if (!step) return [];
   if (step.edges?.length) return step.edges;
   const next = workflowNextStatus({ steps }, from);
+  const ci = {
+    guard: "pr.checks_green",
+    timeout: DEFAULT_TIMEOUT,
+    ...(steps.some((s) => s.status_key === "blocked")
+      ? { on_timeout: "blocked" }
+      : {}),
+  };
   return [
     ...(next && step.next_status_key
       ? [{ to: next, guard: "agent_done" }]
@@ -113,7 +126,7 @@ export function stepEdges(
       ? [{ to: step.back_status_key, guard: "agent_verdict(CHANGES)" }]
       : []),
     ...(next && step.advance_on_ci_green
-      ? [{ to: next, guard: "pr.checks_green" }]
+      ? [{ to: next, ...ci }]
       : []),
   ];
 }
@@ -126,6 +139,9 @@ export function validateWorkflowGraph(
   for (const step of steps) {
     const from = step.status_key;
     const edges = stepEdges(steps, from);
+    // Legacy flags carry no timeout and the server does not ask for one; only
+    // explicit edges are held to the timeout rules.
+    const explicit = !!step.edges?.length;
     if (edges.length > MAX_EDGES_PER_STEP) {
       issues.push({ code: "too_many_edges", from });
     }
@@ -133,7 +149,10 @@ export function validateWorkflowGraph(
       const flag = (code: GraphIssueCode) => issues.push({ code, from, index });
       if (e.to === from || !listed.has(e.to)) return void flag("missing_target");
       if (!isValidGuard(e.guard)) return void flag("bad_guard");
-      if (!guardNeedsTimeout(e.guard)) return;
+      if (e.guard.trim() === "pr.checks_green" && !canAdvanceOnCIGreen(from)) {
+        return void flag("ci_green_source");
+      }
+      if (!explicit || !guardNeedsTimeout(e.guard)) return;
       const ms = durationMs(e.timeout ?? "");
       if (ms === null || ms < MIN_TIMEOUT_MS || ms > MAX_TIMEOUT_MS) {
         return void flag("bad_timeout");
@@ -147,15 +166,6 @@ export function validateWorkflowGraph(
         flag("bad_on_timeout");
       }
     });
-    // The server does not require an exit. A step with a handler and none
-    // strands the issue after the handler is done, so the editor holds the save.
-    if (
-      step.handler.type !== "none" &&
-      !TERMINAL.has(from) &&
-      edges.length === 0
-    ) {
-      issues.push({ code: "no_exit", from });
-    }
   }
   return issues;
 }

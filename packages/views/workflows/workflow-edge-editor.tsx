@@ -5,6 +5,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import {
   EDITABLE_GUARDS,
   addStepEdge,
+  canAdvanceOnCIGreen,
   guardNeedsTimeout,
   removeStepEdge,
   stepEdges,
@@ -68,9 +69,13 @@ export function WorkflowEdgeEditor({
       )}
       {edges.map((e, i) => {
         // An edge the picker cannot offer (issue_status) stays selectable as-is.
-        const guards = EDITABLE_GUARDS.includes(e.guard as never)
-          ? [...EDITABLE_GUARDS]
-          : [...EDITABLE_GUARDS, e.guard];
+        // CI green cannot move an issue out of every status.
+        const pickable = EDITABLE_GUARDS.filter(
+          (g) => g !== "pr.checks_green" || canAdvanceOnCIGreen(stepKey),
+        );
+        const guards = pickable.some((g) => g === e.guard)
+          ? [...pickable]
+          : [...pickable, e.guard];
         const onTimeout = e.on_timeout ?? (others.includes("blocked") ? "blocked" : "");
         return (
           <div

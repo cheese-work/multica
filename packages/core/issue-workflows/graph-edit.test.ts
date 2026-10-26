@@ -114,16 +114,23 @@ describe("validateWorkflowGraph", () => {
     ).toEqual(["in_progress:bad_on_timeout"]);
   });
 
-  it("flags a step with a handler and no exit, but not terminal or handler-less steps", () => {
+  it("does not hold the save for a handler without explicit exits", () => {
     const agent = { type: "agent" as const, id: "a-1" };
-    expect(codes(base({ handler: agent }))).toEqual(["in_progress:no_exit"]);
-    expect(codes(base({ handler: agent, next_status_key: "in_review" }))).toEqual(
-      [],
-    );
-    const withDoneHandler = base().map((s) =>
-      s.status_key === "done" ? { ...s, handler: agent } : s,
-    );
-    expect(codes(withDoneHandler)).toEqual([]);
+    expect(codes(base({ handler: agent }))).toEqual([]);
+    expect(codes(base({ handler: { type: "project_lead" } }))).toEqual([]);
+  });
+
+  it("holds a CI-green exit out of a status the server refuses it from", () => {
+    const ci = { to: "todo", guard: "pr.checks_green", timeout: "72h", on_timeout: "todo" };
+    expect(
+      codes(
+        [step("backlog", { edges: [ci] }), step("todo"), step("blocked", { edges: [ci] }), step("done", { edges: [ci] }), step("cancelled")],
+      ),
+    ).toEqual(["backlog:ci_green_source", "blocked:ci_green_source", "done:ci_green_source"]);
+  });
+
+  it("does not ask a legacy CI advance for a timeout", () => {
+    expect(codes(base({ advance_on_ci_green: true, next_status_key: "in_review" }))).toEqual([]);
   });
 });
 
@@ -148,7 +155,7 @@ describe("editing edges", () => {
     const s = out.find((x) => x.status_key === "in_progress")!;
     expect(s.edges).toEqual([
       { to: "in_review", guard: "agent_done" },
-      { to: "in_review", guard: "pr.checks_green" },
+      { to: "in_review", guard: "pr.checks_green", timeout: "72h", on_timeout: "blocked" },
       { to: "done", guard: "agent_done" },
     ]);
     expect(s.next_status_key).toBeUndefined();
