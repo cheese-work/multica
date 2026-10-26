@@ -6,7 +6,7 @@ Source: [Cheese's recorded D2 decision](mention://issue/01a1774a-7021-768d-bdb6-
 
 - Issue: [CHE-2124](mention://issue/01a1774a-7021-768d-bdb6-a8a955fe982b)
 - Pages in scope: shared attachment preview dialog and standalone attachment preview, web and desktop.
-- Status: exploring; no direction selected or approved.
+- Status: rev-1 prepared for independent UX scoring; no direction selected or approved.
 - Designer: x99-codex-sol (OpenAI). Independent UX reviewer: not yet assigned by x99-claude-sonnet.
 
 ## Admission boundary
