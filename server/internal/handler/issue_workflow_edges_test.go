@@ -326,8 +326,13 @@ func TestRunBudgetRefusesDerivedRunAndBlocksIssue(t *testing.T) {
 	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err == nil || err != service.ErrRunBudgetExhausted {
 		t.Fatalf("third run = %v, want ErrRunBudgetExhausted", err)
 	}
+	// The block runs after the refusal: status, then reason, then the
+	// activity row. Wait for the last write before reading the others.
+	activityRows := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted'`, c.issueID)
+	}
 	deadline := time.Now().Add(5 * time.Second)
-	for c.status(t) != "blocked" && time.Now().Before(deadline) {
+	for activityRows() == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if got := c.status(t); got != "blocked" {
@@ -338,7 +343,7 @@ func TestRunBudgetRefusesDerivedRunAndBlocksIssue(t *testing.T) {
 	if reason != "run-budget" {
 		t.Fatalf("blocked_reason = %q, want run-budget", reason)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted'`, c.issueID); n != 1 {
+	if n := activityRows(); n != 1 {
 		t.Fatalf("run_budget_exhausted activity rows = %d, want 1", n)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, c.issueID); n != 2 {
