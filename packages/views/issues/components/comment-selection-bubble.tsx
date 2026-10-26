@@ -9,6 +9,9 @@ import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floatin
  * popup goes below it. It flips above only when there is no room below, and never
  * slides along the main axis, so it cannot cover the selected text.
  */
+export const NATIVE_MENU_CLEARANCE = 64;
+/** When a touch popup flips above the selection it must clear the native menu stacked there. */
+const touchGap = (placement: string) => (placement.startsWith("top") ? 8 + NATIVE_MENU_CLEARANCE : 8);
 function placementFor(marker: boolean, touch: boolean) {
   if (marker) return "right-start";
   return touch ? "bottom" : "top";
@@ -62,7 +65,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true, mainAxis: !touch, crossAxis: touch }), hide()],
+        ] : [offset(touch ? ({ placement }) => touchGap(placement) : 8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true, mainAxis: !touch, crossAxis: touch }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { renderWithI18n } from "../../test/i18n";
+import { NATIVE_MENU_CLEARANCE } from "./comment-selection-bubble";
 import { useCommentAnnotations } from "./use-comment-annotations";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
@@ -91,9 +92,9 @@ describe("annotation note on iOS", () => {
     const overlay = add.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
     await waitFor(() => expect(overlay.style.visibility).toBe("visible"));
     const top = parseFloat(overlay.style.top);
-    // Falls back to above the selection (745 - 30 - 8 = 707): popup bottom stays clear of the selection top.
-    expect(top).toBe(707);
-    expect(top + 30).toBeLessThanOrEqual(745);
+    // Falls back to above the selection, but above the native menu stacked there too:
+    // popup bottom stays NATIVE_MENU_CLEARANCE clear of the selection top.
+    expect(top + 30).toBeLessThanOrEqual(745 - NATIVE_MENU_CLEARANCE);
   });
 
   it("keeps the popup above the selection with a mouse", async () => {
