@@ -579,12 +579,10 @@ approval (CHE-2027): one prompt per version, on both the automatic and manual
 paths. It runs in the existing `c00-production` environment (required reviewer,
 wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
 `cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
-replaces an older run still waiting for approval. Right after approval the job
-re-checks the candidate with the same rule (`require-current.sh`, which
-needs node and PyYAML to read the newer commits' checks); a
-superseded run skips `prepare-release-candidate`, `admission` and `deploy`
-instead of failing. The manual path is exempt: it names an explicit manifest
-and may deploy a non-head ref.
+replaces an older run still waiting for approval. Once approved, a candidate
+is not superseded merely because `main` advances (CHE-2146). There is no
+post-approval `require-current.sh` guard or `deploy-gate` job. The manual path
+still names an explicit admitted manifest and may deploy a non-head ref.
 
 `prepare-release-candidate` and `deploy` use the C00 secrets from the
 `c00-runtime` environment, which has no reviewers or wait timer, so they do not
@@ -593,18 +591,27 @@ the previous workflow, and reruns of their jobs, still use that workflow and
 therefore still stop at it. Secrets are copied to `c00-runtime` and must be
 rotated in both environments until `c00-production` secrets are retired. A
 missing `c00-runtime` environment fails closed: GitHub creates it empty, the
-SSH step has no key and stops. They share the
+deploy step has no secrets and stops. They share the
 job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
 C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
 default queue (`single`) keeps one pending job and cancels it for any newcomer,
 whatever its version, so a stale stage joining late would evict the newest
 candidate. A freshness check made before the join cannot prevent that, because
 check and join are not atomic. `max` holds up to 100 pending jobs and evicts
-none; if the queue is full GitHub cancels the newcomer. A stale stage that
-reaches its turn is skipped: `approve-c00` and `deploy-gate` (after `admission`)
-skip the stages that follow them before they queue, and `deploy` checks again
-once it has the lock. A stale `prepare-release-candidate` that does run is
-read-only and stops at `deploy-gate`. `actionlint` does not know the `queue` key
+none; if the queue is full GitHub cancels the newcomer. Once `deploy` holds
+the lock, `capture-remote-baseline.sh` re-reads C00's live tuple using the same
+image-label-first capture path as preparation. `verify-deploy-baseline.mjs`
+skips only when C00's running commit already contains the candidate (equal
+or descendant). Unknown or divergent history fails closed. A newer commit
+on `main` alone does not skip an approved deploy.
+
+Before building or transferring any controller bundle, the live tuple must
+match the admitted baseline in every field except `captured_at`. Image,
+configuration, application or migration-ledger drift fails closed without
+changing the running stack or transferring the stale manifest. The operator
+must prepare and admit a fresh release candidate after such a failure; the
+workflow does not silently rebind approved evidence. Both automatic and manual
+deploys use this guard. `actionlint` does not know the `queue` key
 yet and reports it; GitHub validates it on the first run. There is no workflow-level lock, since a run waiting for approval would hold it and
 block every newer version.
 
