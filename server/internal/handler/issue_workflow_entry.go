@@ -92,7 +92,7 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID)
+	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, h.workflowHumans(ctx, step, prev.WorkspaceID, prev.RequestedByID))
 	if !ok {
 		return nil, nil
 	}
@@ -113,9 +113,9 @@ func (e *createHandoffError) Error() string { return e.message }
 // createHandoffResolver resolves a step's handler for a new issue and applies
 // the same permission gate a hand-picked assignee passes. IssueService.Create
 // calls it under the catalog and project locks.
-func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID pgtype.UUID) service.CreateHandoffResolver {
+func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, creatorType, creatorID)
+		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, creatorType, creatorID, h.workflowHumans(ctx, step, project.WorkspaceID, requestedByID))
 		if !ok {
 			return pgtype.Text{}, pgtype.UUID{}, nil
 		}
@@ -474,15 +474,31 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 	return false
 }
 
+// workflowHumans gathers the people a "human by role" step can resolve to:
+// the issue's requester and the workspace owner. Other handlers need neither,
+// so they skip the owner lookup.
+func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, workspaceID, requestedByID pgtype.UUID) issueworkflow.Humans {
+	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
+		return issueworkflow.Humans{}
+	}
+	humans := issueworkflow.Humans{Requester: requestedByID}
+	if owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, workspaceID); err == nil {
+		humans.WorkspaceOwner = owner
+	}
+	return humans
+}
+
 // stepHandlerName describes who a step hands the issue to, for briefs.
 func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project db.Project, step issueworkflow.Step) string {
-	t, id, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID)
+	t, id, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID, h.workflowHumans(ctx, step, issue.WorkspaceID, issue.RequestedByID))
 	if !ok {
 		switch step.Handler.Type {
 		case issueworkflow.HandlerProjectLead:
 			return "the project lead (none set)"
 		case issueworkflow.HandlerCreator:
 			return "the issue creator"
+		case issueworkflow.HandlerHumanByRole:
+			return "a person (none found)"
 		}
 		return ""
 	}
@@ -492,6 +508,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 		return name + " (project lead)"
 	case issueworkflow.HandlerCreator:
 		return name + " (issue creator)"
+	case issueworkflow.HandlerHumanByRole:
+		return name + " (requester, project lead or workspace owner)"
 	}
 	return name
 }

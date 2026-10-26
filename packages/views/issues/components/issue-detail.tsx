@@ -3790,6 +3790,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <ActorAvatar actorType={issue.creator_type} actorId={issue.creator_id} size="sm" enableHoverCard />
             <span className="cursor-pointer truncate">{getActorName(issue.creator_type, issue.creator_id)}</span>
           </PropRow>
+          {issue.requested_by_id && (
+            <PropRow label={t(($) => $.detail.prop_requested_by)}>
+              <ActorAvatar actorType="member" actorId={issue.requested_by_id} size="sm" enableHoverCard />
+              <span className="cursor-pointer truncate">{getActorName("member", issue.requested_by_id)}</span>
+            </PropRow>
+          )}
           <PropRow label={t(($) => $.detail.prop_created)}>
             <span className="text-muted-foreground">{shortDate(issue.created_at, locale)}</span>
           </PropRow>

@@ -258,7 +258,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID), h.workflowHumans(r.Context(), step, wsUUID, previewRequester(actorType, actorID))); ok {
 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
 							candidate.AssigneeID = id
 						}

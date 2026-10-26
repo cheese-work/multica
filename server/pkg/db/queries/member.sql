@@ -8,6 +8,14 @@ SELECT user_id FROM member
 WHERE workspace_id = $1 AND role IN ('owner', 'admin')
 ORDER BY created_at ASC;
 
+-- name: GetWorkspaceOwnerUserID :one
+-- The longest-standing owner, so a workspace with several owners resolves to
+-- the same person every time.
+SELECT user_id FROM member
+WHERE workspace_id = $1 AND role = 'owner'
+ORDER BY created_at ASC, id ASC
+LIMIT 1;
+
 -- name: GetMember :one
 SELECT * FROM member
 WHERE id = $1;
