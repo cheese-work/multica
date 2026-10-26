@@ -33,7 +33,8 @@ describe("workflowEdges", () => {
       workflowEdges({ steps }).filter((e) => e.from === "in_review"),
     ).toEqual([
       {
-        id: "in_review>done:pr.merged",
+        id: "in_review#0",
+        index: 0,
         from: "in_review",
         to: "done",
         guard: "pr.merged",
