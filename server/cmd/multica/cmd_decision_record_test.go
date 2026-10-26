@@ -10,7 +10,7 @@ import (
 )
 
 func TestIssueCommentDecisionRecordFlags(test *testing.T) {
-	for _, flag := range []string{"decision-record", "message", "context-message", "class"} {
+	for _, flag := range []string{"decision-record", "message", "source-comment", "context-message", "class"} {
 		if issueCommentAddCmd.Flags().Lookup(flag) == nil {
 			test.Fatalf("comment add lacks --%s", flag)
 		}

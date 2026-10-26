@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -16,6 +17,8 @@ import (
 type singleCallFixture struct {
 	intentFixture
 	ask, footer string
+	sourceID    string
+	details     decisiontx.Ask
 }
 
 func newSingleCallFixture(test *testing.T) singleCallFixture {
@@ -23,11 +26,13 @@ func newSingleCallFixture(test *testing.T) singleCallFixture {
 	fixture := newIntentFixture(test)
 	dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
 	dbfx.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, fixture.issueID)
-	return singleCallFixture{intentFixture: fixture, ask: "Approve the reversible change?", footer: "Next owner: none"}
+	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
+	details := structuredDecisionAsk(fixture.issueID, sourceID, "Approve the reversible change?")
+	return singleCallFixture{intentFixture: fixture, ask: details.Content(), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 func (fixture singleCallFixture) body() map[string]any {
-	return map[string]any{"issue_id": fixture.issueID, "for": fixture.humanID, "ask": fixture.ask, "footer": fixture.footer, "escalation_class": "reversible"}
+	return map[string]any{"issue_id": fixture.issueID, "for": fixture.humanID, "ask": fixture.details, "footer": fixture.footer, "escalation_class": "reversible"}
 }
 
 func (fixture singleCallFixture) call(body map[string]any) *http.Request {
@@ -40,7 +45,7 @@ func (fixture singleCallFixture) call(body map[string]any) *http.Request {
 
 func (fixture singleCallFixture) counts(test *testing.T) (comments, messages, pings int) {
 	test.Helper()
-	comments = dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID)
+	comments = dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND id <> $2`, fixture.issueID, fixture.sourceID)
 	messages = dbfx.Count(test, `SELECT count(*) FROM chat_message message JOIN chat_session session ON session.id = message.chat_session_id WHERE session.creator_id = $1 AND session.agent_id = $2`, fixture.humanID, fixture.agentID)
 	pings = dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, fixture.issueID, fixture.humanID)
 	return comments, messages, pings
@@ -55,7 +60,7 @@ func TestDecisionSingleCallWritesOneCommentOneMessageOnePing(test *testing.T) {
 	}
 	requestID := created["id"].(string)
 	var content, kind, intentID, commentRequestID string
-	dbfx.QueryRow(test, `SELECT content, decision_comment_kind, decision_intent_id::text, decision_request_id::text FROM comment WHERE issue_id = $1`, fixture.issueID).Scan(&content, &kind, &intentID, &commentRequestID)
+	dbfx.QueryRow(test, `SELECT content, decision_comment_kind, decision_intent_id::text, decision_request_id::text FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'ask'`, fixture.issueID).Scan(&content, &kind, &intentID, &commentRequestID)
 	if content != fixture.ask+"\n\n"+fixture.footer || kind != "ask" || commentRequestID != requestID {
 		test.Fatalf("wrong ask comment: %q kind=%s request=%s", content, kind, commentRequestID)
 	}
@@ -66,7 +71,7 @@ func TestDecisionSingleCallWritesOneCommentOneMessageOnePing(test *testing.T) {
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM decision_intent intent JOIN comment ask ON ask.id = intent.comment_id WHERE intent.id = $1 AND ask.decision_request_id = $2 AND intent.consumed_at IS NOT NULL AND intent.sealed_at IS NOT NULL AND intent.consumed_by_request_id = $2`, intentID, requestID) != 1 ||
 		dbfx.Count(test, `SELECT count(*) FROM decision_intent_target WHERE decision_intent_id = $1 AND human_user_id = $2 AND consumed_at IS NOT NULL AND consumed_by_request_id = $3`, intentID, fixture.humanID, requestID) != 1 ||
-		dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND decision_intent_id = $2 AND issue_comment_id = (SELECT id FROM comment WHERE issue_id = $3)`, requestID, intentID, fixture.issueID) != 1 {
+		dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND decision_intent_id = $2 AND issue_comment_id = (SELECT id FROM comment WHERE issue_id = $3 AND decision_comment_kind = 'ask')`, requestID, intentID, fixture.issueID) != 1 {
 		test.Fatal("intent was not anchored on the ask comment, consumed and sealed")
 	}
 }
@@ -77,7 +82,7 @@ func TestDecisionSingleCallOmitsFooterSeparatorWhenFooterEmpty(test *testing.T) 
 	delete(body, "footer")
 	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
 	var content string
-	dbfx.QueryRow(test, `SELECT content FROM comment WHERE issue_id = $1`, fixture.issueID).Scan(&content)
+	dbfx.QueryRow(test, `SELECT content FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'ask'`, fixture.issueID).Scan(&content)
 	if content != fixture.ask {
 		test.Fatalf("content = %q, want the bare ask", content)
 	}
@@ -325,7 +330,9 @@ func TestDecisionSingleCallComposedCommentLimit(test *testing.T) {
 		test.Run(tc.name, func(test *testing.T) {
 			fixture := newSingleCallFixture(test)
 			body := fixture.body()
-			body["ask"] = strings.Repeat("a", tc.ask)
+			ask := fixture.details
+			ask.Decision = strings.Repeat("a", tc.ask-len(ask.Content())+len(ask.Decision))
+			body["ask"] = ask
 			body["footer"] = strings.Repeat("f", tc.footer)
 			testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(tc.want)
 			if tc.want == http.StatusBadRequest {
@@ -333,7 +340,7 @@ func TestDecisionSingleCallComposedCommentLimit(test *testing.T) {
 				return
 			}
 			var size int
-			dbfx.QueryRow(test, `SELECT length(content) FROM comment WHERE issue_id = $1`, fixture.issueID).Scan(&size)
+			dbfx.QueryRow(test, `SELECT octet_length(content) FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'ask'`, fixture.issueID).Scan(&size)
 			if size != limit {
 				test.Fatalf("stored comment = %d bytes, want exactly %d", size, limit)
 			}

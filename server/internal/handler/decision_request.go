@@ -2,6 +2,9 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -26,6 +29,8 @@ type decisionRequestInput struct {
 	Footer          string
 	ParentID        pgtype.UUID
 	EscalationClass string
+	SourceCommentID pgtype.UUID
+	Fingerprint     string
 }
 
 type decisionRequestResult struct {
@@ -35,6 +40,7 @@ type decisionRequestResult struct {
 	Message          db.ChatMessage
 	ClearedComments  []db.Comment
 	CreatedSession   *db.ChatSession
+	Replayed         bool
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -64,9 +70,37 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
+	if input.SourceCommentID.Valid {
+		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (task.AgentID != agentID || task.IssueID != issue.ID || task.ChatSessionID.Valid || task.Status != "running") {
+			return empty, deny
+		}
+		if err != nil {
+			return empty, err
+		}
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return empty, err
+		}
+		digest := sha256.Sum256(encoded)
+		input.Fingerprint = hex.EncodeToString(digest[:])
+		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+			return prior, err
+		}
+	}
 	intent, err := handler.Queries.GetDecisionIntentForTask(request.Context(), db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, AgentID: agentID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
+	}
+	finish := func(run func() (decisionRequestResult, error)) (decisionRequestResult, error) {
+		result, err := retryDecisionTx(request, run)
+		if err != nil && input.Fingerprint != "" {
+			prior, lookupErr := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint)
+			if lookupErr == nil && prior.Request.ID.Valid {
+				return prior, nil
+			}
+		}
+		return result, err
 	}
 	// A pending intent comment keeps the two-step flow; otherwise this call
 	// opens, uses and seals its own window.
@@ -74,16 +108,30 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 		if input.SessionID.Valid == input.NewDM || input.ParentID.Valid {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a listed lane or an explicit new DM, and no parent, are required with an open intent"}
 		}
-		return retryDecisionTx(request, func() (decisionRequestResult, error) {
+		return finish(func() (decisionRequestResult, error) {
 			return handler.createDecisionRequestTx(request, issue, input, intent)
 		})
 	}
 	if !input.HumanUserID.Valid {
+		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+			return prior, err
+		}
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request requires a named person (for) or an open intent naming the lane's person"}
 	}
-	return retryDecisionTx(request, func() (decisionRequestResult, error) {
+	return finish(func() (decisionRequestResult, error) {
 		return handler.createSingleCallDecisionTx(request, issue, input, agentID)
 	})
+}
+
+func findDecisionRequestRetry(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, taskID pgtype.UUID, fingerprint string) (decisionRequestResult, error) {
+	if fingerprint == "" {
+		return decisionRequestResult{}, nil
+	}
+	prior, err := queries.FindDecisionRequestRetry(ctx, db.FindDecisionRequestRetryParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, TaskID: taskID, Fingerprint: fingerprint})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return decisionRequestResult{}, nil
+	}
+	return decisionRequestResult{Request: prior, Replayed: err == nil}, err
 }
 
 func retryDecisionTx(request *http.Request, run func() (decisionRequestResult, error)) (decisionRequestResult, error) {
@@ -205,6 +253,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		return empty, err
 	}
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+		return prior, err
+	}
 	if input.NewDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
@@ -233,6 +284,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	issue, err = queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID})
 	if err != nil {
 		return empty, err
+	}
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+		return prior, err
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil {
@@ -324,12 +378,23 @@ func createDecisionDM(ctx context.Context, queries *db.Queries, issue db.Issue, 
 // tag nil (single-call path) the ask comment is the intent's own anchor.
 func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue, input decisionRequestInput, intent db.DecisionIntent, session db.ChatSession, newSession bool, root *db.Comment, parentID, commentID pgtype.UUID, tag *db.Comment) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
+	var sourceSnapshot string
+	if input.SourceCommentID.Valid {
+		source, err := queries.LockDecisionSourceComment(ctx, db.LockDecisionSourceCommentParams{WorkspaceID: issue.WorkspaceID, ID: input.SourceCommentID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && source.IssueID != issue.ID {
+			return empty, decisionIntentRefusal{http.StatusNotFound, "ask source comment not found on this issue"}
+		}
+		if err != nil {
+			return empty, err
+		}
+		sourceSnapshot = source.Content
+	}
 	attach := tag != nil && !tag.DecisionRequestID.Valid && strings.TrimSpace(input.Footer) == "" && strings.TrimSpace(tag.Content) == strings.TrimSpace(input.Ask)
 	if attach {
 		commentID = tag.ID
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint})
 	if err != nil {
 		return empty, err
 	}
@@ -424,6 +489,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	issue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID)
 	if err != nil {
 		return empty, err
+	}
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+		return prior, err
 	}
 	if agent.Kind == "system" {
 		return empty, deny
