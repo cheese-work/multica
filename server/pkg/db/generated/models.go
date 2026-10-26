@@ -582,6 +582,7 @@ type ChatSession struct {
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet       bool               `json:"title_manually_set"`
 }
 
 type ClientUsageDaily struct {
