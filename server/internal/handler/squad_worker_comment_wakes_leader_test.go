@@ -25,6 +25,7 @@ func TestGuestSquadWorkerRouteOnMemberAssignedIssue_GH8301(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	ctx := context.Background()
 	fx := newSquadCommentTriggerFixture(t)
 	issueID := uuidToString(fx.Issue.ID)
@@ -65,6 +66,7 @@ func TestCreateComment_GuestSquadWorkerRouting_GH8301(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	cases := []struct {
 		mode                    string
 		name                    string
@@ -177,6 +179,7 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	ctx := context.Background()
 	fx := newSquadCommentTriggerFixture(t)
 	issueID := uuidToString(fx.Issue.ID)
@@ -255,6 +258,7 @@ func TestCreateComment_WorkerAgentCommentFoldsIntoQueuedLeaderAssignment(t *test
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	ctx := context.Background()
 	fx := newSquadCommentTriggerFixture(t)
 	issueID := uuidToString(fx.Issue.ID)
@@ -347,6 +351,7 @@ func TestCreateComment_WorkerAgentCommentWakesPrivateSquadLeader_MUL4015(t *test
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	ctx := context.Background()
 
 	// Manually build a private-leader + private-worker fixture. testUserID owns

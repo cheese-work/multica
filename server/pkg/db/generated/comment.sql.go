@@ -910,6 +910,27 @@ func (q *Queries) HasAgentRepliedInThread(ctx context.Context, arg HasAgentRepli
 	return has_replied, err
 }
 
+const isCommentTriggerRateLimited = `-- name: IsCommentTriggerRateLimited :one
+SELECT EXISTS (
+    SELECT 1 FROM comment_trigger_rate_limit
+    WHERE issue_id = $1
+      AND agent_id = $2
+      AND triggered_at > now() - interval '10 minutes'
+)
+`
+
+type IsCommentTriggerRateLimitedParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) IsCommentTriggerRateLimited(ctx context.Context, arg IsCommentTriggerRateLimitedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isCommentTriggerRateLimited, arg.IssueID, arg.AgentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listChildCommentsForParents = `-- name: ListChildCommentsForParents :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind FROM comment
 WHERE parent_id = ANY($1::uuid[])

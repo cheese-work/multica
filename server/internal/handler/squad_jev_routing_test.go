@@ -2182,7 +2182,7 @@ func TestCreateComment_SquadMentionTriggersJevRouting_RealFlow(t *testing.T) {
 	}
 }
 
-func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
+func TestCreateComment_AgentMentionDoesNotRouteThroughJev(t *testing.T) {
 	ctx := context.Background()
 	wsUUID := util.MustParseUUID(testWorkspaceID)
 	userUUID := util.MustParseUUID(testUserID)
@@ -2275,7 +2275,7 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 
 	// Worker agent posts comment
 	w := httptest.NewRecorder()
-	content := "Task finished; returning report to squad leader."
+	content := "[@Leader](mention://agent/" + util.UUIDToString(leaderAgentID) + ") Task finished; returning report."
 	reqBody := map[string]any{"content": content}
 	r := newRequest("POST", "/api/issues/"+util.UUIDToString(issueID)+"/comments", reqBody)
 	r.Header.Set("X-Agent-ID", util.UUIDToString(memberAgentID))
@@ -2292,7 +2292,7 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 		t.Errorf("Jev was called %d times for agent comment, want 0", jevCallCount)
 	}
 
-	// Verify task in queue is enqueued for squad LEADER, not worker
+	// Verify the explicit agent mention enqueued the named leader, not worker.
 	var enqueuedAgentID string
 	var isLeaderTask bool
 	err = testPool.QueryRow(ctx, `
@@ -2304,8 +2304,8 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 	if enqueuedAgentID != util.UUIDToString(leaderAgentID) {
 		t.Errorf("enqueued task agent_id = %s, want leader %s", enqueuedAgentID, util.UUIDToString(leaderAgentID))
 	}
-	if !isLeaderTask {
-		t.Errorf("is_leader_task = false, want true")
+	if isLeaderTask {
+		t.Errorf("is_leader_task = true, want a direct-agent task")
 	}
 }
 

@@ -101,7 +101,10 @@ const (
 	ReasonProviderFailureCooldown ReasonCode = "provider_failure_cooldown"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
-	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	ReasonIssueLimitReached                   ReasonCode = "issue_limit_reached"
+	ReasonAgentCommentImplicitRouteSuppressed ReasonCode = "agent_comment_implicit_route_suppressed"
+	ReasonAgentCommentRequiresAgentMention    ReasonCode = "agent_comment_requires_agent_mention"
+	ReasonCommentTriggerRateLimited           ReasonCode = "comment_trigger_rate_limited"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 	// ReasonProviderHold: the target resolves to a model provider a workspace
