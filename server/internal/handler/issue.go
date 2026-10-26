@@ -315,6 +315,9 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 // run it inside the status write's transaction and broadcast the returned runs
 // after commit.
 func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.UpdateIssueParams) (db.Issue, []db.AgentTaskQueue, error) {
+	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
@@ -3616,6 +3619,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
+	if writeAgentIssueStatusError(w, err) {
+		return
+	}
 	var handoffErr *createHandoffError
 	if errors.As(err, &handoffErr) {
 		writeError(w, handoffErr.status, handoffErr.message)
@@ -4250,7 +4256,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -5120,7 +5126,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
-			if writeIssueStatusRaceError(w, err) {
+			if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) {
 				return
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
