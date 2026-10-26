@@ -276,6 +276,10 @@ const (
 	// the runtime receives a normal immutable chat input batch. User-facing
 	// APIs filter it out; clients also ignore the kind defensively.
 	ChatMessageKindOnboardingKickoff = "onboarding_kickoff"
+	// ChatMessageKindWakeupTrigger is the hidden, task-owned input of a turn a
+	// DM wakeup started (CHE-1874): it carries the agent's own instruction into
+	// the prompt. Like the kickoff, user-facing APIs never expose it.
+	ChatMessageKindWakeupTrigger = "wakeup_trigger"
 	// ChatMessageKindDecisionReference is the server-authored note that a
 	// decision was recorded from this DM. Its decision_answer_id names the card.
 	ChatMessageKindDecisionReference = "decision_reference"
@@ -470,4 +474,10 @@ type DaemonHeartbeatPendingLocalSkills struct {
 type DaemonHeartbeatPendingLocalSkillImport struct {
 	ID       string `json:"id"`
 	SkillKey string `json:"skill_key"`
+}
+
+// HiddenChatMessageKind reports whether a stored message kind is runtime input
+// that user-facing reads never show.
+func HiddenChatMessageKind(kind string) bool {
+	return kind == ChatMessageKindOnboardingKickoff || kind == ChatMessageKindWakeupTrigger
 }

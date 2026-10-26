@@ -329,3 +329,19 @@ after `main` already held `678_issue_workflow_owner` and
 
 The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
 so a database that already applied the old names re-runs them safely.
+
+## Chat wakeup migration renumbering
+
+Merging `main` into the CHE-1874 stack found `687_chat_message_decision_answer`
+and `688_chat_message_lineage` already on `main`. The stack's chat wakeup
+migrations moved up two prefixes, in order (CHE-1874):
+
+- `687_chat_wakeup` is now `689_chat_wakeup`
+- `688_chat_wakeup_pending_index` is now `690_chat_wakeup_pending_index`
+- `689_chat_wakeup_session_index` is now `691_chat_wakeup_session_index`
+- `690_chat_wakeup_condition` is now `692_chat_wakeup_condition`
+- `691_chat_wakeup_condition_checked` is now `693_chat_wakeup_condition_checked`
+- `692_github_pr_check_run_external_id` is now `694_github_pr_check_run_external_id`
+
+The up and down SQL bytes are unchanged. The runner's concurrent-index name
+map uses the new prefixes.

@@ -834,6 +834,11 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := qtx.DeleteChatWakeupsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat session wakeups")
+		return
+	}
+
 	// Same no-FK chore, for the agent configuration a builder conversation was
 	// editing. A no-op for ordinary chats, which never have one.
 	if err := qtx.DeleteAgentBuilderDraft(r.Context(), session.ID); err != nil {
@@ -1427,6 +1432,9 @@ type QueuedChatTaskResponse struct {
 	CreatedAt string `json:"created_at"`
 	MessageID string `json:"message_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+	// TaskKind is "wakeup" for a turn a DM wakeup started; its Content is empty
+	// because the instruction is hidden input. Empty for a member's message.
+	TaskKind string `json:"task_kind,omitempty"`
 }
 
 type PrioritizeQueuedChatTaskResponse struct {
@@ -1776,6 +1784,7 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: timestampToString(task.CreatedAt),
 			MessageID: uuidToString(task.MessageID),
 			Content:   task.Content,
+			TaskKind:  wakeupTaskKind(task.TaskKind),
 		})
 	}
 
@@ -2162,7 +2171,7 @@ type ChatLastMessage struct {
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
 func buildChatLastMessage(at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
-	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
+	if !at.Valid || protocol.HiddenChatMessageKind(kind) {
 		return nil
 	}
 	return &ChatLastMessage{
@@ -2252,7 +2261,7 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 func visibleChatMessages(messages []db.ChatMessage) []db.ChatMessage {
 	visible := make([]db.ChatMessage, 0, len(messages))
 	for _, message := range messages {
-		if message.MessageKind == protocol.ChatMessageKindOnboardingKickoff {
+		if protocol.HiddenChatMessageKind(message.MessageKind) {
 			continue
 		}
 		visible = append(visible, message)
@@ -2299,4 +2308,12 @@ func normalizeMessageKind(kind string) string {
 	default:
 		return protocol.ChatMessageKindMessage
 	}
+}
+
+// wakeupTaskKind exposes only the wakeup kind of a task; other kinds stay internal.
+func wakeupTaskKind(kind pgtype.Text) string {
+	if kind.String == service.WakeupTaskKind {
+		return kind.String
+	}
+	return ""
 }

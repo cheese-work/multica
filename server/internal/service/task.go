@@ -2542,6 +2542,26 @@ func (s *TaskService) SendDirectChatMessageTx(
 	uploaderID pgtype.UUID,
 	sentVia string,
 ) (DirectChatSendResult, error) {
+	return s.sendDirectChatMessageTx(ctx, qtx, plan, session, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, sentVia, false)
+}
+
+// sendDirectChatMessageTx is the shared send. A wakeup turn (CHE-1874) differs
+// from a member's send in three ways: its input is the hidden wakeup_trigger
+// row, the task is flagged task_kind='wakeup', and it neither titles the DM nor
+// adopts a pending onboarding kickoff.
+func (s *TaskService) sendDirectChatMessageTx(
+	ctx context.Context,
+	qtx *db.Queries,
+	plan DirectChatSendPlan,
+	session db.ChatSession,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	sentVia string,
+	wakeup bool,
+) (DirectChatSendResult, error) {
 	overlay, attr := plan.overlay, plan.Attribution
 	attrSource, attrEvidenceKind, attrEvidenceRef := plan.attrSource, plan.attrEvidenceKind, plan.attrEvidenceRef
 	var out DirectChatSendResult
@@ -2630,6 +2650,11 @@ func (s *TaskService) SendDirectChatMessageTx(
 				return fmt.Errorf("mark compact chat task: %w", err)
 			}
 		}
+		if wakeup {
+			if task, err = qtx.MarkChatTaskWakeup(ctx, task.ID); err != nil {
+				return fmt.Errorf("mark wakeup chat task: %w", err)
+			}
+		}
 		out.Task = task
 
 		// Adopt the onboarding kickoff, if this session still has an unowned one.
@@ -2640,17 +2665,19 @@ func (s *TaskService) SendDirectChatMessageTx(
 		//
 		// A no-op for every other session: only Mika onboarding writes that kind,
 		// and only the first send of one finds it unowned.
-		if err := qtx.AdoptOrphanOnboardingKickoff(ctx, db.AdoptOrphanOnboardingKickoffParams{
-			ChatSessionID: session.ID,
-			TaskID:        task.ID,
-		}); err != nil {
-			return fmt.Errorf("adopt onboarding kickoff: %w", err)
+		if !wakeup {
+			if err := qtx.AdoptOrphanOnboardingKickoff(ctx, db.AdoptOrphanOnboardingKickoffParams{
+				ChatSessionID: session.ID,
+				TaskID:        task.ID,
+			}); err != nil {
+				return fmt.Errorf("adopt onboarding kickoff: %w", err)
+			}
 		}
 
 		// Initialize an explicitly empty Chat before inserting its first public
 		// user message. The CAS query also protects a manual rename and competing
 		// first send; keeping it in this transaction prevents a title-only commit.
-		if title := chattitle.Derive(content); title != "" {
+		if title := chattitle.Derive(content); title != "" && !wakeup {
 			if _, err := qtx.InitializeChatSessionTitle(ctx, db.InitializeChatSessionTitleParams{ID: session.ID, Title: title}); err == nil {
 				out.InitialTitle = title
 			} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -2660,13 +2687,17 @@ func (s *TaskService) SendDirectChatMessageTx(
 
 		// Create the user message already owned by this task (task_id = task.id),
 		// so it belongs to this immutable input batch the instant it exists.
+		messageKind := protocol.ChatMessageKindMessage
+		if wakeup {
+			messageKind = protocol.ChatMessageKindWakeupTrigger
+		}
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
 			ID:            dbid.NewV7(),
 			ChatSessionID: session.ID,
 			Role:          "user",
 			Content:       content,
 			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			MessageKind:   pgtype.Text{String: messageKind, Valid: true},
 			SentVia:       pgtype.Text{String: sentVia, Valid: sentVia != ""},
 		})
 		if err != nil {
