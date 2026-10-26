@@ -1301,6 +1301,7 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
+  hints: z.array(z.string()).optional().catch(undefined),
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),

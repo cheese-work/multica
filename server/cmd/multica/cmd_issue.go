@@ -3030,6 +3030,13 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	if hints, ok := result["hints"].([]any); ok {
+		for _, value := range hints {
+			if hint, ok := value.(string); ok && hint != "" {
+				fmt.Fprintln(os.Stderr, "Hint: "+hint)
+			}
+		}
+	}
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
