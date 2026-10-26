@@ -42,6 +42,7 @@ import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
+import { useAuthStore } from "@multica/core/auth";
 import { api } from "@multica/core/api";
 import type { Attachment } from "@multica/core/types";
 import { attachmentIdFromDownloadURL } from "@multica/core/types";
@@ -236,6 +237,15 @@ function ownAttachmentDownloadId(
   }
 }
 
+function MemberMention({ memberId, children }: { memberId: string; children?: ReactNode }) {
+  const isSelf = useAuthStore((state) => state.user?.id === memberId);
+  return (
+    <span data-testid="member-mention" className={cn("mention", isSelf && "mention-self")}>
+      {children}
+    </span>
+  );
+}
+
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
@@ -286,7 +296,9 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
-    // Member / agent / all mentions
+    if (match?.[1] === "member" && match[2]) {
+      return <MemberMention memberId={match[2]}>{children}</MemberMention>;
+    }
     return <span className="mention">{children}</span>;
   }
 
