@@ -37,4 +37,16 @@ After implementation, the same command observes `4 passed (4)`. The tests verify
 
 The broader `rich-content` suite observes `14 passed` files and `121 passed` tests. Existing jsdom canvas diagnostics remain non-failing. No native-mobile test or Electron-runtime smoke is claimed.
 
-The existing editor table-export fixture initially failed on implementation head `941f098aaddc657c75bed9442a8ca3ff4bc92903`: `Auth store not initialised`. The failure was reproduced locally before correction: `1 failed | 4 passed (5)`. The fixture now supplies a guest Zustand auth store with its callable and `getState` shape. This does not change product auth initialization or table-export behavior.
+The existing editor table-export fixture initially failed on implementation head `941f098aaddc657c75bed9442a8ca3ff4bc92903`: `Auth store not initialised`. The failure was reproduced locally before the first fixture workaround: `1 failed | 4 passed (5)`.
+
+The guest auth mock has since been removed. The regression test now asserts ordinary mention styling without a registered auth store, while retaining table filtering and export assertions. Before the production correction, the table and self-mention tests together observe `1 failed | 8 passed (9)` on parent `e900b9aaf2bb0333a65c6d42c9266c684fc220ef`. After the correction, the same command observes `9 passed (9)`:
+
+```sh
+corepack pnpm --filter @multica/views exec vitest run editor/extensions/table-view.test.tsx rich-content/self-mention.test.tsx --maxWorkers=2 --reporter=verbose
+```
+
+The renderer uses a native external-store subscription when auth is registered and otherwise keeps ordinary mention styling. The original self-mention tests are unchanged, including reactive viewer changes and logout. Auth bootstrap remains strict for other consumers.
+
+All four after PNGs were recaptured with the production correction and match the committed PNGs byte for byte. The refreshed browser observations still pass the same mention counts, styles, contrast, overflow and page-error assertions.
+
+The complete local views suite passes with `corepack pnpm --filter @multica/views test --maxWorkers=4`: `545 passed` files and `6883 passed` tests. Views typecheck, scoped ESLint and `git diff --check` also pass. Existing jsdom canvas and navigation diagnostics remain non-failing.

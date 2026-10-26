@@ -25,7 +25,7 @@
  *             settled-but-malformed fence still renders as source.
  */
 
-import { createContext, isValidElement, memo, useContext, useMemo, useRef } from "react";
+import { createContext, isValidElement, memo, useContext, useMemo, useRef, useSyncExternalStore } from "react";
 import ReactMarkdown, {
   type Components,
   type ExtraProps,
@@ -237,8 +237,16 @@ function ownAttachmentDownloadId(
   }
 }
 
+function subscribeToAuth(onChange: () => void) {
+  return useAuthStore.subscribe?.(onChange) ?? (() => {});
+}
+
 function MemberMention({ memberId, children }: { memberId: string; children?: ReactNode }) {
-  const isSelf = useAuthStore((state) => state.user?.id === memberId);
+  const isSelf = useSyncExternalStore(
+    subscribeToAuth,
+    () => useAuthStore.getState?.().user?.id === memberId,
+    () => false,
+  );
   return (
     <span data-testid="member-mention" className={cn("mention", isSelf && "mention-self")}>
       {children}
