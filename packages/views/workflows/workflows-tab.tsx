@@ -287,6 +287,9 @@ function StepChain({ steps }: { steps: IssueWorkflowStep[] }) {
               {type === "project_lead" && (
                 <span className="text-muted-foreground">· {t(($) => $.workflows.handler.project_lead)}</span>
               )}
+              {type === "human_by_role" && (
+                <span className="text-muted-foreground">· {t(($) => $.workflows.handler.human_by_role)}</span>
+              )}
               {type === "creator" && (
                 <span className="text-muted-foreground">· {t(($) => $.workflows.handler.creator)}</span>
               )}

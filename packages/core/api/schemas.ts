@@ -554,7 +554,7 @@ const IssueWorkflowHandlerSchema = z.object({
 }).loose();
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
 ]);
 
 const IssueWorkflowStepSchema = z.object({
@@ -1511,6 +1511,8 @@ export const IssueSchema = z.object({
   assignee_id: z.string().nullable(),
   creator_type: z.string(),
   creator_id: z.string(),
+  // Additive: older backends do not send it, and nothing breaks without it.
+  requested_by_id: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.

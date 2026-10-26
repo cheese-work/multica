@@ -443,6 +443,7 @@
     "prop_labels": "标签",
     "add_property_action": "添加字段",
     "prop_created_by": "创建者",
+    "prop_requested_by": "请求人",
     "prop_created": "创建时间",
     "prop_updated": "更新时间",
     "activity_section": "动态",
@@ -1478,7 +1479,8 @@
       "member": "成员",
       "project_lead": "项目负责人",
       "creator": "任务创建者",
-      "project_lead_named": "{{name}}（项目负责人）"
+      "project_lead_named": "{{name}}（项目负责人）",
+      "human_by_role": "按角色指派给人"
     },
     "settings": {
       "title": "工作流",
@@ -1675,6 +1677,7 @@
       "mode_member": "交给成员",
       "mode_member_hint": "只改负责人，不会自动运行",
       "project_lead_hint": "项目负责人是智能体时，会开始运行。",
+      "human_by_role_hint": "先请求人，再项目负责人，最后工作区所有者。",
       "pick_agent": "选择智能体",
       "pick_member": "选择成员",
       "search_agents": "搜索智能体",

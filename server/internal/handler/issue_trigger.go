@@ -258,7 +258,12 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+						humans, err := h.workflowHumans(r.Context(), step, project, wsUUID, previewRequester(actorType, actorID))
+						if err != nil {
+							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+							return
+						}
+						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID), humans); ok {
 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
 							candidate.AssigneeID = id
 						}
