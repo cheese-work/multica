@@ -851,7 +851,7 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 
 const listChatDecisionReferences = `-- name: ListChatDecisionReferences :many
 SELECT message.content FROM chat_message message
-WHERE message.chat_session_id = $1 AND message.message_kind = 'decision_reference'
+WHERE message.chat_session_id = $1 AND message.message_kind IN ('decision_reference', 'decision_cancel_notice')
   AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> $2 AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $3
