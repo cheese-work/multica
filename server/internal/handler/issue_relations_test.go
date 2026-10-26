@@ -164,7 +164,26 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 	neighbor := dbfx.Issue(t, "bounded relations neighbor", testutil.Cols{"description": "[root](mention://issue/" + root + ")"})
 	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, root, "[neighbor](mention://issue/"+neighbor+")")
 	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": neighbor, "author_type": "member", "author_id": testUserID, "content": "[root](mention://issue/" + root + ")"})
-	measure := func(depth int) int {
+	dbfx.Exec(t, `INSERT INTO issue(workspace_id,title,creator_type,creator_id,number,description)
+		SELECT $1,'bounded relations background','member',$2,
+		 (SELECT coalesce(max(number),0) FROM issue WHERE workspace_id=$1)+counter,repeat('unrelated text ',64)
+		FROM generate_series(1,2000) counter`, testWorkspaceID, testUserID)
+	dbfx.Cleanup(t, `DELETE FROM issue WHERE workspace_id=$1 AND title='bounded relations background'`, testWorkspaceID)
+	dbfx.Exec(t, `INSERT INTO comment(workspace_id,issue_id,author_type,author_id,content)
+		SELECT $1,background.id,'member',$2,repeat('unrelated text ',64)
+		FROM issue background CROSS JOIN generate_series(1,20)
+		WHERE background.workspace_id=$1 AND background.title='bounded relations background'`, testWorkspaceID, testUserID)
+	dbfx.Cleanup(t, `DELETE FROM comment WHERE workspace_id=$1 AND issue_id IN
+		(SELECT id FROM issue WHERE workspace_id=$1 AND title='bounded relations background')`, testWorkspaceID)
+	dbfx.Exec(t, "ANALYZE issue")
+	dbfx.Exec(t, "ANALYZE comment")
+	t.Log("baseline: 2000 unrelated issues and 40000 unrelated comments; default planner settings")
+	type mentionWork struct {
+		Regex              int
+		DescriptionIndexes int
+		CommentIndexes     int
+	}
+	measure := func(depth int) mentionWork {
 		t.Helper()
 		var planJSON []byte
 		err := testPool.QueryRow(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+issueRelationsSQL,
@@ -173,32 +192,45 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 		type queryPlan struct {
-			Function string      `json:"Function Name"`
-			Loops    int         `json:"Actual Loops"`
-			Plans    []queryPlan `json:"Plans"`
+			NodeType       string      `json:"Node Type"`
+			Function       string      `json:"Function Name"`
+			IndexCondition string      `json:"Index Cond"`
+			Loops          int         `json:"Actual Loops"`
+			Plans          []queryPlan `json:"Plans"`
 		}
 		var plans []struct{ Plan queryPlan }
 		if err := json.Unmarshal(planJSON, &plans); err != nil {
 			t.Fatal(err)
 		}
-		var count func(queryPlan) int
-		count = func(plan queryPlan) int {
-			work := 0
+		var work mentionWork
+		var count func(queryPlan, bool)
+		count = func(plan queryPlan, recursive bool) {
+			recursive = recursive || plan.NodeType == "Recursive Union"
 			if plan.Function == "regexp_matches" {
-				work = plan.Loops
+				work.Regex += plan.Loops
+			}
+			if recursive && strings.Contains(plan.IndexCondition, "mention://issue/") {
+				if strings.Contains(plan.IndexCondition, "description") {
+					work.DescriptionIndexes += plan.Loops
+				}
+				if strings.Contains(plan.IndexCondition, "content") {
+					work.CommentIndexes += plan.Loops
+				}
 			}
 			for _, child := range plan.Plans {
-				work += count(child)
+				count(child, recursive)
 			}
-			return work
 		}
-		work := count(plans[0].Plan)
-		if work == 0 {
+		count(plans[0].Plan, false)
+		if work.Regex == 0 {
 			t.Fatal("EXPLAIN did not observe mention extraction work")
+		}
+		if work.DescriptionIndexes == 0 || work.CommentIndexes == 0 {
+			t.Errorf("depth %d: reverse mentions must use description and comment text indexes; observed description=%d comment=%d", depth, work.DescriptionIndexes, work.CommentIndexes)
 		}
 		return work
 	}
-	before := []int{measure(1), measure(2)}
+	before := []mentionWork{measure(1), measure(2)}
 	for index := 0; index < 80; index++ {
 		unrelated := dbfx.Issue(t, fmt.Sprintf("unrelated relations %d", index))
 		content := "[self](mention://issue/" + unrelated + ")"
@@ -207,9 +239,12 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 	}
 	for depth := 1; depth <= 2; depth++ {
 		after := measure(depth)
-		t.Logf("depth %d: regexp_matches invocations before=%d after=%d with 80 unrelated issues/comments", depth, before[depth-1], after)
-		if after > before[depth-1]+8 {
-			t.Errorf("depth %d: mention extraction work grew with workspace size: %d -> %d", depth, before[depth-1], after)
+		t.Logf("depth %d: mention work before=%+v after=%+v with 80 unrelated issues/comments", depth, before[depth-1], after)
+		if after.Regex > before[depth-1].Regex+8 {
+			t.Errorf("depth %d: mention extraction work grew with workspace size: %d -> %d", depth, before[depth-1].Regex, after.Regex)
+		}
+		if after.DescriptionIndexes != before[depth-1].DescriptionIndexes || after.CommentIndexes != before[depth-1].CommentIndexes {
+			t.Errorf("depth %d: reverse mention index lookups changed with unrelated workspace content: %+v -> %+v", depth, before[depth-1], after)
 		}
 	}
 }

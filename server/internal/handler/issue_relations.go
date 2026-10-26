@@ -95,11 +95,11 @@ forward_mentions AS MATERIALIZED (
  UNION ALL
  SELECT i.id,target.id,'mention'
  FROM workspace_issues i JOIN frontier target
-  ON strpos(lower(i.description),'mention://issue/'||target.id::text)>0
+  ON lower(coalesce(i.description,'')) LIKE '%mention://issue/'||target.id::text||'%'
  UNION ALL
  SELECT i.id,target.id,'mention'
  FROM workspace_issues i JOIN comment c ON c.issue_id=i.id
- JOIN frontier target ON strpos(lower(c.content),'mention://issue/'||target.id::text)>0
+ JOIN frontier target ON lower(c.content) LIKE '%mention://issue/'||target.id::text||'%'
  UNION ALL
  SELECT least(first.issue_id,second.issue_id),greatest(first.issue_id,second.issue_id),'shared_pr'
  FROM frontier JOIN issue_pull_request first ON first.issue_id=frontier.id
