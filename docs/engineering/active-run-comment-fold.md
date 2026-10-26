@@ -2,7 +2,7 @@
 
 Plan only. No code ships until a different-lab reviewer returns PASS (CHE-1442 acceptance 1).
 
-Hindsight (`multica-org`, 2026-10-26 11:48 ICT): reflect: unavailable. Two `reflect` calls returned `503 No available accounts`. No memory is cited.
+Hindsight (`multica-org`): reflect: unavailable. Calls at 2026-10-26 11:48 ICT (two) and 12:27 ICT (one) returned `503 No available accounts`. No memory is cited.
 
 ## Problem
 
@@ -20,7 +20,7 @@ Three gaps follow:
 
 1. A comment for a `running` agent always adds a run.
 2. `reconcileCommentsOnCompletion` runs on `CompleteTask` only (`handler/daemon.go`). A comment deferred onto a run that then fails or is cancelled gets no follow-up.
-3. `reconcileCommentsOnCompletion` returns nothing. It logs a `ListReconcilableCommentsForIssueSince` or `GetIssue` error and returns, and `CompleteTask` continues (`handler/daemon.go:4999`, `5293-5296`). A replay that is blocked and whose obligation cannot be handed off is only logged (`slog.Error ... needs a durable obligation record`). Each of these paths loses the comment.
+3. `reconcileCommentsOnCompletion` returns nothing. It logs a `ListReconcilableCommentsForIssueSince` or `GetIssue` error and returns, and `CompleteTask` continues (`handler/daemon.go:4999`, `5293-5296`). A replay that is blocked and whose obligation cannot be handed off is only logged (`slog.Error ... needs a durable obligation record`). The replay loop also turns lookup errors into "no route": a `GetCommentInWorkspace` error on the parent is ignored (`daemon.go:5350-5355`), and `computeCommentAgentTriggers` and `ResolveOriginatorFromTriggerComment` treat a failed agent, task, squad or comment read as "no trigger" or "unattributed". The loop then skips the comment (`daemon.go:5390-5392`). Each of these paths loses the comment.
 
 ## Options
 
@@ -40,7 +40,7 @@ sequenceDiagram
     participant R as resolveCommentTriggerEnqueue
     participant T as Active run T (running)
     participant D as Daemon
-    participant X as Release (terminal hook + sweeper)
+    participant X as Release obligation (DB trigger + handler + sweeper)
     C->>R: trigger for agent A
     R->>R: queued fold (existing)? yes, done
     R->>R: bind auto supplement to T? (guards below)
@@ -52,15 +52,18 @@ sequenceDiagram
     else any guard fails
         R->>R: enqueue successor (existing path)
     end
-    T-->>X: run ends (completed, failed or cancelled) with an undelivered input
-    X->>R: replay each input through normal triggers for A
-    R->>R: queued fold or fresh enqueue (one run, deduped)
-    R-->>X: per-input result
-    alt every input handled (table below)
-        X->>X: write task_comment_release row
-    else any input not handled
-        X->>X: return error, write no row
-        Note over X: next sweeper tick retries the run
+    T-->>X: run ends (completed, failed or cancelled)
+    X->>X: DB trigger opens pending row (same transaction)
+    loop until released (no cutoff)
+        X->>X: claim obligation (lease)
+        X->>R: replay each input through normal triggers for A
+        R->>R: queued fold or fresh enqueue (one run, deduped)
+        R-->>X: per-input result
+        alt every input handled (table below)
+            X->>X: mark released
+        else any input not handled
+            X->>X: keep pending, record error, back off
+        end
     end
 ```
 
@@ -80,43 +83,77 @@ Order in `resolveCommentTriggerEnqueue`: queued fold, then auto bind, then enque
 
 1. Migration, additive, no foreign keys:
    - `task_supplement.mode TEXT NOT NULL DEFAULT 'explicit' CHECK (mode IN ('explicit','auto'))`.
-   - New table `task_comment_release (task_id UUID NOT NULL, released_at TIMESTAMPTZ NOT NULL DEFAULT now())` with a unique index on `task_id`, built `CONCURRENTLY` in its own migration. It is a side table because `agent_task_queue` is a hot `SELECT *` table (migration 538 note). One row means "this run's undelivered inputs were handed back to routing".
+   - New table `task_comment_release (task_id UUID NOT NULL, opened_at TIMESTAMPTZ NOT NULL DEFAULT now(), released_at TIMESTAMPTZ NULL, attempts INT NOT NULL DEFAULT 0, next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_error TEXT NULL)`. It is a side table because `agent_task_queue` is a hot `SELECT *` table (migration 538 note). A row with `released_at IS NULL` is a **pending release obligation**: this run may still owe a replay. A row with `released_at` set means every input was handled.
+   - Unique index on `task_id`, and a partial index on `next_attempt_at WHERE released_at IS NULL`. Each is built `CONCURRENTLY` in its own migration.
+   - Trigger `open_task_comment_release`, `AFTER UPDATE OF status ON agent_task_queue`, with the same predicate as `settle_terminal_task_supplements` (migration 538): `OLD.status` non-terminal and `NEW.status IN ('completed','failed','cancelled')`. It inserts the pending row (`ON CONFLICT DO NOTHING`). The obligation is then durable in the same transaction as every terminal transition, including the bulk SQL cancels (`CancelAgentTasksByIssue`, `CancelTasksForAgent`, runtime-offline failure) that run no handler code. No terminal path needs its own hook.
 2. `BindAutoCommentTaskSupplement` query: `BindCommentTaskSupplement` plus the head and role guards, writes `mode='auto'`.
 3. `foldCommentIntoRunningTurn` in `handler/comment.go`, wired as above. Notifies the daemon with `NotifyTaskSupplementAvailable`.
 4. `ListReconcilableCommentsForIssueSince`:
    - The supplement exclusion becomes `mode='explicit' OR status='delivered'`. An undelivered auto supplement is replayable.
    - The explicit-cancel acknowledgement also matches a comment bound to the cancelled run by a supplement, not only by `trigger_comment_id` or `coalesced_comment_ids`.
    - New argument `planned_only`. When true, only `c.id = ANY(planned_comment_ids)` qualifies. The thread and `created_at > since` window is off.
-5. Termination release. Extract the per-comment replay body of `reconcileCommentsOnCompletion` into `replayCommentForAgent(...) error`. Change `reconcileCommentsOnCompletion(ctx, task)` to return `error`. New `releaseInputsOnTermination(ctx, task) error`:
-   - Builds the run's **undelivered inputs**: `coalesced_comment_ids` plus the trigger comment, minus `delivered_comment_ids`, plus every auto supplement of the run that is not `delivered`.
+5. Release. Extract the per-comment replay body of `reconcileCommentsOnCompletion` into `replayCommentForAgent(...) error`. `reconcileCommentsOnCompletion` is replaced by `releaseTaskInputs(ctx, taskID) error`:
+   - Loads the task. Builds the run's **undelivered inputs**: `coalesced_comment_ids` plus the trigger comment, minus `delivered_comment_ids`, plus every auto supplement of the run that is not `delivered`.
    - Runs the reconcile with `planned_only=true` over that set on a failed or cancelled run, and the full reconcile (`planned_only=false`) on a completed run. A planned input (a comment registered on a `dispatched` run by `registerPlannedCommentForActiveTask`) and an auto supplement take the same path.
-   - Replays every input first. Inserts the `task_comment_release` row (`ON CONFLICT DO NOTHING`) only when every input is handled (see *Release row* below). Otherwise it returns the error and writes no row. A crash between the replay and the row repeats the replay. The pending-task fold absorbs the repeat.
-6. Call sites for `releaseInputsOnTermination`:
-   - `CompleteTask`, in place of today's `reconcileCommentsOnCompletion` call. The terminal transaction is already committed, so an error does not change the HTTP status: the daemon retry of the callback returns early (`transitioned=false`) and would not retry the replay. `CompleteTask` logs the error at `Warn` with the task ID, writes no row, and continues with `NotifyTaskFinished`. The sweeper owns the retry.
-   - `FailTask` and `CancelTask` handlers, with the same error handling.
-   - A runtime-sweeper tick (`cmd/server`). It selects failed, cancelled and completed runs with `completed_at` in the last 24h, no release row, and at least one input to replay: an undelivered planned input or auto supplement, or for a completed run any comment in the run's reconcile window. It covers offline-runtime failure, the `CancelTasksForIssue`, `CancelTasksForAgent` and archived-agent cancels, a crash between commit and release, and every run whose release returned an error. It calls `releaseInputsOnTermination` per run, so each tick retries an unreleased run until a release succeeds.
+   - Replays every input, even after one fails, and returns the first error. It returns `nil` only when every input is handled (see *Release obligation* below).
+   - Replay uses error-returning lookups. `computeCommentAgentTriggers` gets an option `FailOnLookupError`. With the option on, each lookup that today folds an error into a route decision (`err != nil || ...` on agent, task, squad and root comment reads, and the `RequireActiveIssueProject` internal error) returns the error instead. A `pgx.ErrNoRows` keeps today's meaning: the entity is gone. `ResolveOriginatorFromTriggerComment` and `ResolveIssueReviewSHAParam` get error-returning variants with the same rule. The live comment-create path keeps the option off, so live routing does not change.
+6. Obligation processing. `ClaimTaskCommentRelease` claims a pending row whose `next_attempt_at <= now()` (`FOR UPDATE SKIP LOCKED`), sets `next_attempt_at = now() + 5 minutes` as a lease and increments `attempts`. Then `releaseTaskInputs` runs:
+   - `nil`: set `released_at = now()`.
+   - error: keep `released_at` NULL, store `last_error`, set `next_attempt_at = now() + min(30s * 2^(attempts-1), 15 minutes)`.
+   - A crash after the claim leaves the lease. The row is claimable again after 5 minutes.
+   - There is **no cutoff**. A pending row stays claimable until a release succeeds. From `attempts >= 10`, every failed attempt logs at `Error` with the task ID and `last_error`, so a stuck obligation is visible. It is never dropped.
+   - Callers:
+     - `CompleteTask`, `FailTask` and `CancelTask` claim the row of their own task right after the terminal commit, in place of today's `reconcileCommentsOnCompletion` call. A claim or release error does not change the HTTP status: the terminal transaction is committed, and a daemon retry of the callback returns early (`transitioned=false`). The handler logs at `Warn` and continues with `NotifyTaskFinished`. If the claim finds no row ready, the sweeper owns the row.
+     - A runtime-sweeper tick (`cmd/server`) claims up to N ready rows through the partial index and processes each. The tick has no time window. It covers every terminal path without handler code, every failed release and every expired lease.
    - The window stays `planned_only` on failed and cancelled runs. A failed run does not replay every member comment posted during it. Retry of the failed work itself belongs to CHE-1126.
+   - Housekeeping: the sweeper deletes rows with `released_at` older than 7 days. It never deletes a pending row.
 7. `ClaimNextTaskSupplement`: resolve the author name for agent authors (today it joins `"user"` only and prints "a user").
 8. Trigger outcome: report `coalesced` with a new reason `coalesced_active_run`. Do not add a status. The client allowlist (`packages/core/issues/comment-trigger-outcomes.ts:77`) and the RHC-2 admission check (`dotfiles-agents/scripts/check-handoff-links.sh`, status list `queued | coalesced | deferred`) both accept `coalesced`.
 
-### Release row: only after every input is handled
+### Release obligation: released only after every input is handled
 
-The `task_comment_release` row is the only signal that tells the sweeper to skip a run. So the row is written only when the handler replayed every input or handed it off durably.
+`released_at` is the only signal that ends the obligation. It is set only when the handler replayed every input or handed it off durably.
 
-| Per-input result | Handled? | Why |
+Rule: only two outcomes count as handled without a run: an entity that is gone (`pgx.ErrNoRows`) and an explicit routing or policy decision. Any other error at any step is not handled.
+
+| Step and result | Handled? | Why |
 | --- | --- | --- |
+| Claim, task load, input build, `ListReconcilableCommentsForIssueSince`: query error | no | Nothing was replayed. Release returns the error. |
+| Task row not found (deleted) | yes | No run, no inputs. |
+| `GetIssue` not found | yes | The issue is deleted, nothing can replay (cancel table below). |
+| `GetIssue`, any other error | no | Retry. |
+| Input already delivered, or a note comment | yes | Nothing is owed. |
+| Input comment deleted (excluded by the reconcile query) | yes | The comment is gone. |
+| Parent `GetCommentInWorkspace` not found | yes | The parent is deleted. Routing runs without a parent, as today. |
+| Parent `GetCommentInWorkspace`, any other error | no | A missing parent can drop the route (`daemon.go:5350-5355`). Retry. |
+| Originator or review head SHA lookup, error other than not found | no | An unattributed comment or a wrong head would turn a read error into a policy block. Retry. |
+| `computeCommentAgentTriggers` lookup error (`FailOnLookupError`) | no | Retry. |
+| Routing keeps no trigger for this agent, with no lookup error | yes | Routing decided that nothing is owed. |
 | Enqueued (`queued`), folded (`coalesced`), `deferred` or `steered` | yes | A run now owns the comment. |
-| Already delivered, a note comment, or routing keeps no trigger for this agent | yes | Routing decided that nothing is owed. |
-| `blocked` with a policy reason (invocation not allowed, archived agent, self-trigger, attribution) | yes | Re-checked routing refused the run. This is the routing outcome, not a lost input. |
-| `blocked`, obligation handed to the active task (`propagateUncoveredCommentObligation` returns true) | yes | The active task's plan now carries the comment. |
-| Delegated failure recovery replay returns `nil` | yes | Same as today. |
-| `GetIssue` returns not found | yes | The issue is deleted, nothing can replay (cancel table below). |
-| `ListReconcilableCommentsForIssueSince` error, or any other `GetIssue` error | no | Nothing was replayed. The whole release returns the error. |
-| `blocked` with `ReasonInternalError` | no | Transient. Retry on the next tick. |
-| `blocked`, and the hand-off fails (slot held by a different-head queued task) | no | Today this is only logged. With no row, the sweeper retries, and the retry enqueues once that task ends and frees the slot. |
-| Delegated failure recovery replay returns an error | no | Retry on the next tick. |
+| `blocked` with a reason other than `ReasonInternalError` (invocation not allowed, archived agent, self-trigger, attribution, project inactive) | yes | Re-checked routing refused the run. This is the routing outcome, not a lost input. |
+| `blocked` with `ReasonInternalError`, or no result for this agent | no | Transient. Retry. |
+| `blocked`, obligation handed off (`propagateUncoveredCommentObligation` returns true: planned on the active task, merged into a pending task, or enqueued) | yes | A run's plan now carries the comment. When that run ends, its own obligation row covers the comment as a planned input. |
+| `blocked`, hand-off fails (slot held by a different-head queued task) | no | Today this is only logged. The row stays pending. A later attempt enqueues once that task ends and frees the slot. |
+| Delegated failure recovery replay: `nil` / error | yes / no | Same as today on success. Retry on error. |
+| Mark released fails | no | The lease expires and the replay repeats. The pending-task fold or the delivered set absorbs the repeat (open question 1). |
 
-The handler replays every input even after one fails, and returns the first error. An input that is already handled is absorbed on the retry by the pending-task fold or the delivered set.
+### Failure-path walk against acceptance 3
+
+Each path below ends either in a run that owns the comment, in an explicit decision that nothing is owed, or in a pending row that stays claimable.
+
+| Path | Ends in |
+| --- | --- |
+| Run ends through any terminal SQL, with or without handler code | Pending row in the same transaction (trigger). |
+| Handler or server crashes after the terminal commit | Pending row exists. Sweeper claims it. |
+| Crash after the claim, before the mark | Lease expires after 5 minutes. Sweeper claims it again. |
+| Query or lookup error at any step | Pending row, back-off, retry. No cutoff. |
+| Policy block on replay | Decision recorded by routing, row released. |
+| Hand-off fails | Pending row, retried until the slot frees. |
+| Obligation handed to an active task | That task's own pending row covers the comment when it ends. |
+| Database down for a long time | Pending rows wait. Processing resumes with the database. |
+| Input delivered to the run (`delivered_comment_ids` or supplement `delivered`), then the run fails | The run received the comment, same as its own trigger comment today. Retry of the failed run belongs to CHE-1126. |
+| Runs that end after the migration but on an old application build | Pending row from the trigger. The old build also runs today's completion reconcile. The new build's sweeper replays again: the pending-task fold or the delivered set absorbs it, or one extra follow-up runs (open question 1). |
+| Runs that ended before the migration | No row. They keep today's behavior (`CompleteTask` reconcile already ran, failed and cancelled runs had none). Not backfilled. |
 
 ### Cancellation sources
 
@@ -126,7 +163,7 @@ The existing reconcile already splits cancels by `cancelled_by_type` (`ListRecon
 | --- | --- | --- |
 | A member or an agent cancels this run (`CancelAgentTaskByUser`) | `member` or `agent` | Acknowledged. No replay. |
 | Server-initiated: stale plan, claim failure, offline runtime, archived agent (`CancelAgentTask`, `CancelAgentTaskWithReason`) | `system` | Replayed through normal triggers. Routing, permissions and agent state are re-checked, so an archived agent yields a blocked outcome, not a run. |
-| Issue deletion (`CancelAgentTasksByIssue`) | `system` | Nothing replays: the issue is gone, so the replay finds no issue and the release row is written. |
+| Issue deletion (`CancelAgentTasksByIssue`) | `system` | Nothing replays: the issue is gone, so the replay finds no issue and the obligation is released. |
 
 There is no member-level "cancel all" path. A member stops runs one task at a time, which is the explicit row. So replay never recreates work right after an intentional stop.
 
@@ -135,6 +172,7 @@ There is no member-level "cancel all" path. A member stops runs one task at a ti
 - Mention routing and permissions. Replay re-runs them (`computeCommentAgentTriggers`, `canInvokeAgent`).
 - Member steering. `mode='explicit'` keeps its semantics and its exclusion from reconcile.
 - Daemon protocol. The server already gates on the capability row.
+- Live comment routing. `FailOnLookupError` is on only in the replay path.
 
 ## Acceptance 3 check
 
@@ -145,8 +183,8 @@ There is no member-level "cancel all" path. A member stops runs one task at a ti
 | Failed | auto supplement undelivered, or planned input from `dispatched` | Release replays: one follow-up run. |
 | Cancelled by `system` | same | Release replays: one follow-up run. |
 | Cancelled by a member or an agent | same | Acknowledged: no run. |
-| Any terminal, hook missed | no release row | Sweeper replays once. |
-| Any terminal, release returned an error | no release row | Sweeper retries each tick until a release succeeds. |
+| Any terminal path without handler code | pending obligation row (trigger) | Sweeper replays once and marks released. |
+| Any terminal, release returned an error | row stays pending | Retried with back-off until a release succeeds. No cutoff. |
 | Provider rejects the input | supplement `failed` (ack) | Release replays when T ends. |
 
 A follow-up after a failed run is not a regression. Today the `queued` successor already exists for a `running` run. For a `dispatched` run the comment is lost on failure today.
@@ -163,21 +201,24 @@ Each runs against the handler test database, like `comment_issue_fold_test.go`.
 6. **System cancel** of a `running` run (auto supplement) and of a `dispatched` run (planned input): one follow-up run each.
 7. **Explicit cancel** by a member and by an agent, for both input kinds: no follow-up run. Separate test from 6.
 8. Run completes with the supplement `delivered`: no follow-up.
-9. Sweeper releases a failed run's leftover once. A second tick adds nothing. A crash between replay and the release row leaves one pending run after the retry.
+9. Sweeper releases a failed run's leftover once and marks the row released. A second tick adds nothing. An expired lease (crash between replay and mark) leaves one pending run after the retry.
 10. A failed run does not replay a member comment that was neither planned nor supplemented.
 11. Agent-authored comment shows the agent name at claim.
 12. Explicit steering test suite stays green (`comment_steer_test.go`, `task_supplement_test.go`).
-13. **Completion query fails.** Force `ListReconcilableCommentsForIssueSince` to fail during `CompleteTask` for a run with an undelivered input (a failing query hook on the handler's reconcile queries in the test). Then check: `CompleteTask` returns 200, no `task_comment_release` row exists, and no follow-up run exists. Remove the fault and run one sweeper tick: one follow-up run, and the release row now exists. A second tick adds nothing. Red today: the error is logged, and no path ever replays the comment.
-14. **Hand-off fails.** A failed run's planned input replays as `blocked` because a different-head queued task holds the slot. Check: no release row. Complete that queued task, then run one sweeper tick: one follow-up run for the comment, and the release row exists.
+13. **Completion query fails.** Force `ListReconcilableCommentsForIssueSince` to fail during `CompleteTask` for a run with an undelivered input. Fault injection: a test `DBTX` wrapper that fails a query by its sqlc `-- name:` tag. Then check: `CompleteTask` returns 200, the obligation row is pending with `last_error` set, and no follow-up run exists. Remove the fault, move `next_attempt_at` to now, and run one sweeper tick: one follow-up run, and the row is released. A second tick adds nothing. Red today: the error is logged, and no path ever replays the comment.
+14. **Hand-off fails.** A failed run's planned input replays as `blocked` because a different-head queued task holds the slot. Check: the row stays pending. Complete that queued task, then run one sweeper tick: one follow-up run for the comment, and the row is released.
+15. **Parent lookup fails.** A reply comment is a planned input of a failed run. Fail `GetCommentInWorkspace` once through the same wrapper. Check: the row stays pending and no follow-up exists. Next tick without the fault: one follow-up run, row released. Also: a deleted parent (not found) releases on the first attempt and the comment is routed without a parent.
+16. **Every replay lookup fails closed.** Table test over each sqlc query the replay path calls (task, supplements, reconcile list, issue, parent comment, originator comment, agent, squad, task, root comment, project, review head SHA, enqueue). For each, fail it once: the row stays pending and no input is acknowledged as handled. Then retry without the fault: one follow-up run, row released. The test lists the queries explicitly. A new query in the replay path fails the test until it is added.
+17. **Obligation opens on every terminal transition and has no cutoff.** Each terminal-transition query in `queries/agent.sql` and `queries/runtime.sql`, including `CancelAgentTasksByIssue` and runtime-offline failure, creates a pending row. A row with `attempts = 50` and `opened_at` 30 days old is still claimed and released when the fault clears.
 
 ## Open questions for the reviewer
 
-1. **Replay window.** A repeat after a crash between replay and release row can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
+1. **Replay window.** A repeat after a crash between replay and the released mark can run one extra follow-up if the first follow-up already completed. The plan accepts that rare window. A claim-before-replay order would trade it for a lost comment.
 2. **Upstream.** `upstream/main` (fetched for this plan) has steering work only: more providers (Kiro `#9396`, Cursor `#9322`), Claude handshake budget (`#9252`), supplement root owners (`#9061`). No rule folds a comment into an active run without the author's pick. The plan reuses that provider gating through the capability row.
-3. **Retry window.** The sweeper retries an unreleased run only while `completed_at` is in the last 24h. A failure that lasts longer (for example a 24h database outage) leaves the input unreplayed. The handler logs every failed release at `Warn` with the task ID. The sweeper logs a failed release at `Error` when the run's `completed_at` is older than 23h, the last retries before the run leaves the window. The plan accepts that bound. A longer window costs a wider scan of `agent_task_queue`.
+3. **Cutoff, for Cheese.** The plan has no cutoff: a pending obligation is retried until it succeeds, as acceptance 3 requires. Cost: a permanently failing row is retried every 15 minutes and logs at `Error` from attempt 10. If Cheese wants a cutoff (for example, stop after N days and post a blocker comment on the issue), that is an acceptance change and needs Cheese's decision. The plan does not rely on a cutoff.
 
 The `task_supplement` primary key is `(comment_id, task_id)` (migration 549), so one comment can fold into several agents' runs. No index change is needed.
 
 ## Size
 
-About 5.5h: migrations and queries 1h, bind and wiring 1h, release, sweeper and cancel rules 2h, error-returning reconcile and handled-input rules 0.5h, tests alongside. Over the 4h guide because planned inputs and completed runs now share the release path.
+About 7h: migrations, trigger and queries 1.5h, bind and wiring 1h, release, obligation claim, sweeper and cancel rules 2h, error-returning lookups in the replay path 1h, fault-injection wrapper and tests 1.5h. Over the 4h guide. Split for code: layer 1 obligation table, trigger, release and sweeper (tests 4-10, 13-17); layer 2 auto-supplement bind (tests 1-3, 11-12).
