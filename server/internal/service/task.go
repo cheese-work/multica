@@ -5074,6 +5074,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
@@ -5668,6 +5669,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
