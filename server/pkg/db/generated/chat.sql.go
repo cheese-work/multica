@@ -1528,6 +1528,7 @@ WITH retired_sessions AS (
         $2::bigint IS NULL
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
+      AND COALESCE(t.chat_compaction_epoch, 0) = $3::bigint
       AND t.status = 'failed'
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1543,6 +1544,7 @@ WITH retired_sessions AS (
         $2::bigint IS NULL
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
+      AND COALESCE(t.chat_compaction_epoch, 0) = $3::bigint
       AND t.session_id IS NOT NULL
       AND t.status IN ('completed', 'failed', 'cancelled')
     ORDER BY t.session_id, t.completed_at DESC
@@ -1593,6 +1595,7 @@ LIMIT 1
 type GetLastChatTaskSessionParams struct {
 	ChatSessionID          pgtype.UUID `json:"chat_session_id"`
 	ChannelContextRevision pgtype.Int8 `json:"channel_context_revision"`
+	CompactionEpoch        int64       `json:"compaction_epoch"`
 }
 
 type GetLastChatTaskSessionRow struct {
@@ -1633,6 +1636,11 @@ type GetLastChatTaskSessionRow struct {
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
 //
+// Both scans are scoped to the chat's current compaction_epoch: a session from
+// before an in-place /compact is never resumed, whatever the pointer says. A
+// task is stamped with the epoch at first dispatch, so a follow-up that began
+// before the boundary but was dispatched after it counts as current.
+//
 // Selection is per-session, not per-row, and retired sessions are excluded —
 // both mirroring GetLastTaskSession, which this query had drifted away from.
 // A plain row-level filter reopens the poisoning wormhole GH #5975 closed on
@@ -1642,7 +1650,7 @@ type GetLastChatTaskSessionRow struct {
 // poisoned row invalidates the whole session, while a genuinely different
 // healthy session stays eligible.
 func (q *Queries) GetLastChatTaskSession(ctx context.Context, arg GetLastChatTaskSessionParams) (GetLastChatTaskSessionRow, error) {
-	row := q.db.QueryRow(ctx, getLastChatTaskSession, arg.ChatSessionID, arg.ChannelContextRevision)
+	row := q.db.QueryRow(ctx, getLastChatTaskSession, arg.ChatSessionID, arg.ChannelContextRevision, arg.CompactionEpoch)
 	var i GetLastChatTaskSessionRow
 	err := row.Scan(&i.SessionID, &i.WorkDir, &i.RuntimeID)
 	return i, err
@@ -1661,6 +1669,46 @@ LIMIT 1
 // a resume needs a real completed turn to resume from.
 func (q *Queries) GetLatestAssistantChatMessageForSession(ctx context.Context, chatSessionID pgtype.UUID) (ChatMessage, error) {
 	row := q.db.QueryRow(ctx, getLatestAssistantChatMessageForSession, chatSessionID)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+	)
+	return i, err
+}
+
+const getLatestCompactionSummary = `-- name: GetLatestCompactionSummary :one
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest in-place compaction summary of a DM: the seed of its next turn
+// while the resume pointer is empty. Messages after it are the post-boundary
+// history.
+func (q *Queries) GetLatestCompactionSummary(ctx context.Context, chatSessionID pgtype.UUID) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, getLatestCompactionSummary, chatSessionID)
 	var i ChatMessage
 	err := row.Scan(
 		&i.ID,

@@ -1242,13 +1242,16 @@ LIMIT 1;
 -- Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
 -- whether the most recent terminal task on this chat session withheld its Codex
 -- session because the rollout was missing. When true the next chat claim resumed
--- an older session (or none), so it must disclose the continuity gap.
+-- an older session (or none), so it must disclose the continuity gap. Scoped to
+-- the chat's current compaction_epoch: a gap before an in-place /compact is
+-- covered by the compaction summary.
 SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
 WHERE chat_session_id = sqlc.arg('chat_session_id')
   AND (
     sqlc.narg('channel_context_revision')::bigint IS NULL
     OR COALESCE(channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
   )
+  AND COALESCE(chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
   AND status IN ('completed', 'failed')
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
