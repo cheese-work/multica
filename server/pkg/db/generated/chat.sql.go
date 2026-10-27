@@ -3947,7 +3947,11 @@ const moveChatMessagesOfTasksToSession = `-- name: MoveChatMessagesOfTasksToSess
 WITH moved AS (
     SELECT source.id, row_number() OVER (ORDER BY source.created_at, source.id) AS position
     FROM chat_message AS source
-    WHERE source.chat_session_id = $3 AND source.task_id = ANY($4::uuid[])
+    WHERE source.chat_session_id = $3 AND source.role = 'user'
+      AND source.task_id IN (
+          SELECT COALESCE(task.chat_input_task_id, task.id) FROM agent_task_queue AS task
+          WHERE task.id = ANY($4::uuid[])
+      )
 ),
 attached AS (
     UPDATE attachment AS file SET chat_session_id = $1
@@ -3969,6 +3973,8 @@ type MoveChatMessagesOfTasksToSessionParams struct {
 
 // Moves the input messages of the tasks above, in their original order, to just
 // after the continuation summary so the new DM reads summary, then questions.
+// A retry reads the batch of the root it cloned (chat_input_task_id), so the
+// messages are matched through that owner, not the moved task's own id.
 func (q *Queries) MoveChatMessagesOfTasksToSession(ctx context.Context, arg MoveChatMessagesOfTasksToSessionParams) error {
 	_, err := q.db.Exec(ctx, moveChatMessagesOfTasksToSession,
 		arg.ToSessionID,

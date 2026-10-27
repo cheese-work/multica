@@ -43,10 +43,16 @@ RETURNING id;
 -- name: MoveChatMessagesOfTasksToSession :exec
 -- Moves the input messages of the tasks above, in their original order, to just
 -- after the continuation summary so the new DM reads summary, then questions.
+-- A retry reads the batch of the root it cloned (chat_input_task_id), so the
+-- messages are matched through that owner, not the moved task's own id.
 WITH moved AS (
     SELECT source.id, row_number() OVER (ORDER BY source.created_at, source.id) AS position
     FROM chat_message AS source
-    WHERE source.chat_session_id = sqlc.arg(from_session_id) AND source.task_id = ANY(sqlc.arg(task_ids)::uuid[])
+    WHERE source.chat_session_id = sqlc.arg(from_session_id) AND source.role = 'user'
+      AND source.task_id IN (
+          SELECT COALESCE(task.chat_input_task_id, task.id) FROM agent_task_queue AS task
+          WHERE task.id = ANY(sqlc.arg(task_ids)::uuid[])
+      )
 ),
 attached AS (
     UPDATE attachment AS file SET chat_session_id = sqlc.arg(to_session_id)

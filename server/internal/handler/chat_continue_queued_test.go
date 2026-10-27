@@ -24,13 +24,24 @@ func TestContinueChatSessionMovesQueuedTurns(t *testing.T) {
 			runtimeID := handlerTestRuntimeID(t)
 			sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{})
 			runningID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": sourceID})
-			queuedIDs := make([]string, 2)
-			messageIDs := make([]string, 2)
-			for i, content := range []string{"first queued", "second queued"} {
+			queuedIDs := make([]string, 3)
+			messageIDs := make([]string, 3)
+			attachmentIDs := make([]string, 3)
+			for i, content := range []string{"first queued", "second queued", "retried"} {
 				queuedIDs[i] = dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": sourceID})
 				dbfx.Exec(t, `UPDATE agent_task_queue SET chat_input_task_id = id WHERE id = $1`, queuedIDs[i])
 				messageIDs[i] = dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "task_id": queuedIDs[i], "role": "user", "content": content})
+				attachmentIDs[i] = dbfx.Insert(t, "attachment", testutil.Cols{
+					"workspace_id": testWorkspaceID, "uploader_type": "member", "uploader_id": testUserID,
+					"filename": "input.txt", "url": "https://example.com/input.txt", "content_type": "text/plain", "size_bytes": 1,
+					"chat_session_id": sourceID, "chat_message_id": messageIDs[i],
+				})
 			}
+			// The third turn is a deferred auto-retry: it inherits the failed root's
+			// input batch, so its message and file are still bound to the root.
+			rootID := queuedIDs[2]
+			dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed' WHERE id = $1`, rootID)
+			queuedIDs[2] = dbfx.Task(t, agentID, testutil.Cols{"status": "deferred", "runtime_id": runtimeID, "chat_session_id": sourceID, "parent_task_id": rootID, "chat_input_task_id": rootID})
 
 			path, taskID := "/api/chat/sessions/"+sourceID+"/continue", ""
 			if taskScoped {
@@ -66,8 +77,11 @@ func TestContinueChatSessionMovesQueuedTurns(t *testing.T) {
 					t.Errorf("queued turn %d: task in %s, message in %s, after summary %v; want new DM %s", i, taskSession, messageSession, afterSummary, result.Session.ID)
 				}
 			}
-			if count := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND task_id = ANY($2)`, result.Session.ID, queuedIDs); count != 2 {
-				t.Errorf("new DM holds %d queued messages, want 2", count)
+			if count := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND id = ANY($2)`, result.Session.ID, messageIDs); count != 3 {
+				t.Errorf("new DM holds %d queued messages, want 3", count)
+			}
+			if count := dbfx.Count(t, `SELECT count(*) FROM attachment WHERE chat_session_id = $1 AND id = ANY($2)`, result.Session.ID, attachmentIDs); count != 3 {
+				t.Errorf("new DM holds %d queued attachments, want 3", count)
 			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1 AND status IN ('queued', 'deferred')`, sourceID); count != 0 {
 				t.Errorf("archived DM still has %d claimable tasks", count)
