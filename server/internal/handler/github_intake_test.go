@@ -243,3 +243,50 @@ func TestGitHubIntakeMissingDeliveryGUID(t *testing.T) {
 	}
 	assertGitHubIntakeNoEffects(t, fixture)
 }
+
+func TestGitHubIntakeWorkspaceDeletion(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	delivery := fixture.issueID + "-workspace-deletion"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("initial delivery = %d", response.Code)
+	}
+	otherWorkspaceID := dbfx.Workspace(test, "Other intake workspace", "github-intake-"+fixture.issueID)
+	ctx := context.Background()
+	transaction, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer transaction.Rollback(ctx)
+	if _, err := transaction.Exec(ctx, `
+INSERT INTO github_webhook_revision (
+    workspace_id, installation_id, repository_id, pr_number, object_kind, object_id,
+    body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type,
+    head_sha, review_state, state, reason
+) VALUES ($1, 2019001, 9001, 2019, 'review', 77, repeat('a', 64), $2,
+    'pull_request_review', 'submitted', 42, 42, 'reviewer', 'User', '',
+    'changes_requested', 'deferred', 'awaiting_admission')`, otherWorkspaceID, delivery); err != nil {
+		test.Fatal(err)
+	}
+	if err := fixture.handler.Queries.WithTx(transaction).DeleteWorkspacePullRequests(ctx, parseUUID(testWorkspaceID)); err != nil {
+		test.Fatal(err)
+	}
+	var remaining int
+	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID).Scan(&remaining); err != nil {
+		test.Fatal(err)
+	}
+	if remaining != 0 {
+		test.Fatalf("deleted workspace retains %d intake revisions, want 0", remaining)
+	}
+	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, otherWorkspaceID).Scan(&remaining); err != nil {
+		test.Fatal(err)
+	}
+	if remaining != 1 {
+		test.Fatalf("other workspace retains %d intake revisions, want 1", remaining)
+	}
+	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM github_webhook_intake WHERE delivery_guid=$1`, delivery).Scan(&remaining); err != nil {
+		test.Fatal(err)
+	}
+	if remaining != 1 {
+		test.Fatalf("shared signed deliveries = %d, want 1", remaining)
+	}
+}

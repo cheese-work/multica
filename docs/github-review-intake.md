@@ -34,6 +34,14 @@ deferred, never treated as proof that a PR is not a fork.
 Denials and deferrals log only routing identifiers, states and reason codes.
 GitHub comment or review text is not copied to logs or issue comments.
 
+Workspace deletion removes that workspace's normalized revision work in the
+existing pull-request teardown transaction. Other workspaces' revision rows
+remain. Raw signed receipts have global delivery GUIDs, not workspace ownership,
+and one delivery can serve multiple workspace bindings. The
+workspace deletion manifest retains those shared receipts, including denied
+receipts without a known workspace, rather than deleting another workspace's
+signed recovery source. Intake retention is separate from workspace teardown.
+
 ## Notify-only boundary
 
 This slice creates no issue comment, agent mention or run, including for a
