@@ -29,6 +29,9 @@
  */
 
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -40,6 +43,7 @@ import {
   hasBlockMounted,
   markBlockMounted,
   mountedBlockKey,
+  unmarkBlockMounted,
 } from "./mounted-block-registry";
 
 // Restoring an already-mounted block must happen before paint, or a recycled
@@ -58,8 +62,34 @@ const useIsomorphicLayoutEffect =
  */
 const NEAR_VIEWPORT_ROOT_MARGIN = "800px 0px";
 
+/**
+ * How far outside the viewport a mounted block must be before it can be
+ * released: three times the mount margin, so a block is never released inside
+ * the range where scrolling would bring it straight back.
+ */
+const FAR_VIEWPORT_ROOT_MARGIN = "2400px 0px";
+
+/** Quiet period outside the far margin before a block is released. */
+const RELEASE_AFTER_MS = 5_000;
+
+const RichBlockHoldContext = createContext<((held: boolean) => void) | null>(null);
+
 function supportsIntersectionObserver(): boolean {
   return typeof window !== "undefined" && typeof window.IntersectionObserver === "function";
+}
+
+/**
+ * Keep the enclosing LazyRichBlock mounted while `active` is true. Used by a
+ * block's own interactive state that lives outside the shell's DOM, such as a
+ * viewer in a portal. Outside a LazyRichBlock it does nothing.
+ */
+export function useRichBlockHold(active: boolean): void {
+  const setHeld = useContext(RichBlockHoldContext);
+  useEffect(() => {
+    if (!setHeld || !active) return;
+    setHeld(true);
+    return () => setHeld(false);
+  }, [setHeld, active]);
 }
 
 export function LazyRichBlock({
@@ -93,6 +123,12 @@ export function LazyRichBlock({
   // Everything environment-specific happens in the effect below, which never
   // runs on the server.
   const [mounted, setMounted] = useState(false);
+  // Height of the last released build, kept so the placeholder holds the space.
+  const [releasedHeightPx, setReleasedHeightPx] = useState(0);
+  const holdCount = useRef(0);
+  // The far observer has reported the shell outside the far margin.
+  const farAway = useRef(false);
+  const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Restore a block this session has already built. Kept out of the initial
   // state for the same reason as everything else here: the registry is empty on
@@ -142,6 +178,68 @@ export function LazyRichBlock({
     if (mounted && registryKey != null) markBlockMounted(registryKey);
   }, [mounted, registryKey]);
 
+  const cancelRelease = useCallback(() => {
+    if (releaseTimer.current == null) return;
+    clearTimeout(releaseTimer.current);
+    releaseTimer.current = null;
+  }, []);
+
+  // Read from the DOM, not tracked from focus events: a focused control that is
+  // removed fires no blur, so a tracked flag could pin the block forever.
+  const hasFocusWithin = useCallback(
+    () => ref.current?.contains(document.activeElement) ?? false,
+    [],
+  );
+
+  const release = useCallback(() => {
+    releaseTimer.current = null;
+    const el = ref.current;
+    if (!el || hasFocusWithin() || holdCount.current > 0) return;
+    setReleasedHeightPx(Math.ceil(el.getBoundingClientRect().height));
+    if (registryKey != null) unmarkBlockMounted(registryKey);
+    setMounted(false);
+  }, [registryKey, hasFocusWithin]);
+
+  // Release only once far away, quiet and not in use. Re-evaluated whenever one
+  // of those three changes.
+  const scheduleReleaseIfIdle = useCallback(() => {
+    cancelRelease();
+    if (!farAway.current || hasFocusWithin() || holdCount.current > 0) return;
+    releaseTimer.current = setTimeout(release, RELEASE_AFTER_MS);
+  }, [cancelRelease, release, hasFocusWithin]);
+
+  const setHeld = useCallback(
+    (held: boolean) => {
+      holdCount.current += held ? 1 : -1;
+      scheduleReleaseIfIdle();
+    },
+    [scheduleReleaseIfIdle],
+  );
+
+  useEffect(() => {
+    if (!mounted || !supportsIntersectionObserver()) return;
+    const el = ref.current;
+    if (!el) return;
+
+    farAway.current = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // The last entry is the most recent state of the single observed shell.
+        const latest = entries[entries.length - 1];
+        if (!latest) return;
+        farAway.current = !latest.isIntersecting;
+        scheduleReleaseIfIdle();
+      },
+      { root: scrollRoot, rootMargin: FAR_VIEWPORT_ROOT_MARGIN },
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      farAway.current = false;
+      cancelRelease();
+    };
+  }, [mounted, scrollRoot, scheduleReleaseIfIdle, cancelRelease]);
+
   return (
     <div
       ref={ref}
@@ -154,12 +252,18 @@ export function LazyRichBlock({
       // it collapses with the paragraphs on both sides, and the prose
       // first/last-child reset still applies.
       className="my-5"
+      onFocus={scheduleReleaseIfIdle}
+      onBlur={scheduleReleaseIfIdle}
       // The reservation persists after mount so the shell never shrinks back
       // and re-triggers a measurement pass. Real diagrams and the fixed-height
       // HTML preview normally exceed it, so it rarely adds visible space.
-      style={{ minHeight: reservedHeightPx }}
+      style={{ minHeight: Math.max(reservedHeightPx, releasedHeightPx) }}
     >
-      {mounted ? children : <RichBlockPlaceholder />}
+      {mounted ? (
+        <RichBlockHoldContext.Provider value={setHeld}>{children}</RichBlockHoldContext.Provider>
+      ) : (
+        <RichBlockPlaceholder />
+      )}
     </div>
   );
 }

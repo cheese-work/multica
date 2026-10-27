@@ -25,7 +25,7 @@ vi.mock("mermaid", () => ({
 
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
-import { MermaidDiagram } from "./mermaid-diagram";
+import { MermaidDiagram, resetMermaidInitialization } from "./mermaid-diagram";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
 const VIEWPORT = { width: 800, height: 400 };
@@ -53,6 +53,7 @@ beforeEach(() => {
   mermaidRenderMock.mockReset();
   mermaidRenderMock.mockResolvedValue({ svg: MOCK_SVG });
   mermaidInitializeMock.mockClear();
+  resetMermaidInitialization();
   copyTextMock.mockClear();
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
@@ -559,5 +560,69 @@ describe("MermaidDiagram error state", () => {
     await waitFor(() => {
       expect(copyTextMock).toHaveBeenCalledWith(CHART);
     });
+  });
+});
+
+describe("MermaidDiagram memory (CHE-2164)", () => {
+  it("initializes Mermaid once for diagrams that share a theme", async () => {
+    render(
+      <>
+        <MermaidDiagram chart={CHART} />
+        <MermaidDiagram chart={"graph TD\n  X --> Y"} />
+        <MermaidDiagram chart={"graph TD\n  P --> Q"} />
+      </>,
+    );
+
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(3));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("initializes again when the theme colors change", async () => {
+    let channel = 12;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => ({
+        fillStyle: "#000",
+        fillRect: vi.fn(),
+        getImageData: () => ({ data: new Uint8ClampedArray([channel, 34, 56, 255]) }),
+      }),
+    });
+    render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(1));
+
+    channel = 200;
+    act(() => {
+      document.documentElement.className = "dark";
+    });
+
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(2);
+  });
+
+  // The viewer's document is a third copy of the SVG. It is built from the
+  // host's styles when the viewer opens, not retained from the first render.
+  it("builds the viewer document from the host styles at open time", async () => {
+    let hostFont = "FontBeforeOpen";
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+      const style = real(element, pseudo);
+      if (element === document.documentElement) return style;
+      return new Proxy(style, {
+        get: (target, key) => {
+          if (key === "fontFamily") return hostFont;
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+
+    hostFont = "FontAtOpen";
+    await openViewer();
+
+    const viewerFrame = document.querySelector<HTMLIFrameElement>(".mermaid-viewer-frame");
+    expect(viewerFrame?.srcdoc).toContain("FontAtOpen");
+    expect(viewerFrame?.srcdoc).not.toContain("FontBeforeOpen");
   });
 });

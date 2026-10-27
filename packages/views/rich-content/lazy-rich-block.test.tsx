@@ -11,7 +11,7 @@ import { act, render, screen } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { LazyRichBlock } from "./lazy-rich-block";
+import { LazyRichBlock, useRichBlockHold } from "./lazy-rich-block";
 import { RichContentScrollRootProvider } from "./scroll-root";
 import { resetMountedBlocks } from "./mounted-block-registry";
 
@@ -88,9 +88,7 @@ describe("LazyRichBlock", () => {
     expect(screen.getByTestId("expensive")).toBeInTheDocument();
   });
 
-  // The latch: re-running Mermaid / rebuilding an iframe on every scroll pass
-  // would be worse than mounting eagerly once.
-  it("stops observing after mounting so the block never unmounts", () => {
+  it("stops using the near observer after mounting", () => {
     render(
       <LazyRichBlock reservedHeightPx={280}>
         <Expensive />
@@ -99,12 +97,6 @@ describe("LazyRichBlock", () => {
     enterViewport();
 
     expect(observers[0]?.disconnected).toBe(true);
-
-    // A later "left the viewport" signal must not tear the block down.
-    act(() => {
-      observers[0]?.callback([{ isIntersecting: false }]);
-    });
-    expect(screen.getByTestId("expensive")).toBeInTheDocument();
   });
 
   // Howard's stated risk: lazy mounting must not disturb Virtuoso's height
@@ -185,6 +177,192 @@ describe("LazyRichBlock", () => {
     // committed frame still matches what a server render would produce — see
     // the SSR suite below.
     expect(screen.getByTestId("expensive")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Releasing far off-screen blocks (CHE-2164).
+ *
+ * A mounted Mermaid block holds an SVG, two sandboxed iframes' documents and
+ * a viewer's worth of state. Once the user has scrolled far away and stayed
+ * there, the shell tears the block down to its reserved-size placeholder, and
+ * rebuilds it when it comes back near. Anything the user is interacting with
+ * is never torn down.
+ */
+describe("LazyRichBlock release", () => {
+  const RELEASE_AFTER_MS = 5_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The observer watching a mounted block for "far away". */
+  function farObserver(): FakeObserver {
+    const live = observers.filter((o) => !o.disconnected);
+    expect(live).toHaveLength(1);
+    return live[0]!;
+  }
+
+  function leaveFar() {
+    act(() => {
+      farObserver().callback([{ isIntersecting: false }]);
+    });
+  }
+
+  function idle() {
+    act(() => {
+      vi.advanceTimersByTime(RELEASE_AFTER_MS);
+    });
+  }
+
+  function mountBlock(extra?: React.ReactNode) {
+    const view = render(
+      <LazyRichBlock reservedHeightPx={280} sourceKey="chart">
+        <Expensive />
+        {extra}
+      </LazyRichBlock>,
+    );
+    enterViewport();
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+    return view;
+  }
+
+  it("watches a mounted block with a margin wider than the mount margin", () => {
+    mountBlock();
+
+    const near = Number.parseInt(observers[0]?.options?.rootMargin ?? "0", 10);
+    const far = Number.parseInt(farObserver().options?.rootMargin ?? "0", 10);
+    expect(far).toBeGreaterThan(near);
+  });
+
+  it("releases the block to a placeholder after it stays far away", () => {
+    const { container } = mountBlock();
+
+    leaveFar();
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+    idle();
+
+    expect(screen.queryByTestId("expensive")).toBeNull();
+    const shell = container.querySelector("[data-rich-block-shell]") as HTMLElement;
+    expect(shell.hasAttribute("data-mounted")).toBe(false);
+  });
+
+  it("keeps the measured height when the real block was taller than the reservation", () => {
+    const { container } = mountBlock();
+    const shell = container.querySelector("[data-rich-block-shell]") as HTMLElement;
+    vi.spyOn(shell, "getBoundingClientRect").mockReturnValue({
+      height: 640,
+      width: 100,
+      top: 0,
+      left: 0,
+      right: 100,
+      bottom: 640,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    leaveFar();
+    idle();
+
+    expect(shell.style.minHeight).toBe("640px");
+  });
+
+  it("does not release when the block comes back before the delay ends", () => {
+    mountBlock();
+
+    leaveFar();
+    act(() => {
+      vi.advanceTimersByTime(RELEASE_AFTER_MS - 1_000);
+    });
+    act(() => {
+      farObserver().callback([{ isIntersecting: true }]);
+    });
+    idle();
+
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+  });
+
+  it("mounts a released block again when it comes near", () => {
+    mountBlock();
+    leaveFar();
+    idle();
+    expect(screen.queryByTestId("expensive")).toBeNull();
+
+    enterViewport();
+
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+  });
+
+  it("does not release while focus is inside the block", () => {
+    mountBlock(<button type="button">zoom in</button>);
+    act(() => {
+      screen.getByRole("button", { name: "zoom in" }).focus();
+    });
+
+    leaveFar();
+    idle();
+
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+  });
+
+  it("releases after focus leaves the block", () => {
+    mountBlock(<button type="button">zoom in</button>);
+    const button = screen.getByRole("button", { name: "zoom in" });
+    act(() => button.focus());
+    leaveFar();
+    idle();
+    act(() => button.blur());
+    idle();
+
+    expect(screen.queryByTestId("expensive")).toBeNull();
+  });
+
+  it("does not release while a child holds it, for example an open viewer", () => {
+    function Holder({ held }: { held: boolean }) {
+      useRichBlockHold(held);
+      return null;
+    }
+    const { rerender } = render(
+      <LazyRichBlock reservedHeightPx={280} sourceKey="held">
+        <Expensive />
+        <Holder held />
+      </LazyRichBlock>,
+    );
+    enterViewport();
+
+    leaveFar();
+    idle();
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+
+    rerender(
+      <LazyRichBlock reservedHeightPx={280} sourceKey="held">
+        <Expensive />
+        <Holder held={false} />
+      </LazyRichBlock>,
+    );
+    idle();
+    expect(screen.queryByTestId("expensive")).toBeNull();
+  });
+
+  it("does not let a recycled row resurrect a block that was released", () => {
+    const first = mountBlock();
+    leaveFar();
+    idle();
+    first.unmount();
+    observers = [];
+
+    const second = render(
+      <LazyRichBlock reservedHeightPx={280} sourceKey="chart">
+        <Expensive />
+      </LazyRichBlock>,
+    );
+
+    expect(second.queryByTestId("expensive")).toBeNull();
   });
 });
 

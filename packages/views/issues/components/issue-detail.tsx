@@ -72,6 +72,7 @@ import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@multica/ui/components/ui/command";
 import { AvatarGroup, AvatarGroupCount } from "@multica/ui/components/ui/avatar";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { PropRow } from "../../common/prop-row";
 import { TimelineHandoff } from "../../workflows/timeline-handoff";
@@ -4671,21 +4672,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   <TimelineSkeleton />
                 ) : (
                   <div className="mt-4">
-                    <Virtuoso
-                      key={`${wsId}:${id}`}
-                      ref={virtuosoRef}
-                      customScrollParent={scrollContainerEl}
-                      data={items}
-                      initialScrollTop={restoredScrollTop}
-                      increaseViewportBy={{ top: 800, bottom: 800 }}
-                      computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.kind === "thread-row" ? item.row.key ?? item.id : item.id}`}
-                      skipAnimationFrameInResizeObserver
-                      // followOutput intentionally NOT set. Virtuoso treats
-                      // it as a sticky "is at bottom" flag and resets
-                      // scrollTop to maxScrollTop on every height-change
-                      // tick — issue-detail is document-shaped, not chat.
-                      itemContent={renderItem}
-                    />
+                    <RichContentScrollRootProvider scrollRoot={scrollContainerEl}>
+                      <Virtuoso
+                        key={`${wsId}:${id}`}
+                        ref={virtuosoRef}
+                        customScrollParent={scrollContainerEl}
+                        data={items}
+                        initialScrollTop={restoredScrollTop}
+                        increaseViewportBy={{ top: 800, bottom: 800 }}
+                        computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.kind === "thread-row" ? item.row.key ?? item.id : item.id}`}
+                        skipAnimationFrameInResizeObserver
+                        // followOutput intentionally NOT set. Virtuoso treats
+                        // it as a sticky "is at bottom" flag and resets
+                        // scrollTop to maxScrollTop on every height-change
+                        // tick — issue-detail is document-shaped, not chat.
+                        itemContent={renderItem}
+                      />
+                    </RichContentScrollRootProvider>
                   </div>
                 )
             )}

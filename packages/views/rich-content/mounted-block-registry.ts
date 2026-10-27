@@ -50,6 +50,11 @@ export function markBlockMounted(key: string): void {
   mountedBlocks.add(key);
 }
 
+/** A released block is no longer built; a recycled row must wait to be seen. */
+export function unmarkBlockMounted(key: string): void {
+  mountedBlocks.delete(key);
+}
+
 /** Test-only: the registry outlives individual renders by design. */
 export function resetMountedBlocks(): void {
   mountedBlocks.clear();

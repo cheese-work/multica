@@ -27,6 +27,7 @@ import {
   DynamicBlockSkeleton,
   type DynamicBlockError,
 } from "./dynamic-block";
+import { useRichBlockHold } from "../rich-content/lazy-rich-block";
 import { useThemeVersion } from "./hooks/use-theme-version";
 import {
   HTML_BLOCK_MESSAGE_KEY,
@@ -105,6 +106,8 @@ export function HtmlBlockPreview({ html, title }: HtmlBlockPreviewProps) {
   const [srcDoc, setSrcDoc] = useState<string | null>(null);
   const [error, setError] = useState<DynamicBlockError | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  // Fullscreen is the user's active work; the lazy shell must not release it.
+  useRichBlockHold(fullscreen);
   const [reloadKey, setReloadKey] = useState(0);
   const frameTitle = t(($) => $.code_block.html_preview);
 

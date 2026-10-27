@@ -18,6 +18,7 @@ import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
 } from "@multica/core/issues/stores/sub-issue-display-store";
+import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
@@ -33,6 +34,7 @@ const contentEditorMounts = vi.hoisted(() => ({ count: 0 }));
 // Every ReadonlyContent render, by content. A comment card renders its body
 // through it, so this counts card renders without reaching into the card.
 const readonlyContentRenders = vi.hoisted(() => [] as string[]);
+const readonlyScrollRoots = vi.hoisted(() => [] as (HTMLElement | null)[]);
 const descriptionSelectionAction = vi.hoisted(() => ({ current: undefined as { label: string; onSelect: () => void } | undefined }));
 // Stable empty-attachments reference: the real store returns a shared constant
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
@@ -265,6 +267,7 @@ vi.mock("../../editor", async () => ({
   isPreviewable: () => false,
   ReadonlyContent: ({ content }: { content: string }) => {
     readonlyContentRenders.push(content);
+    readonlyScrollRoots.push(useRichContentScrollRoot());
     return <div data-testid="readonly-content">{content}</div>;
   },
   ContentEditor: forwardRef(function MockContentEditor(
@@ -866,6 +869,7 @@ describe("IssueDetail (shared)", () => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     readonlyContentRenders.length = 0;
+    readonlyScrollRoots.length = 0;
     descriptionSelectionAction.current = undefined;
     descriptionMeasurement.current = {
       totalRows: 1,
@@ -1381,6 +1385,21 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
     // The header leaf names the issue by identifier only — the title is right below.
     expect(screen.getByRole("link", { name: mockIssue.identifier })).toBeInTheDocument();
+  });
+
+  // Rich blocks (Mermaid/HTML) in timeline comments gate their mount against
+  // the timeline's own scroll element, not the browser viewport (CHE-2164).
+  it("publishes the timeline scroll container to comment rich content", async () => {
+    const { container } = renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Started working on this")).toBeInTheDocument();
+    });
+
+    const scroller = container.querySelector("[data-issue-timeline-scroll]");
+    expect(scroller).not.toBeNull();
+    expect(readonlyScrollRoots.length).toBeGreaterThan(0);
+    expect(readonlyScrollRoots.at(-1)).toBe(scroller);
   });
 
   it("pins the comment composer to the scroll viewport on a wide screen", async () => {

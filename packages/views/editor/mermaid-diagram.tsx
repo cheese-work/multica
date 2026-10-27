@@ -47,6 +47,7 @@ import { DYNAMIC_BLOCK_COLLAPSE_AT_PX, DynamicBlockSkeleton } from "./dynamic-bl
 import { useDragToScroll } from "./hooks/use-drag-to-scroll";
 import { useInlineZoom, type InlineZoom } from "./hooks/use-inline-zoom";
 import { useThemeVersion } from "./hooks/use-theme-version";
+import { useRichBlockHold } from "../rich-content/lazy-rich-block";
 import { MermaidViewer } from "./mermaid-viewer";
 import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
@@ -59,6 +60,43 @@ function getMermaid(): Promise<MermaidAPI> {
   mermaidPromise ??= import("mermaid").then(({ default: mermaid }) => mermaid);
 
   return mermaidPromise;
+}
+
+// mermaid.initialize() replaces a process-global config, and every call walks
+// and copies the whole default config. Diagrams that share a theme share the
+// result, so it runs once per distinct set of theme variables, not once per
+// diagram per render (CHE-2164).
+let initializedThemeKey: string | null = null;
+
+function initializeMermaid(
+  mermaid: MermaidAPI,
+  themeVariables: ReturnType<typeof getMermaidThemeVariables>,
+): void {
+  const themeKey = JSON.stringify(themeVariables);
+  if (themeKey === initializedThemeKey) return;
+  initializedThemeKey = themeKey;
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "base",
+    // Render labels as SVG <text> instead of Mermaid's default HTML-in-
+    // <foreignObject>. Browsers do not rasterize foreignObject when an
+    // SVG is drawn through an <img> — verified in Chromium, the label
+    // paints zero pixels AND taints the canvas, so PNG export produces
+    // nothing at all. SVG text keeps the export self-contained.
+    htmlLabels: false,
+    themeVariables,
+    // On invalid syntax, make render() throw instead of drawing Mermaid's
+    // built-in error graphic into the DOM. The catch in MermaidDiagram then
+    // shows our own compact error state — no orphaned error SVG, and no extra
+    // parse pass over valid charts.
+    suppressErrorRendering: true,
+  });
+}
+
+/** Test-only: the initialized theme outlives individual renders by design. */
+export function resetMermaidInitialization(): void {
+  initializedThemeKey = null;
 }
 
 function toLegacyColor(color: string, fallback: string, ownerDocument: Document): string {
@@ -359,7 +397,6 @@ const FALLBACK_LAYOUT: Size = { width: 800, height: MERMAID_SKELETON_HEIGHT_PX }
 interface RenderedDiagram {
   svg: string;
   inlineDocument: string;
-  viewerDocument: string;
   /**
    * Natural size. Always concrete — neither the inline zoom nor the viewer can
    * lay out against an unknown size.
@@ -410,6 +447,9 @@ export function MermaidDiagram({
   const viewerOpen = frame ? frame.viewerOpen : ownViewerOpen;
   const setViewerOpen = frame ? frame.onViewerOpenChange : setOwnViewerOpen;
   const onErrorChange = frame?.onErrorChange;
+  // An open viewer is the user's active work; the lazy shell must not release
+  // the diagram under it.
+  useRichBlockHold(viewerOpen);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -425,23 +465,7 @@ export function MermaidDiagram({
         // a flash of the loading skeleton on every theme toggle.
         setSkeletonLayout(readCachedLayout(chart));
         const mermaid = await getMermaid();
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: "base",
-          // Render labels as SVG <text> instead of Mermaid's default HTML-in-
-          // <foreignObject>. Browsers do not rasterize foreignObject when an
-          // SVG is drawn through an <img> — verified in Chromium, the label
-          // paints zero pixels AND taints the canvas, so PNG export produces
-          // nothing at all. SVG text keeps the export self-contained.
-          htmlLabels: false,
-          themeVariables: getMermaidThemeVariables(containerRef.current),
-          // On invalid syntax, make render() throw instead of drawing Mermaid's
-          // built-in error graphic into the DOM. The catch below then shows our
-          // own compact error state — no orphaned error SVG, and no extra parse
-          // pass over valid charts.
-          suppressErrorRendering: true,
-        });
+        initializeMermaid(mermaid, getMermaidThemeVariables(containerRef.current));
         const { svg: renderedSvg } = await mermaid.render(diagramId, chart);
         if (cancelled) return;
 
@@ -453,13 +477,6 @@ export function MermaidDiagram({
         setRendered({
           svg: renderedSvg,
           inlineDocument: buildSandboxedMermaidDocument(renderedSvg, containerRef.current),
-          // Same size the viewer lays out against, so the drawn SVG and the
-          // transform never disagree about how big the diagram is.
-          viewerDocument: buildViewerMermaidDocument(
-            renderedSvg,
-            containerRef.current,
-            layout,
-          ),
           layout,
           exportBackground: exportStyle.background,
           exportFontFamily: exportStyle.fontFamily,
@@ -502,6 +519,17 @@ export function MermaidDiagram({
     rendered?.inlineDocument,
     zoom.size.width,
   ]);
+  // Built when the viewer opens, from the host's styles at that moment, and
+  // dropped when it closes: it is a third copy of the SVG that most diagrams
+  // never need (CHE-2164). Same size the viewer lays out against, so the drawn
+  // SVG and the transform never disagree about how big the diagram is.
+  const viewerDocument = useMemo(
+    () =>
+      viewerOpen && rendered
+        ? buildViewerMermaidDocument(rendered.svg, containerRef.current, rendered.layout)
+        : null,
+    [viewerOpen, rendered],
+  );
   const openViewer = useCallback(() => setViewerOpen(true), [setViewerOpen]);
   const dragToScroll = useDragToScroll({ onTap: openViewer });
 
@@ -624,7 +652,7 @@ export function MermaidDiagram({
             onOpenChange={setViewerOpen}
             chart={chart}
             svg={rendered.svg}
-            viewerDocument={rendered.viewerDocument}
+            viewerDocument={viewerDocument}
             layout={rendered.layout}
             exportBackground={rendered.exportBackground}
             exportFontFamily={rendered.exportFontFamily}
