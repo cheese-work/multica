@@ -147,7 +147,7 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	var publications []githubIntakePublication
 	for _, revision := range revisions {
 		decision := githubIntakeDecision{State: revision.State, Reason: revision.Reason}
-		if revision.State == "deferred" {
+		if revision.State == "deferred" || revision.State == "dispatched" {
 			if worker.admit == nil {
 				return "", "", nil, errors.New("github: admission unavailable")
 			}

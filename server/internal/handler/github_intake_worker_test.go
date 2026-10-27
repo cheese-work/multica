@@ -190,6 +190,18 @@ func TestGitHubIntakeWorkerCommittedReceiptDedup(t *testing.T) {
 	assertIntakeWorkerDispatch(t, fixture, 1)
 }
 
+func TestGitHubIntakeWorkerDispatchedStateNeedsReceipt(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	delivery := postIntakeForWorker(t, fixture, "-missing-receipt")
+	dbfx.Exec(t, `UPDATE github_webhook_revision SET state='dispatched', reason='test_incomplete_work' WHERE workspace_id=$1`, testWorkspaceID)
+	worker := intakeWorkerForTest(t, fixture)
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "dispatched")
+	assertIntakeWorkerDispatch(t, fixture, 1)
+}
+
 func TestGitHubIntakeWorkerRevisionKeyIncludesBodyHash(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
 	worker := intakeWorkerForTest(t, fixture)
