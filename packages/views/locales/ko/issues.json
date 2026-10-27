@@ -1,4 +1,22 @@
 {
+  "relations": {
+    "title": "관계 그래프",
+    "direction": "화살표는 부모에서 하위 태스크로, 감시 대상에서 재개할 태스크로, 멘션에서 참조 대상으로 향합니다. 현재 태스크는 굵은 테두리로 표시됩니다.",
+    "depth": "깊이",
+    "loading": "관계 불러오는 중…",
+    "load_failed": "관계를 불러오지 못했습니다.",
+    "render_failed": "그래프를 표시하지 못했습니다.",
+    "retry": "다시 시도",
+    "empty": "관련 태스크가 없습니다.",
+    "omitted": "{{count}}개 더 표시되지 않음 (최대 40개 노드).",
+    "parent": "부모 → 하위",
+    "duplicate": "중복 대상",
+    "wakeup": "재개",
+    "children_done": "하위 완료 → 재개",
+    "mention": "멘션",
+    "shared_pr": "공유 PR",
+    "unknown": "관련"
+  },
   "inline_run": {
     "label": "{{name}} 실행",
     "stop": "중지",
