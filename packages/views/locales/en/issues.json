@@ -6,6 +6,7 @@
     "loading": "Loading relations…",
     "load_failed": "Could not load relations.",
     "render_failed": "Could not render the graph.",
+    "filter_label": "Show edge types",
     "retry": "Try again",
     "empty": "No related issues.",
     "omitted": "{{count}} more not shown (40-node limit).",
