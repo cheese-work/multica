@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { marked } from "marked";
+import { describe, expect, it, vi } from "vitest";
 import {
   SELF_MENTION_COLORS,
   emphasizeSelfMentions,
@@ -132,6 +133,21 @@ describe("emphasizeSelfMentions in multi-line and unterminated fences", () => {
 
     const open = ["```", link, link].join("\n");
     expect(emphasizeSelfMentions(open, VIEWER)).toBe(open);
+  });
+});
+
+describe("emphasizeSelfMentions render cost", () => {
+  it("lexes a long segment a constant number of times", () => {
+    const count = 800;
+    const all = "[@all](mention://all/all)";
+    const lexer = vi.spyOn(marked, "lexer");
+    try {
+      const out = emphasizeSelfMentions(Array(count).fill(all).join(" "), VIEWER);
+      expect(out).toBe(Array(count).fill("[**@all**](mention://all/all)").join(" "));
+      expect(lexer.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      lexer.mockRestore();
+    }
   });
 });
 

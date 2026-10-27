@@ -20,19 +20,12 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Links whose first child is bold: what `emphasizeSelfMentions` produces.
-function countBoldLinks(markdown: string) {
-  let count = 0;
-  marked.walkTokens(marked.lexer(markdown), (token) => {
-    if (token.type === "link" && token.tokens?.[0]?.type === "strong") count++;
-  });
-  return count;
-}
-
 // Only real links are bolded. Code (inline, fenced, indented, nested in lists
 // or quotes) is displayed and copied as written, and escaped or image look-alikes
-// aren't links, but regexes can't tell them apart. So try each match on its own
-// and keep it only if the markdown lexer then sees one more bold link.
+// aren't links, but regexes can't tell them apart. So bold every match in a
+// scratch copy, tagging each URL with its match number (`#sm<n>`), and lex that
+// copy once. A match is a real link when a link token comes back with exactly
+// the tagged text; the rest stay as written.
 export function emphasizeSelfMentions(markdown: string, userId: string | undefined) {
   if (!userId) return markdown;
   const self = new RegExp(
@@ -41,14 +34,26 @@ export function emphasizeSelfMentions(markdown: string, userId: string | undefin
   );
   const matches = [...markdown.matchAll(self)];
   if (!matches.length) return markdown;
-  const before = countBoldLinks(markdown);
-  const boldOf = (m: RegExpMatchArray) => `[**${m[1]}**](${m[2]})`;
-  const splice = (source: string, m: RegExpMatchArray) =>
-    source.slice(0, m.index) + boldOf(m) + source.slice(m.index! + m[0].length);
+  const bold = (m: RegExpMatchArray, tag = "") => `[**${m[1]}**](${m[2]}${tag})`;
+  const tagged = matches.map((m, n) => bold(m, `#sm${n}`));
+  let scratch = "";
+  let end = 0;
+  matches.forEach((m, n) => {
+    scratch += markdown.slice(end, m.index) + tagged[n];
+    end = m.index! + m[0].length;
+  });
+  scratch += markdown.slice(end);
+  const real = new Set<number>();
+  marked.walkTokens(marked.lexer(scratch), (token) => {
+    if (token.type !== "link") return;
+    const n = Number(/#sm(\d+)\)$/.exec(token.raw)?.[1]);
+    if (tagged[n] === token.raw) real.add(n);
+  });
   // Back to front so earlier offsets stay valid.
-  return matches
-    .filter((m) => countBoldLinks(splice(markdown, m)) === before + 1)
-    .reduceRight(splice, markdown);
+  return matches.reduceRight(
+    (out, m, n) => (real.has(n) ? out.slice(0, m.index) + bold(m) + out.slice(m.index! + m[0].length) : out),
+    markdown,
+  );
 }
 
 // Top-level code blocks are their own segments: leave them untouched.
