@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -66,6 +67,24 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if session.Status != "active" {
 		writeError(w, http.StatusConflict, "only an active DM can be compacted")
+		return
+	}
+	// The status read at the top is stale by now: the task may have been
+	// cancelled or completed while the body decoded and the DM lock was awaited,
+	// and a successor may already hold the old epoch. Lock the live task (DM
+	// first, then task) and read its status again.
+	task, err = qtx.LockAgentTaskForCompaction(r.Context(), task.ID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" { // lock_not_available
+			writeError(w, http.StatusConflict, "the task is changing state; retry if it is still running")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to lock the compacting task")
+		}
+		return
+	}
+	if task.ChatSessionID != session.ID || (task.Status != "running" && task.Status != "dispatched") {
+		writeError(w, http.StatusConflict, "the task is no longer running")
 		return
 	}
 	if _, err := qtx.GetChannelChatSessionBindingBySessionAny(r.Context(), session.ID); !errors.Is(err, pgx.ErrNoRows) {

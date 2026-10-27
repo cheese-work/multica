@@ -48,6 +48,10 @@ type DecisionCommentFields struct {
 	DisclaimedAt            *string `json:"disclaimed_at,omitempty"`
 	DecisionSourceSessionID string  `json:"decision_source_session_id,omitempty"`
 	DecisionSourceMessageID string  `json:"decision_source_message_id,omitempty"`
+	// The request pointers name the DM card that asked, in the request's own
+	// session: a continued DM answers in a newer session than the one that asked.
+	DecisionRequestSessionID string `json:"decision_request_session_id,omitempty"`
+	DecisionRequestMessageID string `json:"decision_request_message_id,omitempty"`
 }
 
 // decisionAnswerState is pending until the wake delivers it, effective after,
@@ -122,6 +126,10 @@ func (handler *Handler) decisionCommentFields(ctx context.Context, workspaceID p
 		if viewer.Valid && viewer == row.HumanUserID && len(row.ChatMessageIds) > 0 {
 			entry.DecisionSourceSessionID = uuidToString(row.SourceChatSessionID)
 			entry.DecisionSourceMessageID = uuidToString(row.ChatMessageIds[0])
+		}
+		if viewer.Valid && viewer == row.HumanUserID && row.RequestPingMessageID.Valid {
+			entry.DecisionRequestSessionID = uuidToString(row.RequestChatSessionID)
+			entry.DecisionRequestMessageID = uuidToString(row.RequestPingMessageID)
 		}
 		fields[uuidToString(comment.ID)] = entry
 	}
