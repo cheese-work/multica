@@ -10,4 +10,4 @@ Cheese's decision D1 = B of 26 October 2026 (DM, recorded in the description of 
 - Access: the page enforces the same read permission as the source issue, comment or chat. No access gives the standard not-found page and never the media bytes.
 - Out of scope: media kinds Multica does not render today; the route shape (the implementer chooses it and records it in the PR; the mockups show `/issues/<key>/media/<comment-id>/<n>` for context only); the diff-view-between-revisions request in the same DM (separate topic).
 - Tokens: `packages/ui/styles/tokens.css` (dark values, because the viewer is dark), copied into each mockup.
-- Status: rev-1 posted
+- Status: selected — approved when PR #403 merges (rev-1, direction A)
