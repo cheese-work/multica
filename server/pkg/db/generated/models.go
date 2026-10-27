@@ -958,6 +958,13 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubRouteGrant struct {
+	ProjectID pgtype.UUID        `json:"project_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	GrantedBy pgtype.UUID        `json:"granted_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubWebhookIntake struct {
 	DeliveryGuid string             `json:"delivery_guid"`
 	Event        string             `json:"event"`
