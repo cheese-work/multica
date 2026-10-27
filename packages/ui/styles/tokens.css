@@ -239,6 +239,9 @@
     --sidebar-ring: oklch(0.705 0.015 286.067);
     --brand: oklch(0.56079497 0.19449888 256.41258418);
     --brand-foreground: oklch(0.985 0 0);
+    /* Current-user @mention chip: attention fill with dark text. */
+    --mention-self-bg: oklch(0.93 0.12 95);
+    --mention-self-fg: oklch(0.25 0.03 85);
     --success: oklch(0.55 0.16 145);
     --warning: oklch(0.75 0.16 85);
     --info: oklch(0.55 0.18 250);
@@ -314,6 +317,8 @@
     /* Brand also paints body-text links; keep it readable on dark surfaces. */
     --brand: oklch(0.65 0.16 255);
     --brand-foreground: oklch(0.985 0 0);
+    --mention-self-bg: oklch(0.8 0.15 85);
+    --mention-self-fg: oklch(0.18 0.02 85);
     --success: oklch(0.65 0.15 145);
     --warning: oklch(0.70 0.16 85);
     --info: oklch(0.65 0.18 250);
