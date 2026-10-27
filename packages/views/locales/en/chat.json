@@ -71,6 +71,7 @@
     "continuation_summary": "Conversation summary",
     "earlier_dm": "Earlier DM",
     "quote_message": "Quote",
+    "speaker_you": "You",
     "load_older_messages": "Load older messages",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
@@ -306,6 +307,7 @@
     "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
+    "recorded_on": "Recorded on {{issue}}",
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"

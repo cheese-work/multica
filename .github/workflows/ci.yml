@@ -16,9 +16,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  warning-budget:
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Test warning regression fixtures
+        run: node --test scripts/warning-budget.test.mjs
+      - name: Compare CI logs and annotations with successful main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/warning-budget.mjs
+      - name: Upload warning counts and annotations
+        if: ${{ always() && hashFiles('warning-budget-report.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: warning-budget-${{ github.run_id }}
+          path: warning-budget-report.json
+          retention-days: 14
+
   migration-prefix-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
       contents: read
@@ -27,7 +56,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Test migration prefix checker
@@ -60,10 +89,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest] # macOS leg halted (CHE-1012): no free macOS runners
+        os: [ubuntu-24.04] # macOS leg halted (CHE-1012): no free macOS runners
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "~1.26.9"
           cache-dependency-path: server/go.sum
@@ -86,7 +115,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -106,7 +135,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -116,12 +145,12 @@ jobs:
       - name: Filter paths
         id: filter
         if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'merge_group'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           # Pushes compare before/head SHAs. PRs use the pull-request file API;
           # paths-filter ignores base/ref for pull_request events.
-          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || (github.event_name == 'push' && github.event.before || github.base_ref) }}
-          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || (github.event_name == 'push' && github.event.before || '') }}
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha || '') }}
           filters: .github/ci-paths.json
 
       - name: Decide
@@ -136,13 +165,13 @@ jobs:
 
   sqlc-check:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
           check-latest: true
@@ -168,7 +197,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
@@ -177,10 +206,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -229,7 +258,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -237,10 +266,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -285,7 +314,7 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -293,10 +322,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -327,7 +356,7 @@ jobs:
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Check frontend job results
@@ -395,13 +424,13 @@ jobs:
     # A live rerun on cheese-x99-repo-4 still failed with this exact
     # class of failure (see PR #92, run 35701219643) — the runner/dind
     # namespace split has not actually been closed. Moved to GitHub-hosted
-    # ubuntu-latest rather than back to Blacksmith or X99: the repo is
+    # ubuntu-24.04 rather than back to Blacksmith or X99: the repo is
     # public so standard hosted minutes are free, and hosted `services:`
     # containers publish on the runner's own loopback with no nested-daemon
     # namespace split. Making this job work on cheese-x99 still needs the
     # runner and dind to share a namespace, which is a runner-fleet change,
     # not a workflow change.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
@@ -456,7 +485,7 @@ jobs:
 
       - name: Setup Go
         id: go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
@@ -550,7 +579,7 @@ jobs:
   # but never saved here: backend-tests owns publishing (see its comment), and
   # this job's only unique output is the pkg/agent test binary, which is cheap
   # to relink.
-  # Linux stays on GitHub-hosted ubuntu-latest rather than Blacksmith: `--only
+  # Linux stays on GitHub-hosted ubuntu-24.04 rather than Blacksmith: `--only
   # agent` runs the whole pkg/agent package, which includes the Cursor
   # process-group tests. They need PIDFD_SIGNAL_PROCESS_GROUP (Linux 6.9+);
   # The retired paid runner runs 6.6.141 and fails them with EINVAL,
@@ -558,7 +587,7 @@ jobs:
   backend-agent-tests:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ubuntu-latest  # CHE-522: do NOT move to Blacksmith.
+    runs-on: ubuntu-24.04  # CHE-522: do NOT move to Blacksmith.
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
@@ -568,7 +597,7 @@ jobs:
 
       - name: Setup Go
         id: go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
           check-latest: true
@@ -599,13 +628,13 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
@@ -628,7 +657,7 @@ jobs:
     needs: changes
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
@@ -639,7 +668,7 @@ jobs:
 
       - name: Setup Go
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "~1.26.9"
           check-latest: true
@@ -647,7 +676,7 @@ jobs:
 
       - name: Run golangci-lint
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pinned: a floating version turns an upstream release into a
           # surprise red build on an unrelated pull request.
@@ -663,7 +692,7 @@ jobs:
   backend:
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Check backend job results
@@ -685,7 +714,7 @@ jobs:
   # server-only build.
   daemon-artifact:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -694,7 +723,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # commit history for version/commit stamping
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
           check-latest: true
@@ -716,7 +745,7 @@ jobs:
             -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o ../dist/multica ./cmd/multica
       - name: Upload daemon artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: multica-daemon-linux-${{ matrix.goarch }}
           path: dist/multica
@@ -730,7 +759,7 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -761,7 +790,7 @@ jobs:
         os:
           # GitHub-hosted (CHE-748): free on this public repo, no Blacksmith,
           # no X99-only dependency — plain checkout + shell tests.
-          - ubuntu-latest
+          - ubuntu-24.04
           # macOS leg halted (CHE-1012): no free macOS runners.
     runs-on: ${{ matrix.os }}
     steps:
@@ -779,14 +808,14 @@ jobs:
       # rather than relying on whatever ships preinstalled on the runner
       # image, matching this repo's Go/Node pins elsewhere in this workflow.
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "~1.26.9"
           check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -798,15 +827,18 @@ jobs:
     # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
+
+      - name: Test pinned pnpm setup
+        run: node --test scripts/setup-pnpm.test.mjs
 
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
@@ -833,7 +865,7 @@ jobs:
           git diff --exit-code -- packages/core/paths/reserved-slugs.ts
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Test Helm chart
         run: bash scripts/helm-config.test.sh
@@ -855,13 +887,16 @@ jobs:
     # D1 does not exercise.
     needs: changes
     if: ${{ needs.changes.outputs.deploy_cd == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Test D2 deploy control flow
         run: bash deploy/cd/test-deploy.sh
+
+      - name: Test ephemeral GHCR credentials
+        run: bash deploy/cd/test-ghcr-credentials.sh
 
       - name: Test candidate selection and admission
         run: |
@@ -891,11 +926,11 @@ jobs:
     # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
+      - run: bash scripts/setup-pnpm.sh
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
