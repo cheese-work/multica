@@ -129,22 +129,20 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 
 const markGitHubDispatchRun = `-- name: MarkGitHubDispatchRun :exec
 UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', $1::text)
-WHERE id = (
-    SELECT live.id FROM agent_task_queue live
-    WHERE live.issue_id = $2 AND live.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
-    ORDER BY live.created_at DESC LIMIT 1
-)
+WHERE id = $2 AND issue_id = $3
 `
 
 type MarkGitHubDispatchRunParams struct {
 	Source  string      `json:"source"`
+	TaskID  pgtype.UUID `json:"task_id"`
 	IssueID pgtype.UUID `json:"issue_id"`
 }
 
-// Tags the newest live run of an issue as started by a GitHub event, for a
-// workflow handoff that carries no wakeup or review marker of its own.
+// Tags one run as started by a GitHub event, for a workflow handoff that
+// carries no wakeup or review marker of its own. The caller names the exact
+// task its enqueue created, so a later run of the issue is never tagged.
 func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispatchRunParams) error {
-	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.IssueID)
+	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.TaskID, arg.IssueID)
 	return err
 }
 

@@ -325,9 +325,10 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 			return false, "", nil, err
 		}
 		// The kill switch (CHE-2220) drops a halted repository's PRs from what
-		// the rule reports, so no run starts. Their keys stay in the fingerprint:
-		// the rule sees them as already met, and a resume does not replay them.
-		if prs, err = withoutHaltedRepos(ctx, q, w.WorkspaceID, prs, prRepos); err != nil {
+		// the rule reports. Their keys stay in the fingerprint, so a resume does
+		// not replay them; conditionDropped keeps them from starting a run.
+		var haltedKeys []string
+		if prs, haltedKeys, err = withoutHaltedRepos(ctx, q, w.WorkspaceID, prs, prRepos, keys); err != nil {
 			return false, "", nil, err
 		}
 		// Self-hosted VCS pull requests (Forgejo/Gitea/GitLab) live in their own
@@ -401,7 +402,11 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 			}
 		}
 		sort.Strings(keys)
-		return len(keys) > 0, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": prs}, nil
+		observed := map[string]any{"pull_requests": prs}
+		if len(haltedKeys) > 0 {
+			observed[haltedKeysField] = haltedKeys
+		}
+		return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 	case "other_issue":
 		var status string
 		var number int32
@@ -506,7 +511,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 		if condition.Type == "pull_request" && condition.Event == "conflicts" {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
-		if newlyMet && !conditionDropped(observed) {
+		if newlyMet && !conditionDropped(observed, state, fingerprint) {
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return w.NextFireAt, err
 			}
@@ -729,7 +734,13 @@ func stageProgress(children []subIssue) (bool, string, map[string]any) {
 // recordConditionMet turns a newly satisfied condition into one run input. It
 // names the agent runs whose changes satisfied it, when all of them are known.
 func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, observed map[string]any, causes []string, now time.Time) error {
-	facts := map[string]any{"condition": json.RawMessage(w.Condition), "observed": observed, "observed_at": now.UTC().Format(time.RFC3339)}
+	visible := make(map[string]any, len(observed))
+	for k, v := range observed {
+		if k != haltedKeysField {
+			visible[k] = v
+		}
+	}
+	facts := map[string]any{"condition": json.RawMessage(w.Condition), "observed": visible, "observed_at": now.UTC().Format(time.RFC3339)}
 	if len(causes) > 0 {
 		facts["source_task_ids"] = causes
 	}
@@ -738,25 +749,48 @@ func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, ob
 	return err
 }
 
-// withoutHaltedRepos keeps the PRs whose repository the GitHub dispatch kill
-// switch does not cover. repos[i] is the owner and name of prs[i].
-func withoutHaltedRepos(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string) ([]map[string]any, error) {
-	live := prs[:0:0]
+// haltedKeysField carries, in a pull_request condition's observed facts, the
+// fingerprint keys of PRs the GitHub dispatch kill switch covers.
+const haltedKeysField = "halted_keys"
+
+// withoutHaltedRepos splits the PRs by the GitHub dispatch kill switch: it
+// returns those whose repository is not halted, and the fingerprint keys of
+// those that are. repos[i] and keys[i] belong to prs[i].
+func withoutHaltedRepos(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, keys []string) (live []map[string]any, haltedKeys []string, err error) {
+	live = prs[:0:0]
 	for i, pr := range prs {
 		halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: repos[i][0], RepoName: repos[i][1]})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if !halted {
+		if halted {
+			haltedKeys = append(haltedKeys, keys[i])
+		} else {
 			live = append(live, pr)
 		}
 	}
-	return live, nil
+	return live, haltedKeys, nil
 }
 
-// conditionDropped reports a satisfied pull_request condition whose every
-// matching PR is in a halted repository: nothing is left to dispatch.
-func conditionDropped(observed map[string]any) bool {
-	prs, ok := observed["pull_requests"].([]map[string]any)
-	return ok && len(prs) == 0
+// conditionDropped reports a satisfied pull_request condition with nothing
+// new outside the halted repositories: no key outside them occurs more often
+// than the rule has seen. A halted fact is consumed, never queued.
+// ponytail: keys carry only the PR number, so a number shared by a halted and
+// an unhalted repo can hide the unhalted one; widen the key if that bites.
+func conditionDropped(observed map[string]any, previous, current string) bool {
+	halted, _ := observed[haltedKeysField].([]string)
+	if len(halted) == 0 {
+		return false
+	}
+	live := prConditionKeys(current)
+	for _, key := range halted {
+		live[key]--
+	}
+	seen := prConditionKeys(previous)
+	for key, n := range live {
+		if n > seen[key] {
+			return false
+		}
+	}
+	return true
 }

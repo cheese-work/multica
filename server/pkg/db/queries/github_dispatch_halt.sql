@@ -18,14 +18,11 @@ ON CONFLICT (workspace_id, scope) DO NOTHING;
 DELETE FROM github_dispatch_halt WHERE workspace_id = $1 AND scope = $2;
 
 -- name: MarkGitHubDispatchRun :exec
--- Tags the newest live run of an issue as started by a GitHub event, for a
--- workflow handoff that carries no wakeup or review marker of its own.
+-- Tags one run as started by a GitHub event, for a workflow handoff that
+-- carries no wakeup or review marker of its own. The caller names the exact
+-- task its enqueue created, so a later run of the issue is never tagged.
 UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', sqlc.arg(source)::text)
-WHERE id = (
-    SELECT live.id FROM agent_task_queue live
-    WHERE live.issue_id = sqlc.arg(issue_id) AND live.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
-    ORDER BY live.created_at DESC LIMIT 1
-);
+WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
 
 -- name: ListGitHubTriggeredActiveTasks :many
 -- Live runs started by a GitHub event inside a scope: a PR system wakeup

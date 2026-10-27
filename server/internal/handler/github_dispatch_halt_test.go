@@ -368,6 +368,108 @@ func TestGitHubDispatchHaltDropsPRConditionWakeup(t *testing.T) {
 	}
 }
 
+// A halted-only change must not ride on an unhalted PR that already matched:
+// only a newly satisfied fact outside the halted repo starts a run.
+func TestGitHubDispatchHaltIgnoresHaltedChangeBesideLivePR(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 222093
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := handlerTestAgentID(t)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	halted := linkedPRForWakeup(t, fx, installationID, 222093, "che2220-beside-head")
+	now := time.Now().UTC()
+	live, err := testHandler.Queries.UpsertGitHubPullRequest(context.Background(), db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		RepoOwner: "acme", RepoName: "other", PrNumber: 222094,
+		Title: fx.child.Identifier + ": live", State: "merged",
+		HtmlUrl:     "https://github.com/acme/other/pull/222094",
+		PrCreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		PrUpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		HeadSha:     "che2220-live-head", ClearMergeableState: pgtype.Bool{Bool: true, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("UpsertGitHubPullRequest: %v", err)
+	}
+	if _, err := testHandler.Queries.LinkIssueToPullRequest(context.Background(), db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(fx.child.ID), PullRequestID: live.ID,
+	}); err != nil {
+		t.Fatalf("LinkIssueToPullRequest: %v", err)
+	}
+	ruleID := createRule(t, fx.child.ID, agentID, pgtype.UUID{}, service.WakeupInput{
+		Instruction: "Review merged PR", Kind: "event", Mode: "continuous",
+		Condition: json.RawMessage(`{"type":"pull_request","event":"merged"}`),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	runWakeupTick(t)
+	if got := wakeupRunsOf(t, ruleID); got != 1 {
+		t.Fatalf("live merged PR dispatched %d runs, want 1", got)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed' WHERE context->>'wakeup_id' = $1`, ruleID)
+
+	setHalt(t, "acme/widget", true, false)
+	dbfx.Exec(t, `UPDATE github_pull_request SET state='merged' WHERE id=$1`, halted.ID)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE id = $1`, ruleID)
+	runWakeupTick(t)
+	if got := wakeupRunsOf(t, ruleID); got != 1 {
+		t.Fatalf("halted merge beside a live PR dispatched %d runs in total, want 1", got)
+	}
+	setHalt(t, "acme/widget", false, false)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE id = $1`, ruleID)
+	runWakeupTick(t)
+	if got := wakeupRunsOf(t, ruleID); got != 1 {
+		t.Fatalf("resume replayed the halted merge: %d runs in total, want 1", got)
+	}
+}
+
+// The CI-green mark goes on the run that move enqueued, not on whichever run
+// of the issue is newest when the mark is written.
+func TestGitHubDispatchHaltMarksOnlyTheCIGreenRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	const installationID int64 = 222095
+	fx := newPRMergeWebhookFixture(t, installationID)
+	reviewer := seededReadyAgentID(t)
+	other := createHandlerTestAgent(t, "CHE-2220 unrelated run", []byte("[]"))
+	wf := createTestWorkflowSteps(t, "CHE-2220 mark "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "advance_on_ci_green": true},
+		{"status_key": "in_review", "handler": map[string]any{"type": "agent", "id": reviewer}, "instructions": "Review the PR."},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CHE-2220 mark project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	dbfx.Exec(t, `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID)
+	linkedPRForWakeup(t, fx, installationID, 222095, "che2220-mark")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	// A run of another path whose created_at is newer than anything the green
+	// snapshot enqueues: the newest-run guess would tag it.
+	var otherRuntime string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, other).Scan(&otherRuntime)
+	unrelated := dbfx.Task(t, other, testutil.Cols{"issue_id": fx.child.ID, "runtime_id": otherRuntime, "created_at": time.Now().Add(time.Hour)})
+	startSnapshotRefresh(t, installationID, 222095, newGreenSnapshot("che2220-mark").get)()
+	if got := countPendingTasksForAgent(t, fx.child.ID, reviewer); got != 1 {
+		t.Fatalf("CI green queued %d handler runs, want 1", got)
+	}
+
+	setHalt(t, "acme/widget", true, false)
+	if got := countPendingTasksForAgent(t, fx.child.ID, reviewer); got != 0 {
+		t.Fatalf("halt left %d CI-green runs live, want 0", got)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, unrelated); got != 1 {
+		t.Fatal("halt cancelled an unrelated run of the issue")
+	}
+}
+
 // A CI-green workflow handoff queued before the switch went on is a
 // GitHub-triggered run too: switching on cancels it.
 func TestGitHubDispatchHaltCancelsCIGreenRun(t *testing.T) {
