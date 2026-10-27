@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -60,7 +60,7 @@ import {
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
-import { useChatAnnotationScope } from "./chat-annotation-context";
+import { AnnotatableAnswer } from "./annotatable-answer";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
@@ -881,7 +881,9 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
         {t(($) => $.message_list.continuation_summary)}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        </AnnotatableAnswer>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -904,34 +906,6 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
  * the same cache entry useRealtimeSync seeds during execution — so no refetch
  * and no data discontinuity happens at the handoff either.
  */
-/**
- * The answer text of an agent reply. Once the reply is persisted (`messageId`)
- * it is a named tab stop that readers can select from, and markers for saved
- * comments render in the slot right after it, so Tab reaches them before the
- * footer (reading order). While the reply streams the same wrapper renders
- * without the selection attributes, so the answer node keeps its identity at
- * the live to settled handoff.
- */
-function AnnotatableAnswer({ messageId, children }: { messageId?: string; children: ReactNode }) {
-  const { t } = useT("chat");
-  const { enabled, agentName } = useChatAnnotationScope();
-  if (!enabled) return <>{children}</>;
-  return (
-    <div data-annotation-overlay-host>
-      <div
-        data-comment-content={messageId}
-        tabIndex={messageId ? 0 : undefined}
-        role={messageId ? "group" : undefined}
-        aria-label={messageId ? t(($) => $.annotations.source_label, { name: agentName ?? "" }) : undefined}
-        className="rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-      >
-        {children}
-      </div>
-      <div data-annotation-overlay-slot />
-    </div>
-  );
-}
-
 function AssistantMessage({
   taskId,
   message,
