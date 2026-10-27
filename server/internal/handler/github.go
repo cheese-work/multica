@@ -1495,6 +1495,18 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+	case "workflow_run":
+		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_run event")
+			return
+		}
+	case "workflow_job":
+		if err := h.handleWorkflowJobEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_job event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_job event")
+			return
+		}
 	case "check_suite", "check_run", "status":
 		// CI events are pure triggers under Plan C (MUL-5265): their payload is
 		// never read for display. Each just asks the API pipeline to re-fetch

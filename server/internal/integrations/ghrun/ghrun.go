@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -31,6 +31,11 @@ const (
 	PhaseInProgress int32 = 2
 	PhaseCompleted  int32 = 3
 )
+
+// TxStarter opens the per-workspace transaction; *pgxpool.Pool satisfies it.
+type TxStarter interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
 
 // RunEvent is a workflow_run delivery reduced to the stored columns.
 type RunEvent struct {
@@ -66,7 +71,7 @@ type JobEvent struct {
 }
 
 // ApplyRunEvent writes one workflow_run delivery for one workspace.
-func ApplyRunEvent(ctx context.Context, pool *pgxpool.Pool, workspaceID pgtype.UUID, event RunEvent) error {
+func ApplyRunEvent(ctx context.Context, pool TxStarter, workspaceID pgtype.UUID, event RunEvent) error {
 	event.RepoOwner, event.RepoName = strings.ToLower(event.RepoOwner), strings.ToLower(event.RepoName)
 	return inTx(ctx, pool, func(queries *db.Queries) error {
 		run, err := lockRun(ctx, queries, workspaceID, event.InstallationID, event.RepoOwner, event.RepoName, event.RunID, event.RunAttempt, event.HeadSHA)
@@ -99,7 +104,7 @@ func ApplyRunEvent(ctx context.Context, pool *pgxpool.Pool, workspaceID pgtype.U
 }
 
 // ApplyJobEvent writes one workflow_job delivery for one workspace.
-func ApplyJobEvent(ctx context.Context, pool *pgxpool.Pool, workspaceID pgtype.UUID, event JobEvent) error {
+func ApplyJobEvent(ctx context.Context, pool TxStarter, workspaceID pgtype.UUID, event JobEvent) error {
 	event.RepoOwner, event.RepoName = strings.ToLower(event.RepoOwner), strings.ToLower(event.RepoName)
 	return inTx(ctx, pool, func(queries *db.Queries) error {
 		run, err := lockRun(ctx, queries, workspaceID, event.InstallationID, event.RepoOwner, event.RepoName, event.RunID, event.RunAttempt, event.HeadSHA)
@@ -186,7 +191,7 @@ func timestamp(at time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: at, Valid: !at.IsZero()}
 }
 
-func inTx(ctx context.Context, pool *pgxpool.Pool, apply func(*db.Queries) error) error {
+func inTx(ctx context.Context, pool TxStarter, apply func(*db.Queries) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err

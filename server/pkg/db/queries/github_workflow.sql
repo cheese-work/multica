@@ -115,3 +115,16 @@ UPDATE github_workflow_run SET
     updated_at = now()
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4
   AND run_attempt = $5;
+
+-- =====================
+-- Retention (CHE-2147 D2)
+--
+-- The mirror is a 30-day cache of observed events, not history. Both deletes
+-- are global (no workspace filter) and run on the (updated_at) indexes.
+-- =====================
+
+-- name: DeleteExpiredGitHubWorkflowRuns :execrows
+DELETE FROM github_workflow_run WHERE updated_at < $1;
+
+-- name: DeleteExpiredGitHubWorkflowJobs :execrows
+DELETE FROM github_workflow_job WHERE updated_at < $1;

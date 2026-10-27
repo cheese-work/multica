@@ -106,6 +106,37 @@ func (q *Queries) AdvanceGitHubWorkflowRun(ctx context.Context, arg AdvanceGitHu
 	return err
 }
 
+const deleteExpiredGitHubWorkflowJobs = `-- name: DeleteExpiredGitHubWorkflowJobs :execrows
+DELETE FROM github_workflow_job WHERE updated_at < $1
+`
+
+func (q *Queries) DeleteExpiredGitHubWorkflowJobs(ctx context.Context, updatedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGitHubWorkflowJobs, updatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredGitHubWorkflowRuns = `-- name: DeleteExpiredGitHubWorkflowRuns :execrows
+
+DELETE FROM github_workflow_run WHERE updated_at < $1
+`
+
+// =====================
+// Retention (CHE-2147 D2)
+//
+// The mirror is a 30-day cache of observed events, not history. Both deletes
+// are global (no workspace filter) and run on the (updated_at) indexes.
+// =====================
+func (q *Queries) DeleteExpiredGitHubWorkflowRuns(ctx context.Context, updatedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGitHubWorkflowRuns, updatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const ensureGitHubWorkflowRunStub = `-- name: EnsureGitHubWorkflowRunStub :exec
 
 INSERT INTO github_workflow_run (
