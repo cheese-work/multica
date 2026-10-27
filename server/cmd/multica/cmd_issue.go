@@ -761,6 +761,7 @@ func init() {
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueCommentAddCmd.Flags().Bool("allow-external-file", false, "Allow --content-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent run must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
+	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -2946,6 +2947,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
 	}
+	resolveThread, _ := cmd.Flags().GetBool("resolve-thread")
+	if parent, _ := cmd.Flags().GetString("parent"); resolveThread && parent == "" {
+		return fmt.Errorf("--resolve-thread requires --parent: it resolves the thread the reply belongs to")
+	}
 	if err := guardLocalPathLinks(content, "comment body",
 		"Deliver the file itself with `multica issue comment add <issue-id> --attachment <path>` (repeatable) and drop the link."); err != nil {
 		return err
@@ -3030,6 +3035,22 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	if hints, ok := result["hints"].([]any); ok {
+		for _, value := range hints {
+			if hint, ok := value.(string); ok && hint != "" {
+				fmt.Fprintln(os.Stderr, "Hint: "+hint)
+			}
+		}
+	}
+
+	if resolveThread {
+		newID, _ := result["id"].(string)
+		var resolved map[string]any
+		if err := client.PostJSON(ctx, "/api/comments/"+url.PathEscape(newID)+"/resolve", nil, &resolved); err != nil {
+			return fmt.Errorf("comment %s was posted but resolving its thread failed (do not repost; run `multica issue comment resolve %s`): %w", newID, newID, err)
+		}
+		fmt.Fprintf(os.Stderr, "Thread resolved.\n")
+	}
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
