@@ -5,9 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 
-// CHE-2191: a comment body over 16,000 chars mounts a ~2,000-char prefix and a
-// "Show full comment" button; the full rich content mounts on click, when the
-// comment is the highlighted target, or when find owns the thread.
+// CHE-2191: a comment body over 16,000 chars mounts a prefix of whole blocks
+// (at most 2,000 chars, never splitting a block) and a "Show full comment"
+// button; the full rich content mounts on click, when the comment is the
+// highlighted target, or when find owns the thread.
 
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: vi.fn() },
@@ -109,6 +110,21 @@ describe("CommentCard — oversized body (CHE-2191)", () => {
     renderCard(LONG);
     expect(screen.queryAllByRole("table")).toHaveLength(0);
     expect(screen.getByText("Plan rev-14")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show full comment" })).toBeTruthy();
+  });
+
+  // The next block (a ~2,000-char table) does not fit in the 2,000-char budget,
+  // so the prefix is the intro block alone: a block is never split.
+  it("never splits a block: the prefix is whole blocks only", () => {
+    renderCard(LONG);
+    expect(screen.getByTestId("body").textContent).toBe("Plan rev-14");
+  });
+
+  it("fills the prefix with whole short blocks up to 2,000 chars", () => {
+    const paragraphs = Array.from({ length: 30 }, (_, i) => `para ${i} `.padEnd(600, "x"));
+    renderCard(paragraphs.join("\n\n"));
+    const blocks = Array.from(screen.getByTestId("body").querySelectorAll("p"));
+    expect(blocks.map((p) => p.textContent)).toEqual(paragraphs.slice(0, 3));
     expect(screen.getByRole("button", { name: "Show full comment" })).toBeTruthy();
   });
 
