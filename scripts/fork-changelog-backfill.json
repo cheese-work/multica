@@ -37,15 +37,6 @@
       "group": "week"
     },
     {
-      "id": "fork-pr-166",
-      "number": 166,
-      "mergedAt": "2026-10-06T09:49:19.000Z",
-      "date": "2026-10-06",
-      "section": "Improvements",
-      "text": "Child-done, PR-merged and CI-failed wakeups now run from one resolved config: instruction, target, filters, expiry and rate limit.",
-      "group": "week"
-    },
-    {
       "id": "fork-pr-159",
       "number": 159,
       "mergedAt": "2026-10-04T11:54:46.000Z",
@@ -141,7 +132,7 @@
       "mergedAt": "2026-09-24T10:57:10.000Z",
       "date": "2026-09-24",
       "section": "New Features",
-      "text": "Workspaces can choose small or strict export redaction and how long export audit manifests are kept (90 days by default).",
+      "text": "Workspaces can set how long export audit manifests are kept (90 days by default).",
       "group": "week"
     },
     {
@@ -177,7 +168,7 @@
       "mergedAt": "2026-09-21T09:48:48.000Z",
       "date": "2026-09-21",
       "section": "New Features",
-      "text": "The server now enforces required source links on issue writes, including raw CLI and API calls.",
+      "text": "Workspaces can opt in to server-side checks that agent writes cite the required source link of an issue, including raw CLI and API calls.",
       "group": "week"
     },
     {
@@ -195,7 +186,7 @@
       "mergedAt": "2026-09-21T09:24:56.000Z",
       "date": "2026-09-21",
       "section": "New Features",
-      "text": "Agents are now briefed from compact checkpoints of an issue instead of its whole history.",
+      "text": "Agent runs now start with a checkpoint briefing that tracks which comment threads changed since the last run.",
       "group": "week"
     },
     {
@@ -421,24 +412,6 @@
       "date": "2026-05-05",
       "section": "New Features",
       "text": "Issue statuses can follow a customizable workflow; multica issue transitions lists the allowed next statuses.",
-      "group": "week"
-    },
-    {
-      "id": "fork-pr-4",
-      "number": 4,
-      "mergedAt": "2026-05-05T11:23:41.000Z",
-      "date": "2026-05-05",
-      "section": "Bug Fixes",
-      "text": "Malformed review verdicts are now rejected safely instead of crashing or counting as an approval.",
-      "group": "week"
-    },
-    {
-      "id": "fork-pr-2",
-      "number": 2,
-      "mergedAt": "2026-05-05T10:35:51.000Z",
-      "date": "2026-05-05",
-      "section": "New Features",
-      "text": "Review verdicts (changes requested, blocker) now route to fix tasks automatically, without agent @mention ping-pong.",
       "group": "week"
     },
     {
