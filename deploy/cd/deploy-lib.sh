@@ -404,8 +404,8 @@ ghcr_login() {
     MULTICA_GHCR_ORIGINAL_CONFIG="${DOCKER_CONFIG:-}"
     MULTICA_GHCR_ORIGINAL_CONFIG_SET="${DOCKER_CONFIG+x}"
     MULTICA_GHCR_CONFIG="$(mktemp -d)" || return 1
-    printf '%s\n' '{"credHelpers":{"ghcr.io":"multica-ghcr"}}' > "$MULTICA_GHCR_CONFIG/config.json"
-    cat > "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" <<'HELPER'
+    printf '%s\n' '{"credHelpers":{"ghcr.io":"multica-ghcr"}}' > "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    cat > "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" <<'HELPER' || return 1
 #!/bin/sh
 set -eu
 case "$1" in
@@ -418,8 +418,8 @@ case "$1" in
   *) exit 1 ;;
 esac
 HELPER
-    chmod 600 "$MULTICA_GHCR_CONFIG/config.json"
-    chmod 700 "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr"
+    chmod 600 "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    chmod 700 "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" || return 1
     export DOCKER_CONFIG="$MULTICA_GHCR_CONFIG"
     export PATH="$MULTICA_GHCR_CONFIG:$PATH"
   fi
