@@ -83,6 +83,18 @@ describe("proxy legacy workspace route redirects", () => {
     ).toBe("https://app.multica.test/acme/squads/squad-123?view=members");
   });
 
+  it.each([
+    ["/issue/01a140fb-3ecf-7751-a93b-4bbafd5d51ec?x=1", "/acme/issues/01a140fb-3ecf-7751-a93b-4bbafd5d51ec?x=1"],
+    ["/issue/CHE-1798", "/acme/issues/CHE-1798"],
+    ["/issues/CHE-1798", "/acme/issues/CHE-1798"],
+  ])("redirects singular /issue/ link %s to the workspace issues route", (path, expected) => {
+    // The #comment-<id> hash never reaches the server; the browser re-applies
+    // it to the redirect target, so only path + query are asserted here.
+    expect(redirectLocation(path, sessionCookies)).toBe(
+      `https://app.multica.test${expected}`,
+    );
+  });
+
   it("sends logged-out legacy URLs to login", () => {
     expect(redirectLocation("/usage?tab=billing")).toBe(
       "https://app.multica.test/login?tab=billing",

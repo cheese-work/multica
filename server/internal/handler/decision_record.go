@@ -408,7 +408,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: /issue/%s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID), uuidToString(answer.ID))
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: %s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, issueWebPath(workspace.Slug, uuidToString(issue.ID)), uuidToString(answer.ID))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err
@@ -433,4 +433,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 
 func blockQuote(text string) string {
 	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
+}
+
+// issueWebPath is the web route of an issue; the app has no slugless /issue/ route.
+func issueWebPath(workspaceSlug, issueID string) string {
+	return "/" + workspaceSlug + "/issues/" + issueID
 }

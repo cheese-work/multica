@@ -12,6 +12,7 @@ import { isOfficialMarketingHost } from "./lib/public-host";
 // needs to be rewritten to /{slug}/{route}/... so old bookmarks, deep links,
 // and post-revert-and-reapply users don't hit 404.
 const LEGACY_ROUTE_SEGMENTS = new Set([
+  "issue", // singular form emitted by agents and decision notes; maps to issues
   "issues",
   "projects",
   "agents",
@@ -72,7 +73,10 @@ export function proxy(req: NextRequest) {
 
     if (lastSlug) {
       // Preserve deep-link path + query: /issues/abc → /{lastSlug}/issues/abc
-      url.pathname = `/${lastSlug}${pathname}`;
+      // `/issue/...` (singular) has no web route; it means `/issues/...`.
+      const target =
+        firstSegment === "issue" ? pathname.replace(/^\/issue/, "/issues") : pathname;
+      url.pathname = `/${lastSlug}${target}`;
       return NextResponse.redirect(url);
     }
 
