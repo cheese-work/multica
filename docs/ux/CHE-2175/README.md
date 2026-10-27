@@ -85,6 +85,11 @@ The workspace-wide unbind query is removed (N5); re-binding targets the exact
 message ID and compares the previous answer ID. Human disclaim and agent veto
 also retain the selected-request binding (N6). Existing historical
 decision-reference messages remain intact.
+B3 treats a missing referenced answer as no binding, including after issue
+deletion and decision orphan cleanup. Chat decision context and decision
+recording then use the existing unbound-message path. Other database errors
+still propagate. B2's selected-request checks remain unchanged when the answer
+row exists, whether live or withdrawn. B3 changes no UI source or captures.
 The bound send path refuses `/compact` commands without creating any rows.
 DM quotes use the existing plain-quote serializer; issue annotation escaping is
 unchanged.

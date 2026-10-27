@@ -223,6 +223,67 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 	}
 }
 
+func TestSendChatDecisionReplyOrphanedBinding(test *testing.T) {
+	for _, scenario := range []string{"context", "record"} {
+		test.Run(scenario, func(test *testing.T) {
+			ctx := context.Background()
+			agentID, sessionID, _, _ := setupDirectChatSession(test, ctx, "Orphaned bound answer")
+			requestID, _, issueID := seedDMDecision(test, agentID, sessionID, "Original ask", "open", "2 minutes")
+			var survivingID, survivingParentID, survivingIssueID string
+			if scenario == "record" {
+				survivingID, survivingParentID, survivingIssueID = seedDMDecision(test, agentID, sessionID, "Surviving ask", "open", "1 minute")
+			}
+			content := "> Original ask\n\nYes"
+			request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": content, "decision_request_id": requestID})
+			request.Header.Set("X-Actor-Source", "interactive_jwt")
+			request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
+			var sent SendChatMessageResponse
+			testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusCreated).JSON(&sent)
+			dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, issueID)
+			if err := testHandler.cleanupDecisionOrphans(ctx, parseUUID(testWorkspaceID), parseUUID(issueID)); err != nil {
+				test.Fatal(err)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1`, requestID) != 0 || dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, requestID) != 0 {
+				test.Fatal("orphan cleanup kept the deleted issue's decision rows")
+			}
+			message, err := testHandler.Queries.GetChatMessage(ctx, parseUUID(sent.MessageID))
+			if err != nil || !message.DecisionAnswerID.Valid {
+				test.Fatalf("orphan cleanup did not leave the expected stale message binding: %v", err)
+			}
+			if scenario == "context" {
+				session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+				if err != nil {
+					test.Fatal(err)
+				}
+				block, err := testHandler.decisionContextBlock(ctx, session, parseUUID(sent.TaskID), []db.ChatMessage{message})
+				if err != nil {
+					test.Fatalf("orphaned binding wedges chat decision context: %v", err)
+				}
+				if !strings.Contains(block, sent.MessageID) || strings.Contains(block, "already recorded") || strings.Contains(block, "explicitly selected decision request") {
+					test.Fatalf("orphaned source was not treated as unbound: %q", block)
+				}
+				return
+			}
+			markTaskRunning(test, ctx, sent.TaskID)
+			issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(survivingIssueID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			recordRequest := newRequest(http.MethodPost, "/", nil)
+			recordRequest.Header.Set("X-Actor-Source", "task_token")
+			recordRequest.Header.Set("X-Task-ID", sent.TaskID)
+			recordRequest.Header.Set("X-Agent-ID", agentID)
+			recorded, err := testHandler.createAskedDecisionRecordTx(recordRequest, issue, decisionRecordInput{ParentID: parseUUID(survivingParentID), MessageIDs: []pgtype.UUID{message.ID}})
+			if err != nil {
+				test.Fatalf("orphaned binding makes decision recording fail: %v", err)
+			}
+			if recorded.Request.ID != parseUUID(survivingID) || recorded.Request.Status != "answered" || recorded.Answer.ContentSnapshot != content || dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, survivingID) != 1 {
+				test.Fatalf("orphaned source did not record as unbound: %+v", recorded)
+			}
+		})
+	}
+}
+
 func TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard(test *testing.T) {
 	for _, status := range []string{"failed", "cancelled"} {
 		test.Run(status, func(test *testing.T) {

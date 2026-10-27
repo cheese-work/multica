@@ -302,7 +302,8 @@ B2 option 1 keeps the binding to the withdrawn answer as request provenance.
 Context names that selected request even when its answer is withdrawn. The
 record guard permits re-recording only on that answer's request. The live
 answer replaces the old binding inside the record transaction using a
-compare-and-set on the exact message ID. Missing binding rows fail closed.
+compare-and-set on the exact message ID. At B2, missing binding rows failed
+closed. B3 below supersedes that missing-row behavior.
 
 N5 is addressed by removing the workspace-wide unbind query; no new index or
 migration is needed. N6 keeps the binding on human disclaim and agent veto as
@@ -314,3 +315,56 @@ The earlier withdrawal rollback test now injects failure at request reopening,
 not at the removed unbind query. Its answer, request and receipt rollback
 assertions remain. N2's `/compact` refusal remains unchanged. No UI source,
 dependency, migration, hold policy or worker scheduling behavior changes.
+
+## B3: orphaned bindings do not wedge chat turns
+
+Correction parent: `78ba2e0e14aa9a906a40a2ef3035af856f2bd4b2`.
+`TestSendChatDecisionReplyOrphanedBinding` was added before implementation.
+Both cases send a bound reply, hard-delete its issue, run
+`cleanupDecisionOrphans`, and verify that the request and answer are gone while
+the message still has its stale answer ID.
+
+The `context` case builds decision context with no error and treats the source
+as unbound. The `record` case uses `createAskedDecisionRecordTx` to record that
+source against a surviving request. It asserts success and exactly one saved
+answer, rather than accepting an internal error or merely asserting no 500.
+
+From `server/`, the same command observed red and green:
+
+```sh
+set -a; source ../.env.worktree; set +a
+bash ../scripts/go-test-with-agent-cli-guard.sh -- \
+  go test ./internal/handler -run '^TestSendChatDecisionReplyOrphanedBinding$' -count=1 -v
+```
+
+### Observed red
+
+October 27, 2026, 16:34:15 ICT, exit 1, before the implementation changed:
+
+```text
+orphaned binding wedges chat decision context: no rows in result set
+orphaned binding makes decision recording fail: no rows in result set
+--- FAIL: TestSendChatDecisionReplyOrphanedBinding (0.26s)
+    --- FAIL: TestSendChatDecisionReplyOrphanedBinding/context (0.19s)
+    --- FAIL: TestSendChatDecisionReplyOrphanedBinding/record (0.07s)
+FAIL github.com/multica-ai/multica/server/internal/handler 0.527s
+```
+
+### Observed green
+
+October 27, 2026, 16:37:59 ICT, exit 0, after the shared loader fix:
+
+```text
+--- PASS: TestSendChatDecisionReplyOrphanedBinding (0.23s)
+    --- PASS: TestSendChatDecisionReplyOrphanedBinding/context (0.14s)
+    --- PASS: TestSendChatDecisionReplyOrphanedBinding/record (0.09s)
+PASS
+ok github.com/multica-ai/multica/server/internal/handler 0.313s
+```
+
+### Scope
+
+`loadDecisionAnswerBinding` treats only `pgx.ErrNoRows` as no binding.
+Other database errors still propagate. Existing live and withdrawn answer
+rows still take B2's selected-request path. No worker scheduling, hold policy,
+UI source, dependency, query or migration changes are needed for B3.

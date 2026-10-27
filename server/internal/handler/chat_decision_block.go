@@ -130,5 +130,9 @@ func loadDecisionAnswerBinding(ctx context.Context, queries *db.Queries, workspa
 	if !answerID.Valid {
 		return db.DecisionAnswer{}, nil
 	}
-	return queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
+	answer, err := queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.DecisionAnswer{}, nil
+	}
+	return answer, err
 }
