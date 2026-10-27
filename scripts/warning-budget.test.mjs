@@ -101,6 +101,7 @@ test("the CI entrypoint fails a new-warning fixture and passes unchanged main ev
 const endpoint = process.argv[3]
 const scenario = process.env.BUDGET_FIXTURE
 const skipped = scenario.startsWith('skipped-baseline') || scenario === 'paged-baseline' || scenario === 'missing-job'
+const renamed = scenario.startsWith('renamed-')
 let result
 if (endpoint.endsWith('/actions/runs/2')) result = {id:2,workflow_id:3,created_at:'2026-10-27T05:00:00Z',head_sha:'candidate',html_url:'candidate-run'}
 else if (endpoint.includes('/actions/workflows/3/runs?')) {
@@ -115,7 +116,8 @@ else if (endpoint.includes('/actions/workflows/3/runs?')) {
 else if (endpoint.includes('/jobs?')) {
   const baseline = endpoint.includes('/runs/1/')
   const older = endpoint.includes('/runs/3/')
-  result = {jobs:[{id:older?13:baseline?11:12,name:!baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build',status:scenario==='incomplete'?'in_progress':'completed',conclusion:baseline&&skipped?'skipped':'success',check_run_url:'https://api.github.com/check-runs/'+(older?23:baseline?21:22)}]}
+  const name = renamed ? (scenario.includes('cursor') ? 'cursor-background-lifecycle' : 'installer') + ' (' + (baseline ? 'ubuntu-latest' : 'ubuntu-24.04') + ')' : !baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build'
+  result = {jobs:[{id:older?13:baseline?11:12,name,status:scenario==='incomplete'?'in_progress':'completed',conclusion:baseline&&skipped?'skipped':'success',check_run_url:'https://api.github.com/check-runs/'+(older?23:baseline?21:22)}]}
 } else if (endpoint.includes('/annotations?')) result = []
 else if (endpoint.endsWith('/logs')) {
   if (scenario === 'ansi-warning' && !process.argv.includes('--allow-escape-sequences')) {
@@ -124,13 +126,13 @@ else if (endpoint.endsWith('/logs')) {
   }
   const current = endpoint.includes('/jobs/12/')
   const diagnostic = scenario === 'ansi-warning' ? '\\u001b[2KWar\\u001b[33mning: fixture diagnostic\\u001b[0m' : 'Warning: fixture diagnostic'
-  const warning = (current && ['new-warning', 'ansi-warning', 'pr-only-warning'].includes(scenario)) || (skipped && !endpoint.includes('/jobs/11/'))
-  process.stdout.write(warning ? diagnostic + (current && scenario === 'skipped-baseline-new-warning' ? '\\n'+diagnostic : '') : '')
+  const warning = renamed || (current && ['new-warning', 'ansi-warning', 'pr-only-warning'].includes(scenario)) || (skipped && !endpoint.includes('/jobs/11/'))
+  process.stdout.write(warning ? diagnostic + (current && (scenario === 'skipped-baseline-new-warning' || scenario.endsWith('-extra-warning')) ? '\\n'+diagnostic : '') : '')
   process.exit(0)
 } else throw new Error('Unexpected API request '+endpoint)
 process.stdout.write(JSON.stringify(result))
 `, { mode: 0o700 })
-    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0]]) {
+    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0], ["renamed-cursor", 0], ["renamed-cursor-extra-warning", 1], ["renamed-installer", 0], ["renamed-installer-extra-warning", 1]]) {
       const result = spawnSync(process.execPath, [command], { cwd: directory, encoding: "utf8", env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", BUDGET_FIXTURE: scenario, GITHUB_STEP_SUMMARY: "" } })
       assert.equal(result.status, expected, `${scenario}: ${result.stderr}`)
       if (["new-warning", "ansi-warning"].includes(scenario)) {
@@ -139,13 +141,19 @@ process.stdout.write(JSON.stringify(result))
       }
       if (["skipped-baseline", "skipped-baseline-new-warning", "paged-baseline"].includes(scenario)) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
-        assert.deepEqual(report.job_baselines["frontend-build"], { run: "older-main-run", sha: "older-main" })
+        assert.deepEqual(report.job_baselines["frontend-build"], { run: "older-main-run", sha: "older-main", job: "frontend-build" })
         assert.deepEqual(report.regressions, scenario === "skipped-baseline-new-warning" ? [{ warning: "frontend-build: Warning: fixture diagnostic", baseline: 1, current: 2 }] : [])
       }
       if (scenario.startsWith("pr-only")) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
         assert.deepEqual(report.zero_baseline_jobs, ["image-budget"])
         assert.deepEqual(report.baseline, {})
+      }
+      if (scenario.startsWith("renamed-")) {
+        const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
+        const job = scenario.includes("cursor") ? "cursor-background-lifecycle" : "installer"
+        assert.deepEqual(report.job_baselines[`${job} (ubuntu-24.04)`], { run: "main-run", sha: "main", job: `${job} (ubuntu-latest)` })
+        assert.deepEqual(report.regressions, scenario.endsWith("-extra-warning") ? [{ warning: `${job} (ubuntu-24.04): Warning: fixture diagnostic`, baseline: 1, current: 2 }] : [])
       }
     }
   } finally {

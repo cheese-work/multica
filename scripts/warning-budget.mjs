@@ -126,10 +126,11 @@ export function runBudget() {
     for (const run of trusted) {
       baseline ??= run
       for (const job of jobs(run)) {
-        if (!pending.has(job.name) || job.status !== "completed" || job.conclusion !== "success") continue
-        baselineJobs.push(collect(job))
-        jobBaselines[job.name] = { run: run.html_url, sha: run.head_sha }
-        pending.delete(job.name)
+        const name = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
+        if (!pending.has(name) || job.status !== "completed" || job.conclusion !== "success") continue
+        baselineJobs.push({ ...collect(job), name })
+        jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
+        pending.delete(name)
       }
       if (!pending.size) break
     }

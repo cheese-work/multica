@@ -17,7 +17,12 @@ on PRs, so its otherwise empty main executions are not meaningful baselines.
 These jobs do not inherit allowances from another job or an earlier PR.
 
 The report artifact records each job's baseline run URL and SHA in
-`job_baselines`, the strict-zero jobs in `zero_baseline_jobs`, warning counts,
+`job_baselines`, including the original baseline job name. The runner pin
+renames `cursor-background-lifecycle (ubuntu-latest)` and
+`installer (ubuntu-latest)` to their `ubuntu-24.04` matrix names. Only these
+two legacy names are aliases when selecting job evidence. Their warning
+counts retain the candidate job name; no diagnostics are discarded.
+The report records the strict-zero jobs in `zero_baseline_jobs`, warning counts,
 regressions and the candidate's annotation list. `baseline_run` identifies the
 newest trusted main run searched, not necessarily every job's baseline.
 Existing warnings may decrease; a new
