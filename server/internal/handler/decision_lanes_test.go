@@ -71,10 +71,10 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 			test.Fatalf("wrong lanes: %+v", lanes)
 		}
 		for _, lane := range lanes {
-			if len(lane) != 4 {
-				test.Fatalf("lane must expose only four bounded metadata fields: %+v", lane)
+			if len(lane) != 5 {
+				test.Fatalf("lane must expose only five bounded metadata fields: %+v", lane)
 			}
-			for _, key := range []string{"id", "title", "issue_mentions", "updated_at"} {
+			for _, key := range []string{"id", "title", "issue_mentions", "updated_at", "eligible"} {
 				if _, exists := lane[key]; !exists {
 					test.Fatalf("missing metadata field %s: %+v", key, lane)
 				}
