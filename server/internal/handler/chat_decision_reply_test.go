@@ -187,8 +187,8 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if persisted.DecisionAnswerID.Valid {
-				test.Error("withdrawn answer kept the source message binding")
+			if persisted.DecisionAnswerID != withdrawn.Answer.ID {
+				test.Error("withdrawal lost the source message binding")
 			}
 			if count := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE decision_answer_id = $1 AND message_kind = 'decision_reference'`, withdrawn.Answer.ID); count != 1 {
 				test.Error("withdrawal removed the historical decision reference")
@@ -201,7 +201,6 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 			if err != nil || strings.Contains(block, "already recorded") || !strings.Contains(block, requestID) {
 				test.Errorf("withdrawn answer still suppresses retry context: %q / %v", block, err)
 			}
-			dbfx.Exec(test, `UPDATE chat_message SET decision_answer_id = $2 WHERE id = $1`, message.ID, withdrawn.Answer.ID)
 			retryID := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "runtime_id": runtimeID})
 			markTaskRunning(test, ctx, retryID)
 			issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -219,6 +218,76 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 			}
 			if recorded.Request.Status != "answered" || recorded.Answer.DisclaimedAt.Valid || recorded.Answer.ID == withdrawn.Answer.ID || recorded.Answer.WakeAt.Valid || recorded.Answer.EffectiveAt.Time.Before(before.Add(10*time.Minute)) || recorded.Answer.ContentSnapshot != message.Content {
 				test.Fatalf("retry lost the answer or its hold: %+v", recorded.Answer)
+			}
+		})
+	}
+}
+
+func TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard(test *testing.T) {
+	for _, status := range []string{"failed", "cancelled"} {
+		test.Run(status, func(test *testing.T) {
+			ctx := context.Background()
+			agentID, sessionID, runtimeID, _ := setupDirectChatSession(test, ctx, "Keep the selected card")
+			firstID, firstParentID, firstIssueID := seedDMDecision(test, agentID, sessionID, "A. First ask", "open", "2 minutes")
+			secondID, secondParentID, secondIssueID := seedDMDecision(test, agentID, sessionID, "C. Selected ask", "open", "1 minute")
+			request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": "> C. Selected ask\n\nYes", "decision_request_id": secondID})
+			request.Header.Set("X-Actor-Source", "interactive_jwt")
+			request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
+			var sent SendChatMessageResponse
+			testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusCreated).JSON(&sent)
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = $2 WHERE id = $1`, sent.TaskID, status)
+			withdrawn, err := testHandler.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(secondID))
+			if err != nil || !withdrawn.Answer.DisclaimedAt.Valid || withdrawn.Request.Status != "open" {
+				test.Fatalf("could not withdraw selected answer: %+v / %v", withdrawn, err)
+			}
+			message, err := testHandler.Queries.GetChatMessage(ctx, parseUUID(sent.MessageID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			if message.DecisionAnswerID != withdrawn.Answer.ID {
+				test.Error("withdrawal lost the selected request binding")
+			}
+			session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			block, err := testHandler.decisionContextBlock(ctx, session, parseUUID(sent.TaskID), []db.ChatMessage{message})
+			if err != nil || !strings.Contains(block, secondID) || strings.Contains(block, firstID) || strings.Contains(block, "already recorded") {
+				test.Errorf("withdrawn context lost the selected request: %q / %v", block, err)
+			}
+			retryID := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "runtime_id": runtimeID})
+			markTaskRunning(test, ctx, retryID)
+			recordRequest := newRequest(http.MethodPost, "/", nil)
+			recordRequest.Header.Set("X-Actor-Source", "task_token")
+			recordRequest.Header.Set("X-Task-ID", retryID)
+			recordRequest.Header.Set("X-Agent-ID", agentID)
+			firstIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(firstIssueID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			_, err = testHandler.createAskedDecisionRecord(recordRequest, firstIssue, decisionRecordInput{ParentID: parseUUID(firstParentID), MessageIDs: []pgtype.UUID{message.ID}})
+			var refusal decisionIntentRefusal
+			if !errors.As(err, &refusal) || refusal.status != http.StatusBadRequest {
+				test.Fatalf("card-2 reply was accepted for card 1: err=%v card1_answers=%d", err, dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, firstID))
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, firstID) != 0 || dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'quote'`, firstIssueID) != 0 {
+				test.Fatal("refused reuse left an answer or quote on card 1")
+			}
+			secondIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(secondIssueID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			recorded, err := testHandler.createAskedDecisionRecord(recordRequest, secondIssue, decisionRecordInput{ParentID: parseUUID(secondParentID), MessageIDs: []pgtype.UUID{message.ID}})
+			if err != nil || recorded.Request.Status != "answered" || recorded.Answer.DisclaimedAt.Valid || recorded.Answer.ID == withdrawn.Answer.ID || recorded.Answer.ContentSnapshot != message.Content {
+				test.Fatalf("card-2 reply could not be recorded on card 2: %+v / %v", recorded, err)
+			}
+			message, err = testHandler.Queries.GetChatMessage(ctx, message.ID)
+			if err != nil || message.DecisionAnswerID != recorded.Answer.ID {
+				test.Errorf("re-recording did not bind the live answer: %+v / %v", message, err)
+			}
+			block, err = testHandler.decisionContextBlock(ctx, session, parseUUID(retryID), []db.ChatMessage{message})
+			if err != nil || !strings.Contains(block, secondID) || !strings.Contains(block, "already recorded") {
+				test.Errorf("re-recorded context lost the live selected answer: %q / %v", block, err)
 			}
 		})
 	}
@@ -251,15 +320,15 @@ func TestSendChatDecisionReplyWithdrawalRollback(test *testing.T) {
 	var sent SendChatMessageResponse
 	testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusCreated).JSON(&sent)
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'failed' WHERE id = $1`, sent.TaskID)
-	failure := errors.New("message unbind failed")
+	failure := errors.New("request reopen failed")
 	broken := *testHandler
-	broken.TxStarter = &requestCoreStarter{base: testPool, query: "-- name: ClearChatMessageDecisionAnswer", fail: failure}
+	broken.TxStarter = &requestCoreStarter{base: testPool, query: "-- name: ReopenDecisionRequest", fail: failure}
 	result, err := broken.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(requestID))
 	if !errors.Is(err, failure) || len(result.Comments) != 0 {
-		test.Fatalf("failed unbind escaped rollback: %+v / %v", result, err)
+		test.Fatalf("failed reopen escaped rollback: %+v / %v", result, err)
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, requestID) != 1 || dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'answered'`, requestID) != 1 || dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE id = $1 AND decision_answer_id IS NOT NULL`, sent.MessageID) != 1 || dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id IN (SELECT id FROM decision_answer WHERE decision_request_id = $1) AND decision_comment_kind = 'disclaim'`, requestID) != 0 {
-		test.Fatal("failed unbind partially withdrew the answer, request, message binding, or receipt")
+		test.Fatal("failed reopen partially withdrew the answer, request, message binding, or receipt")
 	}
 	if _, err := testHandler.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(requestID)); err != nil {
 		test.Fatalf("withdrawal could not recover after rollback: %v", err)

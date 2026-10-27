@@ -67,9 +67,6 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	if err != nil {
 		return Withdrawal{}, err
 	}
-	if err := queries.ClearChatMessageDecisionAnswer(ctx, db.ClearChatMessageDecisionAnswerParams{WorkspaceID: request.WorkspaceID, AnswerID: answer.ID}); err != nil {
-		return Withdrawal{}, err
-	}
 	if request.Status != "answered" {
 		return result, nil
 	}

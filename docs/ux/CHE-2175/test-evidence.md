@@ -248,3 +248,69 @@ trust-boundary guards remain intact. No check waiver is claimed.
 The local `command -v golangci-lint` probe returned exit 1 with no output, so
 golangci-lint is NOT-RUN locally. Its CI check remains required.
 The full frontend suite is not re-run for this backend-only correction.
+
+## B2: selected request survives withdrawal
+
+The correction parent is `7ef9664dd0a5153094558299ac8da2f93ecd7c67`.
+The B1 evidence above is historical. B2 supersedes its binding-clear mechanism,
+not the existing worker withdrawal lifecycle or the ability to re-record.
+
+`TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard` was added before the
+B2 implementation. Both `failed` and `cancelled` cases use two open requests,
+send an explicitly bound reply on card 2, withdraw its answer, and try to
+record the same message on card 1 before re-recording on card 2. The test also
+checks selected-request context, absence of card-1 writes, and the live binding
+after re-recording.
+
+Command from `server/`, using the existing managed worktree database:
+
+```sh
+set -a; source ../.env.worktree; set +a
+go test ./internal/handler -run '^TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard$' -count=1 -v
+```
+
+Observed behavioral red at 14:51:32 ICT on October 27, 2026, exit 1:
+
+```text
+withdrawal lost the selected request binding
+withdrawn context lost the selected request: ... 2 open decision requests ...
+card-2 reply was accepted for card 1: err=<nil> card1_answers=1
+--- FAIL: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard (0.31s)
+    --- FAIL: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard/failed (0.20s)
+    --- FAIL: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard/cancelled (0.10s)
+FAIL github.com/multica-ai/multica/server/internal/handler 0.378s
+```
+
+An earlier test-build failure and a fixture-only failure are excluded from the
+behavioral-red evidence. The excerpt above comes from the subsequent complete
+behavioral run, before implementation.
+
+Observed green at 14:58:52 ICT on October 27, 2026, exit 0, for the same test
+and command:
+
+```text
+--- PASS: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard (0.40s)
+    --- PASS: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard/failed (0.24s)
+    --- PASS: TestSendChatDecisionReplyWithdrawnSelectionStaysOnCard/cancelled (0.16s)
+PASS
+ok github.com/multica-ai/multica/server/internal/handler 0.727s
+```
+
+### Chosen mechanism
+
+B2 option 1 keeps the binding to the withdrawn answer as request provenance.
+Context names that selected request even when its answer is withdrawn. The
+record guard permits re-recording only on that answer's request. The live
+answer replaces the old binding inside the record transaction using a
+compare-and-set on the exact message ID. Missing binding rows fail closed.
+
+N5 is addressed by removing the workspace-wide unbind query; no new index or
+migration is needed. N6 keeps the binding on human disclaim and agent veto as
+well as failed/cancelled turns. Re-recording the same request remains allowed,
+matching existing withdrawal semantics, but another request cannot consume
+the source. Unbound replies keep their existing behavior.
+
+The earlier withdrawal rollback test now injects failure at request reopening,
+not at the removed unbind query. Its answer, request and receipt rollback
+assertions remain. N2's `/compact` refusal remains unchanged. No UI source,
+dependency, migration, hold policy or worker scheduling behavior changes.

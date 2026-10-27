@@ -346,6 +346,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must exist and be distinct"}
 		}
 	}
+	var boundMessages []db.ChatMessage
 	for _, messageID := range input.MessageIDs {
 		if !messageID.Valid || seen[messageID] {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must be distinct"}
@@ -358,12 +359,18 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
 		}
-		bound, err := hasLiveDecisionAnswer(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
+		bound, err := loadDecisionAnswerBinding(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
 		if err != nil {
 			return empty, err
 		}
-		if bound {
-			return empty, decisionIntentRefusal{http.StatusBadRequest, "source message already answers its explicitly selected request"}
+		if bound.ID.Valid {
+			if bound.DecisionRequestID != decision.ID {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message explicitly selects another decision request"}
+			}
+			if !bound.DisclaimedAt.Valid {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message already answers its explicitly selected request"}
+			}
+			boundMessages = append(boundMessages, message)
 		}
 		contents = append(contents, message.Content)
 		if message.CreatedAt.Time.Before(earliestSource) {
@@ -394,6 +401,13 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	}, root)
 	if err != nil {
 		return empty, err
+	}
+	for _, message := range boundMessages {
+		if _, err := queries.BindChatMessageDecisionAnswer(ctx, db.BindChatMessageDecisionAnswerParams{
+			WorkspaceID: issue.WorkspaceID, SessionID: sourceSessionID, MessageID: message.ID, AnswerID: result.Answer.ID, PreviousAnswerID: message.DecisionAnswerID,
+		}); err != nil {
+			return empty, err
+		}
 	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err

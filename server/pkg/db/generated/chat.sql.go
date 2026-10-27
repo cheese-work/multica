@@ -147,15 +147,17 @@ SET decision_answer_id = $1
 FROM chat_session session
 WHERE session.workspace_id = $2
   AND session.id = $3 AND message.chat_session_id = session.id
-  AND message.id = $4 AND message.decision_answer_id IS NULL
+  AND message.id = $4
+  AND (message.decision_answer_id IS NULL OR message.decision_answer_id = $5)
 RETURNING message.id
 `
 
 type BindChatMessageDecisionAnswerParams struct {
-	AnswerID    pgtype.UUID `json:"answer_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	SessionID   pgtype.UUID `json:"session_id"`
-	MessageID   pgtype.UUID `json:"message_id"`
+	AnswerID         pgtype.UUID `json:"answer_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	SessionID        pgtype.UUID `json:"session_id"`
+	MessageID        pgtype.UUID `json:"message_id"`
+	PreviousAnswerID pgtype.UUID `json:"previous_answer_id"`
 }
 
 func (q *Queries) BindChatMessageDecisionAnswer(ctx context.Context, arg BindChatMessageDecisionAnswerParams) (pgtype.UUID, error) {
@@ -164,6 +166,7 @@ func (q *Queries) BindChatMessageDecisionAnswer(ctx context.Context, arg BindCha
 		arg.WorkspaceID,
 		arg.SessionID,
 		arg.MessageID,
+		arg.PreviousAnswerID,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -219,26 +222,6 @@ type ClearChatMessageChannelMediaPendingParams struct {
 
 func (q *Queries) ClearChatMessageChannelMediaPending(ctx context.Context, arg ClearChatMessageChannelMediaPendingParams) error {
 	_, err := q.db.Exec(ctx, clearChatMessageChannelMediaPending, arg.ID, arg.ChatSessionID)
-	return err
-}
-
-const clearChatMessageDecisionAnswer = `-- name: ClearChatMessageDecisionAnswer :exec
-UPDATE chat_message message
-SET decision_answer_id = NULL
-FROM chat_session session
-WHERE session.workspace_id = $1
-  AND message.chat_session_id = session.id
-  AND message.decision_answer_id = $2
-  AND message.role = 'user' AND message.message_kind = 'message'
-`
-
-type ClearChatMessageDecisionAnswerParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	AnswerID    pgtype.UUID `json:"answer_id"`
-}
-
-func (q *Queries) ClearChatMessageDecisionAnswer(ctx context.Context, arg ClearChatMessageDecisionAnswerParams) error {
-	_, err := q.db.Exec(ctx, clearChatMessageDecisionAnswer, arg.WorkspaceID, arg.AnswerID)
 	return err
 }
 

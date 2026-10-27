@@ -40,12 +40,16 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 	var recorded strings.Builder
 	unbound := make([]db.ChatMessage, 0, len(input))
 	for _, message := range input {
-		bound, err := hasLiveDecisionAnswer(ctx, h.Queries, session.WorkspaceID, message.DecisionAnswerID)
+		bound, err := loadDecisionAnswerBinding(ctx, h.Queries, session.WorkspaceID, message.DecisionAnswerID)
 		if err != nil {
 			return "", err
 		}
-		if bound {
-			fmt.Fprintf(&recorded, "\nUser message %s is already recorded as decision answer %s for its explicitly selected request. Do not record this message against another request.\n", uuidToString(message.ID), uuidToString(message.DecisionAnswerID))
+		if bound.ID.Valid {
+			if bound.DisclaimedAt.Valid {
+				fmt.Fprintf(&recorded, "\nUser message %s explicitly selected decision request %s. Its prior decision answer %s was withdrawn. Record this message only against that request.\n", uuidToString(message.ID), uuidToString(bound.DecisionRequestID), uuidToString(bound.ID))
+			} else {
+				fmt.Fprintf(&recorded, "\nUser message %s is already recorded as decision answer %s for its explicitly selected request %s. Do not record this message against another request.\n", uuidToString(message.ID), uuidToString(bound.ID), uuidToString(bound.DecisionRequestID))
+			}
 		} else {
 			unbound = append(unbound, message)
 		}
@@ -122,13 +126,9 @@ func escapeDecisionBlock(text string) string {
 	return strings.ReplaceAll(text, decisionBlockClose, `<\/decision_requests>`)
 }
 
-func hasLiveDecisionAnswer(ctx context.Context, queries *db.Queries, workspaceID, answerID pgtype.UUID) (bool, error) {
+func loadDecisionAnswerBinding(ctx context.Context, queries *db.Queries, workspaceID, answerID pgtype.UUID) (db.DecisionAnswer, error) {
 	if !answerID.Valid {
-		return false, nil
+		return db.DecisionAnswer{}, nil
 	}
-	answer, err := queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil && !answer.DisclaimedAt.Valid, err
+	return queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
 }

@@ -44,8 +44,12 @@ SHA-256 for each before/after pair:
 The full-route capture is not available from this isolated fixture. The fixture
 does not exercise authentication, the production composer, realtime refresh or
 the network send. Unit and database-backed handler tests cover request binding.
-The full-route UI review pack remains incomplete; the PR stays draft until the
-required full-route captures and independent exact-head review are complete.
+The leader later captured the authenticated full-route pack on
+`7ef9664dd0a5153094558299ac8da2f93ecd7c67`, in CHE-2175 comment
+`01a17c44-6645-7012-aa24-60d54048eeec`. Both widths show card 2 answered and
+card 1 open after sending. The runtime was offline, so those captures do not
+exercise answer withdrawal. B2 changes no UI source and claims no new captures.
+The PR stays draft until the required independent exact-head review is complete.
 
 ## Keep / Change / Remove
 
@@ -71,11 +75,16 @@ agent, workspace, active issue and open asked request before writing anything.
 The message, task, answer and issue quote commit together. Existing decision
 hold and turn-completion rules still apply. The source message is marked with
 its answer ID so the remaining open request cannot consume the same reply.
-Option (b) preserves the existing failed/cancelled-turn withdrawal rule.
-Withdrawal clears the user-message binding in the same transaction, but keeps
-the historical decision-reference message. Retry context and source reuse
-check for a live answer, so a stale or withdrawn binding does not prevent
-recording the reopened request. Re-recording still applies the decision hold.
+B2 supersedes B1's binding-clear mechanism with option 1. The existing
+failed/cancelled-turn withdrawal rule remains unchanged. Withdrawal keeps the
+user-message binding to its withdrawn answer, preserving the explicitly
+selected request. Retry context names that request, and source reuse refuses
+any other request. Re-recording on the selected request replaces the binding
+with the live answer atomically and still applies the decision hold.
+The workspace-wide unbind query is removed (N5); re-binding targets the exact
+message ID and compares the previous answer ID. Human disclaim and agent veto
+also retain the selected-request binding (N6). Existing historical
+decision-reference messages remain intact.
 The bound send path refuses `/compact` commands without creating any rows.
 DM quotes use the existing plain-quote serializer; issue annotation escaping is
 unchanged.
