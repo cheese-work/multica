@@ -60,12 +60,23 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.copy":      executeAgentCopyAction,
 }
 
+// decisionActionPermitted applies the rule of the action's own HTTP path to
+// the approver's current role, read under the member lock: a passkey proves
+// who clicked, not that they may do this.
+func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
+	if actionType == "agent.env.patch" {
+		return canManageAgentEnv(target, approver)
+	}
+	return true
+}
+
 var (
 	errApprovalUnavailable = decisionIntentRefusal{http.StatusForbidden, "approval_proof_unavailable: this server cannot verify an approval yet"}
 	errNotExecutable       = decisionIntentRefusal{http.StatusNotImplemented, "action_not_executable: this action type cannot be approved yet"}
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
+	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
 
@@ -196,10 +207,14 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if err != nil {
 		return empty, err
 	}
-	if _, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID}); errors.Is(err, pgx.ErrNoRows) {
+	approver, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID})
+	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, errNotTheHuman
 	} else if err != nil {
 		return empty, err
+	}
+	if !decisionActionPermitted(action.ActionType, targetAgent, approver) {
+		return empty, errNotPermitted
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},

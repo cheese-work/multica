@@ -30,7 +30,9 @@ func newPendingSecretAction(test *testing.T) pendingAction {
 	var created actionResponse
 	fixture.respond(test, body, http.StatusCreated, &created)
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
-	return pendingAction{fixture, created.ID, created.Action.ID}
+	action := pendingAction{fixture, created.ID, created.Action.ID}
+	action.setEnvAuthority(test, true)
+	return action
 }
 
 func (action pendingAction) hash(test *testing.T) string {
@@ -277,5 +279,47 @@ func TestApproveDecisionActionUncertainCommitReadsTheTrueState(test *testing.T) 
 	decodeJSON(test, action.approve(test, handler, action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusOK), &out)
 	if out.State != "executed" {
 		test.Fatalf("state = %s, want executed", out.State)
+	}
+}
+
+func TestApproveDecisionActionRefusesAMemberWhoCannotManageTheAgentEnv(test *testing.T) {
+	action := newPendingAction(test)
+	action.setEnvAuthority(test, false)
+	before, _ := action.agentEnvVersion(test)
+	body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusForbidden)
+	if !strings.Contains(body, "not_permitted") {
+		test.Fatalf("body %q lacks not_permitted", body)
+	}
+	action.assertUntouched(test)
+	if after, _ := action.agentEnvVersion(test); after != before {
+		test.Fatal("a member without env authority changed the agent env")
+	}
+}
+
+func TestApproveDecisionActionRefusesAnApproverDemotedAfterTheChallenge(test *testing.T) {
+	action := newPendingAction(test)
+	action.setEnvAuthority(test, false)
+	dbfx.Exec(test, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	device, _ := action.enrollPasskey(test)
+	handler := passkeyHandler(test)
+	before, _ := action.agentEnvVersion(test)
+
+	issued := action.issue(test, handler)
+	dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	action.approveWith(test, handler, action.assertion(test, device, issued, passkeyStart+1), http.StatusForbidden)
+	action.assertUntouched(test)
+	if after, _ := action.agentEnvVersion(test); after != before {
+		test.Fatal("a demoted approver changed the agent env")
+	}
+}
+
+func TestApproveDecisionActionExecutesForAWorkspaceAdmin(test *testing.T) {
+	action := newPendingAction(test)
+	action.setEnvAuthority(test, false)
+	dbfx.Exec(test, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	before, _ := action.agentEnvVersion(test)
+	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
+	if after, _ := action.agentEnvVersion(test); after != before+1 {
+		test.Fatalf("env version %d, want %d", after, before+1)
 	}
 }
