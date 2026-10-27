@@ -1,4 +1,5 @@
 "use client";
+import { MediaSourceProvider } from "../../media/media-context";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -610,6 +611,7 @@ export function ChatMessageList({
   );
 
   return (
+    <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
     <div
       ref={setScrollContainerRef}
@@ -719,6 +721,7 @@ export function ChatMessageList({
       )}
     </div>
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 }
 

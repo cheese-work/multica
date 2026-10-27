@@ -83,6 +83,7 @@ function CodeBlockView({ node }: NodeViewProps) {
           hidden={!showHtmlPreview && !fullscreen}
         >
           <HtmlPreviewSurface
+            mediaContent={debouncedHtml}
             open={fullscreen}
             inlineHeight={showHtmlPreview ? HTML_PREVIEW_HEIGHT_PX : 0}
             onOpenChange={setFullscreen}

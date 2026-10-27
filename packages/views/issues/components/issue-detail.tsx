@@ -1,4 +1,5 @@
 "use client";
+import { MediaSourceProvider } from "../../media/media-context";
 
 import {
   issueBehavesAs,
@@ -4766,6 +4767,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // open into one sequence. The versions provider lets each comment's file
   // cards mark a re-uploaded file `v2`.
   const withPreview = (layout: ReactNode) => (
+    <MediaSourceProvider source={{ type: "issues", id: issue.id }}>
     <PreviewSequenceProvider
       items={previewSequence}
       describeItem={describeDeliverable}
@@ -4782,6 +4784,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onLocate={locateOrigin}
       />
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 
   // The peek has no room for the properties sidebar: its core properties are

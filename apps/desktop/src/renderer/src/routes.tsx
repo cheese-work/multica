@@ -128,6 +128,7 @@ export const appRoutes: RouteObject[] = [
           // safety net instead of an in-router <Navigate> (MUL-4741
           // invariant 1: the router never self-navigates).
           { index: true, element: null },
+          { path: "media/:type/:sourceId/:kind/:mediaId", element: <MediaPageRoute /> },
           {
             path: "issues",
             element: <IssuesPage />,
@@ -259,3 +260,4 @@ export function createAppRouter() {
     initialEntries: ["/"],
   });
 }
+import { MediaPageRoute } from "./pages/media-page";

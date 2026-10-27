@@ -1,4 +1,5 @@
 "use client";
+import { useStandaloneMedia } from "../media/media-context";
 
 /**
  * Markdown tables: column resizing, an expanded view and copy. One frame
@@ -514,10 +515,12 @@ type RichTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 
 /** react-markdown's `table` override. */
 export function RichTable({ children, node }: RichTableProps) {
+  const standalone = useStandaloneMedia();
   const { source, rendered } = useContext(RichTableSourceContext);
   const model = useMemo(() => readTableModel(children), [children]);
   const getMarkdown = () =>
     tableMarkdownFromSource(source, rendered, node?.position?.start.offset, node?.position?.end.offset);
+  if (standalone) return <RichTableDialog model={model} open onOpenChange={() => {}} getMarkdown={getMarkdown} standalone />;
   return (
     <RichTableFrame model={model} getMarkdown={getMarkdown}>
       <TableContent>{children}</TableContent>

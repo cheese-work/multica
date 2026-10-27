@@ -1,0 +1,13 @@
+issue: CHE-2123
+design: design/viewer-media-pages/rev-1/A.html @ 13613770066f99d1e8389e73fe877d11a20c4ee0
+pages:
+  - id: media-dialog
+    url: /:workspaceSlug/issues/:id
+    keep: [media-toolbar, media-stage]
+    change: [media-link-action: "Open one persisted media item in a browser tab or app window"]
+    remove: []
+  - id: media-page
+    url: /:workspaceSlug/media/:sourceType/:sourceId/:kind/:mediaId
+    keep: [media-toolbar, media-stage]
+    change: [media-link-action: "Copy the permission-checked media page URL"]
+    remove: []
