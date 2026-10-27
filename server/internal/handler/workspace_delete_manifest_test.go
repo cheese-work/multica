@@ -75,6 +75,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
