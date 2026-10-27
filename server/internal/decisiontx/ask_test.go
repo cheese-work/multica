@@ -67,20 +67,43 @@ func errString(err error) string {
 	return err.Error()
 }
 
-func TestContentKeepsLegacyOrderWithLabels(test *testing.T) {
+func decodedAsk(test *testing.T) Ask {
+	test.Helper()
 	raw, _ := json.Marshal(validAskMap())
 	ask, err := DecodeAsk(raw)
 	if err != nil {
 		test.Fatal(err)
 	}
-	content := ask.Content()
+	return ask
+}
+
+func TestAskContentRenderOrder(test *testing.T) {
+	content := decodedAsk(test).Content()
 	last := -1
-	for _, heading := range []string{"**Agent did**", "**Decision**", "**Options**\n- NOW\n- LATER", "**Recommendation**", "**Default if no reply**", "**Source**"} {
-		at := strings.Index(content, heading)
+	for _, marker := range []string{"**Context**", "**Decision**", "**What is at stake**", "**Options**", "**Recommendation**", "**Default if no reply**", "<details>", "<summary>Details</summary>", "Ran checks.", "</details>", "Investigate in issue"} {
+		at := strings.Index(content, marker)
 		if at <= last {
-			test.Fatalf("heading %q out of order in %q", heading, content)
+			test.Fatalf("%q missing or out of order in %q", marker, content)
 		}
 		last = at
+	}
+	if strings.Count(content, "Investigate in issue") != 1 || strings.Contains(content, "**Agent did**\nRan checks.\n\n**Decision**") {
+		test.Fatalf("investigate link must appear once, after details: %q", content)
+	}
+	for _, link := range []string{"mention://issue/" + testIssueID, "/issue/" + testIssueID + "#comment-" + testCommentID} {
+		if strings.Count(content, link) != 1 || strings.Index(content, link) < strings.Index(content, "</details>") {
+			test.Fatalf("link %q must appear once, after details: %q", link, content)
+		}
+	}
+}
+
+func TestAskContentKeepsOptionFields(test *testing.T) {
+	content := decodedAsk(test).Content()
+	options := content[strings.Index(content, "**Options**"):strings.Index(content, "**Recommendation**")]
+	for _, want := range []string{"NOW", "NOW happens.", "Pro", "Con", "No extra time", "LATER", "LATER happens."} {
+		if !strings.Contains(options, want) {
+			test.Fatalf("options section lacks %q: %q", want, options)
+		}
 	}
 }
 
