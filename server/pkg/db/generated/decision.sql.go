@@ -774,6 +774,35 @@ func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecis
 	return chat_session_id, err
 }
 
+const latestOpenDecisionAsk = `-- name: LatestOpenDecisionAsk :one
+SELECT created_at FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2
+  AND asking_agent_id = $3 AND human_user_id = $4
+  AND status = 'open' AND ask = $5 AND created_at > now() - interval '24 hours'
+ORDER BY created_at DESC LIMIT 1
+`
+
+type LatestOpenDecisionAskParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+	Ask           string      `json:"ask"`
+}
+
+func (q *Queries) LatestOpenDecisionAsk(ctx context.Context, arg LatestOpenDecisionAskParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, latestOpenDecisionAsk,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AskingAgentID,
+		arg.HumanUserID,
+		arg.Ask,
+	)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
 const listChatDecisionContext = `-- name: ListChatDecisionContext :many
 SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
@@ -987,6 +1016,56 @@ func (q *Queries) ListDecisionIntentTargets(ctx context.Context, arg ListDecisio
 			&i.ConsumedAt,
 			&i.ConsumedByRequestID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionLaneIssueReferences = `-- name: ListDecisionLaneIssueReferences :many
+SELECT refs.chat_session_id, max(refs.referenced_at)::timestamptz AS referenced_at FROM (
+    SELECT message.chat_session_id, message.created_at AS referenced_at
+    FROM chat_message message
+    WHERE message.chat_session_id = ANY($1::uuid[])
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.failure_reason IS NULL
+      AND lower(message.content) LIKE '%](mention://issue/' || lower($2::uuid::text) || ')%'
+    UNION ALL
+    SELECT request.chat_session_id, request.created_at
+    FROM decision_request request
+    WHERE request.workspace_id = $3 AND request.issue_id = $2
+      AND request.chat_session_id = ANY($1::uuid[])
+) refs
+GROUP BY refs.chat_session_id
+`
+
+type ListDecisionLaneIssueReferencesParams struct {
+	SessionIds  []pgtype.UUID `json:"session_ids"`
+	IssueID     pgtype.UUID   `json:"issue_id"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+type ListDecisionLaneIssueReferencesRow struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ReferencedAt  pgtype.Timestamptz `json:"referenced_at"`
+}
+
+// A DM references an issue when a message mentions it or a decision request
+// on it was asked there; referenced_at is the newest such time.
+func (q *Queries) ListDecisionLaneIssueReferences(ctx context.Context, arg ListDecisionLaneIssueReferencesParams) ([]ListDecisionLaneIssueReferencesRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLaneIssueReferences, arg.SessionIds, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLaneIssueReferencesRow{}
+	for rows.Next() {
+		var i ListDecisionLaneIssueReferencesRow
+		if err := rows.Scan(&i.ChatSessionID, &i.ReferencedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

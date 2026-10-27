@@ -283,6 +283,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		if input.HumanUserID.Valid && session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
+		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+			return empty, err
+		}
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, located.CommentID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -307,6 +310,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	}
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request refuses a terminal issue"}
+	}
+	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+		return empty, err
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
@@ -491,6 +497,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		if session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
+		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+			return empty, err
+		}
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && root != nil && root.IssueID != issue.ID {
@@ -508,6 +517,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	if agent.Kind == "system" {
 		return empty, deny
+	}
+	if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
 		return empty, err
