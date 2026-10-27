@@ -54,7 +54,9 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
         )}
-        <RichContent content={card.ask} density="compact" phase="settled" />
+        <div data-testid="decision-request-ask">
+          <RichContent content={card.ask} density="compact" phase="settled" />
+        </div>
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">
             {new Intl.DateTimeFormat("en-GB", {
