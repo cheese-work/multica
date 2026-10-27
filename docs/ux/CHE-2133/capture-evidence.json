@@ -1,0 +1,300 @@
+{
+  "base": "84afc806a3e4bf8ae474f788defafa3afaf68a43",
+  "host": "congvc-X99",
+  "profile": "/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2133-6fb84966da31/workdir/.task/implementation-chrome-IDUb8w",
+  "captures": [
+    {
+      "filename": "thread-light-1440-before.png",
+      "stage": "before",
+      "theme": "light",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "comments": 13,
+      "ownComments": 0,
+      "youLabels": 0,
+      "own": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "ownHeader": {
+        "background": "oklch(1 0 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "target": {
+        "background": "color(srgb 0.949859 0.972013 0.994579)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false
+    },
+    {
+      "filename": "thread-light-390-before.png",
+      "stage": "before",
+      "theme": "light",
+      "width": 390,
+      "scrollWidth": 390,
+      "comments": 13,
+      "ownComments": 0,
+      "youLabels": 0,
+      "own": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "ownHeader": {
+        "background": "oklch(1 0 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "target": {
+        "background": "color(srgb 0.949859 0.972013 0.994579)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false
+    },
+    {
+      "filename": "thread-dark-1440-before.png",
+      "stage": "before",
+      "theme": "dark",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "comments": 13,
+      "ownComments": 0,
+      "youLabels": 0,
+      "own": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "ownHeader": {
+        "background": "oklch(0.21 0.006 285.885)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "target": {
+        "background": "color(srgb 0.102171 0.117328 0.147193)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false
+    },
+    {
+      "filename": "thread-dark-390-before.png",
+      "stage": "before",
+      "theme": "dark",
+      "width": 390,
+      "scrollWidth": 390,
+      "comments": 13,
+      "ownComments": 0,
+      "youLabels": 0,
+      "own": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "ownHeader": {
+        "background": "oklch(0.21 0.006 285.885)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "target": {
+        "background": "color(srgb 0.102171 0.117328 0.147193)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false
+    },
+    {
+      "filename": "thread-light-1440-after.png",
+      "stage": "after",
+      "theme": "light",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "comments": 13,
+      "ownComments": 4,
+      "youLabels": 5,
+      "own": {
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "ownHeader": {
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "target": {
+        "background": "color(srgb 0.949859 0.972013 0.994579)",
+        "targetBorder": "2px",
+        "targetBorderColor": "oklch(0.560795 0.194499 256.413)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false,
+      "sticky": {
+        "top": 0,
+        "bottom": 674.46875,
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)"
+      }
+    },
+    {
+      "filename": "thread-light-390-after.png",
+      "stage": "after",
+      "theme": "light",
+      "width": 390,
+      "scrollWidth": 390,
+      "comments": 13,
+      "ownComments": 4,
+      "youLabels": 5,
+      "own": {
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "ownHeader": {
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.141 0.005 285.823)"
+      },
+      "target": {
+        "background": "color(srgb 0.949859 0.972013 0.994579)",
+        "targetBorder": "2px",
+        "targetBorderColor": "oklch(0.560795 0.194499 256.413)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false,
+      "sticky": {
+        "top": 0,
+        "bottom": 1132.015625,
+        "background": "oklab(0.964864 -0.00365546 -0.0151244)"
+      }
+    },
+    {
+      "filename": "thread-dark-1440-after.png",
+      "stage": "after",
+      "theme": "dark",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "comments": 13,
+      "ownComments": 4,
+      "youLabels": 5,
+      "own": {
+        "background": "oklab(0.276 -0.00481575 -0.0280875)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "ownHeader": {
+        "background": "oklab(0.276 -0.00481575 -0.0280875)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "target": {
+        "background": "color(srgb 0.102171 0.117328 0.147193)",
+        "targetBorder": "2px",
+        "targetBorderColor": "oklch(0.65 0.16 255)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false,
+      "sticky": {
+        "top": 0,
+        "bottom": 674.46875,
+        "background": "oklab(0.276 -0.00481575 -0.0280875)"
+      }
+    },
+    {
+      "filename": "thread-dark-390-after.png",
+      "stage": "after",
+      "theme": "dark",
+      "width": 390,
+      "scrollWidth": 390,
+      "comments": 13,
+      "ownComments": 4,
+      "youLabels": 5,
+      "own": {
+        "background": "oklab(0.276 -0.00481575 -0.0280875)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "ownHeader": {
+        "background": "oklab(0.276 -0.00481575 -0.0280875)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "neutral": {
+        "background": "rgba(0, 0, 0, 0)",
+        "targetBorder": "0px",
+        "targetBorderColor": "oklch(0.985 0 0)"
+      },
+      "target": {
+        "background": "color(srgb 0.102171 0.117328 0.147193)",
+        "targetBorder": "2px",
+        "targetBorderColor": "oklch(0.65 0.16 255)"
+      },
+      "selfMention": "<span data-testid=\"member-mention\" class=\"mention mention-self\">@Cheese</span>",
+      "mermaidRendered": true,
+      "neutralReplyOwn": false,
+      "deletedOwn": false,
+      "sticky": {
+        "top": 0,
+        "bottom": 1132.015625,
+        "background": "oklab(0.276 -0.00481575 -0.0280875)"
+      }
+    }
+  ],
+  "exceptions": []
+}

@@ -1,4 +1,23 @@
 {
+  "relations": {
+    "title": "Graphe des relations",
+    "direction": "Les flèches vont du parent à l’enfant, d’une tâche surveillée à celle qu’elle réveille, et d’une mention à sa cible. La tâche actuelle a une bordure épaisse.",
+    "depth": "Profondeur",
+    "loading": "Chargement des relations…",
+    "load_failed": "Impossible de charger les relations.",
+    "render_failed": "Impossible d’afficher le graphe.",
+    "filter_label": "Afficher les types de liens",
+    "retry": "Réessayer",
+    "empty": "Aucune tâche liée.",
+    "omitted": "{{count}} autres tâches masquées (limite de 40 nœuds).",
+    "parent": "parent → enfant",
+    "duplicate": "doublon de",
+    "wakeup": "réveille",
+    "children_done": "enfants terminés → réveil",
+    "mention": "mentionne",
+    "shared_pr": "PR partagée",
+    "unknown": "lié"
+  },
   "inline_run": {
     "label": "Exécution de {{name}}",
     "stop": "Arrêter",
@@ -404,6 +423,7 @@
     "section_parent_issue": "Tâche parente",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Métadonnées",
+    "status_summary_label": "Résumé du statut",
     "section_details": "Détails",
     "section_quick_actions": "Actions rapides",
     "quick_actions_more": "Afficher {{count}} de plus",
@@ -575,6 +595,7 @@
     "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
+    "you": "Vous",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",
@@ -1729,7 +1750,8 @@
       "override_follow_project": "Suivre le workflow du projet",
       "override_error": "Impossible de modifier le workflow",
       "no_workflow": "Aucun workflow",
-      "card_title": "{{workflow}} · selon {{project}}"
+      "card_title": "{{workflow}} · selon {{project}}",
+      "flowchart": "Organigramme"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1778,7 +1800,30 @@
       "scope_own": "Seul ce projet utilise ce workflow.",
       "no_handoff_here": "Pas de relais",
       "scope_shared_one": "{{count}} projet utilise ce workflow. Ses transferts s’appliquent à chaque projet qui l’utilise.",
-      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous."
+      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous.",
+      "graph_label": "Graphe du workflow",
+      "exits_label": "Sorties du workflow",
+      "exit_item": "De {{from}} vers {{to}} quand {{guard}}",
+      "edit": {
+        "title": "Sorties de {{step}}",
+        "pick": "Sélectionnez une étape pour modifier ses sorties.",
+        "empty": "Aucune sortie.",
+        "group": "Sortie {{n}} : {{to}}",
+        "guard": "Condition",
+        "target": "Mène à",
+        "timeout": "Délai",
+        "on_timeout": "À l’expiration",
+        "add": "Ajouter une sortie",
+        "remove": "Supprimer la sortie",
+        "issues": {
+          "too_many_edges": "{{from}} a plus de {{max}} sorties.",
+          "missing_target": "Une sortie de {{from}} mène à une étape absente.",
+          "bad_guard": "Une sortie de {{from}} a une condition inconnue.",
+          "bad_timeout": "Une sortie de {{from}} exige un délai entre 1m et 720h, par ex. 72h.",
+          "bad_on_timeout": "Une sortie de {{from}} exige une étape valide à l’expiration.",
+          "ci_green_source": "{{from}} ne peut pas avancer quand la CI est verte."
+        }
+      }
     },
     "templates": {
       "delivery": {

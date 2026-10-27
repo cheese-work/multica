@@ -11,6 +11,7 @@ import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -54,6 +55,7 @@ import {
 import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
+import { StatusSummary, statusSummaryOf } from "./status-summary";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -113,7 +115,12 @@ import { CommentInput } from "./comment-input";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
-import { ThreadMinimap, type ThreadMinimapThread } from "./thread-minimap";
+import {
+  ThreadMinimap,
+  createRowRangeSource,
+  type MountedRows,
+  type ThreadMinimapThread,
+} from "./thread-minimap";
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
@@ -137,6 +144,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { IssueRelationsButton } from "./issue-relations-button";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
@@ -2311,6 +2319,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Which rows Virtuoso has mounted, for the thread rail. A store rather than
+  // state: a scroll must not re-render this page. A new issue remounts
+  // Virtuoso, which reports its range afresh.
+  const [rowRange] = useState(createRowRangeSource);
+  const onRowRangeChanged = useCallback(
+    ({ startIndex, endIndex }: { startIndex: number; endIndex: number }) =>
+      rowRange.set({ start: startIndex, end: endIndex }),
+    [rowRange],
+  );
+  const mountedRows = useMemo<MountedRows>(
+    () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
+    [items, rowRange],
+  );
   revealFindDocumentRef.current = (documentId) => {
     if (!documentId.startsWith("comment-")) {
       const element = document.getElementById(documentId);
@@ -3656,6 +3677,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
+      <IssueRelationsButton key={issue.id} issueId={issue.id} />
       <WakeupsSection
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
@@ -4080,6 +4102,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             centered column reads 32px left vs 43px right (MUL-4404). Mirroring
             the gutter restores symmetry; overlay-scrollbar platforms reserve
             nothing and render unchanged. */}
+        <RichContentScrollRootProvider scrollRoot={scrollContainerEl}>
         <div
           ref={attachScrollContainer}
           data-tab-scroll-root={isPeek ? undefined : scrollContainerKey}
@@ -4277,6 +4300,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               }}
             />
           )}
+
+          <StatusSummary summary={statusSummaryOf(issue.metadata)} />
 
           <div
             id={`find-description-${id}`}
@@ -4685,6 +4710,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       // scrollTop to maxScrollTop on every height-change
                       // tick — issue-detail is document-shaped, not chat.
                       itemContent={renderItem}
+                      rangeChanged={onRowRangeChanged}
                     />
                   </div>
                 )
@@ -4729,6 +4755,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
         </div>
 
+        </RichContentScrollRootProvider>
+
         {/* Thread quick-jump rail — rides the scroll container's right edge,
             next to the scrollbar, where the pointer already is while
             scrolling (MUL-4522). right-3 is the inset that works in both
@@ -4744,6 +4772,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             threads={minimapThreads}
             scrollContainerEl={scrollContainerEl}
             onJump={jumpToMinimapTarget}
+            mountedRows={mountedRows}
             className="absolute bottom-0 right-3 top-12"
           />
         )}

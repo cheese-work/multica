@@ -71,6 +71,7 @@
     "continuation_summary": "Résumé de la conversation",
     "earlier_dm": "Conversation antérieure",
     "quote_message": "Citer",
+    "speaker_you": "Vous",
     "load_older_messages": "Charger les messages précédents",
     "show_details": "Afficher les détails",
     "replied_in": "Réponse en {{elapsed}}",

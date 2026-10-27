@@ -395,204 +395,34 @@ ledger_at_or_after() {
 # e.g. local --dry-run runs, or a host with its own already-configured Docker
 # credential store — so every caller can unconditionally call it before a
 # pull without an extra existence check of its own.
-_multica_temp_docker_config=""
-_multica_temp_docker_config_lock_fd=""
-
-_ghcr_sweep_config_root() {
-  local root="${1:-}"
-  case "$root" in
-    "" | "/" | "." | "..") return 0 ;;
-    /*) ;;
-    *) return 0 ;;
-  esac
-  local clean_root="${root%/}"
-  if [ -z "$clean_root" ] || [ "$clean_root" = "/" ] || [ -L "$clean_root" ] || [ ! -d "$clean_root" ] || [ ! -O "$clean_root" ]; then
-    return 0
-  fi
-  local entry sweep_fd
-  for entry in "$clean_root"/multica-docker-config.*; do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    if [ ! -L "$entry" ] && [ -d "$entry" ] && [ -O "$entry" ]; then
-      if (
-        exec {sweep_fd}<"$entry" &&
-        flock -n "$sweep_fd" &&
-        [ ! -L "$entry" ] && [ -d "$entry" ] && [ -O "$entry" ] &&
-        rm -rf -- "$entry"
-      ) 2>/dev/null; then
-        :
-      fi
-    fi
-  done
-}
-
-# _ghcr_validate_lock_dir resolves and validates a state-root directory whose
-# deploy.lock guards credential cleanup. Prints the canonicalized "$dir/deploy.lock"
-# path on stdout and returns 0 when valid; returns 1 on empty, relative, root,
-# symlinked, non-directory, or non-user-owned directories or unsafe lock files.
-_ghcr_validate_lock_dir() {
-  local lock_state_dir="${1:-}"
-  case "$lock_state_dir" in
-    "" | "/" | "." | "..") return 1 ;;
-    /*) ;;
-    *) return 1 ;;
-  esac
-  local clean_lock_dir="${lock_state_dir%/}"
-  if [ -z "$clean_lock_dir" ] || [ "$clean_lock_dir" = "/" ] || [ -L "$clean_lock_dir" ] || [ ! -d "$clean_lock_dir" ] || [ ! -O "$clean_lock_dir" ]; then
-    return 1
-  fi
-  local raw_lock_file="$clean_lock_dir/deploy.lock"
-  if [ -L "$raw_lock_file" ] || { [ -e "$raw_lock_file" ] && { [ ! -f "$raw_lock_file" ] || [ ! -O "$raw_lock_file" ]; }; }; then
-    return 1
-  fi
-  local canonical_lock_dir
-  canonical_lock_dir="$(cd -P -- "$clean_lock_dir" 2>/dev/null && pwd -P)" || return 1
-  if [ -z "$canonical_lock_dir" ] || [ "$canonical_lock_dir" = "/" ] || [ -L "$canonical_lock_dir" ] || [ ! -d "$canonical_lock_dir" ] || [ ! -O "$canonical_lock_dir" ]; then
-    return 1
-  fi
-  local lock_file="$canonical_lock_dir/deploy.lock"
-  if [ -L "$lock_file" ] || { [ -e "$lock_file" ] && { [ ! -f "$lock_file" ] || [ ! -O "$lock_file" ]; }; }; then
-    return 1
-  fi
-  printf '%s\n' "$lock_file"
-}
-
-# ghcr_cleanup_stale_configs: sweep residual multica-docker-config.* directories
-# across one or more candidate roots ONLY while holding every required
-# state-root deploy.lock in canonical sorted order.
-#
-# Usage:
-#   ghcr_cleanup_stale_configs --lock-dir <state_dir> [--lock-dir <state_dir>...] -- <root>...
-#   ghcr_cleanup_stale_configs <lock_state_dir> <root>...
-#
-# Called by cd-deploy.yml's post-cutover and always() cleanup steps with both
-# C00_STATE_DIR (used by deploy.sh) and C00_CUTOVER_STATE_DIR (used by
-# cutover.sh) so workflow cleanup never races a concurrent manual deploy.sh or
-# cutover.sh invocation that holds its own state-root deploy.lock while sharing
-# RUNNER_TEMP. If any specified lock_state_dir is invalid/missing or any
-# required deploy.lock is held by another active invocation, skips cleanup and
-# returns 0 without sweeping any root or clobbering deploy_status.
-ghcr_cleanup_stale_configs() {
-  local -a raw_lock_dirs=()
-  if [ "${1:-}" = "--lock-dir" ]; then
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        --lock-dir)
-          raw_lock_dirs+=("${2:-}")
-          shift 2 || return 0
-          ;;
-        --)
-          shift
-          break
-          ;;
-        *)
-          return 0
-          ;;
-      esac
-    done
-  else
-    raw_lock_dirs+=("${1:-}")
-    shift || true
-  fi
-
-  if [ "${#raw_lock_dirs[@]}" -eq 0 ] || [ $# -eq 0 ]; then
-    return 0
-  fi
-
-  local -a validated_locks=()
-  local raw_dir lock_file
-  for raw_dir in "${raw_lock_dirs[@]}"; do
-    if ! lock_file="$(_ghcr_validate_lock_dir "$raw_dir")"; then
-      return 0
-    fi
-    validated_locks+=("$lock_file")
-  done
-
-  local -a sorted_locks=()
-  while IFS= read -r lock_file; do
-    [ -n "$lock_file" ] && sorted_locks+=("$lock_file")
-  done < <(printf '%s\n' "${validated_locks[@]}" | LC_ALL=C sort -u)
-
-  if [ "${#sorted_locks[@]}" -eq 0 ]; then
-    return 0
-  fi
-
-  local wait_secs="${MULTICA_CLEANUP_LOCK_WAIT_SECONDS:-0}"
-  (
-    local lock_fd
-    for lock_file in "${sorted_locks[@]}"; do
-      exec {lock_fd}>"$lock_file" || exit 0
-      if ! flock -w "$wait_secs" "$lock_fd"; then
-        echo "==> skipping multica-docker-config cleanup: deploy lock ${lock_file} is held by another active invocation" >&2
-        exit 0
-      fi
-    done
-    local root
-    for root in "$@"; do
-      _ghcr_sweep_config_root "$root"
-    done
-  ) || true
-}
-
 ghcr_login() {
   if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
     return 0
   fi
-  if [ -z "${_multica_temp_docker_config:-}" ] || [ ! -d "$_multica_temp_docker_config" ]; then
-    local tmp_base
-    if [ -n "${RUNNER_TEMP+x}" ]; then
-      tmp_base="$RUNNER_TEMP"
-    elif [ -n "${state_dir:-}" ] && [ -d "$state_dir" ]; then
-      tmp_base="$state_dir"
-    elif [ -n "${TMPDIR+x}" ]; then
-      tmp_base="$TMPDIR"
-    else
-      tmp_base="/tmp"
-    fi
-    if [ -z "$tmp_base" ] || [ "$tmp_base" = "/" ]; then
-      echo "!! ghcr_login: temporary directory base '${tmp_base}' is invalid" >&2
-      return 1
-    fi
-    _ghcr_sweep_config_root "$tmp_base"
-    if [ -n "${state_dir:-}" ] && [ -d "$state_dir" ] && [ "${state_dir%/}" != "${tmp_base%/}" ]; then
-      _ghcr_sweep_config_root "$state_dir"
-    fi
-    local tmp_dir=""
-    if ! tmp_dir="$(mktemp -d "${tmp_base%/}/multica-docker-config.XXXXXX")" || [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then
-      echo "!! ghcr_login: failed to allocate temporary DOCKER_CONFIG directory under '${tmp_base}'" >&2
-      return 1
-    fi
-    if ! chmod 700 "$tmp_dir"; then
-      echo "!! ghcr_login: failed to set mode 0700 on temporary DOCKER_CONFIG directory '${tmp_dir}'" >&2
-      rm -rf "$tmp_dir" || true
-      return 1
-    fi
-    if ! eval "exec {_multica_temp_docker_config_lock_fd}<\"\$tmp_dir\"" || ! flock -n "$_multica_temp_docker_config_lock_fd"; then
-      if [ -n "${_multica_temp_docker_config_lock_fd:-}" ]; then
-        eval "exec ${_multica_temp_docker_config_lock_fd}<&-" || true
-        _multica_temp_docker_config_lock_fd=""
-      fi
-      echo "!! ghcr_login: failed to lock temporary DOCKER_CONFIG directory '${tmp_dir}'" >&2
-      rm -rf "$tmp_dir" || true
-      return 1
-    fi
-    if [ -n "${HOME:-}" ] && [ -d "$HOME/.docker/cli-plugins" ]; then
-      if ! ln -s "$HOME/.docker/cli-plugins" "$tmp_dir/cli-plugins"; then
-        flock -u "$_multica_temp_docker_config_lock_fd" || true
-        eval "exec ${_multica_temp_docker_config_lock_fd}<&-" || true
-        _multica_temp_docker_config_lock_fd=""
-        echo "!! ghcr_login: failed to link docker cli-plugins into '${tmp_dir}'" >&2
-        rm -rf "$tmp_dir" || true
-        return 1
-      fi
-    fi
-    _multica_temp_docker_config="$tmp_dir"
-  else
-    if ! chmod 700 "$_multica_temp_docker_config"; then
-      echo "!! ghcr_login: failed to set mode 0700 on temporary DOCKER_CONFIG directory '${_multica_temp_docker_config}'" >&2
-      return 1
-    fi
+  if [ -z "${MULTICA_GHCR_CONFIG:-}" ]; then
+    MULTICA_GHCR_ORIGINAL_PATH="$PATH"
+    MULTICA_GHCR_ORIGINAL_CONFIG="${DOCKER_CONFIG:-}"
+    MULTICA_GHCR_ORIGINAL_CONFIG_SET="${DOCKER_CONFIG+x}"
+    MULTICA_GHCR_CONFIG="$(mktemp -d)" || return 1
+    printf '%s\n' '{"credHelpers":{"ghcr.io":"multica-ghcr"}}' > "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    cat > "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" <<'HELPER' || return 1
+#!/bin/sh
+set -eu
+case "$1" in
+  get)
+    IFS= read -r registry || test -n "$registry"
+    test "$registry" = ghcr.io
+    node -e 'process.stdout.write(JSON.stringify({Username:"token",Secret:process.env.GHCR_PULL_TOKEN}))'
+    ;;
+  store|erase) cat >/dev/null ;;
+  *) exit 1 ;;
+esac
+HELPER
+    chmod 600 "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    chmod 700 "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" || return 1
+    export DOCKER_CONFIG="$MULTICA_GHCR_CONFIG"
+    export PATH="$MULTICA_GHCR_CONFIG:$PATH"
   fi
-  export DOCKER_CONFIG="$_multica_temp_docker_config"
   echo "==> logging in to ghcr.io"
   printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null
 }
@@ -603,19 +433,16 @@ ghcr_login() {
 # ghcr_login ever runs, so it fires on every exit path — success, an early
 # `require`/file-check `exit`, or a failure branch — not just the happy path.
 ghcr_logout() {
-  if [ -n "${_multica_temp_docker_config:-}" ]; then
-    if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
-      DOCKER_CONFIG="$_multica_temp_docker_config" docker logout ghcr.io >/dev/null 2>&1 || true
+  if [ -n "${MULTICA_GHCR_CONFIG:-}" ]; then
+    docker logout ghcr.io >/dev/null 2>&1 || true
+    rm -f "$MULTICA_GHCR_CONFIG/config.json" "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr"
+    rmdir "$MULTICA_GHCR_CONFIG"
+    export PATH="$MULTICA_GHCR_ORIGINAL_PATH"
+    if [ -n "$MULTICA_GHCR_ORIGINAL_CONFIG_SET" ]; then
+      export DOCKER_CONFIG="$MULTICA_GHCR_ORIGINAL_CONFIG"
+    else
+      unset DOCKER_CONFIG
     fi
-    if [ -d "$_multica_temp_docker_config" ]; then
-      rm -rf "$_multica_temp_docker_config" || true
-    fi
-    _multica_temp_docker_config=""
+    unset MULTICA_GHCR_CONFIG MULTICA_GHCR_ORIGINAL_PATH MULTICA_GHCR_ORIGINAL_CONFIG MULTICA_GHCR_ORIGINAL_CONFIG_SET
   fi
-  if [ -n "${_multica_temp_docker_config_lock_fd:-}" ]; then
-    flock -u "$_multica_temp_docker_config_lock_fd" || true
-    eval "exec ${_multica_temp_docker_config_lock_fd}<&-" || true
-    _multica_temp_docker_config_lock_fd=""
-  fi
-  unset DOCKER_CONFIG GHCR_PULL_TOKEN
 }

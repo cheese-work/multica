@@ -546,7 +546,6 @@ case "$command" in
     fi
 
     if ! ghcr_login; then
-      ghcr_logout
       echo "!! ghcr.io login failed; $from_colour remains active" >&2
       exit 1
     fi
@@ -559,7 +558,6 @@ case "$command" in
     until MULTICA_BACKEND_IMAGE="$backend_repo" MULTICA_WEB_IMAGE="$web_repo" MULTICA_IMAGE_TAG="$image_tag" \
       compose pull "backend-${to_colour}" "frontend-${to_colour}"; do
       if [ "$pull_attempt" -ge 3 ]; then
-        ghcr_logout
         echo "!! image pull failed for colour=$to_colour; $from_colour remains active" >&2
         exit 1
       fi
@@ -567,7 +565,6 @@ case "$command" in
       sleep $((pull_attempt * 5))
       pull_attempt=$((pull_attempt + 1))
     done
-    ghcr_logout
     if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
       echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
