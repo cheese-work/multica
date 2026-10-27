@@ -38,6 +38,14 @@ SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NUL
 WHERE id = $1
 RETURNING *;
 
+-- name: LockAgentTaskForCompaction :one
+-- Row lock on the task that asks to compact, taken after the DM lock. NOWAIT:
+-- terminal transitions take the task row first and the DM second, so waiting
+-- here could deadlock against one. The caller refuses a locked task.
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE NOWAIT;
+
 -- name: GetTaskCompactionSummary :one
 SELECT * FROM chat_message
 WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -185,3 +186,84 @@ func assertCompactUntouched(t *testing.T, sessionID string) {
 }
 
 func ctx() context.Context { return context.Background() }
+
+// compactAfterTaskEnds drives the interleaving where the caller task ends after
+// the handler's first status check but before the compaction takes the DM lock:
+// the DM row is held, the request is released and parks on that lock, the task
+// is moved to `status`, then the DM is released.
+func compactAfterTaskEnds(t *testing.T, fx compactFixture, status string) (int, []byte) {
+	t.Helper()
+	holder, err := testPool.Begin(ctx())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx())
+	if _, err := holder.Exec(ctx(), `SELECT 1 FROM chat_session WHERE id = $1 FOR UPDATE`, fx.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	type reply struct {
+		status int
+		body   []byte
+	}
+	done := make(chan reply, 1)
+	go func() {
+		s, b := postCompact(t, fx.token, "Summary from a task that already ended.")
+		done <- reply{s, b}
+	}()
+	for waited := 0; ; waited++ {
+		var parked int
+		if err := testPool.QueryRow(ctx(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM chat_session%' AND query ILIKE '%FOR NO KEY UPDATE%'`).Scan(&parked); err != nil {
+			t.Fatal(err)
+		}
+		if parked > 0 {
+			break
+		}
+		if waited > 500 {
+			t.Fatal("compact request never reached the DM lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = $2, completed_at = now() WHERE id = $1`, fx.taskID, status); err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Commit(ctx()); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	return r.status, r.body
+}
+
+// T4: a caller that was cancelled or completed before the compaction took its
+// locks gets a conflict and changes nothing: no summary, no epoch bump.
+func TestChatCompactRefusesTaskThatEndedBeforeTheLock(t *testing.T) {
+	for _, ended := range []string{"cancelled", "completed"} {
+		t.Run(ended, func(t *testing.T) {
+			fx := newCompactFixture(t)
+			if status, body := compactAfterTaskEnds(t, fx, ended); status != http.StatusConflict {
+				t.Fatalf("compact after %s = %d %s, want 409", ended, status, body)
+			}
+			assertCompactUntouched(t, fx.sessionID)
+		})
+	}
+}
+
+// T5: a task whose row is being changed right now (a terminal transition holds
+// it) is refused at once instead of waiting; the transition keeps its DM-last
+// order, so waiting here could deadlock it.
+func TestChatCompactDoesNotWaitOnATaskInTransition(t *testing.T) {
+	fx := newCompactFixture(t)
+	holder, err := testPool.Begin(ctx())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx())
+	if _, err := holder.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := postCompact(t, fx.token, "x"); status != http.StatusConflict {
+		t.Fatalf("compact against a task in transition = %d %s, want 409", status, body)
+	}
+	assertCompactUntouched(t, fx.sessionID)
+}
