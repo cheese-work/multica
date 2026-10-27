@@ -302,6 +302,7 @@
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
     "withdrawn_in": "{{issue}} で取り下げ済み",
+    "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",
     "inherited": "継承",
     "message_unavailable": "このメッセージは利用できなくなりました"
