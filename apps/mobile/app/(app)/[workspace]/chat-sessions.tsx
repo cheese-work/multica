@@ -10,7 +10,7 @@
  *     rows never surface a pinned category or pin icon. Each archived row
  *     exposes a 44pt delete button (`mobile-chat-session-delete`).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useTheme } from "expo-router";
@@ -50,11 +50,13 @@ export default function ChatSessionsRoute() {
     () => activeIsArchived || active.length === 0,
   );
 
-  useEffect(() => {
-    if (activeIsArchived) {
-      setArchivedOpen(true);
-    }
-  }, [activeIsArchived]);
+  // Open the archive group when the active session moves into it. Adjusted
+  // during render (no effect) so it cannot cascade an extra render.
+  const [prevActiveIsArchived, setPrevActiveIsArchived] = useState(activeIsArchived);
+  if (activeIsArchived !== prevActiveIsArchived) {
+    setPrevActiveIsArchived(activeIsArchived);
+    if (activeIsArchived) setArchivedOpen(true);
+  }
 
   const confirmDeleteArchived = (session: ChatSession) => {
     if (session.status !== "archived") return;
