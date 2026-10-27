@@ -304,6 +304,7 @@
       "withdrawn": "已撤回"
     },
     "source_comment": "來源評論",
+    "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",
     "from_original_dm": "來自原始私信",
     "inherited": "繼承",
