@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -30,6 +32,88 @@ func TestDecisionStructuredAskMissingFields(test *testing.T) {
 			request.Body = ioBody(mustDecisionJSON(test, map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "escalation_class": "reversible", "ask": ask}))
 			testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
 			fixture.assertCounts(test, 0)
+		})
+	}
+}
+
+func TestDecisionStructuredAskValidationHTTPContract(test *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*decisiontx.Ask)
+		want   string
+	}{
+		{
+			name: "multi-question decision",
+			mutate: func(ask *decisiontx.Ask) {
+				ask.Decision = "Answer 1 to 5. 1. Run budgets (spend): close CHE-2164 (its PR #432 merged), and for CHE-1192 choose 1 raise the budget by 3 runs or 2 merge sub2api #71 on Luna's PASS. 2. CHE-1532: add the 3 multica-dotfiles secrets MULTICA_TOKEN, MULTICA_SERVER_URL, MULTICA_WORKSPACE_ID (5 min). 3. CHE-2007: run the packet on X99 with attachment 01a17b40, dry run then --apply (10 min). 4. CHE-2166: lane or waive for the C00 read-back. 5. Overnight queue items 1 to 5 from the brief (CHE-2127 fix, CHE-2042 review, CHE-2109 test fix, C00 read-back after your deploy approval, stale-lane triage)."
+			},
+			want: "ask.decision asks more than one question; split into one request per question",
+		},
+		{
+			name:   "inline numbered option label",
+			mutate: func(ask *decisiontx.Ask) { ask.Options[0].Label = "1. first step 2. second step" },
+			want:   "ask.options[0].label has an inline numbered list; put each item on its own line as a Markdown list",
+		},
+		{
+			name:   "bare UUID in option cost",
+			mutate: func(ask *decisiontx.Ask) { ask.Options[1].CostOrTime = "Wait for 01a17cda-b791-7da5-94fc-06fdec20e4ed" },
+			want:   "ask.options[1].cost_or_time has a bare ID; link it as [what it is](link)",
+		},
+		{
+			name:   "ID-only agent did",
+			mutate: func(ask *decisiontx.Ask) { ask.AgentDid = "75eed3bd-33c6-42f5-b612-cf0f03b8879a" },
+			want:   "ask.agent_did must say in at least one plain sentence what the agent did; an ID alone is not enough",
+		},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newIntentFixture(test)
+			tagID := dbfx.Comment(test, fixture.issueID, fixture.mention(), testutil.Cols{
+				"author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID,
+			})
+			intentID := dbfx.Insert(test, "decision_intent", testutil.Cols{
+				"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "task_id": fixture.taskID,
+				"agent_id": fixture.agentID, "comment_id": tagID, "expires_at": time.Now().Add(3 * time.Minute),
+			})
+			dbfx.Exec(test, `UPDATE comment SET decision_intent_id = $1 WHERE id = $2`, intentID, tagID)
+			dbfx.Exec(test, `INSERT INTO decision_intent_target (decision_intent_id, human_user_id) VALUES ($1, $2)`, intentID, fixture.humanID)
+			sessionID := dbfx.Insert(test, "chat_session", testutil.Cols{
+				"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Validation contract",
+			})
+			var issueWorkspaceID string
+			dbfx.QueryRow(test, `SELECT workspace_id::text FROM issue WHERE id = $1`, fixture.issueID).Scan(&issueWorkspaceID)
+			if _, err := testHandler.Queries.GetIssueInWorkspace(context.Background(), db.GetIssueInWorkspaceParams{
+				ID: parseUUID(fixture.issueID), WorkspaceID: parseUUID(issueWorkspaceID),
+			}); err != nil {
+				test.Fatalf("test fixture issue is not in its stored workspace: %v", err)
+			}
+			ask := structuredDecisionAsk(fixture.issueID, tagID, "Approve the reversible change?")
+			tc.mutate(&ask)
+			request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
+				"issue_id": fixture.issueID, "session_id": sessionID,
+				"escalation_class": "reversible", "ask": ask,
+			})
+			request.Header.Set("X-Actor-Source", "task_token")
+			request.Header.Set("X-Agent-ID", fixture.agentID)
+			request.Header.Set("X-Task-ID", fixture.taskID)
+			request.Header.Set("X-Workspace-ID", issueWorkspaceID)
+			issueResponse := httptest.NewRecorder()
+			if _, ok := testHandler.loadIssueForUser(issueResponse, request, fixture.issueID); !ok {
+				test.Fatalf("test fixture issue is not visible: status=%d body=%s", issueResponse.Code, issueResponse.Body.String())
+			}
+			response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusBadRequest).ResponseRecorder
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				test.Fatal(err)
+			}
+			if body.Error != tc.want {
+				test.Fatalf("error = %q, want %q", body.Error, tc.want)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueID); count != 0 {
+				test.Fatalf("validation created %d decision requests", count)
+			}
 		})
 	}
 }

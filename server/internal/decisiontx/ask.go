@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -41,9 +42,15 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"}
-	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
-	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+	askFields               = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	optionFields            = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
+	safeKey                 = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+	askMultiAnswer          = regexp.MustCompile(`(?i)\banswer\s+(?:1\s+to\s+5|1\s*[-–]\s*5|per\s+number|each|all)\b`)
+	askNumberedDecisions    = regexp.MustCompile(`(?i)\bdecisions?\s+\d+(?:\s*(?:,|and|to|-)\s*\d+)+\b`)
+	askNumberedAnswers      = regexp.MustCompile(`(?i)\b(?:numbered\s+answers?|answer\s+per\s+number)\b`)
+	askBareUUID             = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b`)
+	askLongHex              = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
+	askInlineNumberedMarker = regexp.MustCompile(`(?:^|[ \t])(\d+)[.)][ \t]+`)
 )
 
 func errAskObject() error { return &AskError{"ask", "must be one JSON object"} }
@@ -209,6 +216,17 @@ func (ask Ask) Validate() error {
 		}
 		labels[label] = true
 	}
+	if asksMultipleQuestions(ask) {
+		return &AskError{"ask.decision", "asks more than one question; split into one request per question"}
+	}
+	for _, field := range ask.visibleProseFields() {
+		if err := validateVisibleProse(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if plainWordCount(ask.AgentDid) < 4 {
+		return &AskError{"ask.agent_did", "must say in at least one plain sentence what the agent did; an ID alone is not enough"}
+	}
 	for _, field := range []struct{ name, value string }{
 		{"source_issue_id", ask.SourceIssueID}, {"source_comment_id", ask.SourceCommentID},
 	} {
@@ -217,6 +235,147 @@ func (ask Ask) Validate() error {
 		}
 	}
 	return nil
+}
+
+func asksMultipleQuestions(ask Ask) bool {
+	if askMultiAnswer.MatchString(ask.Decision) || askNumberedDecisions.MatchString(ask.Decision) || strings.Count(ask.Decision, "?") >= 2 || hasMultipleNumberedQuestions(ask.Decision) {
+		return true
+	}
+	for _, option := range ask.Options {
+		if askNumberedAnswers.MatchString(option.Label) || askNumberedAnswers.MatchString(option.WhatHappens) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMultipleNumberedQuestions(text string) bool {
+	markers := askInlineNumberedMarker.FindAllStringSubmatchIndex(text, -1)
+	questions := 0
+	for index, marker := range markers {
+		end := len(text)
+		if index+1 < len(markers) {
+			end = markers[index+1][0]
+		}
+		if strings.HasSuffix(strings.TrimSpace(text[marker[1]:end]), "?") {
+			questions++
+			if questions == 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (ask Ask) visibleProseFields() []struct{ name, value string } {
+	fields := []struct{ name, value string }{
+		{"ask.context_eli10", ask.ContextELI10},
+		{"ask.decision", ask.Decision},
+		{"ask.stakes_if_wrong", ask.StakesIfWrong},
+		{"ask.recommendation", ask.Recommendation},
+		{"ask.default_if_no_reply", ask.DefaultIfNoReply},
+	}
+	for index, option := range ask.Options {
+		prefix := fmt.Sprintf("ask.options[%d]", index)
+		fields = append(fields,
+			struct{ name, value string }{prefix + ".label", option.Label},
+			struct{ name, value string }{prefix + ".what_happens", option.WhatHappens},
+		)
+		for itemIndex, item := range option.Pros {
+			fields = append(fields, struct{ name, value string }{fmt.Sprintf("%s.pros[%d]", prefix, itemIndex), item})
+		}
+		for itemIndex, item := range option.Cons {
+			fields = append(fields, struct{ name, value string }{fmt.Sprintf("%s.cons[%d]", prefix, itemIndex), item})
+		}
+		fields = append(fields, struct{ name, value string }{prefix + ".cost_or_time", option.CostOrTime})
+	}
+	return fields
+}
+
+func validateVisibleProse(field, text string) error {
+	if hasInlineNumberedList(text) {
+		return &AskError{field, "has an inline numbered list; put each item on its own line as a Markdown list"}
+	}
+	if askBareUUID.MatchString(stripMarkdownLinkDestinations(text)) {
+		return &AskError{field, "has a bare ID; link it as [what it is](link)"}
+	}
+	return nil
+}
+
+func hasInlineNumberedList(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		markers := askInlineNumberedMarker.FindAllStringSubmatchIndex(line, -1)
+		for index, marker := range markers {
+			if line[marker[2]:marker[3]] != "1" || strings.TrimSpace(line[marker[1]:]) == "" {
+				continue
+			}
+			for _, next := range markers[index+1:] {
+				if line[next[2]:next[3]] == "2" && strings.TrimSpace(line[marker[1]:next[0]]) != "" && strings.TrimSpace(line[next[1]:]) != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func stripMarkdownLinkDestinations(text string) string {
+	var output strings.Builder
+	output.Grow(len(text))
+	bracketDepth := 0
+	for index := 0; index < len(text); {
+		if text[index] == '[' {
+			bracketDepth++
+			output.WriteByte(text[index])
+			index++
+			continue
+		}
+		if text[index] == ']' && bracketDepth > 0 && index+1 < len(text) && text[index+1] == '(' {
+			if end := markdownLinkDestinationEnd(text, index+2); end >= 0 {
+				output.WriteByte(']')
+				bracketDepth--
+				index = end + 1
+				continue
+			}
+		}
+		if text[index] == ']' && bracketDepth > 0 {
+			bracketDepth--
+		}
+		output.WriteByte(text[index])
+		index++
+	}
+	return output.String()
+}
+
+func markdownLinkDestinationEnd(text string, start int) int {
+	depth := 1
+	for index := start; index < len(text); index++ {
+		switch text[index] {
+		case '\\':
+			index++
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func plainWordCount(text string) int {
+	text = lintLinks.ReplaceAllString(text, " ")
+	text = askBareUUID.ReplaceAllString(text, " ")
+	text = askLongHex.ReplaceAllString(text, " ")
+	count := 0
+	for _, word := range strings.Fields(text) {
+		if strings.IndexFunc(word, unicode.IsLetter) >= 0 {
+			count++
+		}
+	}
+	return count
 }
 
 func (ask Ask) Content() string {

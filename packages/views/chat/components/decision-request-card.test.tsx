@@ -42,20 +42,20 @@ describe("DecisionRequestCard accessibility", () => {
   });
 
   // Copied from the golden output of decisiontx Ask.Content() (ask_test.go).
-  const goldenAsk = "**Context**\nA change is ready. You decide when it ships.\n\n**Decision**\nShip now?\n\n**What is at stake**\nA bad change could reach users.\n\n**Options**\n- **NOW**: NOW happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n- **LATER**: LATER happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n\n**Recommendation**\nLATER\n\n**Default if no reply**\nLATER\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\nRan checks.\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/11111111-1111-4111-8111-111111111111) · [Comment](/issue/11111111-1111-4111-8111-111111111111#comment-22222222-2222-4222-8222-222222222222)";
+  const goldenAsk = "**Context**\nA change is ready. You decide when it ships.\n\n**Decision**\nShip now?\n\n**What is at stake**\nA bad change could reach users.\n\n**Options**\n- **NOW**: NOW happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n- **LATER**: LATER happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n\n**Recommendation**\nLATER\n\n**Default if no reply**\nLATER\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\nRan all requested checks.\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/11111111-1111-4111-8111-111111111111) · [Comment](/issue/11111111-1111-4111-8111-111111111111#comment-22222222-2222-4222-8222-222222222222)";
 
   const renderCard = (ask: string) => renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, ask }} /></WorkspaceSlugProvider></QueryClientProvider>);
 
   it("renders the ELI10 ask in order with Details collapsed", () => {
     const { container } = renderCard(goldenAsk);
     const text = container.textContent ?? "";
-    const marks = ["Context", "Options", "Recommendation", "Default if no reply", "Details", "Ran checks.", "Investigate in issue"].map((mark) => text.indexOf(mark));
+    const marks = ["Context", "Options", "Recommendation", "Default if no reply", "Details", "Ran all requested checks.", "Investigate in issue"].map((mark) => text.indexOf(mark));
     expect(marks.every((at, index) => at >= 0 && at > (marks[index - 1] ?? -1))).toBe(true);
     const details = container.querySelector("details");
     expect(details).not.toBeNull();
     expect(details).not.toHaveAttribute("open");
     expect(details?.querySelector("summary")).toHaveTextContent("Details");
-    expect(details).toHaveTextContent("Ran checks.");
+    expect(details).toHaveTextContent("Ran all requested checks.");
     expect(details).not.toHaveTextContent("Investigate in issue");
     expect(text.match(/Investigate in issue/g)).toHaveLength(1);
   });

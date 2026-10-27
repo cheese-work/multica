@@ -60,8 +60,8 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task could not open intent: status=%d body=%+v", response.StatusCode, body)
 	}
 	response.Body.Close()
-	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
-	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Checks completed.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Completed all the requested checks."})
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Completed all the requested checks.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
 	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": ask, "escalation_class": "spend"}
 	response = call(http.MethodPost, "/api/decisions", input, testToken, true)
 	if response.StatusCode != http.StatusForbidden {
