@@ -193,3 +193,14 @@ func TestResolveP8NullFieldsInheritAgentRow(t *testing.T) {
 		t.Fatalf("settings = %+v, want %+v", got.Settings, want)
 	}
 }
+
+func TestResolveKeepsExplicitEmptyContextArgs(t *testing.T) {
+	got := Resolve(Input{
+		Agent:   claudeAgent,
+		Presets: []Preset{{Name: "clear", ContextArgs: []string{}}},
+		DM:      sp("clear"),
+	})
+	if got.Name != "clear" || got.Settings.ContextArgs == nil || len(got.Settings.ContextArgs) != 0 {
+		t.Fatalf("got %s with context args %#v, want clear with non-nil empty", got.Name, got.Settings.ContextArgs)
+	}
+}

@@ -188,3 +188,19 @@ func TestValidate(t *testing.T) {
 		t.Fatal("sandbox arg accepted")
 	}
 }
+
+// NULL context_args inherit the agent's own args; an explicit empty list
+// replaces them, so the claim merger can remove existing context overrides.
+func TestEffectiveExplicitEmptyContextArgsIsNotInherit(t *testing.T) {
+	inherit, _ := Effective(claudeAgent, labs, Preset{Name: "p"})
+	if inherit.ContextArgs != nil {
+		t.Fatalf("NULL context args = %#v, want nil", inherit.ContextArgs)
+	}
+	clear, reason := Effective(claudeAgent, labs, Preset{Name: "p", ContextArgs: []string{}})
+	if reason != "" {
+		t.Fatalf("empty context args stale: %s", reason)
+	}
+	if clear.ContextArgs == nil || len(clear.ContextArgs) != 0 {
+		t.Fatalf("explicit [] = %#v, want non-nil empty", clear.ContextArgs)
+	}
+}

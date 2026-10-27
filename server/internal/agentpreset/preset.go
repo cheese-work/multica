@@ -38,7 +38,9 @@ const (
 	ReasonLabLock       = "lab_lock"
 )
 
-// Preset is one agent_preset row. A nil field inherits the agent row.
+// Preset is one agent_preset row. A nil field inherits the agent row. For
+// ContextArgs, nil inherits and a non-nil empty slice replaces the agent's
+// context args with none.
 type Preset struct {
 	Name          string
 	Model         *string
@@ -60,7 +62,8 @@ type Agent struct {
 type Labs map[string]string
 
 // Settings are the effective run settings after merging a preset over the
-// agent row. ContextArgs is nil when no preset sets them.
+// agent row. ContextArgs is nil when no preset sets them and non-nil empty
+// when a preset clears them.
 type Settings struct {
 	Model         string
 	ThinkingLevel string
@@ -201,7 +204,7 @@ func Effective(a Agent, labs Labs, p Preset) (Settings, string) {
 	if p.ServiceTier != nil {
 		s.ServiceTier = *p.ServiceTier
 	}
-	if len(p.ContextArgs) > 0 {
+	if p.ContextArgs != nil {
 		s.ContextArgs = p.ContextArgs
 	}
 	return s, ""
