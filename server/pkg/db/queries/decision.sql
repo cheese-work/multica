@@ -201,39 +201,40 @@ WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('d
 ORDER BY target.human_user_id;
 
 -- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.updated_at
+-- With issue_id, lanes that name the issue (a message mention or a decision
+-- request on it) rank first, newest reference first, before the limit applies.
+-- session_id narrows the result to one lane for an eligibility check.
+SELECT session.id, session.title, session.updated_at, ref.referenced_at::timestamptz AS referenced_at
 FROM chat_session session
+LEFT JOIN LATERAL (
+    SELECT max(refs.referenced_at) AS referenced_at FROM (
+        SELECT message.created_at AS referenced_at
+        FROM chat_message message
+        WHERE message.chat_session_id = session.id
+          AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+          AND message.failure_reason IS NULL
+          AND lower(message.content) LIKE '%](mention://issue/' || lower(sqlc.narg('issue_id')::uuid::text) || ')%'
+        UNION ALL
+        SELECT request.created_at
+        FROM decision_request request
+        WHERE request.workspace_id = session.workspace_id AND request.issue_id = sqlc.narg('issue_id')::uuid
+          AND request.chat_session_id = session.id
+    ) refs
+) ref ON sqlc.narg('issue_id')::uuid IS NOT NULL
 WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.agent_id = sqlc.arg('agent_id')
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
-ORDER BY session.updated_at DESC, session.id DESC
+  AND (sqlc.narg('session_id')::uuid IS NULL OR session.id = sqlc.narg('session_id')::uuid)
+ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10;
 
--- name: ListDecisionLaneIssueReferences :many
--- A DM references an issue when a message mentions it or a decision request
--- on it was asked there; referenced_at is the newest such time.
-SELECT refs.chat_session_id, max(refs.referenced_at)::timestamptz AS referenced_at FROM (
-    SELECT message.chat_session_id, message.created_at AS referenced_at
-    FROM chat_message message
-    WHERE message.chat_session_id = ANY(sqlc.arg('session_ids')::uuid[])
-      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
-      AND message.failure_reason IS NULL
-      AND lower(message.content) LIKE '%](mention://issue/' || lower(sqlc.arg('issue_id')::uuid::text) || ')%'
-    UNION ALL
-    SELECT request.chat_session_id, request.created_at
-    FROM decision_request request
-    WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.issue_id = sqlc.arg('issue_id')
-      AND request.chat_session_id = ANY(sqlc.arg('session_ids')::uuid[])
-) refs
-GROUP BY refs.chat_session_id;
-
--- name: LatestOpenDecisionAsk :one
-SELECT created_at FROM decision_request
+-- name: OpenDecisionAsksSince :many
+SELECT ask, created_at FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
   AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
-  AND status = 'open' AND ask = sqlc.arg('ask') AND created_at > now() - interval '24 hours'
-ORDER BY created_at DESC LIMIT 1;
+  AND status = 'open' AND created_at > now() - interval '24 hours'
+ORDER BY created_at DESC;
 
 -- name: ListDecisionLaneMentions :many
 WITH scoped_mentions AS MATERIALIZED (

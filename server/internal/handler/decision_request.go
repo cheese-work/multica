@@ -194,17 +194,11 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return db.ChatSession{}, deny
 	}
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID, SessionID: session.ID})
 	if err != nil {
 		return db.ChatSession{}, err
 	}
-	listed := false
-	for _, lane := range lanes {
-		if lane.ID == session.ID {
-			listed = true
-		}
-	}
-	if !listed {
+	if len(lanes) == 0 {
 		return db.ChatSession{}, deny
 	}
 	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
@@ -219,7 +213,7 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 // the lane of the latest request on this issue, else the newest lane that
 // mentions this issue. The zero value means: open a new Decisions DM.
 func defaultDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID) (pgtype.UUID, error) {
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, IssueID: issue.ID})
 	if err != nil || len(lanes) == 0 {
 		return pgtype.UUID{}, err
 	}

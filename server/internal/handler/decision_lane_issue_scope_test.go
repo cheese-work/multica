@@ -125,3 +125,49 @@ func TestDecisionLanesAreOrderedByIssueRelevance(test *testing.T) {
 		test.Fatalf("eligibility must follow the reference: %+v", lanes)
 	}
 }
+
+func TestDecisionRequestKeepsOlderDiscussedDMEligible(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	matching := fixture.newDMLane(test, "original discussion")
+	fixture.discussIn(test, matching)
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() - interval '2 days' WHERE id = $1`, matching)
+	for index := 0; index < 10; index++ {
+		fixture.newDMLane(test, "new unrelated conversation")
+	}
+	body := fixture.body()
+	body["session_id"] = matching
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+}
+
+func TestDecisionLanesRankOlderDiscussedDMBeforeTheLimit(test *testing.T) {
+	fixture := newIntentFixture(test)
+	openLaneIntent(test, fixture, fixture.mention())
+	matching := laneNamingIssue(test, fixture.issueID, fixture.agentID, fixture.humanID, "original discussion")
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() - interval '2 days' WHERE id = $1`, matching)
+	for index := 0; index < 10; index++ {
+		dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "new unrelated conversation"})
+	}
+	var lanes []struct {
+		ID       string `json:"id"`
+		Eligible bool   `json:"eligible"`
+	}
+	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusOK).JSON(&lanes)
+	if len(lanes) == 0 || lanes[0].ID != matching || !lanes[0].Eligible {
+		test.Fatalf("the original issue DM must rank first, got %+v", lanes)
+	}
+}
+
+func TestDecisionReaskWithFreshSourceCommentIsRefused(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	lane := laneNamingIssue(test, fixture.issueID, fixture.agentID, fixture.humanID, "original discussion")
+	body := fixture.body()
+	body["session_id"] = lane
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
+	fixture.details.SourceCommentID = sourceID
+	body = fixture.body()
+	body["session_id"] = lane
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusConflict)
+}

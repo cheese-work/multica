@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -18,41 +17,27 @@ const decisionReaskWindow = 24 * time.Hour
 
 var ictZone = time.FixedZone("ICT", 7*60*60)
 
-// decisionLaneReferences maps each lane to the newest time it named the issue
-// (a message mention or a decision request on it); absent lanes never did.
-func decisionLaneReferences(ctx context.Context, queries *db.Queries, issue db.Issue, lanes []db.ListDecisionLanesRow) (map[pgtype.UUID]time.Time, error) {
-	ids := make([]pgtype.UUID, len(lanes))
-	for index, lane := range lanes {
-		ids[index] = lane.ID
-	}
-	rows, err := queries.ListDecisionLaneIssueReferences(ctx, db.ListDecisionLaneIssueReferencesParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, SessionIds: ids})
-	if err != nil {
-		return nil, err
-	}
-	references := make(map[pgtype.UUID]time.Time, len(rows))
-	for _, row := range rows {
-		references[row.ChatSessionID] = row.ReferencedAt.Time
-	}
-	return references, nil
-}
-
 // requireLaneNamesIssue refuses a DM where the issue was never discussed and
-// lists the DMs where it was.
+// lists the DMs where it was. Eligibility is read for this one DM, not from the
+// ten-lane listing, so an old discussion stays eligible.
 func requireLaneNamesIssue(ctx context.Context, queries *db.Queries, issue db.Issue, session db.ChatSession) error {
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: session.AgentID, CreatorID: session.CreatorID})
+	lanes := db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: session.AgentID, CreatorID: session.CreatorID, IssueID: issue.ID}
+	own := lanes
+	own.SessionID = session.ID
+	rows, err := queries.ListDecisionLanes(ctx, own)
 	if err != nil {
 		return err
 	}
-	references, err := decisionLaneReferences(ctx, queries, issue, lanes)
-	if err != nil {
-		return err
-	}
-	if _, named := references[session.ID]; named {
+	if len(rows) == 1 && rows[0].ReferencedAt.Valid {
 		return nil
 	}
+	rows, err = queries.ListDecisionLanes(ctx, lanes)
+	if err != nil {
+		return err
+	}
 	var matching []string
-	for _, lane := range lanes {
-		if _, named := references[lane.ID]; named {
+	for _, lane := range rows {
+		if lane.ReferencedAt.Valid {
 			matching = append(matching, fmt.Sprintf("%s (%q)", uuidToString(lane.ID), lane.Title))
 		}
 	}
@@ -63,16 +48,25 @@ func requireLaneNamesIssue(ctx context.Context, queries *db.Queries, issue db.Is
 	return decisionIntentRefusal{http.StatusForbidden, "DM " + uuidToString(session.ID) + " never discussed this issue; " + hint}
 }
 
+// askSourceTail is the per-run provenance link that ends a rendered ask; a
+// fresh source comment must not make the same decision look new.
+var askSourceTail = regexp.MustCompile(`\n\n\*\*Source\*\*\n[^\n]*$`)
+
 // requireNoRecentReask refuses the same unanswered ask from the same agent to
-// the same person on the same issue within decisionReaskWindow of the earlier one.
+// the same person on the same issue within decisionReaskWindow of the earlier
+// one. The ask is compared without its source link.
 func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, ask string) error {
-	earlier, err := queries.LatestOpenDecisionAsk(ctx, db.LatestOpenDecisionAskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID, Ask: ask})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
+	earlier, err := queries.OpenDecisionAsksSince(ctx, db.OpenDecisionAsksSinceParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
 	if err != nil {
 		return err
 	}
-	const layout = "2006-01-02 15:04 ICT"
-	return decisionIntentRefusal{http.StatusConflict, fmt.Sprintf("this decision was already asked at %s and is unanswered; re-ask allowed after %s", earlier.Time.In(ictZone).Format(layout), earlier.Time.Add(decisionReaskWindow).In(ictZone).Format(layout))}
+	identity := askSourceTail.ReplaceAllString(ask, "")
+	for _, row := range earlier {
+		if askSourceTail.ReplaceAllString(row.Ask, "") != identity {
+			continue
+		}
+		const layout = "2006-01-02 15:04 ICT"
+		return decisionIntentRefusal{http.StatusConflict, fmt.Sprintf("this decision was already asked at %s and is unanswered; re-ask allowed after %s", row.CreatedAt.Time.In(ictZone).Format(layout), row.CreatedAt.Time.Add(decisionReaskWindow).In(ictZone).Format(layout))}
+	}
+	return nil
 }
