@@ -76,13 +76,15 @@ var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which 
 // issue and its task together, and an uncommitted Triage issue must still be
 // seen.
 //
+// target names the agent and trigger of the run, for the run budget.
+//
 // A named run skips the read entirely: Triage never refuses it, so there is
 // nothing to look up.
 //
 // A missing issue is not in Triage: the enqueue proceeds and fails (or not) on
 // its own terms. A read error refuses, because a run that cannot be shown to be
 // allowed must not start.
-func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
+func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) error {
 	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
 		return err
 	}
@@ -99,7 +101,7 @@ func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	if state.Valid {
 		return ErrIssueInTriage
 	}
-	return guardRunBudget(ctx, q, issueID)
+	return guardRunBudget(ctx, q, issueID, target)
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB

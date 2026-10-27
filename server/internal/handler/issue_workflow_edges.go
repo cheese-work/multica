@@ -213,11 +213,17 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 // blocked alone (something else parked it), one whose workflow has no blocked
 // status, where the refusal alone holds the line, and one that is no longer in
 // the status the refused run was for: the hook runs after the refusal, and a
-// finish written in between (CHE-2226) must stay.
+// finish written in between (CHE-2226) must stay. An issue in review is blocked
+// only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || issue.Status == issuestatus.Blocked || issue.Status != e.Status ||
 		service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return
+	}
+	// A refused run for anyone but the reviewer must not block the review: the
+	// reviewer's own first run on a head is still admitted.
+	if issue.Status == issuestatus.InReview && issue.AssigneeID != e.Target.AgentID {
 		return
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
@@ -250,15 +256,21 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		refused, e.Runs, e.Max, raise))
 }
 
-// runBudgetRefusedRun names the run the budget refused in one phrase.
+// runBudgetRefusedRun names the run the budget refused in one phrase: the
+// agent that would have received it, what asked, and the status the issue was
+// in.
 func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetExhausted) string {
-	who := "the assignee"
-	if e.AssigneeType == "agent" && e.AssigneeID.Valid {
-		if agent, err := h.Queries.GetAgent(ctx, e.AssigneeID); err == nil {
+	who := "an agent"
+	if e.Target.AgentID.Valid {
+		if agent, err := h.Queries.GetAgent(ctx, e.Target.AgentID); err == nil {
 			who = "agent " + agent.Name
 		}
 	}
-	return fmt.Sprintf("a run for %s while the issue was %s", who, e.Status)
+	trigger := e.Target.Trigger
+	if trigger == "" {
+		trigger = "derived"
+	}
+	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
 }
 
 // runBudgetRaiseCommand is the command that lifts this issue's cap by a few

@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimIssueReviewHead = `-- name: ClaimIssueReviewHead :one
+INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
+VALUES ($1::uuid, $2::uuid, $3::text, $4::uuid)
+ON CONFLICT DO NOTHING
+RETURNING head_sha
+`
+
+type ClaimIssueReviewHeadParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	HeadSha     string      `json:"head_sha"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Records the first run for the issue's reviewer on a PR head. Returns a row
+// only to the caller that inserted it, so of any number of concurrent enqueues
+// for one head exactly one is the first.
+func (q *Queries) ClaimIssueReviewHead(ctx context.Context, arg ClaimIssueReviewHeadParams) (string, error) {
+	row := q.db.QueryRow(ctx, claimIssueReviewHead,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HeadSha,
+		arg.AgentID,
+	)
+	var head_sha string
+	err := row.Scan(&head_sha)
+	return head_sha, err
+}
+
 const countIssueRunsSince = `-- name: CountIssueRunsSince :one
 SELECT COUNT(*)::bigint FROM agent_task_queue
 WHERE issue_id = $1::uuid AND created_at > $2::timestamptz
@@ -37,30 +66,6 @@ DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkflowEdges, id)
 	return err
-}
-
-const hasUnreviewedPRHead = `-- name: HasUnreviewedPRHead :one
-SELECT EXISTS (
-    SELECT 1
-    FROM issue_pull_request ipr
-    JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
-    WHERE ipr.issue_id = $1::uuid
-      AND pr.state IN ('open', 'draft') AND pr.head_sha <> ''
-      AND NOT EXISTS (
-          SELECT 1 FROM issue_review_admission a
-          WHERE a.issue_id = ipr.issue_id AND a.pull_request_id = pr.id AND a.head_sha = pr.head_sha
-      )
-)::boolean
-`
-
-// True when an open or draft PR linked to the issue sits on a head that no
-// run has been admitted for yet (the issue_review_admission trigger records
-// the admission when the run is created).
-func (q *Queries) HasUnreviewedPRHead(ctx context.Context, issueID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, hasUnreviewedPRHead, issueID)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
@@ -126,17 +131,6 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 		return nil, err
 	}
 	return items, nil
-}
-
-const lockIssueReviewAdmission = `-- name: LockIssueReviewAdmission :exec
-SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
-`
-
-// Serialises the review-admission check for one issue until the caller's
-// transaction ends, so two concurrent enqueues cannot both take the same head.
-func (q *Queries) LockIssueReviewAdmission(ctx context.Context, key string) error {
-	_, err := q.db.Exec(ctx, lockIssueReviewAdmission, key)
-	return err
 }
 
 const raiseIssueMaxRuns = `-- name: RaiseIssueMaxRuns :one

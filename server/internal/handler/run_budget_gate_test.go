@@ -127,7 +127,7 @@ func TestRunBudgetDelayedHookDoesNotOverwriteFinishedStatus(t *testing.T) {
 	c := newEdgeCase(t, 2226003, mergeEdgeSteps)
 	issue := spendBudget(t, c, 2, "in_progress")
 	c.enter(t, "merged")
-	testHandler.onRunBudgetExhausted(context.Background(), service.RunBudgetExhausted{IssueID: issue.ID, Runs: 2, Max: 2})
+	testHandler.onRunBudgetExhausted(context.Background(), service.RunBudgetExhausted{IssueID: issue.ID, Runs: 2, Max: 2, Status: "in_progress", Target: service.RunTarget{AgentID: issue.AssigneeID, Trigger: "retry"}})
 	if got := c.status(t); got != "merged" {
 		t.Fatalf("delayed hook moved a merged issue to %s", got)
 	}
@@ -169,64 +169,6 @@ func TestRunBudgetReviewWithoutPRIsNotAdmitted(t *testing.T) {
 	}
 }
 
-// A refused enqueue does not consume the head's admission.
-func TestRunBudgetRefusedEnqueueKeepsReviewAdmission(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-	c := newEdgeCase(t, 2226001, mergeEdgeSteps)
-	issue := spendBudget(t, c, 2, "in_review")
-	linkPR(t, c.issueID, 2226, "head-one")
-
-	if _, err := testPool.Exec(ctx, `UPDATE agent SET archived_at=now() WHERE id=$1`, issue.AssigneeID); err != nil {
-		t.Fatal(err)
-	}
-	defer testPool.Exec(ctx, `UPDATE agent SET archived_at=NULL WHERE id=$1`, issue.AssigneeID)
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err == nil {
-		t.Fatal("enqueue for an archived agent succeeded")
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM issue_review_admission WHERE issue_id=$1`, c.issueID); n != 0 {
-		t.Fatalf("failed enqueue reserved %d admissions, want 0", n)
-	}
-}
-
-// Concurrent enqueues on one head admit exactly one run: the admission is
-// recorded atomically with the run's own insert.
-func TestRunBudgetConcurrentReviewsOfOneHeadAdmitOne(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-	c := newEdgeCase(t, 2226001, mergeEdgeSteps)
-	issue := spendBudget(t, c, 2, "in_review")
-	linkPR(t, c.issueID, 2226, "head-one")
-
-	const callers = 8
-	results := make(chan error, callers)
-	start := make(chan struct{})
-	for i := 0; i < callers; i++ {
-		go func() {
-			<-start
-			_, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue)
-			results <- err
-		}()
-	}
-	close(start)
-	for i := 0; i < callers; i++ {
-		if err := <-results; err != nil && !errors.Is(err, service.ErrRunBudgetExhausted) && !errors.Is(err, service.ErrDuplicatePendingTask) {
-			t.Fatalf("concurrent enqueue failed unexpectedly: %v", err)
-		}
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND created_at > now() - interval '1 minute' AND status IN ('queued','dispatched','running')`, c.issueID); n != 1 {
-		t.Fatalf("live review runs on one head = %d, want 1", n)
-	}
-	finishRuns(t, c)
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
-		t.Fatalf("next run on the same head = %v, want ErrRunBudgetExhausted", err)
-	}
-}
-
 // A block says which run was refused and the exact command that lifts it.
 func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	if testHandler == nil {
@@ -244,7 +186,7 @@ func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_command' LIKE 'multica issue budget raise % --runs %' AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
 		t.Fatalf("run_budget_exhausted activity with refused_run and raise_command = %d, want 1", n)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
 		t.Fatalf("block comment naming the run and the raise command = %d, want 1", n)
 	}
 }

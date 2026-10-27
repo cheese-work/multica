@@ -59,7 +59,16 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("runs must be above the cap now in force (%d)", current))
 		return
 	}
-	raised, err := h.Queries.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
+	// The cap and the audit of who raised it commit together: a raise with no
+	// record of the person behind it must not stay in force.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(req.Runs), WorkflowMax: int32(workflowMax),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -71,11 +80,15 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{"from": current, "to": raised.Int32})
-	if _, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
+	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_raised", Details: body,
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "raised the run budget but failed to record it")
+		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": raised.Int32, "previous_max_runs": current})

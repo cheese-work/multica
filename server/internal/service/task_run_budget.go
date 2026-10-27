@@ -32,16 +32,24 @@ var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget
 // started category, so the budget names it besides the done and closed ones.
 const statusMerged = "merged"
 
+// RunTarget is the run an enqueue asks for: the agent that would receive it
+// and what asked (comment, mention, retry...). The guard needs both to tell the
+// reviewer's first run on a head from other bookkeeping, and to say what it
+// refused.
+type RunTarget struct {
+	AgentID pgtype.UUID
+	Trigger string
+}
+
 // RunBudgetExhausted describes the refusal that fired the hook: how many runs
-// the issue has and the cap it hit, and the run that was refused (a derived run
-// for the issue's assignee while it sat in Status).
+// the issue has and the cap it hit, and the run that was refused (Target's
+// trigger, for Target's agent, while the issue sat in Status).
 type RunBudgetExhausted struct {
-	IssueID      pgtype.UUID
-	Runs         int64
-	Max          int
-	Status       string
-	AssigneeType string
-	AssigneeID   pgtype.UUID
+	IssueID pgtype.UUID
+	Runs    int64
+	Max     int
+	Status  string
+	Target  RunTarget
 }
 
 var onRunBudgetExhausted atomic.Pointer[func(context.Context, RunBudgetExhausted)]
@@ -76,7 +84,7 @@ func RunBudgetStart(ctx context.Context, q *db.Queries, issueID pgtype.UUID, def
 // guardRunBudget refuses a derived enqueue for an issue whose workflow budget
 // is spent. An issue with no workflow, or a workflow with no stored budget
 // start (the built-in Default nobody saved), is not budgeted.
-func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
 	issue, err := q.GetIssue(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -106,6 +114,12 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > max {
 		max = int(issue.MaxRunsOverride.Int32)
 	}
+	// The claim runs before the cap check so that a run inside the budget also
+	// marks its head as reviewed: a second run on that head stays budgeted.
+	first, err := claimFirstReviewOfHead(ctx, q, issue, target)
+	if err != nil {
+		return fmt.Errorf("run budget: review admission: %w", err)
+	}
 	if runs < int64(max) {
 		return nil
 	}
@@ -114,11 +128,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 	if isFinishedStatus(ctx, q, issue) {
 		return ErrRunBudgetExhausted
 	}
-	admitted, err := admitFirstReviewOfHead(ctx, q, issue)
-	if err != nil {
-		return fmt.Errorf("run budget: review admission: %w", err)
-	}
-	if admitted {
+	if first {
 		return nil
 	}
 	if hook := onRunBudgetExhausted.Load(); hook != nil {
@@ -126,7 +136,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
 			IssueID: issue.ID, Runs: runs, Max: max,
-			Status: issue.Status, AssigneeType: issue.AssigneeType.String, AssigneeID: issue.AssigneeID,
+			Status: issue.Status, Target: target,
 		})
 	}
 	return ErrRunBudgetExhausted
@@ -146,20 +156,35 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 	return IsFinishedStatus(ctx, q, issue.WorkspaceID, issue.Status)
 }
 
-// admitFirstReviewOfHead reports whether the run is the first one for an issue
-// in in_review on a PR head: the review gate, which the budget does not refuse.
-// The check only reads; the admission is recorded by the trigger on the run's
-// own insert, so a failed or deduplicated enqueue leaves the head unspent. The
-// lock holds until the caller's transaction ends, which makes the pair atomic
-// for a transaction-scoped caller. A pool-scoped caller releases it at once
-// (ponytail: the window is the gap between check and insert; add an insert
-// there if that path ever carries concurrent derived runs).
-func admitFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue) (bool, error) {
-	if issue.Status != issuestatus.InReview {
+// claimFirstReviewOfHead reports whether the run is the first one for the
+// issue's reviewer on the PR head under review: the review gate, which the
+// budget does not refuse. Only the issue's assignee while the issue is in
+// in_review counts as the reviewer, so a leader's or a mention's run never
+// spends the allowance, and only the one head the run is pinned to
+// (GetIssueReviewHeadSha) is claimed. The claim is one insert on the
+// (issue, head) key, so it is atomic on a pool-scoped handle as well as in a
+// transaction, and concurrent enqueues for one head cannot both win.
+// ponytail: a pool-scoped enqueue that fails after the claim (a dedup against a
+// pending run on the same head, an archived agent) leaves the head spent; a
+// person raises the cap with `multica issue budget raise`. Upgrade to a
+// task-scoped claim if such failures prove common.
+func claimFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (bool, error) {
+	if issue.Status != issuestatus.InReview || issue.AssigneeType.String != "agent" ||
+		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return false, nil
 	}
-	if err := q.LockIssueReviewAdmission(ctx, "review-admission:"+uuidString(issue.ID)); err != nil {
+	head, err := q.GetIssueReviewHeadSha(ctx, issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
 	}
-	return q.HasUnreviewedPRHead(ctx, issue.ID)
+	_, err = q.ClaimIssueReviewHead(ctx, db.ClaimIssueReviewHeadParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HeadSha: head, AgentID: target.AgentID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }

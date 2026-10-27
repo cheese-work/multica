@@ -1297,7 +1297,7 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 	if issueAssignee && issue.AssigneeID != agentID {
 		return nil, fmt.Errorf("comment trigger agent does not match issue assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: "comment"}); err != nil {
 		return nil, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
@@ -1469,7 +1469,11 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "assignment or status handoff"
+	if triggerCommentID.Valid {
+		trigger = "comment"
+	}
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin, RunTarget{AgentID: issue.AssigneeID, Trigger: trigger}); err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 
@@ -1610,7 +1614,7 @@ func (s *TaskService) PrepareTaskForMention(ctx context.Context, issue db.Issue,
 }
 
 func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin) (db.AgentTaskQueue, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: "mention"}); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	agent, err := queries.GetAgent(ctx, params.AgentID)
@@ -1708,7 +1712,11 @@ func (s *TaskService) prepareMentionTaskWithQueries(ctx context.Context, queries
 }
 
 func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.CreateAgentTaskParams, attribution.Result, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "mention"
+	if isLeader {
+		trigger = "squad leader callback"
+	}
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger}); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 	agent, err := queries.GetAgent(ctx, agentID)
@@ -5705,7 +5713,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -6298,7 +6306,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
 		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),

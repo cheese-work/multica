@@ -1395,12 +1395,11 @@ type IssueReaction struct {
 }
 
 type IssueReviewAdmission struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	HeadSha       string             `json:"head_sha"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	AdmittedAt    pgtype.Timestamptz `json:"admitted_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	HeadSha     string             `json:"head_sha"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	AdmittedAt  pgtype.Timestamptz `json:"admitted_at"`
 }
 
 type IssueSourceContext struct {
