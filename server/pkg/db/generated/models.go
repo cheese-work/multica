@@ -958,6 +958,44 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubWebhookIntake struct {
+	DeliveryGuid string             `json:"delivery_guid"`
+	Event        string             `json:"event"`
+	Signature    string             `json:"signature"`
+	Payload      []byte             `json:"payload"`
+	State        string             `json:"state"`
+	Reason       string             `json:"reason"`
+	ReceivedAt   pgtype.Timestamptz `json:"received_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubWebhookRevision struct {
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	InstallationID     int64              `json:"installation_id"`
+	RepositoryID       int64              `json:"repository_id"`
+	PullRequestID      pgtype.UUID        `json:"pull_request_id"`
+	PrNumber           int32              `json:"pr_number"`
+	ObjectKind         string             `json:"object_kind"`
+	ObjectID           int64              `json:"object_id"`
+	BodyHash           string             `json:"body_hash"`
+	SourceDeliveryGuid pgtype.Text        `json:"source_delivery_guid"`
+	Event              string             `json:"event"`
+	Action             string             `json:"action"`
+	SenderID           int64              `json:"sender_id"`
+	AuthorID           int64              `json:"author_id"`
+	AuthorLogin        string             `json:"author_login"`
+	AuthorType         string             `json:"author_type"`
+	HeadSha            string             `json:"head_sha"`
+	ReviewState        string             `json:"review_state"`
+	ObjectCreatedAt    pgtype.Timestamptz `json:"object_created_at"`
+	ObjectUpdatedAt    pgtype.Timestamptz `json:"object_updated_at"`
+	ObjectSubmittedAt  pgtype.Timestamptz `json:"object_submitted_at"`
+	State              string             `json:"state"`
+	Reason             string             `json:"reason"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GovernanceAttempt struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -35,7 +36,7 @@ func assertGitHubIntakeNoEffects(t *testing.T, fixture githubReviewFixture) {
 	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 0 {
 		t.Fatalf("GitHub text projected before admission: %d comments", count)
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND id<>$2`, fixture.issueID, fixture.source); count != 0 {
 		t.Fatalf("actionable dispatch before gate G: %d runs", count)
 	}
 }
@@ -157,4 +158,88 @@ func TestGitHubIntakeT7RevisionDeduplication(t *testing.T) {
 	if state != "deferred" || reason == "" {
 		t.Fatalf("notify-only work = %s/%s, want deferred with reason", state, reason)
 	}
+}
+
+func TestGitHubIntakeCommentEvents(t *testing.T) {
+	for _, event := range []string{"pull_request_review_comment", "issue_comment"} {
+		for _, action := range []string{"created", "edited", "deleted"} {
+			t.Run(event+"/"+action, func(t *testing.T) {
+				fixture := newGitHubIntakeFixture(t)
+				fixture.payload["action"] = action
+				fixture.payload["comment"] = fixture.payload["review"]
+				delete(fixture.payload, "review")
+				if event == "issue_comment" {
+					fixture.payload["issue"] = map[string]any{"number": 2019, "pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widget/pulls/2019"}}
+					delete(fixture.payload, "pull_request")
+				}
+				delivery := fixture.issueID + "-comment"
+				if response := fixture.post(event, fixture.secret, delivery); response.Code != http.StatusAccepted {
+					t.Fatalf("comment intake = %d %s", response.Code, response.Body.String())
+				}
+				var storedEvent, storedAction, reason string
+				if err := testPool.QueryRow(context.Background(), `SELECT event, action, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&storedEvent, &storedAction, &reason); err != nil {
+					t.Fatal(err)
+				}
+				if storedEvent != event || storedAction != action || reason == "" {
+					t.Fatalf("comment metadata = %s/%s/%s", storedEvent, storedAction, reason)
+				}
+				assertGitHubIntakeNoEffects(t, fixture)
+			})
+		}
+	}
+}
+
+func TestGitHubIntakeDeliveryConflictAndNewRevision(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	delivery := fixture.issueID + "-original"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		t.Fatalf("initial delivery = %d", response.Code)
+	}
+	fixture.payload["review"].(map[string]any)["body"] = "Changed signed revision"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusConflict {
+		t.Fatalf("GUID collision = %d, want 409", response.Code)
+	}
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-new"); response.Code != http.StatusAccepted {
+		t.Fatalf("new revision = %d", response.Code)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_intake WHERE delivery_guid LIKE $1`, fixture.issueID+"%"); count != 2 {
+		t.Fatalf("raw deliveries = %d, want 2", count)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 2 {
+		t.Fatalf("distinct revisions = %d, want 2", count)
+	}
+	assertGitHubIntakeNoEffects(t, fixture)
+}
+
+func TestGitHubIntakeConcurrentRevisionDeduplication(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	var workers sync.WaitGroup
+	statuses := make(chan int, 6)
+	for delivery := 0; delivery < 6; delivery++ {
+		workers.Go(func() {
+			statuses <- fixture.post("pull_request_review", fixture.secret, fmt.Sprintf("%s-concurrent-%d", fixture.issueID, delivery)).Code
+		})
+	}
+	workers.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusAccepted {
+			t.Errorf("concurrent intake = %d", status)
+		}
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_intake WHERE delivery_guid LIKE $1`, fixture.issueID+"%"); count != 6 {
+		t.Fatalf("concurrent deliveries = %d, want 6", count)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 1 {
+		t.Fatalf("concurrent revision rows = %d, want 1", count)
+	}
+	assertGitHubIntakeNoEffects(t, fixture)
+}
+
+func TestGitHubIntakeMissingDeliveryGUID(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	if response := fixture.post("pull_request_review", fixture.secret, ""); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing GUID = %d, want 400", response.Code)
+	}
+	assertGitHubIntakeNoEffects(t, fixture)
 }
