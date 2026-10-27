@@ -63,6 +63,59 @@ func TestAgentCannotCloseIssueWithOpenDecision(t *testing.T) {
 	}
 }
 
+func TestAgentCannotCloseIssueWithUndeliveredDecisionAnswer(t *testing.T) {
+	createTestCustomStatus(t, "agent_accepted", "done")
+	for _, writer := range issueWriters {
+		for _, withDescription := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/description=%t", writer.name, withDescription), func(t *testing.T) {
+				fixture := newAskedRecordFixture(t)
+				recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+				if err != nil {
+					t.Fatal(err)
+				}
+				dbfx.Exec(t, `UPDATE issue SET status = 'in_review' WHERE id = $1`, fixture.issueID)
+				body := map[string]any{"status": "agent_accepted", "suppress_run": true}
+				if withDescription {
+					body["description"] = "must not change"
+				}
+				response := writer.write(t, fixture.issueID, body, map[string]string{
+					"X-Actor-Source": "task_token", "X-Agent-ID": fixture.agentID, "X-Task-ID": fixture.taskID,
+				})
+				if err := cancelDecisionForTest(testHandler, fixture); err != nil {
+					t.Fatal(err)
+				}
+				request, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{
+					WorkspaceID: fixture.issue.WorkspaceID, ID: fixture.decision.ID,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				answer, err := testHandler.Queries.GetDecisionAnswer(context.Background(), db.GetDecisionAnswerParams{
+					WorkspaceID: fixture.issue.WorkspaceID, ID: recorded.Answer.ID,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if request.Status != "answered" || request.CancelReason.Valid || answer.WakeOutcome.String == "skipped_ineligible" || answer.WokenAt.Valid || answer.DisclaimedAt.Valid {
+					t.Fatalf("close returned HTTP %d; decision status=%s cancel_reason=%s; answer wake_outcome=%s woken=%t disclaimed=%t; want answered with a live undelivered answer", response.Code, request.Status, request.CancelReason.String, answer.WakeOutcome.String, answer.WokenAt.Valid, answer.DisclaimedAt.Valid)
+				}
+				if writer.name == "batch" {
+					var result struct {
+						Updated int `json:"updated"`
+					}
+					response.Want(http.StatusOK).JSON(&result)
+					if result.Updated != 0 {
+						t.Fatalf("blocked batch updated %d issues", result.Updated)
+					}
+				} else {
+					response.Want(http.StatusConflict)
+				}
+				wantIssueStatus(t, fixture.issueID, "in_review")
+			})
+		}
+	}
+}
+
 func TestOpenDecisionStatusGuardBoundaries(t *testing.T) {
 	createTestCustomStatus(t, "shipped", "done")
 	createTestCustomStatus(t, "approved", "done")
@@ -75,14 +128,25 @@ func TestOpenDecisionStatusGuardBoundaries(t *testing.T) {
 		{"member-only approval", "agent", "approved", "open", http.StatusForbidden},
 		{"review stays allowed", "agent", "in_review", "open", http.StatusOK},
 		{"explicit cancellation", "agent", "cancelled", "open", http.StatusOK},
-		{"answered request", "agent", "done", "answered", http.StatusOK},
+		{"answered request awaiting wake", "agent", "done", "answered", http.StatusConflict},
+		{"disclaimed answer", "agent", "done", "disclaimed", http.StatusOK},
 		{"withdrawn request", "agent", "done", "cancelled", http.StatusOK},
 		{"human override", "member", "done", "open", http.StatusOK},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			fixture := newAskedRecordFixture(t)
-			dbfx.Exec(t, `UPDATE decision_request SET status = $2 WHERE id = $1`, fixture.decision.ID, testCase.requestStatus)
+			if testCase.requestStatus == "answered" || testCase.requestStatus == "disclaimed" {
+				recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if testCase.requestStatus == "disclaimed" {
+					dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+				}
+			} else {
+				dbfx.Exec(t, `UPDATE decision_request SET status = $2 WHERE id = $1`, fixture.decision.ID, testCase.requestStatus)
+			}
 			headers := map[string]string{}
 			if testCase.actor == "agent" {
 				headers = map[string]string{"X-Actor-Source": "task_token", "X-Agent-ID": fixture.agentID}
@@ -100,6 +164,7 @@ func TestOpenDecisionStatusGuardBoundaries(t *testing.T) {
 }
 
 func TestOpenDecisionBlocksDefaultWorkflowHandoff(t *testing.T) {
+	resetDecisionLease(t)
 	createTestCustomStatus(t, "agent_accepted", "done")
 	fixture := newAskedRecordFixture(t)
 	leadID := createHandlerTestAgent(t, "decision workflow lead", []byte("[]"))
@@ -131,13 +196,29 @@ func TestOpenDecisionBlocksDefaultWorkflowHandoff(t *testing.T) {
 	if requestStatus != "open" {
 		t.Fatalf("rejected workflow edge cancelled the request: %s", requestStatus)
 	}
-	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+	recorded, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
 		t.Fatal(err)
+	}
+	issueWriters[0].write(t, fixture.issueID, body, headers).Want(http.StatusConflict)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(t, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+	dbfx.Exec(t, `UPDATE decision_intent SET sealed_at = clock_timestamp() WHERE id = $1`, fixture.intentID)
+	_, runner := newDecisionRunnerFixture(t)
+	decisionPass(t, runner)
+	answer, err := testHandler.Queries.GetDecisionAnswer(context.Background(), db.GetDecisionAnswerParams{
+		WorkspaceID: fixture.issue.WorkspaceID, ID: recorded.Answer.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answer.WokenAt.Valid || answer.WakeOutcome.String != "run_enqueued" {
+		t.Fatalf("answer not delivered before close: woken=%t outcome=%s", answer.WokenAt.Valid, answer.WakeOutcome.String)
 	}
 	issueWriters[0].write(t, fixture.issueID, body, headers).Want(http.StatusOK)
 	status, assigneeType, assigneeID = issueStatusAndAssignee(t, fixture.issueID)
 	if status != "agent_accepted" || assigneeType != "agent" || assigneeID != leadID {
-		t.Fatalf("answered decision did not release workflow edge: %s %s %s", status, assigneeType, assigneeID)
+		t.Fatalf("delivered decision did not release workflow edge: %s %s %s", status, assigneeType, assigneeID)
 	}
 }
 
