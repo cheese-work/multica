@@ -39,7 +39,10 @@ func (handler *Handler) usePasskeysFromEnv(queries *db.Queries, transactions txS
 		return
 	}
 	if relyingParty != nil {
-		handler.usePasskeys(&passkey.Service{WebAuthn: relyingParty, Queries: queries, Tx: transactions})
+		handler.usePasskeys(&passkey.Service{
+			WebAuthn: relyingParty, Queries: queries, Tx: transactions,
+			Mail: handler.EmailService, CodeKey: []byte(os.Getenv("MULTICA_PASSKEY_ENROLL_KEY")),
+		})
 	}
 }
 

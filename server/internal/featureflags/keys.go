@@ -59,6 +59,10 @@ const (
 	// zero scoped definitions until the layer that backfills and activates
 	// them. Reads and previews are not gated; they never persist.
 	WakeupDefinitionWrites = "wakeup_definition_writes"
+	// PasskeyEnrollment (CHE-2233) opens first-passkey enrollment. It is CLOSED
+	// in every environment until Cheese records that no agent or automation can
+	// read the account mailbox that receives the enrollment code.
+	PasskeyEnrollment = "passkey_enrollment"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -182,4 +186,13 @@ func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service
 
 func ProjectWorkflowsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, ProjectWorkflowsV1, false)
+}
+
+// PasskeyEnrollmentEnabled reports whether passkey enrollment is open. A nil
+// service or provider is closed, never "unset".
+func PasskeyEnrollmentEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, PasskeyEnrollment, false)
 }

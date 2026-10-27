@@ -25,12 +25,86 @@ func (q *Queries) AdvancePasskey(ctx context.Context, arg AdvancePasskeyParams) 
 	return err
 }
 
+const bumpPasskeyEnrollAttempt = `-- name: BumpPasskeyEnrollAttempt :one
+UPDATE passkey_enroll_ceremony SET
+    attempts = attempts + 1,
+    failed_at = CASE WHEN attempts + 1 >= 5 THEN now() ELSE failed_at END,
+    consumed_at = CASE WHEN attempts + 1 >= 5 THEN now() ELSE consumed_at END
+WHERE id = $1
+RETURNING attempts
+`
+
+// A wrong code or a rejected attestation costs one attempt. The fifth ends
+// the ceremony as failed.
+func (q *Queries) BumpPasskeyEnrollAttempt(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, bumpPasskeyEnrollAttempt, id)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
+}
+
+const consumeOpenPasskeyEnrollCeremony = `-- name: ConsumeOpenPasskeyEnrollCeremony :exec
+UPDATE passkey_enroll_ceremony SET consumed_at = now() WHERE user_id = $1 AND consumed_at IS NULL
+`
+
+func (q *Queries) ConsumeOpenPasskeyEnrollCeremony(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, consumeOpenPasskeyEnrollCeremony, userID)
+	return err
+}
+
 const consumePasskeyChallenge = `-- name: ConsumePasskeyChallenge :exec
 UPDATE passkey_assertion_challenge SET consumed_at = now() WHERE id = $1
 `
 
 func (q *Queries) ConsumePasskeyChallenge(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, consumePasskeyChallenge, id)
+	return err
+}
+
+const consumePasskeyEnrollCeremony = `-- name: ConsumePasskeyEnrollCeremony :exec
+UPDATE passkey_enroll_ceremony SET consumed_at = now() WHERE id = $1
+`
+
+func (q *Queries) ConsumePasskeyEnrollCeremony(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, consumePasskeyEnrollCeremony, id)
+	return err
+}
+
+const countFailedPasskeyEnrollCeremonies = `-- name: CountFailedPasskeyEnrollCeremonies :one
+SELECT count(*)::int FROM passkey_enroll_ceremony
+WHERE user_id = $1 AND failed_at IS NOT NULL AND failed_at > now() - interval '24 hours'
+`
+
+func (q *Queries) CountFailedPasskeyEnrollCeremonies(ctx context.Context, userID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countFailedPasskeyEnrollCeremonies, userID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countPasskeyEnrollStart = `-- name: CountPasskeyEnrollStart :exec
+UPDATE passkey_enroll_limit SET
+    hour_starts = CASE WHEN now() - hour_started_at >= interval '1 hour' THEN 1 ELSE hour_starts + 1 END,
+    hour_started_at = CASE WHEN now() - hour_started_at >= interval '1 hour' THEN now() ELSE hour_started_at END,
+    day_starts = CASE WHEN now() - day_started_at >= interval '1 day' THEN 1 ELSE day_starts + 1 END,
+    day_started_at = CASE WHEN now() - day_started_at >= interval '1 day' THEN now() ELSE day_started_at END
+WHERE user_id = $1
+`
+
+func (q *Queries) CountPasskeyEnrollStart(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, countPasskeyEnrollStart, userID)
+	return err
+}
+
+const ensurePasskeyEnrollLimit = `-- name: EnsurePasskeyEnrollLimit :exec
+
+INSERT INTO passkey_enroll_limit (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING
+`
+
+// Enrollment. Every enrollment transaction takes the limit row first (NOWAIT),
+// then the ceremony, so start and finish cannot deadlock.
+func (q *Queries) EnsurePasskeyEnrollLimit(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, ensurePasskeyEnrollLimit, userID)
 	return err
 }
 
@@ -52,6 +126,53 @@ func (q *Queries) GetPasskeyChallenge(ctx context.Context, id pgtype.UUID) (Pass
 		&i.ConsumedAt,
 		&i.SupersededAt,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertPasskey = `-- name: InsertPasskey :one
+INSERT INTO user_passkey (user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at
+`
+
+type InsertPasskeyParams struct {
+	UserID          pgtype.UUID `json:"user_id"`
+	CredentialID    []byte      `json:"credential_id"`
+	PublicKey       []byte      `json:"public_key"`
+	AttestationType string      `json:"attestation_type"`
+	Aaguid          []byte      `json:"aaguid"`
+	SignCount       int64       `json:"sign_count"`
+	Transports      []string    `json:"transports"`
+	Flags           int16       `json:"flags"`
+}
+
+func (q *Queries) InsertPasskey(ctx context.Context, arg InsertPasskeyParams) (UserPasskey, error) {
+	row := q.db.QueryRow(ctx, insertPasskey,
+		arg.UserID,
+		arg.CredentialID,
+		arg.PublicKey,
+		arg.AttestationType,
+		arg.Aaguid,
+		arg.SignCount,
+		arg.Transports,
+		arg.Flags,
+	)
+	var i UserPasskey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CredentialID,
+		&i.PublicKey,
+		&i.AttestationType,
+		&i.Aaguid,
+		&i.SignCount,
+		&i.Transports,
+		&i.Flags,
+		&i.SuspectAt,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
 	)
 	return i, err
 }
@@ -94,6 +215,45 @@ func (q *Queries) InsertPasskeyChallenge(ctx context.Context, arg InsertPasskeyC
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const insertPasskeyEnrollCeremony = `-- name: InsertPasskeyEnrollCeremony :one
+INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, expires_at)
+VALUES ($1, $2, $3, now() + interval '10 minutes')
+RETURNING id, expires_at
+`
+
+type InsertPasskeyEnrollCeremonyParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	CodeHmac    []byte      `json:"code_hmac"`
+	SessionData []byte      `json:"session_data"`
+}
+
+type InsertPasskeyEnrollCeremonyRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) InsertPasskeyEnrollCeremony(ctx context.Context, arg InsertPasskeyEnrollCeremonyParams) (InsertPasskeyEnrollCeremonyRow, error) {
+	row := q.db.QueryRow(ctx, insertPasskeyEnrollCeremony, arg.UserID, arg.CodeHmac, arg.SessionData)
+	var i InsertPasskeyEnrollCeremonyRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const insertPasskeyEvent = `-- name: InsertPasskeyEvent :exec
+INSERT INTO passkey_event (user_id, action, details) VALUES ($1, $2, $3)
+`
+
+type InsertPasskeyEventParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	Action  string      `json:"action"`
+	Details []byte      `json:"details"`
+}
+
+func (q *Queries) InsertPasskeyEvent(ctx context.Context, arg InsertPasskeyEventParams) error {
+	_, err := q.db.Exec(ctx, insertPasskeyEvent, arg.UserID, arg.Action, arg.Details)
+	return err
 }
 
 const listUsablePasskeys = `-- name: ListUsablePasskeys :many
@@ -226,6 +386,78 @@ func (q *Queries) LockPasskeyChallengeNowait(ctx context.Context, id pgtype.UUID
 		&i.Expired,
 	)
 	return i, err
+}
+
+const lockPasskeyEnrollCeremonyNowait = `-- name: LockPasskeyEnrollCeremonyNowait :one
+SELECT ceremony.id, ceremony.user_id, ceremony.code_hmac, ceremony.session_data, ceremony.expires_at, ceremony.attempts, ceremony.consumed_at, ceremony.failed_at, ceremony.created_at, (ceremony.expires_at <= now())::bool AS expired
+FROM passkey_enroll_ceremony ceremony WHERE ceremony.id = $1 FOR UPDATE NOWAIT
+`
+
+type LockPasskeyEnrollCeremonyNowaitRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	CodeHmac    []byte             `json:"code_hmac"`
+	SessionData []byte             `json:"session_data"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	Attempts    int32              `json:"attempts"`
+	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
+	FailedAt    pgtype.Timestamptz `json:"failed_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Expired     bool               `json:"expired"`
+}
+
+func (q *Queries) LockPasskeyEnrollCeremonyNowait(ctx context.Context, id pgtype.UUID) (LockPasskeyEnrollCeremonyNowaitRow, error) {
+	row := q.db.QueryRow(ctx, lockPasskeyEnrollCeremonyNowait, id)
+	var i LockPasskeyEnrollCeremonyNowaitRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CodeHmac,
+		&i.SessionData,
+		&i.ExpiresAt,
+		&i.Attempts,
+		&i.ConsumedAt,
+		&i.FailedAt,
+		&i.CreatedAt,
+		&i.Expired,
+	)
+	return i, err
+}
+
+const lockPasskeyEnrollLimitNowait = `-- name: LockPasskeyEnrollLimitNowait :one
+SELECT user_id,
+       (locked_until IS NOT NULL AND locked_until > now())::bool AS locked,
+       CASE WHEN now() - hour_started_at >= interval '1 hour' THEN 0 ELSE hour_starts END::int AS hour_count,
+       CASE WHEN now() - day_started_at >= interval '1 day' THEN 0 ELSE day_starts END::int AS day_count
+FROM passkey_enroll_limit WHERE user_id = $1 FOR UPDATE NOWAIT
+`
+
+type LockPasskeyEnrollLimitNowaitRow struct {
+	UserID    pgtype.UUID `json:"user_id"`
+	Locked    bool        `json:"locked"`
+	HourCount int32       `json:"hour_count"`
+	DayCount  int32       `json:"day_count"`
+}
+
+func (q *Queries) LockPasskeyEnrollLimitNowait(ctx context.Context, userID pgtype.UUID) (LockPasskeyEnrollLimitNowaitRow, error) {
+	row := q.db.QueryRow(ctx, lockPasskeyEnrollLimitNowait, userID)
+	var i LockPasskeyEnrollLimitNowaitRow
+	err := row.Scan(
+		&i.UserID,
+		&i.Locked,
+		&i.HourCount,
+		&i.DayCount,
+	)
+	return i, err
+}
+
+const lockPasskeyEnrollment = `-- name: LockPasskeyEnrollment :exec
+UPDATE passkey_enroll_limit SET locked_until = now() + interval '24 hours' WHERE user_id = $1
+`
+
+func (q *Queries) LockPasskeyEnrollment(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockPasskeyEnrollment, userID)
+	return err
 }
 
 const markPasskeySuspect = `-- name: MarkPasskeySuspect :exec
