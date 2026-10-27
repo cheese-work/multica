@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
+import enCommon from "../../locales/en/common.json";
 
 const updateMutate = vi.hoisted(() => vi.fn());
 
@@ -31,7 +32,7 @@ vi.mock("../../navigation", () => ({
 
 import { ChatSessionHeader } from "./chat-session-header";
 
-const TEST_RESOURCES = { en: { chat: enChat } };
+const TEST_RESOURCES = { en: { chat: enChat, common: enCommon } };
 const RENAME_LABEL = enChat.header.rename;
 const OUTSIDE_LABEL = "Outside control";
 
@@ -59,7 +60,7 @@ function startRename(): HTMLInputElement {
       <button type="button">{OUTSIDE_LABEL}</button>
     </>,
   );
-  fireEvent.click(screen.getByTitle(RENAME_LABEL));
+  fireEvent.click(screen.getByRole("button", { name: "Original title" }));
   return screen.getByRole("textbox", { name: RENAME_LABEL });
 }
 
@@ -199,3 +200,80 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
     expect(screen.getByText("Original title")).toBeInTheDocument();
   });
 });
+
+// CHE-1808: the context meter shows the latest completed run's prompt size
+// against the model's window, warns ten points below the auto-compact
+// threshold, and the menu offers "Compact now".
+describe("ChatSessionHeader context meter", () => {
+  const withContext = (tokens?: number | null, window?: number | null) =>
+    ({ ...session, context_tokens: tokens, context_window: window }) as unknown as ChatSession;
+
+  function renderHeader(
+    sessionValue: ChatSession,
+    props: { autoCompactThresholdPct?: number | null; onCompact?: () => void } = {},
+  ) {
+    const Header = ChatSessionHeader as unknown as React.ComponentType<Record<string, unknown>>;
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <Header session={sessionValue} agent={null} {...props} />
+      </I18nProvider>,
+    );
+  }
+
+  it.each([
+    ["no size", undefined, undefined],
+    ["no window", 124_000, null],
+    ["no tokens", null, 200_000],
+    ["zero window", 124_000, 0],
+  ])("is hidden when the run reported %s", (_name, tokens, window) => {
+    renderHeader(withContext(tokens, window), { autoCompactThresholdPct: 80 });
+
+    expect(screen.queryByText(/ of \d/)).not.toBeInTheDocument();
+  });
+
+  it("shows the share and the window below the warning zone", () => {
+    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdPct: 80 });
+
+    expect(screen.getByText("62% of 200k")).toBeInTheDocument();
+    expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
+  });
+
+  it("does not warn one token short of ten points below the threshold", () => {
+    renderHeader(withContext(139_999, 200_000), { autoCompactThresholdPct: 80 });
+    expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
+  });
+
+  it("warns at exactly ten points below and above", () => {
+    const { unmount } = renderHeader(withContext(140_000, 200_000), { autoCompactThresholdPct: 80 });
+    expect(screen.getByText("70% of 200k")).toBeInTheDocument();
+    expect(screen.getByText("Will compact after the next reply")).toBeInTheDocument();
+    unmount();
+
+    renderHeader(withContext(190_000, 200_000), { autoCompactThresholdPct: 80 });
+    expect(screen.getByText("Will compact after the next reply")).toBeInTheDocument();
+  });
+
+  it("never warns when auto-compact is off", () => {
+    renderHeader(withContext(190_000, 200_000), { autoCompactThresholdPct: null });
+
+    expect(screen.getByText("95% of 200k")).toBeInTheDocument();
+    expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
+  });
+
+  it("writes a 1M window as 1M", () => {
+    renderHeader(withContext(120_000, 1_000_000), { autoCompactThresholdPct: 80 });
+
+    expect(screen.getByText("12% of 1M")).toBeInTheDocument();
+  });
+
+  it("sends /compact from the menu's Compact now item", async () => {
+    const onCompact = vi.fn();
+    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdPct: 80, onCompact });
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Compact now" }));
+
+    expect(onCompact).toHaveBeenCalledTimes(1);
+  });
+});
+

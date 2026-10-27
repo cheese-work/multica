@@ -195,6 +195,11 @@ export interface Issue {
   assignee_id: string | null;
   creator_type: IssueAssigneeType;
   creator_id: string;
+  /**
+   * The member this issue was created for: set when an agent creates it on
+   * their behalf. The "human by role" workflow handler hands to them first.
+   */
+  requested_by_id?: string | null;
   parent_issue_id: string | null;
   /**
    * The original this issue duplicates (MUL-7349): present only while the
@@ -203,6 +208,8 @@ export interface Issue {
    */
   duplicate_of?: IssueDuplicateOf | null;
   project_id: string | null;
+  /** The workflow this issue follows instead of its project's; null follows the project. */
+  workflow_id?: string | null;
   position: number;
   // Ordered barrier group among sibling sub-issues (null = unstaged). The
   // parent assignee is woken when a stage closes while a later one waits;

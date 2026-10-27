@@ -240,6 +240,43 @@ describe("useIssueActions", () => {
     expect(mockUpdateMutate).not.toHaveBeenCalled();
   });
 
+  // The picker confirmed a handoff, then this gate asks about the run. The
+  // dialog it opens makes the write, so it needs the choice and the binding.
+  it("a confirmed handoff keeps its stop choice and binding through the run-confirm modal", () => {
+    const parked = {
+      ...mockIssue,
+      status: "backlog",
+      assignee_type: "agent",
+      assignee_id: "agent-1",
+    } as Issue;
+    const binding = {
+      previous_assignee_type: "agent",
+      previous_assignee_id: "agent-1",
+      handler_type: "agent",
+      handler_id: "agent-2",
+    };
+    const { result } = renderHook(() => useIssueActions(parked), { wrapper });
+
+    act(() => {
+      result.current.updateField({
+        status: "rework",
+        stop_previous_assignee_runs: true,
+        handoff_preview: binding,
+      });
+    });
+
+    expect(mockOpenModal).toHaveBeenCalledWith(
+      "issue-run-confirm",
+      expect.objectContaining({
+        mode: "promote",
+        status: "rework",
+        stopPreviousAssigneeRuns: true,
+        handoffPreview: binding,
+      }),
+    );
+    expect(mockUpdateMutate).not.toHaveBeenCalled();
+  });
+
   it("a status change that starts no run applies directly", () => {
     const { result } = renderHook(() => useIssueActions(mockIssue), { wrapper });
 

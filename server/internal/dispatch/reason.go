@@ -15,6 +15,7 @@ package dispatch
 type ReasonCode string
 
 const (
+	ReasonProjectInactive ReasonCode = "project_inactive"
 	// ReasonQueued / ReasonCoalesced / ReasonDeferred are the success-path codes.
 	ReasonQueued    ReasonCode = "queued"
 	ReasonCoalesced ReasonCode = "coalesced"
@@ -91,6 +92,11 @@ const (
 	// nothing is pending — the trigger is answered by accepting the issue out of
 	// Triage, not by waiting.
 	ReasonIssueInTriage ReasonCode = "issue_in_triage"
+	// ReasonRunBudgetExhausted: the issue used the run budget its workflow
+	// allows (CHE-2152), so no run derived from it starts. A property of the
+	// issue like ReasonIssueInTriage; a person unblocking the issue, or
+	// naming an agent by hand, runs again.
+	ReasonRunBudgetExhausted ReasonCode = "run_budget_exhausted"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
@@ -100,7 +106,10 @@ const (
 	ReasonProviderFailureCooldown ReasonCode = "provider_failure_cooldown"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
-	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	ReasonIssueLimitReached                   ReasonCode = "issue_limit_reached"
+	ReasonAgentCommentImplicitRouteSuppressed ReasonCode = "agent_comment_implicit_route_suppressed"
+	ReasonAgentCommentRequiresAgentMention    ReasonCode = "agent_comment_requires_agent_mention"
+	ReasonCommentTriggerRateLimited           ReasonCode = "comment_trigger_rate_limited"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 	// ReasonProviderHold: the target resolves to a model provider a workspace

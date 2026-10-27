@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -91,7 +93,7 @@ func TestJevCredentialWriteOnlyLifecycle(t *testing.T) {
 	}
 
 	get := invokeJevCredential(t, &h, testUserID, http.MethodGet, nil, "")
-	if get.Code != http.StatusOK || get.Body.String() != "{\"present\":true}\n" || strings.Contains(get.Body.String(), jevCredentialTestSecret) {
+	if get.Code != http.StatusOK || get.Body.String() != "{\"present\":true,\"configurable\":true}\n" || strings.Contains(get.Body.String(), jevCredentialTestSecret) {
 		t.Fatalf("write-only GET = %d: %s", get.Code, get.Body.String())
 	}
 	if deleted := invokeJevCredential(t, &h, testUserID, http.MethodDelete, nil, ""); deleted.Code != http.StatusNoContent {
@@ -124,6 +126,57 @@ func TestJevCredentialRejectsNonAdminsMachinesAndMissingKey(t *testing.T) {
 				t.Fatalf("PUT = %d: %s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestJevCredentialGetReportsStorageCapability(t *testing.T) {
+	if testHandler == nil || testPool == nil || dbfx == nil {
+		t.Skip("handler test database is unavailable")
+	}
+	requireJevCredentialTable(t)
+	workspaceID := dbfx.Workspace(t, "Jev credential capability", "jev-credential-capability-"+uuid.NewString())
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	memberID := dbfx.User(t, "Jev capability member", uuid.NewString()+"@multica.test")
+	dbfx.Member(t, workspaceID, memberID, "member")
+	outsiderID := dbfx.User(t, "Jev capability outsider", uuid.NewString()+"@multica.test")
+	keyMaterial := bytes.Repeat([]byte{1}, 32)
+	configured := jevCredentialHandler(t)
+	unconfigured := *testHandler // nil keyring is the deployment's default-off state.
+
+	for name, tc := range map[string]struct {
+		handler *Handler
+		userID  string
+		want    string
+	}{
+		"owner configured":    {&configured, testUserID, "{\"present\":false,\"configurable\":true}\n"},
+		"member configured":   {&configured, memberID, "{\"present\":false,\"configurable\":true}\n"},
+		"owner unconfigured":  {&unconfigured, testUserID, "{\"present\":false,\"configurable\":false}\n"},
+		"member unconfigured": {&unconfigured, memberID, "{\"present\":false,\"configurable\":false}\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := invokeJevCredentialForWorkspace(t, tc.handler, workspaceID, tc.userID, http.MethodGet, nil, "")
+			if response.Code != http.StatusOK || response.Body.String() != tc.want {
+				t.Fatalf("GET = %d: %q, want %q", response.Code, response.Body.String(), tc.want)
+			}
+			body := response.Body.String()
+			for _, leaked := range []string{string(keyMaterial), hex.EncodeToString(keyMaterial), base64.StdEncoding.EncodeToString(keyMaterial), "current"} {
+				if strings.Contains(body, leaked) {
+					t.Fatalf("GET exposed key material %q: %s", leaked, body)
+				}
+			}
+		})
+	}
+
+	// Capability metadata does not widen who may read the credential state.
+	if response := invokeJevCredentialForWorkspace(t, &unconfigured, workspaceID, outsiderID, http.MethodGet, nil, ""); response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "configurable") {
+		t.Fatalf("outsider GET = %d: %s", response.Code, response.Body.String())
+	}
+	// The write path keeps its authorization and its 403 fallback.
+	if response := invokeJevCredentialForWorkspace(t, &configured, workspaceID, memberID, http.MethodPut, []byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), ""); response.Code != http.StatusForbidden {
+		t.Fatalf("member PUT = %d: %s", response.Code, response.Body.String())
+	}
+	if response := invokeJevCredentialForWorkspace(t, &unconfigured, workspaceID, testUserID, http.MethodPut, []byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), ""); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "jev_credential_configuration_required") {
+		t.Fatalf("unconfigured PUT = %d: %s", response.Code, response.Body.String())
 	}
 }
 

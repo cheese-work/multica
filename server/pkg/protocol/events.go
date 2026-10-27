@@ -20,6 +20,10 @@ const (
 	EventIssueReactionAdded   = "issue_reaction:added"
 	EventIssueReactionRemoved = "issue_reaction:removed"
 
+	// Decision events. The payload carries answer_id, issue_id and state
+	// (pending | effective | disclaimed); clients refetch the affected cards.
+	EventDecisionAnswerUpdated = "decision_answer:updated"
+
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"
@@ -43,6 +47,7 @@ const (
 
 	// Inbox events
 	EventInboxNew           = "inbox:new"
+	EventInboxUpdated       = "inbox:updated" // an unread record gained another reply
 	EventInboxRead          = "inbox:read"
 	EventInboxUnread        = "inbox:unread"
 	EventInboxArchived      = "inbox:archived"
@@ -118,6 +123,12 @@ const (
 	// The `action` in the payload is advisory (it makes a frame in devtools
 	// self-describing); nothing routes on it.
 	EventIssueStatusChanged = "issue_status:changed"
+
+	// Project workflow events (MUL-7420). Same shape as the status catalog
+	// event: workflows are read as one list, so every write answers the same
+	// way — re-read it. A project switching workflows publishes
+	// project:updated instead.
+	EventIssueWorkflowChanged = "issue_workflow:changed"
 
 	// Pin events
 	EventPinCreated   = "pin:created"

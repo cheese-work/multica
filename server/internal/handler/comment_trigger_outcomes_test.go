@@ -260,6 +260,7 @@ func TestCreateComment_SquadLeaderSelfMentionCompletedTaskDoesNotFakeSuccess(t *
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	ctx := context.Background()
 
 	leaderID := createHandlerTestAgent(t, "Self-Mention Leader", nil)

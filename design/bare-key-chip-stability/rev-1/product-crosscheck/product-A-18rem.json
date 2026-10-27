@@ -1,0 +1,58 @@
+[
+ {
+  "vp": "desktop",
+  "title": "short",
+  "pending": {
+   "w": 288,
+   "h": 22,
+   "hostH": 24.8
+  },
+  "resolved": {
+   "w": 288,
+   "h": 22,
+   "hostH": 24.8
+  }
+ },
+ {
+  "vp": "desktop",
+  "title": "long",
+  "pending": {
+   "w": 288,
+   "h": 22,
+   "hostH": 24.8
+  },
+  "resolved": {
+   "w": 288,
+   "h": 22,
+   "hostH": 24.8
+  }
+ },
+ {
+  "vp": "mobile",
+  "title": "short",
+  "pending": {
+   "w": 288,
+   "h": 22,
+   "hostH": 47.5
+  },
+  "resolved": {
+   "w": 288,
+   "h": 22,
+   "hostH": 47.5
+  }
+ },
+ {
+  "vp": "mobile",
+  "title": "long",
+  "pending": {
+   "w": 288,
+   "h": 22,
+   "hostH": 47.5
+  },
+  "resolved": {
+   "w": 288,
+   "h": 22,
+   "hostH": 47.5
+  }
+ }
+]

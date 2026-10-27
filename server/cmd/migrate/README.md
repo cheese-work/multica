@@ -233,3 +233,99 @@ The SQL bytes are unchanged. No migration-runner name map entry is needed.
 Numbers 631 to 649 are claimed or reserved by open pull requests (wakeups,
 inbox) and 650 to 652 by the DM reply record, so 653 is the next free number
 on 2026-10-16. Production deployment remains gated on Cheese.
+
+## Upstream v0.6.3 workflow migrations renumbering
+
+Upstream v0.6.3 ships nine project-workflow migrations whose prefixes (573 to
+579, 581, 582) collide with fork migrations already applied on deployed
+databases. The fork files keep their names. The nine upstream files are new to
+this fork, so no database has recorded them, and they take the next free
+numbers in their original order (CHE-1837):
+
+- `573_issue_workflow` is now `657_issue_workflow`
+- `574_issue_workflow_pkey_index` is now `658_issue_workflow_pkey_index`
+- `575_issue_workflow_primary_key` is now `659_issue_workflow_primary_key`
+- `576_issue_workflow_workspace_name_index` is now `660_issue_workflow_workspace_name_index`
+- `577_project_workflow_id` is now `661_project_workflow_id`
+- `578_agent_task_workflow_step` is now `662_agent_task_workflow_step`
+- `579_wakeup_skip_handed_to_agent` is now `663_wakeup_skip_handed_to_agent`
+- `581_issue_workflow_is_default` is now `664_issue_workflow_is_default`
+- `582_issue_workflow_default_index` is now `665_issue_workflow_default_index`
+
+These nine were first renumbered to `656`–`664`. Fork `main` then took
+`656_dm_channel_default_off` (CHE-1848). That migration is published, so it
+keeps its name, and the nine unmerged workflow migrations moved up by one, to
+`657`–`665` in the same order. No database has recorded either set of names.
+The rename is pure: the up and down SQL bytes of the nine match upstream.
+
+The SQL bytes are unchanged. The runner name map entries for the three index
+migrations follow the new names. `allowedForkCollisions` gains no entry. A later
+upstream sync must delete these nine upstream filenames when it re-adds them,
+or the workflow tables would be created twice.
+
+Migration `666_wakeup_handoff_write_tag` is fork-only. It replaces
+`capture_issue_wakeup` from `663_wakeup_skip_handed_to_agent` so a write that
+hands an issue to an agent no longer drops that agent's issue-event receipts at
+capture (CHE-1837). The receipts carry the write's id and the handler consumes
+them once the agent's run exists, so a stop between commit and enqueue cannot
+lose the change. A later upstream sync keeps `666` after the re-added upstream
+function body, or the zero-delivery window returns.
+
+## Agent task queue compaction columns
+
+Migration `655_agent_task_queue_compact` adds `task_kind`, `compact_reason` and
+`compact_trigger_tokens` to `agent_task_queue` (CHE-1807). It was `629_` on the
+PR branch, which collided with `629_chat_session_title_trgm_index` on `main`.
+It never reached `main`, so no ledger row exists under the old name. It does not
+depend on `630_agent_task_queue_context`. Numbers 631 to 649 are claimed by open
+wakeup and inbox pull requests, 650 to 652 by the DM reply record, 653 by the
+unpin migration and 654 by the chat message `sent_via` validation, so 655 is the
+next free number on 2026-10-17. Production deployment remains gated on Cheese.
+
+## Upstream v0.6.4 migration renumbering
+
+Upstream v0.6.4 ships two migrations whose prefixes (583, 584) collide with
+fork migrations already applied on deployed databases. The fork files keep their
+names. The two upstream files are new to this fork, so no database has recorded
+them, and they take the next free numbers after `main`'s `670` (CHE-1900; they were 669 and 670, then 670 and 671, until main took 669 for `chat_fork_source_message` and 670 for `run_gate_event` on 21 Oct 2026):
+
+- `583_runtime_profile_add_muse` is now `671_runtime_profile_add_muse`
+- `584_quick_action_optional_target` is now `672_quick_action_optional_target`
+
+The SQL bytes are unchanged. `allowedForkCollisions` gains no entry. A later
+upstream sync must delete these two upstream filenames when it re-adds them, or
+the `muse` runtime profile and the optional quick-action target would be applied
+twice. Open pull requests that claim 671 or later renumber after this one merges.
+
+## Upstream v0.7.0 migration renumbering
+
+Upstream v0.7.0 adds eight migrations with prefixes 585 through 592. Those
+prefixes already belong to shipped fork migrations. The fork files retain
+their names. The upstream migrations take 678 through 685, after the fork's
+677, in their original order (CHE-2005):
+
+- `585_issue_workflow_owner` is now `678_issue_workflow_owner`
+- `586_cloud_agent_connection` is now `679_cloud_agent_connection`
+- `587_cloud_agent_connection_provider_index` is now `680_cloud_agent_connection_provider_index`
+- `588_daemon_token_owner` is now `681_daemon_token_owner`
+- `589_member_delegation_day` is now `682_member_delegation_day`
+- `590_member_delegation_day_unique_index` is now `683_member_delegation_day_unique_index`
+- `591_member_delegation_day_primary_key` is now `684_member_delegation_day_primary_key`
+- `592_runtime_shared_with` is now `685_runtime_shared_with`
+
+The up and down SQL bytes are unchanged. The runner's concurrent-index name
+map uses the new prefixes. No collision exception is added. A later sync
+must not reintroduce these upstream filenames under their original prefixes.
+
+## Chat migration renumbering
+
+PR 315 added `678_chat_message_decision_answer` and `679_chat_message_lineage`
+after `main` already held `678_issue_workflow_owner` and
+`679_cloud_agent_connection`. The chat migrations take the next free prefixes
+(CHE-2028):
+
+- `678_chat_message_decision_answer` is now `687_chat_message_decision_answer`
+- `679_chat_message_lineage` is now `688_chat_message_lineage`
+
+The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
+so a database that already applied the old names re-runs them safely.

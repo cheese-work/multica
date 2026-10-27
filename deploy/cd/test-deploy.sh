@@ -782,8 +782,11 @@ expect_contains "$auth_log" "logout ghcr.io" ghcr-login-fails
 # The automatic release-candidate path must use the explicit cutover root for
 # active_colour instead of assuming C00_STATE_DIR contains both contracts.
 workflow_text="$(cat "$root_dir/.github/workflows/cd-deploy.yml")"
+baseline_capture_text="$(cat "$root_dir/deploy/cd/capture-remote-baseline.sh")"
 expect_contains "$workflow_text" 'C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}' workflow-active-colour-path
-expect_contains "$workflow_text" '${C00_CUTOVER_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
+expect_contains "$workflow_text" 'bash deploy/cd/capture-remote-baseline.sh' workflow-active-colour-path
+expect_contains "$baseline_capture_text" '${C00_CUTOVER_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
+expect_not_contains "$baseline_capture_text" '${C00_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
 expect_not_contains "$workflow_text" '${C00_STATE_DIR%/}/cutover-state.json' workflow-active-colour-path
 expect_not_contains "$workflow_text" '/deploy/cd/router/state/active.json' workflow-active-colour-path
 

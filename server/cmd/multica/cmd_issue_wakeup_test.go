@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -177,6 +179,7 @@ func TestIssueWakeupCLIConditionsAndManagement(t *testing.T) {
 		{[]string{"--until-property", "p1=approved"}, `{"field":"property","property_id":"p1","type":"issue_field","value":"approved"}`},
 		{[]string{"--until-children-done", "--stage", "2"}, `{"stage":2,"type":"children_done"}`},
 		{[]string{"--until-pr", "checks", "--mode", "continuous", "--max-fires", "5"}, `{"event":"checks_finished","type":"pull_request"}`},
+		{[]string{"--until-pr", "conflicts", "--mode", "continuous", "--max-fires", "5"}, `{"event":"conflicts","type":"pull_request"}`},
 		{[]string{"--until-assignee", "agent:a1"}, `{"assignee_id":"a1","assignee_type":"agent","field":"assignee","type":"issue_field"}`},
 	} {
 		calls = nil
@@ -226,5 +229,28 @@ func TestIssueWakeupCLIConditionsAndManagement(t *testing.T) {
 	}
 	if err := run("checkin", issue, "w1"); err == nil {
 		t.Error("check-in without a note accepted")
+	}
+}
+
+func TestIssueWakeupCreatePrintsServerWarningsToStderr(t *testing.T) {
+	t.Chdir(t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"wake","enabled":true,"warnings":["workspace_wakeups_paused"]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	var stderr, stdout bytes.Buffer
+	cmd := newIssueWakeupCommand()
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"create", "a57c0511-1ebc-471d-a314-438ca16cc75d", "--event", "task.completed", "--instruction", "inspect"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "workspace_wakeups_paused") {
+		t.Fatalf("stderr = %q, want the paused warning", stderr.String())
 	}
 }

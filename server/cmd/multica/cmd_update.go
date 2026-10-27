@@ -27,17 +27,21 @@ func init() {
 	updateCmd.Flags().DurationVar(&updateDownloadTimeout, "download-timeout", cli.DefaultUpdateDownloadTimeout, "Maximum time to wait for the release archive download")
 }
 
-func runUpdate(_ *cobra.Command, _ []string) error {
+func runUpdate(cmd *cobra.Command, _ []string) error {
 	if updateDownloadTimeout <= 0 {
 		return fmt.Errorf("download timeout must be greater than zero")
 	}
 
+	if err := cli.CheckUpdateFreeze(); err != nil {
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "Current version: %s (commit: %s, built: %s)\n", version, commit, date)
 
-	// Linux/macOS update from the fork's successful main CI artifacts only;
-	// there is no fallback to upstream releases or Homebrew.
+	// Linux/macOS update from the configured Multica server only; there is no
+	// fallback to GitHub, upstream releases or Homebrew.
 	if cli.ForkUpdateSupported(runtime.GOOS) {
-		return runForkUpdate()
+		return runForkUpdate(resolveServerURL(cmd), resolveToken(cmd))
 	}
 
 	// Check the configured release source.
@@ -84,10 +88,13 @@ func releaseVersionsMatch(current, latest string) bool {
 	return strings.TrimPrefix(currentVersion, "v") == strings.TrimPrefix(latestVersion, "v")
 }
 
-func runForkUpdate() error {
+func runForkUpdate(serverURL, token string) error {
+	if serverURL == "" {
+		return fmt.Errorf("server URL not set: use --server-url flag, MULTICA_SERVER_URL env, or 'multica config set server_url <url>'")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), updateDownloadTimeout+time.Minute)
 	defer cancel()
-	u, err := cli.ResolveForkUpdate(ctx, runtime.GOOS, runtime.GOARCH, commit)
+	u, err := cli.ResolveForkUpdate(ctx, serverURL, token, runtime.GOOS, runtime.GOARCH, commit)
 	switch {
 	case errors.Is(err, cli.ErrForkUpToDate):
 		fmt.Fprintln(os.Stderr, "Already up to date.")

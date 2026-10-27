@@ -96,7 +96,7 @@ WITH candidates AS (
  -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
  -- (everything but the closed category; see systemWakeupIssueActive).
  SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
- WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention')
+ WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed')
   AND i.status<>'cancelled'
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
@@ -105,6 +105,14 @@ WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.n
   AND NOT (w.id = ANY(@skip_ids::uuid[]))
   -- An instance a full aggregate counter delayed waits for its retry time.
   AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
+ -- A paused workspace (CHE-1727) is only scanned for what the pause settles:
+ -- inputs to drop and recurring slots to skip. Overdue one-shots and conditions
+ -- wait for the resume without crowding the bounded batch.
+ AND (NOT EXISTS(SELECT 1 FROM workspace ws WHERE ws.id=w.workspace_id AND ws.settings->>'wakeups_paused'='true')
+  -- Sub-issue and other condition hints stay pending through a pause: they only
+  -- prompt an evaluation of what still holds on resume.
+  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
+  OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
 ORDER BY w.updated_at,w.id LIMIT @row_limit;
 -- name: ListPendingWakeupInputGroups :many
 -- Scheduler observability over unprocessed inputs, grouped per rule and by
@@ -168,6 +176,18 @@ UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WH
 -- Active-run defer: stamps the facts a running target held back and returns
 -- only those not stamped before, so the reason is recorded once per fact.
 UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY(@ids::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING *;
+-- name: ConsumeHandoffWakeupReceipts :exec
+-- A write that handed the issue to an agent starts that agent's run after it
+-- commits. Once the run exists, the agent's issue-event receipts from the same
+-- write are handled. A receipt that merged with earlier pending events keeps
+-- its place, and a receipt already reserved by a run is left to that run.
+UPDATE issue_wakeup_receipt r SET processed_at=now()
+FROM issue_wakeup w
+WHERE w.id=r.wakeup_id AND w.issue_id= @issue_id AND w.agent_id= @agent_id
+  AND r.processed_at IS NULL AND r.task_id IS NULL
+  AND r.event_type LIKE 'issue.%'
+  AND r.payload->>'handoff_write'= @write::text
+  AND COALESCE((r.payload->>'coalesced_count')::bigint,1)=1;
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
@@ -201,7 +221,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    id
+    workflow_step, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -226,6 +246,14 @@ SELECT
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
+    -- The workflow step this run works on (MUL-7420). A wakeup continues the
+    -- run that registered it, so it keeps that run's step: a status change it
+    -- makes after someone else moved the issue is refused like the run's own
+    -- would be. A wakeup a member registered starts from the issue's status.
+    COALESCE(
+        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = $3),
+        (SELECT i.status FROM issue i WHERE i.id = $3)
+    ),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
@@ -268,7 +296,7 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
 -- run block together, and only while the rolling limit has room. Manual,
 -- loop and max_fires pauses never match.
 UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention') AND w.paused_reason='rate'
+WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed') AND w.paused_reason='rate'
  AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> @since) < @max_runs::bigint;
 
 -- name: CountWakeupFires :exec
@@ -351,3 +379,51 @@ WHERE id= @id AND status='dispatched' AND dispatched_at= @dispatched_at RETURNIN
 -- not finished: the run that made a change still knows about it.
 SELECT count(*) FROM agent_task_queue WHERE id=ANY(@ids::uuid[]) AND agent_id= @agent_id AND issue_id= @issue_id
  AND status IN ('dispatched','running','waiting_local_directory');
+-- name: WorkspaceWakeupsPaused :one
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= @id;
+-- name: DropPausedWakeupReceipts :execrows
+-- A pause consumes what arrives meanwhile and records why. A person's manual
+-- trigger, a one-shot's due time and the hints of a condition rule are not
+-- dropped: a hint only prompts an evaluation of what still holds.
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.id= @id AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
+ AND NOT (r.event_type='time.due' AND w.kind='at') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'));
+-- name: CountPendingManualWakeupReceipts :one
+SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id= @id AND processed_at IS NULL AND event_type='wakeup.manual';
+-- name: DropPausedWorkspaceReceipts :execrows
+-- Resume settles what the pause dropped before any dispatch tick can replay it
+-- (CHE-1727). Same rule as DropPausedWakeupReceipts, for every rule of the workspace.
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.workspace_id= @workspace_id AND r.processed_at IS NULL
+ AND r.event_type<>'wakeup.manual' AND NOT (r.event_type='time.due' AND w.kind='at')
+ AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'));
+-- name: ListOverdueRecurringWakeups :many
+SELECT * FROM issue_wakeup WHERE workspace_id= @workspace_id AND enabled AND kind IN ('every','cron') AND next_fire_at<=now();
+-- name: WorkspaceWakeupsPausedShared :one
+-- Reads the pause and the last resume time under a KEY SHARE lock on the
+-- workspace row, held to the end of the dispatch transaction: a pause or resume
+-- writer takes FOR UPDATE, so the answer cannot go stale before the enqueue
+-- (CHE-1727).
+SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool AS paused,
+ (CASE WHEN settings->>'wakeups_resumed_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' THEN (settings->>'wakeups_resumed_at')::timestamptz END)::timestamptz AS resumed_at
+FROM workspace WHERE id= @id FOR KEY SHARE;
+-- name: DropLatePausedReceipts :execrows
+-- A producer that takes no workspace lock (an issue or task update) can commit
+-- a receipt after the resume swept. Its event time says it arrived while the
+-- workspace was paused, so it is dropped like the others. The event time is the
+-- later of the insert and the payload's occurred_at, which a merged receipt
+-- carries for its latest event, so a real event after the resume that merged
+-- into a late paused receipt is kept (CHE-1727).
+UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
+FROM issue_wakeup w
+WHERE r.wakeup_id=w.id AND w.id= @id AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
+ AND NOT (r.event_type='time.due' AND w.kind='at')
+ AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'))
+ AND GREATEST(r.created_at, CASE WHEN r.payload->>'occurred_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]' THEN (r.payload->>'occurred_at')::timestamptz END) < @resumed_at::timestamptz;
+-- name: StampWakeupsResumed :exec
+-- The resume time, from the database clock, that DropLatePausedReceipts compares
+-- against. The settings blob may not be an object in a legacy workspace.
+UPDATE workspace SET settings=jsonb_set(settings,'{wakeups_resumed_at}',to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+WHERE id= @id AND jsonb_typeof(settings)='object';

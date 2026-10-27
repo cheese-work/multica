@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -496,12 +497,9 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 	})
 }
 
-// TestCreateComment_AutopilotWorkerResultWakesSquadLeader locks the accepted
-// behavior that the run's originator reaches the plain (non-@mention)
-// assigned-squad-leader fallback too, so a worker's result comment on the
-// autopilot issue can still wake the private squad leader and close the
-// leader -> worker -> leader loop under the autopilot chain.
-func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
+// TestCreateComment_AutopilotWorkerResultDoesNotWakeSquadLeader verifies that
+// an unmentioned worker result does not bypass strict comment routing.
+func TestCreateComment_AutopilotWorkerResultDoesNotWakeSquadLeader(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -565,6 +563,13 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("worker result CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
+	var response CommentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode worker result response: %v", err)
+	}
+	if len(response.TriggerOutcomes) != 1 || response.TriggerOutcomes[0].ReasonCode != ReasonAgentCommentImplicitRouteSuppressed {
+		t.Fatalf("worker result outcomes = %+v, want implicit-route suppression", response.TriggerOutcomes)
+	}
 
 	var leaderTasks int
 	if err := testPool.QueryRow(ctx, `
@@ -573,8 +578,8 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 	`, issueID, leaderID).Scan(&leaderTasks); err != nil {
 		t.Fatalf("count leader tasks: %v", err)
 	}
-	if leaderTasks != 1 {
-		t.Fatalf("expected the private squad leader to be woken once via autopilot-creator authority, got %d", leaderTasks)
+	if leaderTasks != 0 {
+		t.Fatalf("expected no private squad leader run for an unmentioned worker result, got %d", leaderTasks)
 	}
 }
 

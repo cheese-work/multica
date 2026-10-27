@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
-import { AutoCompactSchema, isValidAutoCompactPct, readAutoCompact } from "./auto-compact";
+import { AutoCompactSchema, isValidAutoCompactPct, readAutoCompact, resolveAutoCompact } from "./auto-compact";
 
 // Retrospective test (added with the implementation, not first).
 describe("readAutoCompact", () => {
@@ -129,5 +129,33 @@ describe("readAutoCompact on a malformed workspace response", () => {
     ["auto_compact fields are garbage", { id: "ws-1", settings: { auto_compact: { enabled: [], threshold_pct: {} } } }],
   ])("returns the defaults when %s", async (_label, body) => {
     expect(await readFromResponse(body)).toEqual({ enabled: true, threshold_pct: 80 });
+  });
+});
+
+// CHE-1808: the effective rule mirrors the server's precedence (agent override
+// over workspace over the defaults, field by field).
+describe("resolveAutoCompact", () => {
+  it("defaults to on at 80", () => {
+    expect(resolveAutoCompact(undefined, undefined)).toEqual({ enabled: true, threshold_pct: 80 });
+  });
+
+  it("lets a present agent field win over the workspace value", () => {
+    expect(
+      resolveAutoCompact(
+        { auto_compact: { enabled: false, threshold_pct: 60 } },
+        { auto_compact: { threshold_pct: 85 } },
+      ),
+    ).toEqual({ enabled: false, threshold_pct: 85 });
+  });
+
+  it("treats a null agent override as inherit and ignores malformed fields", () => {
+    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: null })).toEqual({
+      enabled: true,
+      threshold_pct: 55,
+    });
+    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: { enabled: "no", threshold_pct: 5 } })).toEqual({
+      enabled: true,
+      threshold_pct: 55,
+    });
   });
 });

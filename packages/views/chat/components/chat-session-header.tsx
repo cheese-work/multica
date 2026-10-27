@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Trash2, UserRound } from "lucide-react";
-import { Button } from "@multica/ui/components/ui/button";
+import { Archive, ArchiveRestore, Minimize2, MoreHorizontal, Pencil, Trash2, UserRound } from "lucide-react";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -32,6 +32,8 @@ import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
+import { ChatContextMeter } from "./chat-context-meter";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
 /**
  * Per-session header for the conversation pane: agent avatar + editable chat
@@ -44,6 +46,8 @@ export function ChatSessionHeader({
   agent,
   onArchive,
   renameRequest = 0,
+  autoCompactThresholdPct = null,
+  onCompact,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -52,8 +56,13 @@ export function ChatSessionHeader({
   // see ChatPage.handleArchive. Falls back to a plain status flip if unwired.
   onArchive?: (session: ChatSession) => void;
   renameRequest?: number;
+  /** Auto-compact threshold for this DM, or null when auto-compact is off. */
+  autoCompactThresholdPct?: number | null;
+  /** Sends /compact. Omit to hide the "Compact now" item. */
+  onCompact?: () => void;
 }) {
   const { t } = useT("chat");
+  const { t: tCommon } = useT("common");
   const wsPaths = useWorkspacePaths();
   const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
@@ -199,14 +208,15 @@ export function ChatSessionHeader({
             className="w-full rounded-sm bg-background px-1 py-0.5 text-body font-semibold outline-none ring-1 ring-border focus-visible:ring-brand"
           />
         ) : (
-          <button
-            type="button"
-            onClick={startRename}
-            title={t(($) => $.header.rename)}
-            className="block max-w-full truncate text-left text-body font-semibold text-foreground outline-none hover:text-foreground/80 focus-visible:text-foreground/80"
-          >
-            {title}
-          </button>
+          <TooltipHint label={t(($) => $.header.rename)}>
+            <button
+              type="button"
+              onClick={startRename}
+              className="block max-w-full truncate text-left text-body font-semibold text-foreground outline-none hover:text-foreground/80 focus-visible:text-foreground/80"
+            >
+              {title}
+            </button>
+          </TooltipHint>
         )}
         {agent && (
           <div className="truncate text-caption text-muted-foreground">
@@ -216,9 +226,23 @@ export function ChatSessionHeader({
         )}
       </div>
 
+      {isArchived ? null : (
+        <ChatContextMeter
+          tokens={session.context_tokens}
+          window={session.context_window}
+          thresholdPct={autoCompactThresholdPct}
+        />
+      )}
+
       <DropdownMenu>
         <DropdownMenuTrigger
-          render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" />}
+          render={
+            <IconButton
+              label={tCommon(($) => $.more_actions)}
+              tooltipSide="bottom"
+              className="text-muted-foreground"
+            />
+          }
         >
           <MoreHorizontal className="h-4 w-4" />
         </DropdownMenuTrigger>
@@ -235,6 +259,12 @@ export function ChatSessionHeader({
               {t(($) => $.header.view_profile)}
             </DropdownMenuItem>
           )}
+          {onCompact && !isArchived ? (
+            <DropdownMenuItem disabled={session.compacting === true} onClick={onCompact}>
+              <Minimize2 className="h-4 w-4" />
+              {t(($) => $.header.compact_now)}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           {isArchived ? (
             <>

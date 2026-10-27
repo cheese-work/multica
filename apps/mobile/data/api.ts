@@ -59,6 +59,7 @@ import type {
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
+  WorkflowHandoffPreview,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
@@ -72,6 +73,7 @@ import {
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   TimelineEntriesSchema,
+  WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
 import type {
@@ -686,6 +688,21 @@ class ApiClient {
       EMPTY_ISSUE_FALLBACK,
       { ...opts, endpoint: "getIssue" },
     );
+  }
+
+  /**
+   * What moving the issue to `status` would do under its project's workflow:
+   * who it goes to and the previous agent's active runs. Writes nothing.
+   * Fails closed on a malformed body — the caller shows an error instead of
+   * applying a move nobody could confirm.
+   */
+  async previewWorkflowHandoff(issueId: string, status: string): Promise<WorkflowHandoffPreview> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/workflow-handoff?${new URLSearchParams({ status }).toString()}`,
+    );
+    const parsed = WorkflowHandoffPreviewSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("workflow handoff preview is malformed");
+    return parsed.data as WorkflowHandoffPreview;
   }
 
   // Write endpoint — mirrors POST /api/issues
