@@ -212,9 +212,6 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 		return pullID, "", "", err
 	}
-	if payload.Sender.ID != object.User.ID {
-		return pullID, "quarantined", "foreign_editor", nil
-	}
 	pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
 		WorkspaceID: workspaceID, RepoOwner: payload.Repository.Owner.Login, RepoName: payload.Repository.Name, PrNumber: number,
 	})
@@ -257,6 +254,9 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 			return pullID, "", "", err
 		}
 		if issue.WorkspaceID == workspaceID {
+			if payload.Sender.ID != object.User.ID {
+				return pullID, "quarantined", "foreign_editor", nil
+			}
 			return pullID, "deferred", "awaiting_admission", nil
 		}
 	}
