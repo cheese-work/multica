@@ -11,6 +11,7 @@ Product contracts the runtime brief does not fully encode.
 - [Per-issue token usage](#per-issue-token-usage)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
+- [Comments: update, delete, resolve, search, subscribers](#comments-update-delete-resolve-search-subscribers)
 
 To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
 
@@ -448,6 +449,40 @@ multica issue create --title "Step 1" --parent <issue-id> --assignee <agent> --s
 multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --stage 2 --status backlog
 multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --stage 3 --status backlog
 ```
+
+## Comments: update, delete, resolve, search, subscribers
+
+```bash
+multica issue comment update <comment-id> --expected-revision <n> --content-file ./body.md
+multica issue comment delete <comment-id>
+multica issue comment resolve <comment-id> [--known-as-of <RFC3339Nano>]
+multica issue comment unresolve <comment-id>
+multica issue search "<query>" [--include-closed] [--limit 20] --output json
+multica issue subscriber list <issue-id>
+multica issue subscriber add <issue-id> [--user <name> | --user-id <uuid>]
+multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
+```
+
+- **Update** needs the comment's current `revision` from `comment list`. If
+  another editor got there first the write is rejected: read the latest body
+  and merge into it; do not just resend with the newer revision. A changed
+  body is a new trigger: runs the old body started that are still in flight
+  are cancelled and every agent the new body mentions is queued again.
+  Attachments stay as they are.
+- **Delete** keeps replies: a comment that has replies stays as an empty
+  placeholder so they keep their place.
+- **Resolve** folds a whole thread away. Pass `--known-as-of` (the newest
+  `created_at` you loaded) so the server rejects the resolve with a
+  `thread_changed` conflict if a reply landed since, instead of folding an
+  unread reply away. `unresolve` reopens it.
+- **Search** matches titles, descriptions and comment bodies, so a conclusion
+  that only lives in a thread is findable. `match_source` is a display hint,
+  not a filter. A bare number or identifier-shaped query matches by number and
+  ranks first, whatever the prefix, so an id pasted from another tracker can
+  top the results with an unrelated local issue. Closed issues are excluded
+  unless `--include-closed`.
+- **Subscribers** default to the caller. `--user` is a fuzzy name match;
+  prefer `--user-id`, which cannot match the wrong person.
 
 ## Issue wakeups
 

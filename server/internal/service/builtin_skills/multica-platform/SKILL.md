@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the runtime brief does not fully cover: issue and PR contracts, charts and files in comments, mentions, agents, squads, autopilots, projects, runtimes, wakeups, skill import. Not for the product code you are working on."
+description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, skill import. Not for the product code you are working on."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -27,6 +27,9 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
 | `references/autopilots.md` | Autopilots: schedule / webhook / manual triggers, `create_issue` vs `run_only`, why one did not fire |
 | `references/projects.md` | Projects and their durable resources (`github_repo`, `local_directory`, worktree mode); project workflows — status columns, handoffs, a `[Project workflow]` block in your prompt |
+| `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes) |
+| `references/decisions.md` | Asking a named person to decide: `decision request/get/list/withdraw`, DM lane choice |
+| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork) |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
 
