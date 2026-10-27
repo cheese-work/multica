@@ -23,6 +23,7 @@ import { useMemo } from "react";
 import { MOBILE_RADIUS } from "@/lib/radius";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { selfMentionLinkVariants } from "./self-mention";
 
 /**
  * Typography scale — Apple HIG-calibrated, one tier below shadcn web.
@@ -93,7 +94,7 @@ const MD_GAP = {
 // for the full history (2026-05-19 transparent + brand tint workaround
 // → 2026-05-19 reverted to subtle surface-2 chip + foreground text).
 
-export function useMarkdownStyle() {
+export function useMarkdownStyle(viewerId: string | null = null) {
   const { isDarkColorScheme } = useColorScheme();
   const t = isDarkColorScheme ? THEME.dark : THEME.light;
 
@@ -179,6 +180,11 @@ export function useMarkdownStyle() {
         color: t.brand,
         underline: true,
       },
+      // Viewer's own mentions and `@all`: filled chip (web `.mention-self`).
+      linkVariants: selfMentionLinkVariants(viewerId, {
+        color: t.brandForeground,
+        backgroundColor: t.brand,
+      }),
       // Keep inline code backgrounds transparent: native attributed-string chips
       // span the line box and cannot be vertically padded by this renderer. Monospace
       // and a neutral tint identify code without making it look like a link.
@@ -312,6 +318,6 @@ export function useMarkdownStyle() {
         color: t.foreground,
       },
     }),
-    [t],
+    [t, viewerId],
   );
 }

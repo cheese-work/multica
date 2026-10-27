@@ -32,7 +32,8 @@
  * Mention chip note: mobile renders `mention://` links via enriched's
  * default link styling (brand-colored, underlined), matching web's
  * fallback behavior when no `renderMention` is provided
- * (`packages/ui/markdown/Markdown.tsx:173-178`). The avatar pill
+ * (`packages/ui/markdown/Markdown.tsx:173-178`). Exception: the viewer's own
+ * mentions and `@all` get a filled bold chip (`./self-mention.ts`). The avatar pill
  * variant only ever existed on web in specific contexts that supplied
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
@@ -42,12 +43,14 @@ import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import type { Attachment } from "@multica/core/types";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
+import { emphasizeSelfMentions } from "./self-mention";
 
 interface Props {
   content: string;
@@ -112,7 +115,8 @@ export function Markdown({
   compact = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const baseStyle = useMarkdownStyle();
+  const viewerId = useAuthStore((s) => s.user?.id ?? null);
+  const baseStyle = useMarkdownStyle(viewerId);
   const markdownStyle = useMemo(
     () =>
       compact
@@ -130,8 +134,8 @@ export function Markdown({
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);
-    return splitMarkdown(processed);
-  }, [content]);
+    return splitMarkdown(emphasizeSelfMentions(processed, viewerId));
+  }, [content, viewerId]);
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
