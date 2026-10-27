@@ -958,15 +958,28 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubWebhookDispatch struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ObjectKind  string             `json:"object_kind"`
+	ObjectID    int64              `json:"object_id"`
+	BodyHash    string             `json:"body_hash"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	CommentID   pgtype.UUID        `json:"comment_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	CommittedAt pgtype.Timestamptz `json:"committed_at"`
+}
+
 type GithubWebhookIntake struct {
-	DeliveryGuid string             `json:"delivery_guid"`
-	Event        string             `json:"event"`
-	Signature    string             `json:"signature"`
-	Payload      []byte             `json:"payload"`
-	State        string             `json:"state"`
-	Reason       string             `json:"reason"`
-	ReceivedAt   pgtype.Timestamptz `json:"received_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	DeliveryGuid  string             `json:"delivery_guid"`
+	Event         string             `json:"event"`
+	Signature     string             `json:"signature"`
+	Payload       []byte             `json:"payload"`
+	State         string             `json:"state"`
+	Reason        string             `json:"reason"`
+	ReceivedAt    pgtype.Timestamptz `json:"received_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
 }
 
 type GithubWebhookRevision struct {

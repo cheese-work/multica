@@ -12,7 +12,7 @@ import (
 )
 
 const getGitHubWebhookIntake = `-- name: GetGitHubWebhookIntake :one
-SELECT delivery_guid, event, signature, payload, state, reason, received_at, updated_at FROM github_webhook_intake WHERE delivery_guid = $1
+SELECT delivery_guid, event, signature, payload, state, reason, received_at, updated_at, attempts, next_attempt_at FROM github_webhook_intake WHERE delivery_guid = $1
 `
 
 func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid string) (GithubWebhookIntake, error) {
@@ -27,8 +27,36 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 		&i.Reason,
 		&i.ReceivedAt,
 		&i.UpdatedAt,
+		&i.Attempts,
+		&i.NextAttemptAt,
 	)
 	return i, err
+}
+
+const hasGitHubWebhookDispatch = `-- name: HasGitHubWebhookDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4 AND issue_id = $5)
+`
+
+type HasGitHubWebhookDispatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ObjectKind  string      `json:"object_kind"`
+	ObjectID    int64       `json:"object_id"`
+	BodyHash    string      `json:"body_hash"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) HasGitHubWebhookDispatch(ctx context.Context, arg HasGitHubWebhookDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubWebhookDispatch,
+		arg.WorkspaceID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.IssueID,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertGitHubWebhookIntake = `-- name: InsertGitHubWebhookIntake :execrows
@@ -123,6 +151,173 @@ func (q *Queries) InsertGitHubWebhookRevision(ctx context.Context, arg InsertGit
 	return result.RowsAffected(), nil
 }
 
+const listDeferredGitHubWebhookIntakes = `-- name: ListDeferredGitHubWebhookIntakes :many
+SELECT delivery_guid, event, reason, attempts, received_at, next_attempt_at,
+       EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
+FROM github_webhook_intake WHERE state = 'deferred'
+ORDER BY received_at LIMIT $1
+`
+
+type ListDeferredGitHubWebhookIntakesRow struct {
+	DeliveryGuid  string             `json:"delivery_guid"`
+	Event         string             `json:"event"`
+	Reason        string             `json:"reason"`
+	Attempts      int32              `json:"attempts"`
+	ReceivedAt    pgtype.Timestamptz `json:"received_at"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	AgeSeconds    int64              `json:"age_seconds"`
+}
+
+func (q *Queries) ListDeferredGitHubWebhookIntakes(ctx context.Context, limit int32) ([]ListDeferredGitHubWebhookIntakesRow, error) {
+	rows, err := q.db.Query(ctx, listDeferredGitHubWebhookIntakes, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeferredGitHubWebhookIntakesRow{}
+	for rows.Next() {
+		var i ListDeferredGitHubWebhookIntakesRow
+		if err := rows.Scan(
+			&i.DeliveryGuid,
+			&i.Event,
+			&i.Reason,
+			&i.Attempts,
+			&i.ReceivedAt,
+			&i.NextAttemptAt,
+			&i.AgeSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubWebhookRevisionsForWork = `-- name: ListGitHubWebhookRevisionsForWork :many
+SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at FROM github_webhook_revision
+WHERE installation_id = $1 AND repository_id = $2
+  AND object_kind = $3 AND object_id = $4 AND body_hash = $5
+ORDER BY workspace_id
+FOR UPDATE
+`
+
+type ListGitHubWebhookRevisionsForWorkParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepositoryID   int64  `json:"repository_id"`
+	ObjectKind     string `json:"object_kind"`
+	ObjectID       int64  `json:"object_id"`
+	BodyHash       string `json:"body_hash"`
+}
+
+func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg ListGitHubWebhookRevisionsForWorkParams) ([]GithubWebhookRevision, error) {
+	rows, err := q.db.Query(ctx, listGitHubWebhookRevisionsForWork,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubWebhookRevision{}
+	for rows.Next() {
+		var i GithubWebhookRevision
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.RepositoryID,
+			&i.PullRequestID,
+			&i.PrNumber,
+			&i.ObjectKind,
+			&i.ObjectID,
+			&i.BodyHash,
+			&i.SourceDeliveryGuid,
+			&i.Event,
+			&i.Action,
+			&i.SenderID,
+			&i.AuthorID,
+			&i.AuthorLogin,
+			&i.AuthorType,
+			&i.HeadSha,
+			&i.ReviewState,
+			&i.ObjectCreatedAt,
+			&i.ObjectUpdatedAt,
+			&i.ObjectSubmittedAt,
+			&i.State,
+			&i.Reason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordGitHubWebhookDispatch = `-- name: RecordGitHubWebhookDispatch :execrows
+INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id)
+SELECT $1, $2, $3, $4, $5, $6, $7
+WHERE EXISTS (
+    SELECT 1 FROM agent_task_queue task JOIN comment ON comment.id = task.trigger_comment_id
+    WHERE task.id = $7 AND task.workspace_id = $1 AND task.issue_id = $5
+      AND comment.id = $6 AND comment.workspace_id = $1 AND comment.issue_id = $5
+)
+`
+
+type RecordGitHubWebhookDispatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ObjectKind  string      `json:"object_kind"`
+	ObjectID    int64       `json:"object_id"`
+	BodyHash    string      `json:"body_hash"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	CommentID   pgtype.UUID `json:"comment_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) RecordGitHubWebhookDispatch(ctx context.Context, arg RecordGitHubWebhookDispatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordGitHubWebhookDispatch,
+		arg.WorkspaceID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.IssueID,
+		arg.CommentID,
+		arg.TaskID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const scheduleGitHubWebhookIntakeRetry = `-- name: ScheduleGitHubWebhookIntakeRetry :exec
+UPDATE github_webhook_intake
+SET state = 'deferred', reason = $2, updated_at = now(),
+    attempts = LEAST(attempts::bigint + 1, 2147483647)::integer,
+    next_attempt_at = now() + $3::bigint * interval '1 second'
+WHERE delivery_guid = $1
+`
+
+type ScheduleGitHubWebhookIntakeRetryParams struct {
+	DeliveryGuid string `json:"delivery_guid"`
+	Reason       string `json:"reason"`
+	DelaySeconds int64  `json:"delay_seconds"`
+}
+
+func (q *Queries) ScheduleGitHubWebhookIntakeRetry(ctx context.Context, arg ScheduleGitHubWebhookIntakeRetryParams) error {
+	_, err := q.db.Exec(ctx, scheduleGitHubWebhookIntakeRetry, arg.DeliveryGuid, arg.Reason, arg.DelaySeconds)
+	return err
+}
+
 const setGitHubWebhookIntakeState = `-- name: SetGitHubWebhookIntakeState :exec
 UPDATE github_webhook_intake SET state = $2, reason = $3, updated_at = now()
 WHERE delivery_guid = $1
@@ -137,4 +332,55 @@ type SetGitHubWebhookIntakeStateParams struct {
 func (q *Queries) SetGitHubWebhookIntakeState(ctx context.Context, arg SetGitHubWebhookIntakeStateParams) error {
 	_, err := q.db.Exec(ctx, setGitHubWebhookIntakeState, arg.DeliveryGuid, arg.State, arg.Reason)
 	return err
+}
+
+const setGitHubWebhookRevisionState = `-- name: SetGitHubWebhookRevisionState :exec
+UPDATE github_webhook_revision SET state = $5, reason = $6, updated_at = now()
+WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4
+`
+
+type SetGitHubWebhookRevisionStateParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ObjectKind  string      `json:"object_kind"`
+	ObjectID    int64       `json:"object_id"`
+	BodyHash    string      `json:"body_hash"`
+	State       string      `json:"state"`
+	Reason      string      `json:"reason"`
+}
+
+func (q *Queries) SetGitHubWebhookRevisionState(ctx context.Context, arg SetGitHubWebhookRevisionStateParams) error {
+	_, err := q.db.Exec(ctx, setGitHubWebhookRevisionState,
+		arg.WorkspaceID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.State,
+		arg.Reason,
+	)
+	return err
+}
+
+const takeGitHubWebhookIntake = `-- name: TakeGitHubWebhookIntake :one
+SELECT delivery_guid, event, signature, payload, state, reason, received_at, updated_at, attempts, next_attempt_at FROM github_webhook_intake
+WHERE state = 'deferred' AND next_attempt_at <= now()
+ORDER BY next_attempt_at, received_at
+LIMIT 1 FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) TakeGitHubWebhookIntake(ctx context.Context) (GithubWebhookIntake, error) {
+	row := q.db.QueryRow(ctx, takeGitHubWebhookIntake)
+	var i GithubWebhookIntake
+	err := row.Scan(
+		&i.DeliveryGuid,
+		&i.Event,
+		&i.Signature,
+		&i.Payload,
+		&i.State,
+		&i.Reason,
+		&i.ReceivedAt,
+		&i.UpdatedAt,
+		&i.Attempts,
+		&i.NextAttemptAt,
+	)
+	return i, err
 }
