@@ -52,6 +52,9 @@ passes `can_route` for that issue. Its system comment contains the canonical
 GitHub permalink, author login and numeric ID, event type, object ID and
 intake ID. Review bodies, inline text, filenames and supplied URLs are not
 copied into issue history. The former synchronous CHE-2019 path stays dormant.
+An `issue_comment` delivery does not contain a PR head object. That event
+uses the non-fork repository verification already mirrored from signed PR
+events. Missing or unverified stored metadata does not authorize projection.
 
 The schema permits `denied`, `deferred`, `quarantined`, `unsigned`, `projected`
 and `dispatched`. This handler initializes signed work as `denied` or

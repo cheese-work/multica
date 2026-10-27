@@ -53,10 +53,6 @@ SELECT delivery_guid, event, reason, attempts, received_at, next_attempt_at,
 FROM github_webhook_intake WHERE state = 'deferred'
 ORDER BY received_at LIMIT $1;
 
--- name: HasGitHubWebhookDispatch :one
-SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
-WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3);
-
 -- name: GetGitHubWebhookDispatch :one
 SELECT * FROM github_webhook_dispatch WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3;
 

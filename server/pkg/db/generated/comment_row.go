@@ -59,6 +59,5 @@ func (r UpdateCommentRow) Comment() Comment {
 		DecisionAnswerID:    r.DecisionAnswerID,
 		DecisionIntentID:    r.DecisionIntentID,
 		DecisionCommentKind: r.DecisionCommentKind,
-		GithubNotifyOnly:    r.GithubNotifyOnly,
 	}
 }

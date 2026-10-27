@@ -287,3 +287,20 @@ func TestGitHubProjectionLookupFailureDefersAtBothChecks(test *testing.T) {
 		})
 	}
 }
+
+func TestGitHubProjectionIssueCommentUsesSignedPRMetadata(test *testing.T) {
+	fixture, _ := newGitHubProjectionFixture(test)
+	fixture.payload["comment"] = fixture.payload["review"]
+	fixture.payload["action"] = "created"
+	fixture.payload["issue"] = map[string]any{"number": 2019, "pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widget/pulls/2019"}}
+	delete(fixture.payload, "pull_request")
+	delivery := fixture.issueID + "-real-issue-comment"
+	if response := fixture.post("issue_comment", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("intake = %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := projectionWorker(fixture).runOnce(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	assertIntakeWorkerState(test, delivery, "projected")
+	assertGitHubProjection(test, fixture, delivery, "issue_comment", "issuecomment-77")
+}

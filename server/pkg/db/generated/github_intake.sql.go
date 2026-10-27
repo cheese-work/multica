@@ -242,24 +242,6 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 	return i, err
 }
 
-const hasGitHubWebhookDispatch = `-- name: HasGitHubWebhookDispatch :one
-SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
-WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3)
-`
-
-type HasGitHubWebhookDispatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RevisionID  pgtype.UUID `json:"revision_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-}
-
-func (q *Queries) HasGitHubWebhookDispatch(ctx context.Context, arg HasGitHubWebhookDispatchParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasGitHubWebhookDispatch, arg.WorkspaceID, arg.RevisionID, arg.IssueID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const insertGitHubWebhookIntake = `-- name: InsertGitHubWebhookIntake :execrows
 INSERT INTO github_webhook_intake (delivery_guid, event, signature, payload)
 VALUES ($1, $2, $3, $4)

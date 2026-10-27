@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,12 +51,8 @@ type githubIntakePayload struct {
 	PullRequest struct {
 		Number int32 `json:"number"`
 		Head   struct {
-			SHA  string `json:"sha"`
-			Repo *struct {
-				ID       int64  `json:"id"`
-				FullName string `json:"full_name"`
-				Fork     bool   `json:"fork"`
-			} `json:"repo"`
+			SHA  string              `json:"sha"`
+			Repo *ghPRHeadRepository `json:"repo"`
 		} `json:"head"`
 	} `json:"pull_request"`
 	Issue struct {
@@ -220,13 +215,6 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 	if payload.Sender.ID != object.User.ID {
 		return pullID, "quarantined", "foreign_editor", nil
 	}
-	headRepo := payload.PullRequest.Head.Repo
-	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" {
-		return pullID, "deferred", "missing_pull_request_metadata", nil
-	}
-	if headRepo.Fork || headRepo.ID != payload.Repository.ID || !strings.EqualFold(headRepo.FullName, payload.Repository.Owner.Login+"/"+payload.Repository.Name) {
-		return pullID, "denied", "fork_pull_request", nil
-	}
 	pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
 		WorkspaceID: workspaceID, RepoOwner: payload.Repository.Owner.Login, RepoName: payload.Repository.Name, PrNumber: number,
 	})
@@ -238,6 +226,22 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 	}
 	if pull.InstallationID != payload.Installation.ID {
 		return pullID, "denied", "installation_mismatch", nil
+	}
+	headRepo := payload.PullRequest.Head.Repo
+	if headRepo == nil {
+		if !pull.HeadRepoSame || payload.Issue.Number != number || len(payload.Issue.PullRequest) == 0 {
+			return pullID, "deferred", "missing_pull_request_metadata", nil
+		}
+	} else {
+		if headRepo.ID <= 0 || headRepo.FullName == "" {
+			return pullID, "deferred", "missing_pull_request_metadata", nil
+		}
+		if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
+			return pullID, "denied", "fork_pull_request", nil
+		}
+		if !pull.HeadRepoSame {
+			return pullID, "denied", "fork_or_unverified_head_repository", nil
+		}
 	}
 	pullID = pull.ID
 	issues, err := queries.ListIssueIDsForPullRequest(ctx, pullID)
