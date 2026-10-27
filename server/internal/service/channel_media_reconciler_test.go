@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -527,6 +528,53 @@ func TestChannelMediaReconciler_TailRowIsUnclaimedUntilItsTurn(t *testing.T) {
 		if !exists || state != "tombstoned" || attempt != 1 {
 			t.Fatalf("row %s = (%q, attempt=%d, %v), want ('tombstoned', 1, true) — one claim, one delete", key, state, attempt, exists)
 		}
+	}
+}
+
+// One claim takes ONE row, whatever plan the database picks. The claim joins
+// the target table to a LIMIT 1 ... SKIP LOCKED subquery; when the planner
+// puts the target on the outer side of a nested loop (it does once table
+// statistics shift, e.g. after an autovacuum analyze) the subquery is re-run
+// per outer row and, because the row it just claimed is skipped, hands every
+// following row to the same UPDATE. sqlc's :one then returns the first and
+// silently drops the rest, leaving them in 'deleting' with a live lease and
+// attempt already bumped — the rows TestChannelMediaReconciler_TailRow... and
+// ..._SettlesThreeStates saw flake. Planner settings force that plan here so
+// the test does not depend on statistics.
+func TestChannelMediaReconciler_ClaimTakesOneRowUnderNestedLoopPlan(t *testing.T) {
+	pool := newCancelFinalizePool(t)
+	f := seedReconcilerFixture(t, pool)
+	// Key order == age order, so the outer (primary-key) scan reaches the
+	// oldest row first and each later row is the subquery's next pick.
+	f.seedLedgerRow(t, "ws/lark/claim-a", "https://cdn.test/claim-a", "pending", ChannelMediaReconcileSettleDelay+3*time.Minute)
+	f.seedLedgerRow(t, "ws/lark/claim-b", "https://cdn.test/claim-b", "pending", ChannelMediaReconcileSettleDelay+2*time.Minute)
+	f.seedLedgerRow(t, "ws/lark/claim-c", "https://cdn.test/claim-c", "pending", ChannelMediaReconcileSettleDelay+time.Minute)
+
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off; SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("force nested-loop plan: %v", err)
+	}
+
+	leaseToken := pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	if _, err := db.New(tx).ClaimNextChannelMediaPendingObjectForReconcile(ctx, db.ClaimNextChannelMediaPendingObjectForReconcileParams{
+		LeaseToken:  leaseToken,
+		Lease:       pgInterval(channelMediaReconcileLease),
+		SettleDelay: pgInterval(ChannelMediaReconcileSettleDelay),
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	var claimed int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM channel_media_pending_object WHERE lease_token = $1`, leaseToken).Scan(&claimed); err != nil {
+		t.Fatalf("count claimed: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("one claim leased %d rows, want exactly 1", claimed)
 	}
 }
 
