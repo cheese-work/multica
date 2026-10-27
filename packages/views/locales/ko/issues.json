@@ -1658,7 +1658,8 @@
       "override_follow_project": "프로젝트 워크플로 따르기",
       "override_error": "워크플로를 변경할 수 없습니다",
       "no_workflow": "워크플로 없음",
-      "card_title": "“{{workflow}}” · “{{project}}” 기준"
+      "card_title": "“{{workflow}}” · “{{project}}” 기준",
+      "flowchart": "플로차트"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1706,7 +1707,30 @@
       "title": "“{{workflow}}” 워크플로",
       "scope_own": "이 워크플로는 이 프로젝트만 사용합니다.",
       "no_handoff_here": "인계 없음",
-      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다."
+      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다.",
+      "graph_label": "워크플로 그래프",
+      "exits_label": "워크플로 출구",
+      "exit_item": "{{guard}} 일 때 {{from}}에서 {{to}}로",
+      "edit": {
+        "title": "{{step}}의 전이",
+        "pick": "단계를 선택하면 전이를 편집할 수 있습니다.",
+        "empty": "전이가 없습니다.",
+        "group": "전이 {{n}}: {{to}}",
+        "guard": "조건",
+        "target": "이동 대상",
+        "timeout": "타임아웃",
+        "on_timeout": "타임아웃 시",
+        "add": "전이 추가",
+        "remove": "전이 삭제",
+        "issues": {
+          "too_many_edges": "{{from}}의 전이가 {{max}}개를 넘습니다.",
+          "missing_target": "{{from}}의 전이가 없는 단계로 향합니다.",
+          "bad_guard": "{{from}}의 전이에 알 수 없는 조건이 있습니다.",
+          "bad_timeout": "{{from}}의 전이에는 1m~720h 사이의 타임아웃이 필요합니다(예: 72h).",
+          "bad_on_timeout": "{{from}}의 전이에는 올바른 타임아웃 시 단계가 필요합니다.",
+          "ci_green_source": "{{from}}은(는) CI 성공으로 진행할 수 없습니다."
+        }
+      }
     },
     "templates": {
       "delivery": {

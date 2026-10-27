@@ -1,0 +1,40 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2167-7ec159f2dbe2/workdir/multica/packages/views
+
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content 259ms
+   → expected 'color-mix(in oklab, var(--warning) 25…' to be 'var(--brand)' // Object.is equality
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content 47ms
+   → expected 'color-mix(in oklab, var(--warning) 25…' to be 'var(--brand)' // Object.is equality
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights only the viewer's member mention in compact content without changing case 41ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights only the viewer's member mention in document content without changing case 61ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > does not highlight member mentions without a current user 50ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > updates the self variant when the viewer changes or logs out 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content
+AssertionError: expected 'color-mix(in oklab, var(--warning) 25…' to be 'var(--brand)' // Object.is equality
+
+Expected: "var(--brand)"
+Received: "color-mix(in oklab, var(--warning) 25%, var(--background))"
+
+ ❯ rich-content/self-mention.test.tsx:66:67
+     64|       expect(screen.getByText("@ChEeSe")).toHaveClass("mention-self");
+     65|       expect(screen.getByText("@ChEeSe").matches(selfRule.selectorText…
+     66|       expect(selfRule.style.getPropertyValue("background-color")).toBe…
+       |                                                                   ^
+     67|       expect(selfRule.style.getPropertyValue("color")).toBe("var(--bac…
+     68|       for (const label of ["@Other", "@Agent", "@all"]) {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 4 passed (6)
+   Start at  08:52:26
+   Duration  16.66s (transform 8.78s, setup 229ms, import 13.96s, tests 493ms, environment 1.60s)
+
+undefined
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2167-7ec159f2dbe2/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run rich-content/self-mention.test.tsx --maxWorkers=2 --reporter=verbose

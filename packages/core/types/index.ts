@@ -13,6 +13,7 @@ export type {
   IssueWorkflow,
   IssueWorkflowHandler,
   IssueWorkflowHandlerType,
+  IssueWorkflowEdge,
   IssueWorkflowStep,
   ListIssueWorkflowsResponse,
   IssueWorkflowWriteRequest,
