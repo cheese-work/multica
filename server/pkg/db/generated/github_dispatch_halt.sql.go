@@ -86,6 +86,7 @@ WHERE i.workspace_id = $1
   AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
   AND (
     t.context ? 'github_review_key'
+    OR t.context ? 'github_dispatch'
     OR (t.trigger_evidence_kind = 'issue_wakeup' AND EXISTS (
         SELECT 1 FROM issue_wakeup w
         WHERE w.id = t.trigger_evidence_ref_id AND w.system_rule LIKE 'pr\_%'))
@@ -104,8 +105,8 @@ type ListGitHubTriggeredActiveTasksParams struct {
 }
 
 // Live runs started by a GitHub event inside a scope: a PR system wakeup
-// (pr_merged, pr_checks_*, pr_needs_attention) or a PR review wakeup. The scope
-// is matched against the repos of the issue's linked PRs.
+// (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
+// workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against the repos of the issue's linked PRs.
 func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGitHubTriggeredActiveTasksParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope)
 	if err != nil {
@@ -124,6 +125,27 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 		return nil, err
 	}
 	return items, nil
+}
+
+const markGitHubDispatchRun = `-- name: MarkGitHubDispatchRun :exec
+UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', $1::text)
+WHERE id = (
+    SELECT live.id FROM agent_task_queue live
+    WHERE live.issue_id = $2 AND live.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ORDER BY live.created_at DESC LIMIT 1
+)
+`
+
+type MarkGitHubDispatchRunParams struct {
+	Source  string      `json:"source"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// Tags the newest live run of an issue as started by a GitHub event, for a
+// workflow handoff that carries no wakeup or review marker of its own.
+func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispatchRunParams) error {
+	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.IssueID)
+	return err
 }
 
 const resumeGitHubDispatch = `-- name: ResumeGitHubDispatch :execrows

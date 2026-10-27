@@ -17,16 +17,27 @@ ON CONFLICT (workspace_id, scope) DO NOTHING;
 -- name: ResumeGitHubDispatch :execrows
 DELETE FROM github_dispatch_halt WHERE workspace_id = $1 AND scope = $2;
 
+-- name: MarkGitHubDispatchRun :exec
+-- Tags the newest live run of an issue as started by a GitHub event, for a
+-- workflow handoff that carries no wakeup or review marker of its own.
+UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', sqlc.arg(source)::text)
+WHERE id = (
+    SELECT live.id FROM agent_task_queue live
+    WHERE live.issue_id = sqlc.arg(issue_id) AND live.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ORDER BY live.created_at DESC LIMIT 1
+);
+
 -- name: ListGitHubTriggeredActiveTasks :many
 -- Live runs started by a GitHub event inside a scope: a PR system wakeup
--- (pr_merged, pr_checks_*, pr_needs_attention) or a PR review wakeup. The scope
--- is matched against the repos of the issue's linked PRs.
+-- (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
+-- workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against the repos of the issue's linked PRs.
 SELECT t.id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE i.workspace_id = sqlc.arg(workspace_id)
   AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
   AND (
     t.context ? 'github_review_key'
+    OR t.context ? 'github_dispatch'
     OR (t.trigger_evidence_kind = 'issue_wakeup' AND EXISTS (
         SELECT 1 FROM issue_wakeup w
         WHERE w.id = t.trigger_evidence_ref_id AND w.system_rule LIKE 'pr\_%'))

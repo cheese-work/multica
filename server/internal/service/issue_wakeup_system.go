@@ -1132,6 +1132,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		state := w.ConditionState
 		switch {
 		case met && fingerprint != state:
+			if conditionDropped(observed) {
+				state = fingerprint
+				break
+			}
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return err
 			}

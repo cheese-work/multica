@@ -268,7 +268,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := prConditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -276,10 +276,11 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		linked, missingSnapshot := 0, false
 		var keys []string
 		var prs []map[string]any
+		var prRepos [][2]string
 		for rows.Next() {
 			var number int32
-			var state, head, checks, currentHead, mergeable, id string
-			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id); err != nil {
+			var state, head, checks, currentHead, mergeable, id, repoOwner, repoName string
+			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id, &repoOwner, &repoName); err != nil {
 				rows.Close()
 				return false, "", nil, err
 			}
@@ -289,6 +290,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				if state == "merged" {
 					keys = append(keys, fmt.Sprintf("%d", number))
 					prs = append(prs, map[string]any{"number": number, "state": state})
+					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "checks_finished":
 				if !githubChecks {
@@ -298,6 +300,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
 					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
 					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks)})
+					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "conflicts":
 				if !githubChecks || (state != "open" && state != "draft") {
@@ -313,11 +316,18 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				if mergeable == "CONFLICTING" || ((mergeable == "UNKNOWN" || mergeable == "") && previous[key] > 0) {
 					keys = append(keys, key)
 					prs = append(prs, map[string]any{"number": number, "head_sha": head, "mergeable": "conflicting"})
+					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
+			return false, "", nil, err
+		}
+		// The kill switch (CHE-2220) drops a halted repository's PRs from what
+		// the rule reports, so no run starts. Their keys stay in the fingerprint:
+		// the rule sees them as already met, and a resume does not replay them.
+		if prs, err = withoutHaltedRepos(ctx, q, w.WorkspaceID, prs, prRepos); err != nil {
 			return false, "", nil, err
 		}
 		// Self-hosted VCS pull requests (Forgejo/Gitea/GitLab) live in their own
@@ -496,7 +506,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 		if condition.Type == "pull_request" && condition.Event == "conflicts" {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
-		if newlyMet {
+		if newlyMet && !conditionDropped(observed) {
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return w.NextFireAt, err
 			}
@@ -726,4 +736,27 @@ func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, ob
 	payload, _ := json.Marshal(facts)
 	_, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: "condition:" + now.UTC().Format(time.RFC3339Nano), EventType: wakeupConditionEventType, Payload: payload})
 	return err
+}
+
+// withoutHaltedRepos keeps the PRs whose repository the GitHub dispatch kill
+// switch does not cover. repos[i] is the owner and name of prs[i].
+func withoutHaltedRepos(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string) ([]map[string]any, error) {
+	live := prs[:0:0]
+	for i, pr := range prs {
+		halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: repos[i][0], RepoName: repos[i][1]})
+		if err != nil {
+			return nil, err
+		}
+		if !halted {
+			live = append(live, pr)
+		}
+	}
+	return live, nil
+}
+
+// conditionDropped reports a satisfied pull_request condition whose every
+// matching PR is in a halted repository: nothing is left to dispatch.
+func conditionDropped(observed map[string]any) bool {
+	prs, ok := observed["pull_requests"].([]map[string]any)
+	return ok && len(prs) == 0
 }

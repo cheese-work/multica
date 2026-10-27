@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -267,6 +268,7 @@ func TestGitHubDispatchHaltStopsCIGreenAdvance(t *testing.T) {
 		t.Skip("database not available")
 	}
 	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
 	const installationID int64 = 222013
 	const prNumber int32 = 22202
 	fx := newPRMergeWebhookFixture(t, installationID)
@@ -329,5 +331,75 @@ func TestGitHubDispatchHaltDropsPRReviewWakeup(t *testing.T) {
 	}
 	if got := authorRuns(); got != 1 {
 		t.Fatalf("review after the resume woke the author %d times, want 1", got)
+	}
+}
+
+// A member's pull_request condition rule is evaluated by the wakeup scheduler,
+// not by the built-in PR wakeups, so it needs its own halt check. The event is
+// dropped: a later resume does not replay it.
+func TestGitHubDispatchHaltDropsPRConditionWakeup(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 222091
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := handlerTestAgentID(t)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	pull := linkedPRForWakeup(t, fx, installationID, 222091, "che2220-condition-head")
+	ruleID := createRule(t, fx.child.ID, agentID, pgtype.UUID{}, service.WakeupInput{
+		Instruction: "Review merged PR", Kind: "event",
+		Condition: json.RawMessage(`{"type":"pull_request","event":"merged"}`),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+
+	setHalt(t, "acme/widget", true, false)
+	dbfx.Exec(t, `UPDATE github_pull_request SET state='merged' WHERE id=$1`, pull.ID)
+	runWakeupTick(t)
+	if got := wakeupRunsOf(t, ruleID); got != 0 {
+		t.Fatalf("halted PR condition dispatched %d runs, want 0", got)
+	}
+
+	setHalt(t, "acme/widget", false, false)
+	runWakeupTick(t)
+	if got := wakeupRunsOf(t, ruleID); got != 0 {
+		t.Fatalf("resume replayed the dropped PR condition: %d runs, want 0", got)
+	}
+}
+
+// A CI-green workflow handoff queued before the switch went on is a
+// GitHub-triggered run too: switching on cancels it.
+func TestGitHubDispatchHaltCancelsCIGreenRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	const installationID int64 = 222092
+	fx := newPRMergeWebhookFixture(t, installationID)
+	reviewer := seededReadyAgentID(t)
+	wf := createTestWorkflowSteps(t, "CHE-2220 sweep "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "advance_on_ci_green": true},
+		{"status_key": "in_review", "handler": map[string]any{"type": "agent", "id": reviewer}, "instructions": "Review the PR."},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CHE-2220 sweep project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	dbfx.Exec(t, `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID)
+	linkedPRForWakeup(t, fx, installationID, 222092, "che2220-sweep")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	startSnapshotRefresh(t, installationID, 222092, newGreenSnapshot("che2220-sweep").get)()
+	if got := countPendingTasksForAgent(t, fx.child.ID, reviewer); got != 1 {
+		t.Fatalf("CI green queued %d handler runs, want 1", got)
+	}
+
+	setHalt(t, "acme/widget", true, false)
+	if got := countPendingTasksForAgent(t, fx.child.ID, reviewer); got != 0 {
+		t.Fatalf("halt left %d CI-green runs live, want 0", got)
 	}
 }
