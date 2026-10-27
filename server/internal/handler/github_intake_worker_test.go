@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -76,6 +77,31 @@ func TestGitHubIntakeWorkerT8Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertIntakeWorkerDispatch(t, fixture, 1)
+}
+
+func TestGitHubIntakeWorkerUncommittedReceiptInvisible(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	worker := intakeWorkerForTest(t, fixture)
+	ctx := context.Background()
+	transaction, err := fixture.handler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transaction.Rollback(ctx)
+	queries := fixture.handler.Queries.WithTx(transaction)
+	revision := db.GithubWebhookRevision{WorkspaceID: parseUUID(testWorkspaceID), ObjectKind: "review", ObjectID: 77, BodyHash: strings.Repeat("a", 64)}
+	decision, err := worker.admit(ctx, queries, revision, githubIntakePayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.dispatch(ctx, queries, revision, decision.Targets[0]); err != nil {
+		t.Fatalf("atomic dispatch: %v", err)
+	}
+	assertIntakeWorkerDispatch(t, fixture, 0)
+	if err := transaction.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerDispatch(t, fixture, 0)
 }
 
 func TestGitHubIntakeWorkerGateClosed(t *testing.T) {
@@ -162,6 +188,36 @@ func TestGitHubIntakeWorkerCommittedReceiptDedup(t *testing.T) {
 	}
 	assertIntakeWorkerState(t, delivery, "dispatched")
 	assertIntakeWorkerDispatch(t, fixture, 1)
+}
+
+func TestGitHubIntakeWorkerRevisionKeyIncludesBodyHash(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	worker := intakeWorkerForTest(t, fixture)
+	first := postIntakeForWorker(t, fixture, "-body-first")
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.payload["action"] = "edited"
+	fixture.payload["review"].(map[string]any)["body"] = "a different signed body"
+	second := postIntakeForWorker(t, fixture, "-body-second")
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, first, "dispatched")
+	assertIntakeWorkerState(t, second, "dispatched")
+	assertIntakeWorkerDispatch(t, fixture, 2)
+}
+
+func TestGitHubIntakeWorkerDeniedRevisionSettlesDelivery(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	dbfx.Exec(t, `UPDATE workspace SET settings='{}' WHERE id=$1`, testWorkspaceID)
+	delivery := postIntakeForWorker(t, fixture, "-unmapped")
+	worker := githubIntakeWorker{handler: fixture.handler, admit: fixture.handler.admitGitHubIntake}
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "denied")
+	assertGitHubIntakeNoEffects(t, fixture)
 }
 
 func TestGitHubIntakeWorkerReceiptErrorRollsBack(t *testing.T) {

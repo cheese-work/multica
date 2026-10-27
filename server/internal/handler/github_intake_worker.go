@@ -198,6 +198,12 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	if issue.WorkspaceID != revision.WorkspaceID {
 		return nil, errors.New("github: cross-workspace dispatch refused")
 	}
+	if _, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: target.AgentID, WorkspaceID: revision.WorkspaceID}); err != nil {
+		return nil, err
+	}
+	if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: target.UserID, WorkspaceID: revision.WorkspaceID}); err != nil {
+		return nil, err
+	}
 	seen, err := queries.HasGitHubWebhookDispatch(ctx, db.HasGitHubWebhookDispatchParams{
 		WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
 		BodyHash: revision.BodyHash, IssueID: issue.ID,

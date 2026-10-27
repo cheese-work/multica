@@ -268,7 +268,8 @@ INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_
 SELECT $1, $2, $3, $4, $5, $6, $7
 WHERE EXISTS (
     SELECT 1 FROM agent_task_queue task JOIN comment ON comment.id = task.trigger_comment_id
-    WHERE task.id = $7 AND task.workspace_id = $1 AND task.issue_id = $5
+    JOIN issue ON issue.id = task.issue_id
+    WHERE task.id = $7 AND issue.workspace_id = $1 AND task.issue_id = $5
       AND comment.id = $6 AND comment.workspace_id = $1 AND comment.issue_id = $5
 )
 `
