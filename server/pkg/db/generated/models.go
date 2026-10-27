@@ -1285,6 +1285,7 @@ type Issue struct {
 	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
 	WorkflowID         pgtype.UUID        `json:"workflow_id"`
 	RequestedByID      pgtype.UUID        `json:"requested_by_id"`
+	MaxRunsOverride    pgtype.Int4        `json:"max_runs_override"`
 }
 
 type IssueCheckpoint struct {
@@ -1391,6 +1392,15 @@ type IssueReaction struct {
 	ActorID     pgtype.UUID        `json:"actor_id"`
 	Emoji       string             `json:"emoji"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type IssueReviewAdmission struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	PullRequestID pgtype.UUID        `json:"pull_request_id"`
+	HeadSha       string             `json:"head_sha"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AdmittedAt    pgtype.Timestamptz `json:"admitted_at"`
 }
 
 type IssueSourceContext struct {

@@ -39,6 +39,30 @@ func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const hasUnreviewedPRHead = `-- name: HasUnreviewedPRHead :one
+SELECT EXISTS (
+    SELECT 1
+    FROM issue_pull_request ipr
+    JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+    WHERE ipr.issue_id = $1::uuid
+      AND pr.state IN ('open', 'draft') AND pr.head_sha <> ''
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_review_admission a
+          WHERE a.issue_id = ipr.issue_id AND a.pull_request_id = pr.id AND a.head_sha = pr.head_sha
+      )
+)::boolean
+`
+
+// True when an open or draft PR linked to the issue sits on a head that no
+// run has been admitted for yet (the issue_review_admission trigger records
+// the admission when the run is created).
+func (q *Queries) HasUnreviewedPRHead(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnreviewedPRHead, issueID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
 WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
@@ -102,6 +126,44 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockIssueReviewAdmission = `-- name: LockIssueReviewAdmission :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Serialises the review-admission check for one issue until the caller's
+// transaction ends, so two concurrent enqueues cannot both take the same head.
+func (q *Queries) LockIssueReviewAdmission(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, lockIssueReviewAdmission, key)
+	return err
+}
+
+const raiseIssueMaxRuns = `-- name: RaiseIssueMaxRuns :one
+UPDATE issue SET max_runs_override = $1::int
+WHERE id = $2::uuid AND workspace_id = $3::uuid
+  AND $1::int > COALESCE(max_runs_override, $4::int)
+RETURNING max_runs_override
+`
+
+type RaiseIssueMaxRunsParams struct {
+	Runs        int32       `json:"runs"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowMax int32       `json:"workflow_max"`
+}
+
+// Sets the issue's own run cap, only upward from the cap now in force.
+func (q *Queries) RaiseIssueMaxRuns(ctx context.Context, arg RaiseIssueMaxRunsParams) (pgtype.Int4, error) {
+	row := q.db.QueryRow(ctx, raiseIssueMaxRuns,
+		arg.Runs,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.WorkflowMax,
+	)
+	var max_runs_override pgtype.Int4
+	err := row.Scan(&max_runs_override)
+	return max_runs_override, err
 }
 
 const scheduleWorkflowEdges = `-- name: ScheduleWorkflowEdges :exec

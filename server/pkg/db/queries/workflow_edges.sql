@@ -38,3 +38,31 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND created_at > sqlc.arg('since')::
 SELECT created_at FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1;
+
+-- name: LockIssueReviewAdmission :exec
+-- Serialises the review-admission check for one issue until the caller's
+-- transaction ends, so two concurrent enqueues cannot both take the same head.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('key')::text, 0));
+
+-- name: HasUnreviewedPRHead :one
+-- True when an open or draft PR linked to the issue sits on a head that no
+-- run has been admitted for yet (the issue_review_admission trigger records
+-- the admission when the run is created).
+SELECT EXISTS (
+    SELECT 1
+    FROM issue_pull_request ipr
+    JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+    WHERE ipr.issue_id = sqlc.arg('issue_id')::uuid
+      AND pr.state IN ('open', 'draft') AND pr.head_sha <> ''
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_review_admission a
+          WHERE a.issue_id = ipr.issue_id AND a.pull_request_id = pr.id AND a.head_sha = pr.head_sha
+      )
+)::boolean;
+
+-- name: RaiseIssueMaxRuns :one
+-- Sets the issue's own run cap, only upward from the cap now in force.
+UPDATE issue SET max_runs_override = sqlc.arg('runs')::int
+WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
+RETURNING max_runs_override;
