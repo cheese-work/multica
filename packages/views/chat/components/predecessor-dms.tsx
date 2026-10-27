@@ -69,7 +69,7 @@ function PredecessorDm({
         {label}
       </CollapsibleTrigger>
       {!open && last && (
-        <p data-testid="predecessor-preview" data-speaker={last.role} className="truncate text-caption text-faint-foreground">
+        <p data-testid="predecessor-preview" data-speaker={last.role} className="truncate pl-4 text-caption text-faint-foreground">
           {last.role === "user" ? t(($) => $.message_list.speaker_you) : agentName}: {last.content}
         </p>
       )}
