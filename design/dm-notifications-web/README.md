@@ -7,4 +7,4 @@
 - Parent: [CHE-1789](mention://issue/01a140fa-ca77-7f2c-aa9f-200fa58ab088). Behavior source: `docs/designs/dm-search-notifications-push.md`, section "N4: web client", with CHE-1848 (DM switches off by default) superseding the old DM defaults.
 - Pages in scope: Settings → Notifications (web and the Electron shell), the Inbox list with DM records, in-app and OS banners, browser permission and device push states, iPhone Home Screen guidance.
 - Not in scope: the service worker and any runtime push test, the mobile app (its own approved design is `dm-notifications-mobile`), Electron push.
-- Status: rev-1 posted — three directions, no selection, not scored yet
+- Status: selected rev-1 direction A — approved when PR #307 merges

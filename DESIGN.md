@@ -70,6 +70,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 - Admin-only controls stay visible to members, disabled, with a one-line reason.
 - Mobile notification settings (`apps/mobile`, `dm-notifications-mobile` rev-1 A): one section per source (Inbox notifications, Direct messages), each led by an In-app switch row. With Inbox In-app off, the event rows are dimmed and locked. While disconnected, the switches are locked under a warning banner.
 - Mobile Inbox DM rows (same revision): the issue-row layout with a chat glyph where the status icon sits, a "New reply" / "N new replies" / "Decision needed" second line, and filter chips under the header (All, Unread, Direct messages).
+- Web notification settings (`dm-notifications-web` rev-1 A): Settings → Notifications has Inbox and Direct messages sections, each led by In-app and Push rows, then a This device section for browser permission and push registration. Web Inbox DM rows get a chat glyph and filter chips (All, Unread, Direct messages). Banners carry the sender and "New reply" / "N new replies" / "Decision needed" only.
 
 ## Approved revisions
 
@@ -78,9 +79,12 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | wakeups-pause | 3 | A | 255 | `de646d2bb8c50bb93653d98395f17f3dc2e0ceee` |
 | jev-governance-tab | 4 | C | 268 | `a32ec00a3ee38cbdf9336c3c953f7cf840ace38b` |
 | dm-notifications-mobile | 1 | A | 277 | `a768e4532ac3f193ece7b552308a95eabe97619b` |
+| dm-notifications-web | 1 | A | 307 | `0b7065192a3d456ef5bd06173aff361ae0924387` |
 
-Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`. The merge commit is read from GitHub and is not written here.
+Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
 The `jev-governance-tab` row records a selection only. Cheese chose direction C at 03:18 ICT on 16 Oct 2026 (CHE-1780 comment `01a14136-ef91-73e1-867f-41c3747e6ad7`: "C  is direction"). The commit in that row is the `rev-4` revision commit. No approval exists until PR 268 merges.
 
 The `dm-notifications-mobile` row records a selection only. Cheese chose direction A on CHE-1811 (comment `01a14243-3674-7796-aaf2-b9354a94065e`). The commit in that row is the `rev-1` revision commit. No approval exists until PR 277 merges.
+
+The `dm-notifications-web` row records a selection only. Cheese chose direction A on CHE-1798 (comment `01a17c84-c39f-7b25-952e-b018529aa34d`: "A"). The commit in that row is the `rev-1` revision commit. No approval exists until PR 307 merges.
