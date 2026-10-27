@@ -77,6 +77,16 @@ func TestHumanStepsRejects(test *testing.T) {
 			firstStep(ask)["values"] = []any{map[string]any{"name": "MULTICA_SERVER_URL", "value": "https://…"}}
 		}, "ask.human_steps[0].values[0].value is a placeholder; give the literal or a source"},
 		{"placeholder in command", func(ask map[string]any) { firstStep(ask)["command"] = "gh secret set X --body <token>" }, "ask.human_steps[0] names <token> without a values entry"},
+		{"secret name is only a prefix of the declared name", func(ask map[string]any) {
+			step := firstStep(ask)
+			step["command"] = "gh secret set MULTICA_TOKEN"
+			step["values"] = []any{map[string]any{"name": "MULTICA_TOKEN_BACKUP", "value": "x"}}
+		}, "ask.human_steps[0] names MULTICA_TOKEN without a values entry"},
+		{"placeholder is only a word inside the declared name", func(ask map[string]any) {
+			step := firstStep(ask)
+			step["command"] = "gh secret set X --body <token>"
+			step["values"] = []any{map[string]any{"name": "unrelated_token_backup", "value": "x"}}
+		}, "ask.human_steps[0] names <token> without a values entry"},
 		{"implicit value word", func(ask map[string]any) { firstStep(ask)["action"] = "Set the URL, tương tự the others" }, "ask.human_steps[0].action leaves values implicit (tương tự); write each one"},
 		{"implicit etc", func(ask map[string]any) { firstStep(ask)["action"] = "Set the URL, etc." }, "ask.human_steps[0].action leaves values implicit (etc.); write each one"},
 		{"bare uuid in action", func(ask map[string]any) {
@@ -141,6 +151,7 @@ func TestContentRendersHumanSteps(test *testing.T) {
 		"**Default if no reply**", "**Steps for you**",
 		"1. Set the API URL secret", "   ```\n   gh secret set MULTICA_SERVER_URL", "- MULTICA_SERVER_URL (API port 19444, not web port 19443): https://congvc-c00.taila6fa8a.ts.net:19444 (source: agent env MULTICA_SERVER_URL)", "Done when: gh secret list -R cheese-work/multica-dotfiles shows MULTICA_SERVER_URL",
 		"2. Set the workspace secret", "- MULTICA_WORKSPACE_ID (UUID, not the slug cheese-work): f2b734e0-b6de-4414-8a27-a2f69b0ef843",
+		"3. Set the token secret", "gh secret set MULTICA_TOKEN -R cheese-work/multica-dotfiles\n", "(source: web app Settings > API Tokens",
 		"**Checked first**", "- 15:15 ICT: curl", "- not verified: token write scope",
 		"**After you finish**", "x99-claude-sonnet re-runs skill-sync.yml", "<details>",
 	} {
@@ -149,6 +160,16 @@ func TestContentRendersHumanSteps(test *testing.T) {
 			test.Fatalf("%q missing or out of order in %q", marker, content)
 		}
 		last = at
+	}
+}
+
+func TestContentKeepsTokenOutOfTheCommand(test *testing.T) {
+	ask, err := decodeMap(stepsAsk(test, "pass"))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if content := ask.Content(); strings.Contains(content, "MULTICA_TOKEN -R cheese-work/multica-dotfiles --body") {
+		test.Fatalf("token step must prompt, not take --body: %q", content)
 	}
 }
 

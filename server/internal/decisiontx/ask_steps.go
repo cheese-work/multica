@@ -171,11 +171,12 @@ func (step HumanStep) validate(prefix string) error {
 	return nil
 }
 
+// declares reports whether a values name carries the identifier as a whole
+// token: MULTICA_TOKEN_BACKUP does not declare MULTICA_TOKEN. A descriptive
+// suffix after a space or bracket is allowed.
 func (step HumanStep) declares(name string) bool {
-	inner := strings.Trim(name, "<>")
-	return slices.ContainsFunc(step.Values, func(value StepValue) bool {
-		return strings.Contains(value.Name, name) || strings.Contains(value.Name, inner)
-	})
+	whole := regexp.MustCompile(`(?:^|[^A-Za-z0-9_])` + regexp.QuoteMeta(strings.Trim(name, "<>")) + `(?:$|[^A-Za-z0-9_])`)
+	return slices.ContainsFunc(step.Values, func(value StepValue) bool { return whole.MatchString(value.Name) })
 }
 
 // lintHumanSteps adds advisory hints; it never blocks.
