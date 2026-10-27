@@ -6,7 +6,7 @@ const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, 
 
 test("workflow Ubuntu labels are pinned instead of silently migrating", () => {
   for (const name of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
-    if (name.endsWith(".yml")) assert.doesNotMatch(workflow(name), /ubuntu-latest/, name)
+    if (name.endsWith(".yml")) assert.doesNotMatch(workflow(name).replace(/#.*/g, ""), /ubuntu-latest/, name)
   }
 })
 
@@ -49,4 +49,19 @@ test("pnpm setup installs the pinned package without a newer bootstrap self-upda
     assert.doesNotMatch(source, /uses: pnpm\/action-setup@/, name)
     if (source.includes("cache: pnpm")) assert.match(source, /run: bash scripts\/setup-pnpm\.sh/, name)
   }
+})
+
+test("unneeded lifecycle scripts remain disabled with an explicit reviewed decision", () => {
+  const { pnpm } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+  for (const name of ["core-js", "protobufjs", "unicode-animations", "electron-winstaller", "sharp"]) {
+    assert.ok(pnpm.ignoredBuiltDependencies?.includes(name), name)
+    assert.ok(!pnpm.onlyBuiltDependencies.includes(name), name)
+  }
+  for (const name of ["esbuild", "electron", "msw", "unrs-resolver"]) assert.ok(pnpm.onlyBuiltDependencies.includes(name), name)
+})
+
+test("runner pinning preserves historical probe and floating-image cache comments", () => {
+  const source = workflow("ci.yml")
+  assert.match(source, /runs Linux 6\.6\.141, GitHub-hosted ubuntu-latest runs 6\.17\.0/)
+  assert.match(source, /when ubuntu-latest moves to a new/)
 })

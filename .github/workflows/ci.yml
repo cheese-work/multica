@@ -66,9 +66,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: timeout 25s node scripts/migration-prefix-check.mjs
 
-  # Linux stays on GitHub-hosted ubuntu-24.04: root cause confirmed (CHE-522)
+  # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
   # via a live kernel-version probe, not inference — the retired paid runner
-  # runs Linux 6.6.141, GitHub-hosted ubuntu-24.04 runs 6.17.0. The
+  # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The
   # process-group retain code (cursor_background_process_linux.go) requires
   # PIDFD_SIGNAL_PROCESS_GROUP, added in Linux 6.9 with no earlier equivalent;
   # on a pre-6.9 kernel PidfdSendSignal returns EINVAL ("invalid argument"),
@@ -382,7 +382,7 @@ jobs:
   # merge, the same shape as the turbo caches above. The key carries the
   # resolved Go version because `check-latest` floats across patch releases,
   # and the runner image (ImageOS) because cached cgo and race objects are
-  # linked against that image's glibc: when ubuntu-24.04 moves to a new
+  # linked against that image's glibc: when ubuntu-latest moves to a new
   # release, an entry built on the old one must not be restored. setup-go
   # keys on ImageOS for the same reason (actions/setup-go#368).
   #

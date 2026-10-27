@@ -21,15 +21,22 @@ function normalize(message) {
     .replace(/\s+/g, " ").trim()
 }
 
+function sourcePath(path) {
+  return path.replaceAll("\\", "/").replace(/^.*\/multica\/multica\//, "").replace(/^\.\//, "")
+}
+
 export function warningCounts(jobs) {
   const counts = {}
   for (const job of jobs) {
     const logs = {}
     const annotations = {}
+    const eslintMessages = new Map()
+    let eslintFile = ""
     let commandHeader = false
     for (const line of stripVTControlCharacters(job.log).split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
+        eslintFile = ""
         continue
       }
       if (commandHeader) {
@@ -38,16 +45,29 @@ export function warningCounts(jobs) {
       }
       if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
       const message = normalize(line)
+      if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
+        eslintFile = sourcePath(message)
+        continue
+      }
       if (/##\[(command|group)\]|^Run |^\s*(?:echo |printf )/.test(message)) continue
       if (/^(?:# Subtest:|(?:not )?ok \d+\b)/.test(message)) continue
-      if (!/##\[(warning|notice)\]|::(?:warning|notice)::|\b(?:DeprecationWarning|ExperimentalWarning|[Ww]arning[:!]|WARN(?:ING)?\b)|⚠|╭ Warning |Found \d+ warnings|\d+:\d+\s+warning\b/.test(line)) continue
-      const warning = message.replace(/^::(?:warning|notice)::/i, "")
+      if (!/##\[(warning|notice)\]|::(?:warning|notice)::|\b(?:DeprecationWarning|ExperimentalWarning|[Ww]arning[:!]|WARN(?:ING)?\b)|\bnpm warn\b|⚠|╭ Warning |Found \d+ warnings|\d+:\d+\s+warning\b/.test(line)) continue
+      let warning = message.replace(/^::(?:warning|notice)::/i, "")
+      const eslint = warning.match(/^\d+:\d+\s+warning\s+(.+)$/)
+      if (eslint) {
+        const rule = eslintFile ? eslint[1].match(/\s([@\w-]+(?:\/[\w-]+)*)$/)?.[1] : undefined
+        const detail = rule ? eslint[1].slice(0, -rule.length).trim() : eslint[1]
+        warning = `${eslintFile ? `${eslintFile}: ` : ""}${rule ?? `warning ${detail}`}`
+        if (eslintFile) eslintMessages.set(`${eslintFile}: ${detail}`, warning)
+      }
       logs[warning] = (logs[warning] ?? 0) + 1
     }
     for (const annotation of job.annotations) {
       if (!["warning", "notice"].includes(annotation.annotation_level)) continue
       const message = normalize(annotation.message)
-      annotations[message] = (annotations[message] ?? 0) + 1
+      const file = /\.[cm]?[jt]sx?$/.test(annotation.path ?? "") ? sourcePath(annotation.path) : ""
+      const warning = file ? eslintMessages.get(`${file}: ${message}`) ?? `${file}: ${message}` : message
+      annotations[warning] = (annotations[warning] ?? 0) + 1
     }
     for (const warning of new Set([...Object.keys(logs), ...Object.keys(annotations)])) {
       counts[`${job.name}: ${warning}`] = Math.max(logs[warning] ?? 0, annotations[warning] ?? 0)
@@ -83,26 +103,46 @@ export function runBudget() {
   if (!/^cheese-work\/multica$/.test(repository ?? "") || !/^\d+$/.test(runId ?? "")) throw new Error("Expected a Multica CI run")
   const prefix = `repos/${repository}`
   const current = api(`${prefix}/actions/runs/${runId}`)
-  const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&event=push&status=success&per_page=30`).workflow_runs
-  const baseline = runs.find((run) => String(run.id) !== runId && run.created_at < current.created_at)
-  if (!baseline) throw new Error("No successful main CI run is available for a trusted warning baseline")
-  function collect(run) {
+  function jobs(run) {
     return pages(`${prefix}/actions/runs/${run.id}/jobs?filter=latest`, "jobs")
       .filter((job) => job.name !== "warning-budget" && job.conclusion !== "skipped")
-      .map((job) => {
-        if (job.status !== "completed") throw new Error(`Job ${job.name} has not completed`)
-        const checkId = job.check_run_url.split("/").at(-1)
-        if (!/^\d+$/.test(checkId)) throw new Error(`Invalid check run for ${job.name}`)
-        return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
-      })
   }
-  const baselineJobs = collect(baseline)
-  const currentJobs = collect(current)
-  const regressions = warningRegressions(warningCounts(baselineJobs), warningCounts(currentJobs))
-  const report = { baseline_run: baseline.html_url, current_run: current.html_url, baseline_sha: baseline.head_sha, current_sha: current.head_sha, baseline: warningCounts(baselineJobs), current: warningCounts(currentJobs), annotations: currentJobs.map(({ name, annotations }) => ({ name, annotations })), regressions }
+  function collect(job) {
+    if (job.status !== "completed") throw new Error(`Job ${job.name} has not completed`)
+    const checkId = job.check_run_url.split("/").at(-1)
+    if (!/^\d+$/.test(checkId)) throw new Error(`Invalid check run for ${job.name}`)
+    return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
+  }
+  const currentJobs = jobs(current).map(collect)
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint"])
+  const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
+  const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
+  const baselineJobs = []
+  let baseline
+  for (let page = 1; pending.size && page <= 10; page++) {
+    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=success&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
+    const trusted = runs.filter((run) => String(run.id) !== runId && run.created_at < current.created_at && run.head_branch === "main" && ["push", "schedule", "workflow_dispatch"].includes(run.event))
+      .sort((first, second) => second.created_at.localeCompare(first.created_at))
+    for (const run of trusted) {
+      baseline ??= run
+      for (const job of jobs(run)) {
+        if (!pending.has(job.name) || job.status !== "completed" || job.conclusion !== "success") continue
+        baselineJobs.push(collect(job))
+        jobBaselines[job.name] = { run: run.html_url, sha: run.head_sha }
+        pending.delete(job.name)
+      }
+      if (!pending.size) break
+    }
+    if (runs.length < 100) break
+  }
+  if (pending.size) throw new Error(`No successful main CI job baseline is available within the latest 1000 runs for: ${[...pending].join(", ")}`)
+  const baselineCounts = warningCounts(baselineJobs)
+  const currentCounts = warningCounts(currentJobs)
+  const regressions = warningRegressions(baselineCounts, currentCounts)
+  const report = { baseline_run: baseline?.html_url ?? null, current_run: current.html_url, baseline_sha: baseline?.head_sha ?? null, current_sha: current.head_sha, job_baselines: jobBaselines, zero_baseline_jobs: currentJobs.map(({ name }) => name).filter((name) => zeroBaselineJobs.has(name)), baseline: baselineCounts, current: currentCounts, annotations: currentJobs.map(({ name, annotations }) => ({ name, annotations })), regressions }
   writeFileSync("warning-budget-report.json", `${JSON.stringify(report, null, 2)}\n`)
   console.log(JSON.stringify(report, null, 2))
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Warning budget against main: ${regressions.length} new warning signatures. Baseline: ${baseline.html_url}\n`)
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Warning budget against per-job main baselines: ${regressions.length} new warning signatures. See job_baselines and zero_baseline_jobs in the report.\n`)
   if (regressions.length) process.exitCode = 1
 }
 

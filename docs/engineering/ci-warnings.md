@@ -3,20 +3,37 @@
 The `warning-budget` CI job waits for build, test, lint and supporting jobs.
 It reads their completed job logs and GitHub warning/notice annotations with
 read-only permissions. It compares warning signatures and occurrence counts
-against the most recent successful `main` push of the same workflow that
-predates the candidate run. The candidate cannot supply its own baseline.
-Missing main evidence, unavailable logs and incomplete jobs fail the check.
+against each job's latest successful execution in a successful `main` run of
+the same workflow that predates the candidate run. The search includes pushes,
+scheduled full runs and manual main runs, with pagination through up to 1000
+successful main runs when newer runs skipped a job. Missing evidence beyond
+that history bound fails closed. Pull-request runs cannot provide trusted baseline evidence.
+The candidate cannot supply its own baseline. Missing main job evidence,
+unavailable logs and incomplete candidate jobs fail the check.
 
-The report artifact contains both run URLs, SHAs, warning counts, regressions
-and the candidate's annotation list. Existing warnings may decrease; a new
+Decision: the PR-only `migration-prefix-check`, `image-budget` and `go-lint`
+jobs have a strict zero-warning baseline. The Go job's tool steps run only
+on PRs, so its otherwise empty main executions are not meaningful baselines.
+These jobs do not inherit allowances from another job or an earlier PR.
+
+The report artifact records each job's baseline run URL and SHA in
+`job_baselines`, the strict-zero jobs in `zero_baseline_jobs`, warning counts,
+regressions and the candidate's annotation list. `baseline_run` identifies the
+newest trusted main run searched, not necessarily every job's baseline.
+Existing warnings may decrease; a new
 signature or an increased count fails. There is no suppression list or
 candidate-editable allowance file. PID, ANSI, timestamp and BuildKit progress
 noise are normalized. Test names and runner command-header metadata are not
 diagnostics. Grouped output from the tools themselves is still counted.
 Raw log downloads explicitly allow terminal escapes in `gh`; Node strips VT
 control sequences before warning detection.
-Timestamped Go application `WARN` events emitted by negative-path fixtures
-are runtime events, not compiler/test-harness diagnostics. They are not counted;
+ESLint signatures use the repository-relative file and rule, not `line:col`
+or line numbers embedded in the message. Counts still catch an additional
+warning for the same file and rule. File-specific annotations retain their
+path and match the corresponding lint log signature when available.
+Every timestamped Go application `WARN` event matching
+`YYYY/MM/DD HH:MM:SS[.fraction] WARN` is a runtime log event in every job,
+not only in negative-path fixtures. These events are not counted;
 all GitHub warning/notice annotations are still counted regardless of source.
 
 Run the local regression fixtures with:
@@ -48,6 +65,10 @@ The repository uses major tags, not SHA pins. Releases checked for this change:
 | docker/build-push-action | v7.4.0 | v7 | node24 |
 | docker/metadata-action | v6.2.0 | v6 | node24 |
 | pnpm/action-setup | v6.1.0 | replaced by pinned npm install | node24 |
+| dorny/paths-filter | v4.0.3 | v4 | node24 |
+| golangci/golangci-lint-action | v9.3.0 | v9 | node24 |
+| goreleaser/goreleaser-action | v7.3.0 | v7 | node24 |
+| azure/setup-helm | v5.0.1 | v5 | node24 |
 
 The v6 pnpm action bootstraps pnpm 11 before switching to the repository's
 pinned pnpm 10, producing a layout-migration warning. `scripts/setup-pnpm.sh`
@@ -55,10 +76,6 @@ instead installs exactly `package.json`'s pnpm version in `RUNNER_TEMP` and
 exports only that package's bin directory. Invalid pins and failed installs
 fail before publishing a PATH entry. No newer bootstrap or layout migration
 is needed.
-| dorny/paths-filter | v4.0.3 | v4 | node24 |
-| golangci/golangci-lint-action | v9.3.0 | v9 | node24 |
-| goreleaser/goreleaser-action | v7.3.0 | v7 | node24 |
-| azure/setup-helm | v5.0.1 | v5 | node24 |
 
 Each release's `action.yml` declares the recorded runtime. Ubuntu jobs pin
 `ubuntu-24.04`. CD jobs do not install application dependencies and explicitly
@@ -69,11 +86,15 @@ Tailwind's optimizer used Lightning CSS 1.32.0, which warned about the valid
 override selects 1.33.0, whose release adds that support. Both find-highlight
 rules remain intact. No CSS optimization or diagnostic is disabled.
 
-The two pnpm boxes listed unreviewed lifecycle scripts. The allowlist now also
-approves the lockfile's `core-js` banner, `msw` worker synchronization,
-`protobufjs` version check, `unicode-animations` terminal demo and
-`unrs-resolver` native-loader preparation. Script execution remains allowlisted;
-there is no blanket approval, ignored-build list or log suppression.
+The pnpm boxes listed lifecycle scripts without an explicit review decision.
+The allowlist retains `esbuild`, `electron`, `msw` worker synchronization and
+`unrs-resolver` native-loader preparation. `ignoredBuiltDependencies` explicitly
+keeps the unnecessary `core-js` banner, `protobufjs` version check and
+`unicode-animations` terminal demo disabled. It also disables
+`electron-winstaller` preparation for the retired Windows build and `sharp`'s
+install-time check; the lockfile supplies Sharp's platform-native packages.
+These scripts do not execute. This is an audited lifecycle decision, not a
+warning-log filter or blanket script approval.
 
 The unencrypted-credential warning came from C00's remote cutover, not X99.
 The shared registry login now uses an ephemeral environment-backed credential
@@ -85,6 +106,12 @@ the action's post hook, an always-run step stops only that container with a
 120-second grace period and removes only that builder with a 180-second status
 budget. The step has a four-minute bound and fails rather than hiding cleanup
 errors; the action still owns its context/certificate cleanup.
+Decision: cleanup is intentionally fail-closed. A cleanup failure fails
+qualification, so `cd-deploy.yml` does not start. A run that leaves its owned
+builder behind is not qualified; cleanup errors are not downgraded to warnings.
+
+The original item 6 red logs did not record an assertion and exit status.
+Item 6 test-first red is NOT-RUN; passing credential fixtures are not red proof.
 
 ## Acceptance boundary
 

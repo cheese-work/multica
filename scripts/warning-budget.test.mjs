@@ -70,6 +70,29 @@ test("timestamped application events are not compiler or test-harness diagnostic
   assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: "warning: C compiler diagnostic\n2026/10/28 06:00:22.123456 WARN expected negative-control event", annotations: [] }])).length, 1)
 })
 
+test("eslint warnings follow file and rule rather than line numbers", () => {
+  const job = (file, line) => ({
+    name: "frontend-build",
+    log: `2026-10-27T05:00:00Z /home/runner/work/multica/multica/${file}\n2026-10-27T05:00:00Z ##[warning] ${line}:6 warning Hook dependency changes (at line ${line + 3}) react-hooks/exhaustive-deps`,
+    annotations: [{ annotation_level: "warning", path: file, start_line: line, message: `Hook dependency changes (at line ${line + 3})` }],
+  })
+  const baseline = warningCounts([job("packages/views/first.tsx", 54)])
+  assert.deepEqual(baseline, { "frontend-build: packages/views/first.tsx: react-hooks/exhaustive-deps": 1 })
+  assert.deepEqual(warningRegressions(baseline, warningCounts([job("packages/views/first.tsx", 55)])), [])
+  assert.equal(warningRegressions(baseline, warningCounts([job("packages/views/second.tsx", 55)])).length, 1)
+  const repeated = job("packages/views/first.tsx", 55)
+  repeated.log += `\n${repeated.log}`
+  assert.equal(warningRegressions(baseline, warningCounts([repeated]))[0].current, 2)
+  const coreRule = { ...job("packages/views/first.tsx", 55), log: "/home/runner/work/multica/multica/packages/views/first.tsx\n55:6 warning Expected braces around the statement curly", annotations: [] }
+  assert.deepEqual(warningCounts([coreRule]), { "frontend-build: packages/views/first.tsx: curly": 1 })
+})
+
+test("lowercase npm warn diagnostics are counted", () => {
+  assert.deepEqual(warningCounts([{ name: "install", log: "npm warn deprecated fixture@1.0.0: use the maintained API", annotations: [] }]), {
+    "install: npm warn deprecated fixture@1.0.0: use the maintained API": 1,
+  })
+})
+
 test("the CI entrypoint fails a new-warning fixture and passes unchanged main evidence", () => {
   const directory = mkdtempSync(join(tmpdir(), "warning-budget-"))
   const command = fileURLToPath(new URL("./warning-budget.mjs", import.meta.url))
@@ -77,29 +100,52 @@ test("the CI entrypoint fails a new-warning fixture and passes unchanged main ev
     writeFileSync(join(directory, "gh"), `#!/usr/bin/env node
 const endpoint = process.argv[3]
 const scenario = process.env.BUDGET_FIXTURE
+const skipped = scenario.startsWith('skipped-baseline') || scenario === 'paged-baseline' || scenario === 'missing-job'
 let result
 if (endpoint.endsWith('/actions/runs/2')) result = {id:2,workflow_id:3,created_at:'2026-10-27T05:00:00Z',head_sha:'candidate',html_url:'candidate-run'}
-else if (endpoint.includes('/actions/workflows/3/runs?')) result = {workflow_runs: scenario === 'missing-baseline' ? [] : [{id:1,created_at:'2026-10-26T05:00:00Z',head_sha:'main',html_url:'main-run'}]}
+else if (endpoint.includes('/actions/workflows/3/runs?')) {
+  const page = Number(new URLSearchParams(endpoint.split('?')[1]).get('page') || 1)
+  const latest = {id:1,event:'push',head_branch:'main',created_at:'2026-10-26T05:00:00Z',head_sha:'main',html_url:'main-run'}
+  const older = {id:3,event:'schedule',head_branch:'main',created_at:'2026-10-25T05:00:00Z',head_sha:'older-main',html_url:'older-main-run'}
+  const untrusted = {id:4,event:'pull_request',head_branch:'main',created_at:'2026-10-27T04:00:00Z',head_sha:'fork',html_url:'fork-run'}
+  if (scenario === 'missing-baseline') result = {workflow_runs:[]}
+  else if (scenario === 'paged-baseline') result = {workflow_runs:page === 1 ? [latest, ...Array.from({length:99}, (entry, index) => ({...untrusted,id:100+index}))] : page === 2 ? [older] : []}
+  else result = {workflow_runs:page > 1 ? [] : [latest, ...(skipped && scenario !== 'missing-job' ? [untrusted, {...older,id:5,event:'workflow_dispatch',head_branch:'feature'}, {...older,id:6,created_at:'2026-10-28T05:00:00Z'}, older] : [])]}
+}
 else if (endpoint.includes('/jobs?')) {
   const baseline = endpoint.includes('/runs/1/')
-  result = {jobs:[{id:baseline?11:12,name:'frontend-build',status:scenario==='incomplete'?'in_progress':'completed',conclusion:'success',check_run_url:'https://api.github.com/check-runs/'+(baseline?21:22)}]}
+  const older = endpoint.includes('/runs/3/')
+  result = {jobs:[{id:older?13:baseline?11:12,name:!baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build',status:scenario==='incomplete'?'in_progress':'completed',conclusion:baseline&&skipped?'skipped':'success',check_run_url:'https://api.github.com/check-runs/'+(older?23:baseline?21:22)}]}
 } else if (endpoint.includes('/annotations?')) result = []
 else if (endpoint.endsWith('/logs')) {
   if (scenario === 'ansi-warning' && !process.argv.includes('--allow-escape-sequences')) {
     process.stderr.write('the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway')
     process.exit(1)
   }
-  process.stdout.write(endpoint.includes('/jobs/12/') && ['new-warning', 'ansi-warning'].includes(scenario) ? (scenario === 'ansi-warning' ? '\\u001b[2KWar\\u001b[33mning: fixture diagnostic\\u001b[0m' : 'Warning: fixture diagnostic') : '')
+  const current = endpoint.includes('/jobs/12/')
+  const diagnostic = scenario === 'ansi-warning' ? '\\u001b[2KWar\\u001b[33mning: fixture diagnostic\\u001b[0m' : 'Warning: fixture diagnostic'
+  const warning = (current && ['new-warning', 'ansi-warning', 'pr-only-warning'].includes(scenario)) || (skipped && !endpoint.includes('/jobs/11/'))
+  process.stdout.write(warning ? diagnostic + (current && scenario === 'skipped-baseline-new-warning' ? '\\n'+diagnostic : '') : '')
   process.exit(0)
 } else throw new Error('Unexpected API request '+endpoint)
 process.stdout.write(JSON.stringify(result))
 `, { mode: 0o700 })
-    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1]]) {
+    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0]]) {
       const result = spawnSync(process.execPath, [command], { cwd: directory, encoding: "utf8", env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", BUDGET_FIXTURE: scenario, GITHUB_STEP_SUMMARY: "" } })
       assert.equal(result.status, expected, `${scenario}: ${result.stderr}`)
       if (["new-warning", "ansi-warning"].includes(scenario)) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
         assert.deepEqual(report.regressions, [{ warning: "frontend-build: Warning: fixture diagnostic", baseline: 0, current: 1 }])
+      }
+      if (["skipped-baseline", "skipped-baseline-new-warning", "paged-baseline"].includes(scenario)) {
+        const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
+        assert.deepEqual(report.job_baselines["frontend-build"], { run: "older-main-run", sha: "older-main" })
+        assert.deepEqual(report.regressions, scenario === "skipped-baseline-new-warning" ? [{ warning: "frontend-build: Warning: fixture diagnostic", baseline: 1, current: 2 }] : [])
+      }
+      if (scenario.startsWith("pr-only")) {
+        const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
+        assert.deepEqual(report.zero_baseline_jobs, ["image-budget"])
+        assert.deepEqual(report.baseline, {})
       }
     }
   } finally {
