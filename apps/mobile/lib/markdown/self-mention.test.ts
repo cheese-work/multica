@@ -169,6 +169,24 @@ describe("emphasizeSelfMentionSegments", () => {
     ]);
   });
 
+  it("keeps code verbatim when an escaped mention and a linked code label share the source", () => {
+    const bold = `[**@Me**](mention://member/${VIEWER})`;
+    const source = `\\${link}\n\n\`${link}\`\n\n${link}\n\n[\`${link}\`](https://example.com)`;
+    expect(emphasizeSelfMentionSegments(splitMarkdown(source), VIEWER)).toEqual([
+      {
+        type: "prose",
+        content: `\\${link}\n\n\`${link}\`\n\n${bold}\n\n[\`${link}\`](https://example.com)`,
+      },
+    ]);
+  });
+
+  it("still bolds a real mention next to an escaped mention", () => {
+    const source = `\\${link} plus ${link}`;
+    expect(emphasizeSelfMentionSegments(splitMarkdown(source), VIEWER)).toEqual([
+      { type: "prose", content: `\\${link} plus [**@Me**](mention://member/${VIEWER})` },
+    ]);
+  });
+
   it("bolds links in lists, quotes and tables but not escaped or image look-alikes", () => {
     const out = (source: string) => emphasizeSelfMentions(source, VIEWER);
     const bold = `[**@Me**](mention://member/${VIEWER})`;

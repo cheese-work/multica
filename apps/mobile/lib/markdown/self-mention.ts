@@ -20,30 +20,35 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Only real link tokens are bolded. Code (inline, fenced, indented, nested in
-// lists or quotes) is displayed and copied as written, and regexes can't tell
-// it apart, so ask the markdown lexer which matches are links.
+// Links whose first child is bold: what `emphasizeSelfMentions` produces.
+function countBoldLinks(markdown: string) {
+  let count = 0;
+  marked.walkTokens(marked.lexer(markdown), (token) => {
+    if (token.type === "link" && token.tokens?.[0]?.type === "strong") count++;
+  });
+  return count;
+}
+
+// Only real links are bolded. Code (inline, fenced, indented, nested in lists
+// or quotes) is displayed and copied as written, and escaped or image look-alikes
+// aren't links, but regexes can't tell them apart. So try each match on its own
+// and keep it only if the markdown lexer then sees one more bold link.
 export function emphasizeSelfMentions(markdown: string, userId: string | undefined) {
   if (!userId) return markdown;
-  const self = () =>
-    new RegExp(
-      String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(userId)}|all/[^)\s]*))\)`,
-      "g",
-    );
-  // One entry per match in source order: is it a link token, or text/code?
-  const isLink: boolean[] = [];
-  marked.walkTokens(marked.lexer(markdown), (token) => {
-    const raw = (token as { raw?: string }).raw ?? "";
-    if (token.type === "link") {
-      for (const m of raw.matchAll(self())) isLink.push(m[0] === raw);
-    } else if (!("tokens" in token) && !("items" in token) && token.type !== "table") {
-      isLink.push(...Array.from(raw.matchAll(self()), () => false));
-    }
-  });
-  // Lexer and source disagree (unexpected syntax): leave the text alone.
-  if (isLink.length !== [...markdown.matchAll(self())].length) return markdown;
-  let i = 0;
-  return markdown.replace(self(), (all, label, url) => (isLink[i++] ? `[**${label}**](${url})` : all));
+  const self = new RegExp(
+    String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(userId)}|all/[^)\s]*))\)`,
+    "g",
+  );
+  const matches = [...markdown.matchAll(self)];
+  if (!matches.length) return markdown;
+  const before = countBoldLinks(markdown);
+  const boldOf = (m: RegExpMatchArray) => `[**${m[1]}**](${m[2]})`;
+  const splice = (source: string, m: RegExpMatchArray) =>
+    source.slice(0, m.index) + boldOf(m) + source.slice(m.index! + m[0].length);
+  // Back to front so earlier offsets stay valid.
+  return matches
+    .filter((m) => countBoldLinks(splice(markdown, m)) === before + 1)
+    .reduceRight(splice, markdown);
 }
 
 // Top-level code blocks are their own segments: leave them untouched.
