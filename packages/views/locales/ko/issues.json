@@ -6,6 +6,7 @@
     "loading": "관계 불러오는 중…",
     "load_failed": "관계를 불러오지 못했습니다.",
     "render_failed": "그래프를 표시하지 못했습니다.",
+    "filter_label": "표시할 관계 유형",
     "retry": "다시 시도",
     "empty": "관련 태스크가 없습니다.",
     "omitted": "{{count}}개 더 표시되지 않음 (최대 40개 노드).",
@@ -580,6 +581,7 @@
     "wakeup_link_run": "실행 보기"
   },
   "comment": {
+    "you": "나",
     "add_reaction": "반응 추가",
     "collapse_thread": "스레드 접기",
     "expand_thread": "스레드 펼치기",

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { parse } from "yaml";
 
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
@@ -19,6 +20,17 @@ vi.mock("@multica/ui/lib/clipboard", () => ({ copyText: copyTextMock }));
 
 const mermaidRenderMock = vi.hoisted(() => vi.fn());
 const mermaidInitializeMock = vi.hoisted(() => vi.fn());
+const viewerPropsMock = vi.hoisted(() => vi.fn());
+vi.mock("./mermaid-viewer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mermaid-viewer")>();
+  return {
+    ...actual,
+    MermaidViewer: (props: Parameters<typeof actual.MermaidViewer>[0]) => {
+      viewerPropsMock(props);
+      return <actual.MermaidViewer {...props} />;
+    },
+  };
+});
 vi.mock("mermaid", () => ({
   default: { initialize: mermaidInitializeMock, render: mermaidRenderMock },
 }));
@@ -52,7 +64,7 @@ beforeEach(() => {
   // and an unconsumed *Once implementation would leak into the next test.
   mermaidRenderMock.mockReset();
   mermaidRenderMock.mockResolvedValue({ svg: MOCK_SVG });
-  mermaidInitializeMock.mockClear();
+  viewerPropsMock.mockClear();
   copyTextMock.mockClear();
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
@@ -139,6 +151,54 @@ async function expectViewerStaysClosed() {
   });
   expect(screen.queryByRole("application")).toBeNull();
 }
+
+describe("MermaidDiagram lifecycle", () => {
+  it("initializes Mermaid once across diagrams and theme changes", async () => {
+    render(<><MermaidDiagram chart={CHART} /><MermaidDiagram chart="graph TD\n X --> Y" /></>);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+    act(() => document.documentElement.classList.add("dark"));
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(4));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds the viewer document only while the viewer is open", async () => {
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toBeNull();
+    await openViewer();
+    expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain(MOCK_SVG);
+  });
+
+  it("keeps frontmatter and supplies theme colors per render", async () => {
+    render(<MermaidDiagram chart={`---\ntitle: Preserved title\nconfig:\n  flowchart:\n    curve: linear\n---\n${CHART}`} />);
+    await findFrame();
+    const source = mermaidRenderMock.mock.lastCall?.[1];
+    expect(source).toContain("Preserved title");
+    expect(source).toContain("linear");
+    expect(source).toContain("rgb(12, 34, 56)");
+  });
+
+  it.each([
+    { name: "without frontmatter", chart: CHART, theme: "base" },
+    {
+      name: "with unthemed frontmatter",
+      chart: `---\nconfig:\n  flowchart:\n    curve: linear\n---\n${CHART}`,
+      theme: "base",
+    },
+    {
+      name: "with an explicit author theme",
+      chart: `---\nconfig:\n  theme: neutral\n---\n${CHART}`,
+      theme: "neutral",
+    },
+  ])("sets the render theme $name", async ({ chart, theme }) => {
+    render(<MermaidDiagram chart={chart} />);
+    await findFrame();
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
+    expect(frontmatter).not.toBeNull();
+    expect(parse(frontmatter![1]!).config.theme).toBe(theme);
+  });
+});
 
 describe("MermaidDiagram theme changes", () => {
   it(

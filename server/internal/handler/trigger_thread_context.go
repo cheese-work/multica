@@ -24,8 +24,8 @@ const (
 // embeds it. Best-effort: any read error yields "" and the prompt falls back
 // to the comment-list hint.
 func (h *Handler) buildTriggerThreadContext(ctx context.Context, trigger db.Comment, rootID pgtype.UUID) string {
-	rows, err := h.Queries.ListCommentThreadHistory(ctx, db.ListCommentThreadHistoryParams{
-		RowLimit:        1000,
+	earlier, err := h.Queries.ListCommentThreadContext(ctx, db.ListCommentThreadContextParams{
+		ReplyLimit:      triggerThreadContextReplies,
 		RootID:          rootID,
 		WorkspaceID:     trigger.WorkspaceID,
 		IssueID:         trigger.IssueID,
@@ -35,16 +35,6 @@ func (h *Handler) buildTriggerThreadContext(ctx context.Context, trigger db.Comm
 	if err != nil {
 		return ""
 	}
-	earlier := rows[:0:0]
-	for _, row := range rows {
-		if row.ID != trigger.ID && !row.DeletedAt.Valid {
-			earlier = append(earlier, row)
-		}
-	}
-	// Keep the root (the question that opened the thread) plus the newest replies.
-	if len(earlier) > triggerThreadContextReplies+1 {
-		earlier = append(earlier[:1:1], earlier[len(earlier)-triggerThreadContextReplies:]...)
-	}
 	names := map[pgtype.UUID]string{}
 	lines := make([]string, 0, len(earlier))
 	for _, row := range earlier {
@@ -53,7 +43,7 @@ func (h *Handler) buildTriggerThreadContext(ctx context.Context, trigger db.Comm
 	return strings.Join(lines, "\n\n")
 }
 
-func (h *Handler) commentAuthorLabel(ctx context.Context, c db.ListCommentThreadHistoryRow, cache map[pgtype.UUID]string) string {
+func (h *Handler) commentAuthorLabel(ctx context.Context, c db.Comment, cache map[pgtype.UUID]string) string {
 	if name, ok := cache[c.AuthorID]; ok {
 		return name
 	}

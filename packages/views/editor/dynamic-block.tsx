@@ -136,6 +136,7 @@ export function DynamicBlock({
       value={view}
       onValueChange={(value) => setView(value as DynamicBlockView)}
       data-dynamic-block={kind}
+      data-rich-block-active={fullscreen ? "" : undefined}
       // No outer margin: the lazy shell around the block owns that spacing.
       className={cn(
         "group/dynamic-block gap-0 overflow-hidden rounded-lg border bg-surface shadow-[var(--surface-shadow)]",
