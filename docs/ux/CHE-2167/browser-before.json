@@ -1,0 +1,377 @@
+{
+  "phase": "before",
+  "results": [
+    {
+      "theme": "light",
+      "width": 1440,
+      "screenshot": "mentions-light-1440-before.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.141 0.005 285.823)",
+          "background": "oklab(0.928565 0.00348623 0.0398478)",
+          "foregroundRgba": [
+            9,
+            9,
+            11,
+            255
+          ],
+          "backgroundRgba": [
+            244,
+            230,
+            202,
+            255
+          ],
+          "contrast": 16.123007094346903,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.141 0.005 285.823)",
+          "background": "oklab(0.928565 0.00348623 0.0398478)",
+          "foregroundRgba": [
+            9,
+            9,
+            11,
+            255
+          ],
+          "backgroundRgba": [
+            244,
+            230,
+            202,
+            255
+          ],
+          "contrast": 16.123007094346903,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "light",
+      "width": 390,
+      "screenshot": "mentions-light-390-before.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.141 0.005 285.823)",
+          "background": "oklab(0.928565 0.00348623 0.0398478)",
+          "foregroundRgba": [
+            9,
+            9,
+            11,
+            255
+          ],
+          "backgroundRgba": [
+            244,
+            230,
+            202,
+            255
+          ],
+          "contrast": 16.123007094346903,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.141 0.005 285.823)",
+          "background": "oklab(0.928565 0.00348623 0.0398478)",
+          "foregroundRgba": [
+            9,
+            9,
+            11,
+            255
+          ],
+          "backgroundRgba": [
+            244,
+            230,
+            202,
+            255
+          ],
+          "contrast": 16.123007094346903,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "screenshot": "mentions-dark-1440-before.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.985 0 0)",
+          "background": "oklab(0.31 0.00450873 0.0362399)",
+          "foregroundRgba": [
+            250,
+            250,
+            250,
+            255
+          ],
+          "backgroundRgba": [
+            57,
+            47,
+            26,
+            255
+          ],
+          "contrast": 12.610182305775876,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.985 0 0)",
+          "background": "oklab(0.31 0.00450873 0.0362399)",
+          "foregroundRgba": [
+            250,
+            250,
+            250,
+            255
+          ],
+          "backgroundRgba": [
+            57,
+            47,
+            26,
+            255
+          ],
+          "contrast": 12.610182305775876,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 390,
+      "screenshot": "mentions-dark-390-before.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.985 0 0)",
+          "background": "oklab(0.31 0.00450873 0.0362399)",
+          "foregroundRgba": [
+            250,
+            250,
+            250,
+            255
+          ],
+          "backgroundRgba": [
+            57,
+            47,
+            26,
+            255
+          ],
+          "contrast": 12.610182305775876,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.985 0 0)",
+          "background": "oklab(0.31 0.00450873 0.0362399)",
+          "foregroundRgba": [
+            250,
+            250,
+            250,
+            255
+          ],
+          "backgroundRgba": [
+            57,
+            47,
+            26,
+            255
+          ],
+          "contrast": 12.610182305775876,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    }
+  ]
+}

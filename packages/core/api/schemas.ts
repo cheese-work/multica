@@ -554,8 +554,15 @@ const IssueWorkflowHandlerSchema = z.object({
 }).loose();
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
 ]);
+
+const IssueWorkflowEdgeSchema = z.object({
+  to: z.string(),
+  guard: z.string(),
+  timeout: z.string().optional(),
+  on_timeout: z.string().optional(),
+});
 
 const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
@@ -564,6 +571,7 @@ const IssueWorkflowStepSchema = z.object({
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
+  edges: z.array(IssueWorkflowEdgeSchema).optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -574,6 +582,9 @@ export const IssueWorkflowSchema = z.object({
   is_default: z.boolean().default(false),
   owner_id: z.string().nullable().default(null),
   steps: z.array(IssueWorkflowStepSchema).default([]),
+  // Run rules (CHE-2152): null keeps the server default budget.
+  max_runs_per_issue: z.number().nullable().default(null),
+  include_child_prs: z.boolean().default(true),
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
@@ -595,6 +606,8 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   is_default: false,
   owner_id: null,
   steps: [],
+  max_runs_per_issue: null,
+  include_child_prs: true,
   project_ids: [],
   created_at: "",
   updated_at: "",
@@ -984,6 +997,18 @@ const DecisionCardSchema = z.object({
   inherited: z.boolean().catch(false).default(false),
 }).loose();
 
+const DecisionRequestCardSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string().default(""),
+  source_comment_id: z.string().nullish().catch(undefined),
+  ask: z.string(),
+  state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
+  created_at: z.string(),
+  withdrawn_at: z.string().nullish().catch(undefined),
+  reason: z.string().optional().catch(undefined),
+}).loose();
+
 export const ChatMessageSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -995,11 +1020,13 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference", "decision_request", "decision_cancel_notice"])
     .catch("message")
     .optional(),
   decision_quotes: z.array(DecisionCardSchema).optional().catch(undefined),
   decision_ref: DecisionCardSchema.optional().catch(undefined),
+  decision_request: DecisionRequestCardSchema.optional().catch(undefined),
+  decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -1287,6 +1314,7 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
+  hints: z.array(z.string()).optional().catch(undefined),
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
@@ -1511,6 +1539,8 @@ export const IssueSchema = z.object({
   assignee_id: z.string().nullable(),
   creator_type: z.string(),
   creator_id: z.string(),
+  // Additive: older backends do not send it, and nothing breaks without it.
+  requested_by_id: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.

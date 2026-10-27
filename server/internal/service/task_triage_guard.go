@@ -69,7 +69,8 @@ var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived fr
 // run. Redoing triage is re-triage.
 var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which is redone by re-triaging the issue rather than by rerunning it")
 
-// guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage. q is
+// guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
+// whose workflow run budget is spent (guardRunBudget). q is
 // the caller's own query handle so a transaction-scoped enqueue reads the
 // status its own transaction wrote — the deferred-channel path creates the
 // issue and its task together, and an uncommitted Triage issue must still be
@@ -98,7 +99,7 @@ func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	if state.Valid {
 		return ErrIssueInTriage
 	}
-	return nil
+	return guardRunBudget(ctx, q, issueID)
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB

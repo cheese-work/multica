@@ -1,4 +1,22 @@
 {
+  "relations": {
+    "title": "Relations graph",
+    "direction": "Arrows point from parent to child, from a watched issue to the issue it wakes, and from a mention to its target. The current issue has a thick border.",
+    "depth": "Depth",
+    "loading": "Loading relations…",
+    "load_failed": "Could not load relations.",
+    "render_failed": "Could not render the graph.",
+    "retry": "Try again",
+    "empty": "No related issues.",
+    "omitted": "{{count}} more not shown (40-node limit).",
+    "parent": "parent → child",
+    "duplicate": "duplicate of",
+    "wakeup": "wakes",
+    "children_done": "children done → wake",
+    "mention": "mentions",
+    "shared_pr": "shared PR",
+    "unknown": "related"
+  },
   "inline_run": {
     "label": "{{name}} run",
     "stop": "Stop",
@@ -404,6 +422,7 @@
     "section_parent_issue": "Parent issue",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Metadata",
+    "status_summary_label": "Status summary",
     "section_details": "Details",
     "section_quick_actions": "Quick Actions",
     "quick_actions_more": "Show {{count}} more",
@@ -449,6 +468,7 @@
     "prop_labels": "Labels",
     "add_property_action": "Add property",
     "prop_created_by": "Created by",
+    "prop_requested_by": "Requested by",
     "prop_created": "Created",
     "prop_updated": "Updated",
     "activity_section": "Activity",
@@ -574,6 +594,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
     "expand_thread": "Expand thread",
@@ -1531,7 +1552,8 @@
       "member": "Member",
       "project_lead": "Project lead",
       "creator": "Issue creator",
-      "project_lead_named": "{{name}} (project lead)"
+      "project_lead_named": "{{name}} (project lead)",
+      "human_by_role": "Human by role"
     },
     "settings": {
       "title": "Workflows",
@@ -1727,7 +1749,8 @@
       "override_follow_project": "Follow the project’s workflow",
       "override_error": "Couldn’t change the workflow",
       "no_workflow": "No workflow",
-      "card_title": "{{workflow}} · from {{project}}"
+      "card_title": "{{workflow}} · from {{project}}",
+      "flowchart": "Flowchart"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1746,6 +1769,7 @@
       "mode_member": "Hand to a member",
       "mode_member_hint": "Changes the assignee; nothing runs",
       "project_lead_hint": "If the project lead is an agent, it starts a run.",
+      "human_by_role_hint": "Requester, then project lead, then workspace owner.",
       "pick_agent": "Choose an agent",
       "pick_member": "Choose a member",
       "search_agents": "Search agents",
@@ -1775,7 +1799,30 @@
       "scope_own": "Only this project uses this workflow.",
       "no_handoff_here": "No handoff",
       "scope_shared_one": "{{count}} project uses this workflow. Its handoffs apply to every project using it.",
-      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them."
+      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them.",
+      "graph_label": "Workflow graph",
+      "exits_label": "Workflow exits",
+      "exit_item": "{{from}} to {{to}} when {{guard}}",
+      "edit": {
+        "title": "Exits from {{step}}",
+        "pick": "Select a step to edit its exits.",
+        "empty": "No exits.",
+        "group": "Exit {{n}}: {{to}}",
+        "guard": "Guard",
+        "target": "Goes to",
+        "timeout": "Timeout",
+        "on_timeout": "On timeout",
+        "add": "Add exit",
+        "remove": "Remove exit",
+        "issues": {
+          "too_many_edges": "{{from}} has more than {{max}} exits.",
+          "missing_target": "An exit of {{from}} goes to a missing step.",
+          "bad_guard": "An exit of {{from}} has an unknown guard.",
+          "bad_timeout": "An exit of {{from}} needs a timeout between 1m and 720h, e.g. 72h.",
+          "bad_on_timeout": "An exit of {{from}} needs a valid On timeout step.",
+          "ci_green_source": "{{from}} cannot advance on CI green."
+        }
+      }
     },
     "templates": {
       "delivery": {

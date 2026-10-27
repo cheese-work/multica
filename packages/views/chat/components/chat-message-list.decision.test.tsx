@@ -94,6 +94,62 @@ beforeEach(() => scrollToIndex.mockReset());
 afterEach(() => vi.useRealTimers());
 
 describe("ChatMessageList — decision cards", () => {
+  const requestCard = {
+    id: "request-1",
+    issue_id: "issue-1",
+    issue_identifier: "CHE-2088",
+    source_comment_id: "source-1",
+    ask: "Ship the reversible change?",
+    state: "open" as const,
+    created_at: "2026-10-26T05:00:00Z",
+  };
+
+  it("renders an open ask as a labelled card with source issue and comment links", () => {
+    renderList({ messages: [{ ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: requestCard }] });
+    const region = screen.getByRole("region", { name: "Decision request: Open" });
+    expect(region).toHaveTextContent(requestCard.ask);
+    expect(screen.getByRole("link", { name: "CHE-2088" })).toHaveAttribute("href", "/acme/issues/issue-1");
+    expect(screen.getByRole("link", { name: "Source comment" })).toHaveAttribute("href", "/acme/issues/issue-1#comment-source-1");
+    expect(region).toHaveTextContent("12:00 ICT");
+  });
+
+  it("keeps the original ask and reason in the withdrawn card, not a text announcement", () => {
+    renderList({ messages: [
+      { ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: { ...requestCard, state: "withdrawn", reason: "Superseded by the new scope.", withdrawn_at: "2026-10-26T06:30:00Z" } },
+      { ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice", content: "Obsolete text announcement" }), decision_requests: [{ ...requestCard, state: "withdrawn", reason: "Superseded by the new scope.", withdrawn_at: "2026-10-26T06:30:00Z" }] },
+    ] });
+    const region = screen.getByRole("region", { name: "Decision request: Withdrawn" });
+    expect(region).toHaveTextContent(requestCard.ask);
+    expect(region).toHaveTextContent("Superseded by the new scope.");
+    expect(region).toHaveTextContent("13:30 ICT");
+    expect(screen.queryByText("Obsolete text announcement")).toBeNull();
+    expect(screen.queryByText(/ask text unavailable/i)).toBeNull();
+  });
+
+  it("labels answered asks and leaves legacy asks without source metadata usable", () => {
+    renderList({ messages: [{ ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: { ...requestCard, state: "answered", source_comment_id: undefined } }] });
+    expect(screen.getByRole("region", { name: "Decision request: Answered" })).toHaveTextContent(requestCard.ask);
+    expect(screen.getByRole("link", { name: "CHE-2088" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Source comment" })).toBeNull();
+  });
+
+  it("keeps the text of asks from older servers without any card metadata", () => {
+    renderList({ messages: [message("legacy", { role: "assistant", message_kind: "decision_request", content: "Original legacy ask" })] });
+    expect(screen.getByText("Original legacy ask")).toBeInTheDocument();
+    expect(screen.queryByTestId("decision-request-card")).toBeNull();
+  });
+
+  it("renders the withdrawn card when the original ask is outside the loaded page", () => {
+    renderList({ messages: [{ ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice", content: "Legacy cancellation text" }), decision_requests: [{ ...requestCard, state: "withdrawn", reason: "Scope changed." }] }] });
+    expect(screen.getByRole("region", { name: "Decision request: Withdrawn" })).toHaveTextContent(requestCard.ask);
+    expect(screen.queryByText("Legacy cancellation text")).toBeNull();
+  });
+
+  it("keeps a cancellation notice readable if additive card metadata is unavailable", () => {
+    renderList({ messages: [message("notice", { role: "assistant", message_kind: "decision_cancel_notice", content: "Cancellation fallback" })] });
+    expect(screen.getByText("Cancellation fallback")).toBeInTheDocument();
+  });
+
   it("puts the card under the quoted bubble and none under other bubbles", () => {
     renderList({ messages: [message("a"), message("bb", { decision_quotes: [card()] })] });
     const cards = screen.getAllByTestId("decision-dm-card");

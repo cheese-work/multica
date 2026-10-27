@@ -15,22 +15,22 @@ import (
 )
 
 func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(writer, http.StatusForbidden, "decision request requires this issue's running task")
+		return
+	}
 	var input struct {
-		IssueID         string `json:"issue_id"`
-		SessionID       string `json:"session_id"`
-		NewDM           bool   `json:"new_dm"`
-		For             string `json:"for"`
-		Ask             string `json:"ask"`
-		Footer          string `json:"footer"`
-		ParentID        string `json:"parent_id"`
-		EscalationClass string `json:"escalation_class"`
+		IssueID         string          `json:"issue_id"`
+		SessionID       string          `json:"session_id"`
+		NewDM           bool            `json:"new_dm"`
+		For             string          `json:"for"`
+		Ask             json.RawMessage `json:"ask"`
+		Footer          string          `json:"footer"`
+		ParentID        string          `json:"parent_id"`
+		EscalationClass string          `json:"escalation_class"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
-		return
-	}
-	if len(decisionAskContent(decisionRequestInput{Ask: input.Ask, Footer: input.Footer})) > maxCommentContentBytes {
-		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, input.IssueID)
@@ -38,6 +38,33 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
+		return
+	}
+	if len(input.Ask) == 0 || string(input.Ask) == "null" {
+		writeError(writer, http.StatusBadRequest, "a structured ask is required")
+		return
+	}
+	parsed, err := decisiontx.DecodeAsk(input.Ask)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	hints := decisiontx.LintAsk(parsed)
+	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
+	if !ok {
+		return
+	}
+	sourceCommentID, ok := parseUUIDOrBadRequest(writer, parsed.SourceCommentID, "ask.source_comment_id")
+	if !ok {
+		return
+	}
+	if sourceIssueID != issue.ID {
+		writeError(writer, http.StatusBadRequest, "ask.source_issue_id must match issue_id")
+		return
+	}
+	ask := parsed.Content()
+	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
+		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
 	if input.NewDM && (input.SessionID != "" || input.For == "") {
@@ -57,9 +84,13 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
+		return
+	}
+	if result.Replayed {
+		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints})
 		return
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
@@ -103,7 +134,13 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
-	writeJSON(writer, http.StatusCreated, result.Request)
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints})
+}
+
+// decisionRequestResponse adds advisory ask-lint hints to the stored request.
+type decisionRequestResponse struct {
+	db.DecisionRequest
+	Hints []string `json:"hints,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {

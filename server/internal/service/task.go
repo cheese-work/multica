@@ -54,6 +54,10 @@ type TaskService struct {
 	Wakeup    TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
+	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
+	// moves the issue along an edge whose guard holds, or reschedules or drops
+	// the watch. Nil leaves the watches untouched.
+	WorkflowEdges func(ctx context.Context, w db.IssueWakeup) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -388,6 +392,22 @@ func (s *TaskService) captureTaskQueued(ctx context.Context, task db.AgentTaskQu
 type runtimeMCPOverlayData struct {
 	Overlay       json.RawMessage
 	ConnectedApps json.RawMessage
+}
+
+type preparedRuntimeMCPOverlay struct {
+	agentID          pgtype.UUID
+	originatorUserID pgtype.UUID
+	data             runtimeMCPOverlayData
+}
+
+func (s *TaskService) runtimeMCPOverlayForEnqueue(ctx context.Context, originatorUserID pgtype.UUID, agent db.Agent, prepared *preparedRuntimeMCPOverlay) runtimeMCPOverlayData {
+	if prepared == nil {
+		return s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	}
+	if prepared.agentID != agent.ID || prepared.originatorUserID != originatorUserID {
+		return runtimeMCPOverlayData{}
+	}
+	return prepared.data
 }
 
 // buildRuntimeMCPOverlay computes the optional per-task Composio MCP overlay.
@@ -750,6 +770,7 @@ var ErrAttributionFailClosed = errors.New("attribution: no precise accountable h
 // including the index name, is logged once at debug and never wrapped in) so no
 // upper-layer log or response can leak the constraint name (#5914, Elon review).
 var ErrDuplicatePendingTask = errors.New("a pending task for this issue and agent already exists")
+var ErrCommentTriggerRateLimited = errors.New("comment-triggered run was rate limited")
 
 // isDuplicatePendingTaskErr reports whether err is the pending-task unique-index
 // violation (a concurrent enqueue won the race). Accept both names while v1 and
@@ -1193,6 +1214,118 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 	return s.enqueueIssueTask(ctx, issue, commentID, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 }
 
+func (s *TaskService) EnqueueCommentTriggeredTask(ctx context.Context, issue db.Issue, agentID, triggerCommentID pgtype.UUID, issueAssignee, isLeader bool, squadID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
+	if !issue.ID.Valid || !agentID.Valid || !triggerCommentID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("comment trigger requires valid issue, agent, and comment ids")
+	}
+	if s.TxStarter == nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("comment trigger rate limit requires transaction support")
+	}
+	rateLimited, err := s.commentTriggerRateLimited(ctx, issue.ID, agentID)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if rateLimited {
+		return db.AgentTaskQueue{}, ErrCommentTriggerRateLimited
+	}
+	preparedOverlay, err := s.prepareCommentTriggerRuntimeMCPOverlay(ctx, issue, agentID, triggerCommentID, issueAssignee, actorUserID, origin)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("begin comment trigger enqueue: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "comment-trigger-rate-limit:"+util.UUIDToString(issue.ID)+":"+util.UUIDToString(agentID)); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("lock comment trigger rate limit: %w", err)
+	}
+	var limited bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM comment_trigger_rate_limit
+		WHERE issue_id = $1 AND agent_id = $2 AND triggered_at > now() - interval '10 minutes'
+	)`, issue.ID, agentID).Scan(&limited)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("read comment trigger rate limit: %w", err)
+	}
+	if limited {
+		return db.AgentTaskQueue{}, ErrCommentTriggerRateLimited
+	}
+
+	queries := s.Queries.WithTx(tx)
+	var task db.AgentTaskQueue
+	var attr attribution.Result
+	if issueAssignee {
+		if issue.AssigneeID != agentID {
+			return db.AgentTaskQueue{}, fmt.Errorf("comment trigger agent does not match issue assignee")
+		}
+		task, attr, err = s.enqueueIssueTaskWithQueriesAndOverlay(ctx, queries, issue, triggerCommentID, nil, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, origin, preparedOverlay)
+	} else {
+		task, attr, err = s.enqueueMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, nil, isLeader, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin, preparedOverlay)
+	}
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO comment_trigger_rate_limit (issue_id, agent_id, triggered_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (issue_id, agent_id) DO UPDATE SET triggered_at = EXCLUDED.triggered_at`, issue.ID, agentID); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("record comment trigger rate limit: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("commit comment trigger enqueue: %w", err)
+	}
+	s.RecordHumanDelegation(ctx, attr)
+	s.PublishTaskEnqueued(ctx, task)
+	return task, nil
+}
+
+func (s *TaskService) commentTriggerRateLimited(ctx context.Context, issueID, agentID pgtype.UUID) (bool, error) {
+	limited, err := s.Queries.IsCommentTriggerRateLimited(ctx, db.IsCommentTriggerRateLimitedParams{
+		IssueID: issueID,
+		AgentID: agentID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("read comment trigger rate limit: %w", err)
+	}
+	return limited, nil
+}
+
+func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context, issue db.Issue, agentID, triggerCommentID pgtype.UUID, issueAssignee bool, actorUserID pgtype.UUID, origin RunOrigin) (*preparedRuntimeMCPOverlay, error) {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) {
+		return nil, nil
+	}
+	if issueAssignee && issue.AssigneeID != agentID {
+		return nil, fmt.Errorf("comment trigger agent does not match issue assignee")
+	}
+	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin); err != nil {
+		return nil, err
+	}
+	agent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("load agent: %w", err)
+	}
+	if agent.ArchivedAt.Valid {
+		return nil, fmt.Errorf("agent is archived")
+	}
+	if !agent.RuntimeID.Valid {
+		return nil, fmt.Errorf("agent has no runtime")
+	}
+	agentAuthoredSource := attribution.SourceDelegation
+	if issueAssignee {
+		agentAuthoredSource = attribution.SourceCommentSource
+	}
+	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, agentAuthoredSource, actorUserID)
+	attr, err = s.applyAttributionFallback(ctx, attr, agent)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}, nil
+}
+
 // EnqueueDeferredChannelIssueTask persists the assigned task for a media-backed
 // channel /issue turn without making it claimable yet. The fireAt deadline is a
 // crash-safe fallback; the channel router promotes the task as soon as the
@@ -1328,6 +1461,10 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 }
 
 func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
+	return s.enqueueIssueTaskWithQueriesAndOverlay(ctx, queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, nil)
+}
+
+func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.AgentTaskQueue, attribution.Result, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
@@ -1364,7 +1501,7 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	originatorUserID := attr.UserID
-	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	createParams := db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
@@ -1544,7 +1681,11 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 }
 
 func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
-	params, attr, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
+	return s.enqueueMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, nil)
+}
+
+func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.AgentTaskQueue, attribution.Result, error) {
+	params, attr, err := s.prepareMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, preparedOverlay)
 	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
@@ -1563,6 +1704,10 @@ func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries
 }
 
 func (s *TaskService) prepareMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.CreateAgentTaskParams, attribution.Result, error) {
+	return s.prepareMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, nil)
+}
+
+func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.CreateAgentTaskParams, attribution.Result, error) {
 	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
@@ -1593,7 +1738,7 @@ func (s *TaskService) prepareMentionTaskWithQueries(ctx context.Context, queries
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 	originatorUserID := attr.UserID
-	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	return db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
@@ -6154,8 +6299,8 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || IsProjectInactive(err) {
-			slog.Info("task auto-retry skipped: issue is in triage",
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
+			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
 			return nil, nil
@@ -8629,6 +8774,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"assignee_id":     util.UUIDToPtr(issue.AssigneeID),
 		"creator_type":    issue.CreatorType,
 		"creator_id":      util.UUIDToString(issue.CreatorID),
+		"requested_by_id": util.UUIDToPtr(issue.RequestedByID),
 		"parent_issue_id": util.UUIDToPtr(issue.ParentIssueID),
 		// Mirrors handler.IssueResponse.DuplicateOf. Null is only true for a
 		// row with no live mark; IssueToMapResolved resolves it for the rest.

@@ -60,6 +60,7 @@ export function MermaidBlock({ chart, title }: { chart: string; title?: string |
       // A diagram that did not draw has nothing to blow up.
       onFullscreen={error == null ? () => setViewerOpen(true) : undefined}
       fullscreenButtonRef={fullscreenButtonRef}
+      fullscreen={viewerOpen}
       preview={() => <MermaidDiagram chart={chart} frame={frame} />}
     />
   );

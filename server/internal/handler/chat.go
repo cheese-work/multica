@@ -404,6 +404,10 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exactly one of title or project_id is required")
 		return
 	}
+	if hasTitle {
+		h.renameChatSession(w, r, userID, *req.Title)
+		return
+	}
 
 	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
 	if !ok {
@@ -414,71 +418,53 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		updated db.ChatSession
 		err     error
 	)
-	var projectIDChanged bool
-	if hasTitle {
-		title := strings.TrimSpace(*req.Title)
-		if title == "" {
-			writeError(w, http.StatusBadRequest, "title is required")
+	projectID := pgtype.UUID{Valid: false}
+	if string(req.ProjectID) != "null" {
+		var rawProjectID string
+		if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		if len([]rune(title)) > chatSessionTitleMaxLen {
-			writeError(w, http.StatusBadRequest, "title is too long")
+		rawProjectID = strings.TrimSpace(rawProjectID)
+		if rawProjectID == "" {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		updated, err = h.Queries.UpdateChatSessionTitle(r.Context(), db.UpdateChatSessionTitleParams{
-			ID:    session.ID,
-			Title: title,
-		})
-	} else {
-		projectID := pgtype.UUID{Valid: false}
-		if string(req.ProjectID) != "null" {
-			var rawProjectID string
-			if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			rawProjectID = strings.TrimSpace(rawProjectID)
-			if rawProjectID == "" {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
-			if !ok {
-				return
-			}
-		}
-
-		tx, txErr := h.TxStarter.Begin(r.Context())
-		if txErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
+		if !ok {
 			return
 		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
+	}
 
-		if projectID.Valid {
-			if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
-				ID:          projectID,
-				WorkspaceID: session.WorkspaceID,
-			}); lockErr != nil {
-				if errors.Is(lockErr, pgx.ErrNoRows) {
-					writeError(w, http.StatusNotFound, "project not found")
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "failed to lock project")
-				return
-			}
-		}
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
 
-		updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
-			ID:          session.ID,
+	if projectID.Valid {
+		if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
+			ID:          projectID,
 			WorkspaceID: session.WorkspaceID,
-			ProjectID:   projectID,
-		})
-		if err == nil {
-			err = tx.Commit(r.Context())
+		}); lockErr != nil {
+			if errors.Is(lockErr, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to lock project")
+			return
 		}
-		projectIDChanged = true
+	}
+
+	updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
+		ID:          session.ID,
+		WorkspaceID: session.WorkspaceID,
+		ProjectID:   projectID,
+	})
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat session")
@@ -491,10 +477,8 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		Title:         updated.Title,
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	}
-	if projectIDChanged {
-		projectID := uuidToPtr(updated.ProjectID)
-		payload.ProjectID = &projectID
-	}
+	projectIDValue := uuidToPtr(updated.ProjectID)
+	payload.ProjectID = &projectIDValue
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
 	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
@@ -1311,10 +1295,18 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	groupedAtt := h.groupChatMessageAttachments(ctx, workspaceID, messageIDs)
 
 	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
+	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
+			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
+				resp[i].DecisionRequests = cards
+			} else {
+				resp[i].DecisionRequest = &cards[0]
+			}
+		}
 		if cards := quotes[uuidToString(m.ID)]; len(cards) > 0 {
 			resp[i].DecisionQuotes = cards
 		}
@@ -2204,7 +2196,9 @@ type ChatMessageResponse struct {
 	DecisionQuotes []DecisionCard `json:"decision_quotes"`
 	// DecisionRef is the card a decision_reference message announces; nil for
 	// other kinds and for rows written before the link was stored.
-	DecisionRef *DecisionCard `json:"decision_ref,omitempty"`
+	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
+	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
+	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
@@ -2296,6 +2290,8 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingOpening
 	case protocol.ChatMessageKindDecisionReference:
 		return protocol.ChatMessageKindDecisionReference
+	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
+		return kind
 	default:
 		return protocol.ChatMessageKindMessage
 	}
