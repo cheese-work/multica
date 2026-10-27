@@ -60,7 +60,8 @@ export function patchSessionListAfterRename(
               ? {
                   ...s,
                   title: payload.title ?? s.title,
-                  pinned: payload.pinned ?? s.pinned,
+                  // Archived DMs are unpinned (A2), even if the event omits `pinned`.
+                  pinned: payload.status === "archived" ? false : (payload.pinned ?? s.pinned),
                   status: payload.status ?? s.status,
                   continued_into_session_id:
                     payload.continued_into_session_id ??

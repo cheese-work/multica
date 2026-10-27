@@ -436,4 +436,29 @@ describe("patchSessionListAfterRename", () => {
     expect(afterArchive?.[1]?.unread_count).toBe(0);
     expect(afterArchive?.[1]?.continued_into_session_id).toBe("s2");
   });
+
+  it("clears a stale pin when an event archives a pinned DM without a pinned field", () => {
+    const qc = new QueryClient();
+    const wsId = "ws-1";
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), [
+      {
+        id: "s1",
+        workspace_id: wsId,
+        creator_id: "u1",
+        agent_id: "a1",
+        title: "Pinned",
+        status: "active",
+        pinned: true,
+        has_unread: false,
+        created_at: "2026-10-21T01:00:00Z",
+        updated_at: "2026-10-21T05:00:00Z",
+      },
+    ]);
+
+    patchSessionListAfterRename(qc, wsId, { chat_session_id: "s1", status: "archived" });
+
+    const [row] = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId)) ?? [];
+    expect(row?.status).toBe("archived");
+    expect(row?.pinned).toBe(false);
+  });
 });
