@@ -120,9 +120,18 @@ func decodeStrings(field string, raw json.RawMessage, into *[]string) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	if err := json.Unmarshal(raw, into); err != nil {
+	var items []*string
+	if err := json.Unmarshal(raw, &items); err != nil {
 		return &AskError{field, "must be a list of strings"}
 	}
+	list := make([]string, len(items))
+	for index, item := range items {
+		if item == nil {
+			return &AskError{field, "must be a list of strings"}
+		}
+		list[index] = *item
+	}
+	*into = list
 	return nil
 }
 

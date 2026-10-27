@@ -20,7 +20,7 @@ func LintAsk(ask Ask) []string {
 	check := func(field, text string) {
 		text = lintLinks.ReplaceAllString(text, " ")
 		for _, sha := range lintSHA.FindAllString(text, -1) {
-			if strings.ContainsAny(sha, "0123456789") && strings.ContainsAny(sha, "abcdef") {
+			if strings.ContainsAny(sha, "0123456789") {
 				hints = append(hints, fmt.Sprintf("%s has a commit SHA (%s); say what it is in plain words", field, sha))
 			}
 		}

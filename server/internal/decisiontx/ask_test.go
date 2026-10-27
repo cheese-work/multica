@@ -36,6 +36,8 @@ func TestDecodeAskMessages(test *testing.T) {
 		{name: "one option", mutate: func(ask map[string]any) { ask["options"] = ask["options"].([]any)[:1] }, want: "ask.options requires at least two structured options"},
 		{name: "duplicate labels", mutate: func(ask map[string]any) { ask["options"].([]any)[1].(map[string]any)["label"] = "now" }, want: "ask.options[1].label must differ from the other labels"},
 		{name: "no cons", mutate: func(ask map[string]any) { ask["options"].([]any)[0].(map[string]any)["cons"] = []string{" "} }, want: "ask.options[0].cons requires at least one nonblank item"},
+		{name: "null pro", mutate: func(ask map[string]any) { ask["options"].([]any)[0].(map[string]any)["pros"] = []any{"Useful", nil} }, want: "ask.options[0].pros must be a list of strings"},
+		{name: "number con", mutate: func(ask map[string]any) { ask["options"].([]any)[0].(map[string]any)["cons"] = []any{"Slow", 3} }, want: "ask.options[0].cons must be a list of strings"},
 		{name: "blank cost", mutate: func(ask map[string]any) { ask["options"].([]any)[1].(map[string]any)["cost_or_time"] = "" }, want: "ask.options[1].cost_or_time is required"},
 		{name: "trailing data", raw: `{} {}`, want: "ask must be one JSON object"},
 		{name: "not an object", raw: `["x"]`, want: "ask must be one JSON object"},
@@ -92,8 +94,13 @@ func TestLintAsk(test *testing.T) {
 	if hints := LintAsk(ask); len(hints) != 1 || !strings.Contains(hints[0], "NOT-RUN") {
 		test.Fatalf("hints = %q, want only NOT-RUN (links stripped, plain words ignored)", hints)
 	}
+	ask.StakesIfWrong = "Reverts commit 904221117 and 1234567890abcdef."
+	if hints := LintAsk(ask); len(hints) != 2 || !strings.Contains(hints[0], "904221117") || !strings.Contains(hints[1], "1234567890abcdef") {
+		test.Fatalf("hints = %q, want both numeric-leading SHAs named", hints)
+	}
+	ask.StakesIfWrong = "Fine."
 	ask.ContextELI10 = "One sentence only."
-	if hints := LintAsk(ask); len(hints) != 2 || !strings.Contains(hints[1], "1 sentences") {
+	if hints := LintAsk(ask); len(hints) != 1 || !strings.Contains(hints[0], "1 sentences") {
 		test.Fatalf("hints = %q, want a sentence-count hint", hints)
 	}
 }

@@ -84,6 +84,20 @@ func TestDecisionAskDecodeErrorsAfterAuthChecks(test *testing.T) {
 			test.Fatalf("auth failure leaked ask errors: %s", response.Body.String())
 		}
 	})
+	test.Run("non-member with task token", func(test *testing.T) {
+		fixture := newRequestCoreFixture(test, false)
+		outsider := dbfx.User(test, "Ask Outsider", "ask-outsider-"+fixture.issueID+"@multica.test")
+		request := fixture.askRequest(test, legacy(fixture))
+		request.Header.Set("X-User-ID", outsider)
+		response := testutil.Call(test, testHandler.RequestDecision, request)
+		if response.Code != http.StatusForbidden && response.Code != http.StatusNotFound {
+			test.Fatalf("status = %d, want 403 or 404: %s", response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "ask.") {
+			test.Fatalf("auth failure leaked ask errors: %s", response.Body.String())
+		}
+		fixture.assertCounts(test, 0)
+	})
 	test.Run("unknown issue", func(test *testing.T) {
 		fixture := newRequestCoreFixture(test, false)
 		request := fixture.apiRequest()
