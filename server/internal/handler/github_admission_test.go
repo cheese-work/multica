@@ -168,7 +168,7 @@ func TestGitHubAdmissionWithdrawalScopeAndDispatchHistory(test *testing.T) {
 		{"object_kind", "'issue_comment'"}, {"object_id", "78"},
 		{"state", "'dispatched'"},
 	} {
-		statement := `CREATE TEMP TABLE withdrawal_copy ON COMMIT DROP AS SELECT * FROM github_webhook_revision WHERE source_delivery_guid=$1`
+		statement := `CREATE TEMP TABLE withdrawal_copy ON COMMIT DROP AS SELECT * FROM github_webhook_revision WHERE source_delivery_guid=$1 AND body_hash<>repeat('a',64)`
 		if _, err := transaction.Exec(context.Background(), statement, delivery); err != nil {
 			test.Fatal(err)
 		}
