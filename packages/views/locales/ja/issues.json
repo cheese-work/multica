@@ -417,6 +417,7 @@
     "section_parent_issue": "親タスク",
     "section_pull_requests": "Pull requests",
     "section_metadata": "メタデータ",
+    "status_summary_label": "ステータスの概要",
     "section_details": "詳細",
     "section_quick_actions": "クイックアクション",
     "quick_actions_more": "残り {{count}} 件を表示",

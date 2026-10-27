@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,12 @@ import (
 // design discussion on MUL-2017).
 const (
 	maxIssueMetadataKeys = 50
+	// statusSummaryMetadataKey holds the issue's one-glance "Status summary"
+	// (CHE-2070): agents rewrite it at each handoff and the issue page shows it
+	// above the description. It reuses this KV surface for its single-key
+	// atomic writes and the issue_metadata_changed event.
+	statusSummaryMetadataKey = "status_summary"
+	maxStatusSummaryRunes    = 500
 )
 
 var issueMetadataKeyRE = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`)
@@ -44,6 +51,18 @@ var issueMetadataMutationLogSequence atomic.Uint64
 // numbers all collapse to float64 and we'd lose integer fidelity.
 type SetIssueMetadataKeyRequest struct {
 	Value json.RawMessage `json:"value"`
+}
+
+// validateStatusSummary keeps the reserved key a short plain string.
+func validateStatusSummary(raw json.RawMessage) error {
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return errors.New("status_summary must be a string")
+	}
+	if utf8.RuneCountInString(text) > maxStatusSummaryRunes {
+		return fmt.Errorf("status_summary cannot exceed %d characters", maxStatusSummaryRunes)
+	}
+	return nil
 }
 
 func validateIssueMetadataKey(key string) error {
@@ -171,6 +190,12 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	if err := validateIssueMetadataValue(req.Value); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if key == statusSummaryMetadataKey {
+		if err := validateStatusSummary(req.Value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	issue, ok := h.loadIssueForUser(w, r, issueID)

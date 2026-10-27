@@ -417,6 +417,7 @@
     "section_parent_issue": "상위 태스크",
     "section_pull_requests": "Pull requests",
     "section_metadata": "메타데이터",
+    "status_summary_label": "상태 요약",
     "section_details": "세부 정보",
     "section_quick_actions": "퀵 액션",
     "quick_actions_more": "{{count}}개 더 보기",

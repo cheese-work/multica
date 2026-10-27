@@ -417,6 +417,7 @@
     "section_parent_issue": "父任务",
     "section_pull_requests": "Pull Request",
     "section_metadata": "元数据",
+    "status_summary_label": "状态摘要",
     "section_details": "详情",
     "section_quick_actions": "快捷操作",
     "quick_actions_more": "显示其余 {{count}} 条",

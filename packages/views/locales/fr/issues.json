@@ -422,6 +422,7 @@
     "section_parent_issue": "Tâche parente",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Métadonnées",
+    "status_summary_label": "Résumé du statut",
     "section_details": "Détails",
     "section_quick_actions": "Actions rapides",
     "quick_actions_more": "Afficher {{count}} de plus",
