@@ -1,39 +1,39 @@
-/**
- * Self-mention highlight for the mobile markdown renderer (CHE-2115).
- *
- * Web styles the viewer's own mentions (and `@all`, which counts as a mention
- * of everyone) with a bold, filled, rounded chip. enriched-markdown cannot
- * inject React per leaf, so mobile gets the same signal from two native hooks:
- *   - `linkVariants` (per-URL-pattern link style) → filled background, no
- *     underline. The library has no corner radius for link backgrounds, so
- *     the fill is square — a known divergence from web.
- *   - bold emphasis inside the link label → `font-weight: 700` equivalent;
- *     variants cannot set weight.
- */
+import type { MarkdownStyle } from "react-native-enriched-markdown";
 
+// sRGB of --mention-self-bg/-fg in packages/ui/styles/tokens.css (the native
+// renderer can't read CSS vars). Kept out of lib/theme.ts so it stays testable
+// without loading expo-router.
+export const SELF_MENTION_COLORS = {
+  light: { bg: "#ffe787", fg: "#282110" },
+  dark: { bg: "#eab532", fg: "#161107" },
+};
+
+// `@all` counts as a mention of every viewer, like web's `.mention-self`.
+// Link variants can't set font weight, so bold the label in the markdown.
 const SELF_LABEL = String.raw`@[^\]\n*_\\]*`;
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function emphasizeSelfMentions(markdown: string, viewerId: string | null) {
-  if (!viewerId) return markdown;
+export function emphasizeSelfMentions(markdown: string, userId: string | undefined) {
+  if (!userId) return markdown;
   const self = new RegExp(
-    String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(viewerId)}|all/[^)\s]*))\)`,
+    String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(userId)}|all/[^)\s]*))\)`,
     "g",
   );
   return markdown.replace(self, "[**$1**]($2)");
 }
 
 export function selfMentionLinkVariants(
-  viewerId: string | null,
-  colors: { color: string; backgroundColor: string },
-): Record<string, { color: string; backgroundColor: string; underline: boolean }> {
-  if (!viewerId) return {};
-  const style = { ...colors, underline: false };
+  userId: string | undefined,
+  colors: { bg: string; fg: string },
+): MarkdownStyle["linkVariants"] {
+  if (!userId) return undefined;
+  // Regex strings tested against the full URL. Ids are UUIDs, but escape anyway.
+  const style = { color: colors.fg, backgroundColor: colors.bg, underline: false };
   return {
-    [`^mention://member/${escapeRegex(viewerId)}$`]: style,
+    [`^mention://member/${escapeRegex(userId)}$`]: style,
     "^mention://all/": style,
   };
 }
