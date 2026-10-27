@@ -86,9 +86,18 @@ replacement content from GitHub.
 
 Before calling admission, the worker denies older pending revisions as
 `superseded` when a newer signed self-edit for the same workspace, installation,
-repository, object and author is stored. An edit at the initial revision's
-timestamp also supersedes that initial revision. Foreign edits do not supersede
-the author's pending work. Denied and dispatched history remains intact.
+repository, object and author is stored. For reviews, any stored self-edit
+supersedes the submitted revision, even when the submission arrives later.
+Successive edited review bodies are ordered by the canonical revision's
+server-assigned `created_at` receipt time, with its source GUID breaking ties.
+This is receipt order, not proof of GitHub edit chronology; authoritative
+provenance admission remains required before production projection or dispatch.
+Comments use their signed `updated_at` first, then receipt order for equal
+update timestamps. Foreign edits do not supersede the author's pending work.
+Denied and dispatched history remains intact.
+Redelivery of a dispatched revision with a committed receipt reuses its stored
+disposition without calling admission again. A dispatched state without a
+receipt still requires admission and a committed dispatch transaction.
 
 The production admission function currently rechecks the intake guards and
 leaves eligible items `deferred` with `awaiting_admission`. Full provenance
@@ -116,7 +125,9 @@ The dormant dispatch primitive writes the system comment, queued task,
 transaction. Receipts are keyed by workspace, object kind, object ID, body
 hash, canonical revision source GUID and target issue. Redeliveries select the
 original canonical revision; a different redelivery GUID does not create another
-receipt. Same-body edits retain separate receipts. A receipt is inserted only
+receipt. Distinct normalized revisions retain separate receipts; repeated
+review edits with the same identity reuse the canonical revision and receipt.
+A receipt is inserted only
 when its matching canonical revision, task and trigger comment exist. Notifications publish only after
 commit. A failed or interrupted transaction cannot commit a receipt alone;
 a retry reads the committed receipt before creating another dispatch.

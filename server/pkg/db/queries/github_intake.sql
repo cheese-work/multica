@@ -59,11 +59,18 @@ WHERE revision.workspace_id = pending.workspace_id
     WHERE newer.workspace_id = pending.workspace_id
       AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
       AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
-      AND newer.object_updated_at IS NOT NULL
       AND (
-        newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at)
-        OR (pending.action IN ('submitted', 'created')
-            AND newer.object_updated_at >= COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at, newer.object_updated_at))
+        (pending.object_kind = 'review' AND (
+          pending.action = 'submitted'
+          OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+        ))
+        OR (pending.object_kind <> 'review' AND newer.object_updated_at IS NOT NULL AND (
+          newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_created_at)
+          OR (newer.object_updated_at = COALESCE(pending.object_updated_at, pending.object_created_at) AND (
+            pending.action = 'created'
+            OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+          ))
+        ))
       )
   );
 
@@ -84,6 +91,11 @@ SELECT delivery_guid, event, reason, attempts, received_at, next_attempt_at,
        EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
 FROM github_webhook_intake WHERE state = 'deferred'
 ORDER BY received_at LIMIT $1;
+
+-- name: HasGitHubWebhookRevisionDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4
+  AND source_delivery_guid = $5);
 
 -- name: HasGitHubWebhookDispatch :one
 SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch

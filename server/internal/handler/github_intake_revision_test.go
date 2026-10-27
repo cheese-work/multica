@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -16,7 +17,6 @@ func TestGitHubIntakeWorkerSameBodyRevisionsAndRedelivery(test *testing.T) {
 	}
 	assertIntakeWorkerDispatch(test, fixture, 1)
 	fixture.payload["action"] = "edited"
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
 	edited := postIntakeForWorker(test, fixture, "-revision-edited")
 	if _, err := worker.runOnce(context.Background()); err != nil {
 		test.Fatal(err)
@@ -32,6 +32,32 @@ func TestGitHubIntakeWorkerSameBodyRevisionsAndRedelivery(test *testing.T) {
 	}
 }
 
+func TestGitHubIntakeWorkerDispatchedRedeliveryPreservesHistory(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	worker := intakeWorkerForTest(test, fixture)
+	initial := postIntakeForWorker(test, fixture, "-dispatched-initial")
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	var admissions int
+	worker.admit = func(context.Context, *db.Queries, db.GithubWebhookRevision, githubIntakePayload) (githubIntakeDecision, error) {
+		admissions++
+		return githubIntakeDecision{State: "denied", Reason: "test_provenance_changed"}, nil
+	}
+	redelivery := postIntakeForWorker(test, fixture, "-dispatched-redelivery")
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	var state, reason string
+	dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, initial).Scan(&state, &reason)
+	if admissions != 0 || state != "dispatched" || reason != "admitted" {
+		test.Fatalf("redelivery admissions=%d history=%s/%s, want 0 and dispatched/admitted", admissions, state, reason)
+	}
+	assertIntakeWorkerState(test, initial, "dispatched")
+	assertIntakeWorkerState(test, redelivery, "dispatched")
+	assertIntakeWorkerDispatch(test, fixture, 1)
+}
+
 func TestGitHubIntakeWorkerDeniedRevisionIsolation(test *testing.T) {
 	fixture := newGitHubIntakeFixture(test)
 	worker := intakeWorkerForTest(test, fixture)
@@ -39,7 +65,6 @@ func TestGitHubIntakeWorkerDeniedRevisionIsolation(test *testing.T) {
 	denied := postIntakeForWorker(test, fixture, "-revision-denied")
 	fixture.payload["sender"] = map[string]any{"id": 42, "login": "reviewer", "type": "User"}
 	fixture.payload["action"] = "edited"
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
 	edited := postIntakeForWorker(test, fixture, "-revision-eligible")
 	if _, err := worker.runOnce(context.Background()); err != nil {
 		test.Fatal(err)
@@ -63,24 +88,23 @@ func TestGitHubIntakeWorkerDeniedRevisionIsolation(test *testing.T) {
 }
 
 func TestGitHubIntakeWorkerSupersedesPendingBeforeAdmission(test *testing.T) {
-	for _, scenario := range []string{"initial_first", "edited_first", "same_clock_tick"} {
+	for _, scenario := range []string{"initial_first", "edited_first", "edited_again", "same_receipt_tick"} {
 		test.Run(scenario, func(test *testing.T) {
 			fixture := newGitHubIntakeFixture(test)
 			worker := intakeWorkerForTest(test, fixture)
-			initial, edited := fixture.issueID+"-pending-initial", fixture.issueID+"-pending-edited"
+			initial, edited := fixture.issueID+"-pending-1", fixture.issueID+"-pending-2"
 			postInitial := func() {
 				fixture.payload["action"] = "submitted"
-				fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:00:00Z"
-				postIntakeForWorker(test, fixture, "-pending-initial")
+				if scenario == "edited_again" || scenario == "same_receipt_tick" {
+					fixture.payload["action"] = "edited"
+				}
+				fixture.payload["review"].(map[string]any)["body"] = "earlier review body"
+				postIntakeForWorker(test, fixture, "-pending-1")
 			}
 			postEdited := func() {
 				fixture.payload["action"] = "edited"
-				updated := "2026-10-26T08:05:00Z"
-				if scenario == "same_clock_tick" {
-					updated = "2026-10-26T08:00:00Z"
-				}
-				fixture.payload["review"].(map[string]any)["updated_at"] = updated
-				postIntakeForWorker(test, fixture, "-pending-edited")
+				fixture.payload["review"].(map[string]any)["body"] = "later edited review body"
+				postIntakeForWorker(test, fixture, "-pending-2")
 			}
 			if scenario == "edited_first" {
 				postEdited()
@@ -88,6 +112,9 @@ func TestGitHubIntakeWorkerSupersedesPendingBeforeAdmission(test *testing.T) {
 			} else {
 				postInitial()
 				postEdited()
+			}
+			if scenario == "same_receipt_tick" {
+				dbfx.Exec(test, `UPDATE github_webhook_revision SET created_at='2026-10-26T08:00:00Z' WHERE source_delivery_guid IN ($1,$2)`, initial, edited)
 			}
 			admit := worker.admit
 			var admitted []string
@@ -119,7 +146,7 @@ func TestGitHubIntakeWorkerSupersessionScope(test *testing.T) {
 	fixture := newGitHubIntakeFixture(test)
 	initial := postIntakeForWorker(test, fixture, "-scope-initial")
 	fixture.payload["action"] = "edited"
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
+	fixture.payload["review"].(map[string]any)["body"] = "edited review body"
 	edited := postIntakeForWorker(test, fixture, "-scope-edited")
 	ctx := context.Background()
 	transaction, err := testPool.Begin(ctx)
@@ -171,7 +198,7 @@ func TestGitHubIntakeWorkerForeignEditDoesNotSupersede(test *testing.T) {
 	initial := postIntakeForWorker(test, fixture, "-foreign-initial")
 	fixture.payload["action"] = "edited"
 	fixture.payload["sender"] = map[string]any{"id": 99, "login": "other-writer", "type": "User"}
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
+	fixture.payload["review"].(map[string]any)["body"] = "foreign edited review body"
 	foreign := postIntakeForWorker(test, fixture, "-foreign-edit")
 	worker := intakeWorkerForTest(test, fixture)
 	worker.admit = func(context.Context, *db.Queries, db.GithubWebhookRevision, githubIntakePayload) (githubIntakeDecision, error) {
@@ -189,4 +216,72 @@ func TestGitHubIntakeWorkerForeignEditDoesNotSupersede(test *testing.T) {
 	}
 	assertIntakeWorkerState(test, foreign, "quarantined")
 	assertGitHubIntakeNoEffects(test, fixture)
+}
+
+func TestGitHubIntakeWorkerCommentSupersession(test *testing.T) {
+	for _, scenario := range []string{"initial_first", "edited_first", "updated_time_outranks_receipt", "same_update_tick"} {
+		test.Run(scenario, func(test *testing.T) {
+			fixture := newGitHubIntakeFixture(test)
+			worker := intakeWorkerForTest(test, fixture)
+			comment := fixture.payload["review"].(map[string]any)
+			delete(comment, "submitted_at")
+			comment["created_at"] = "2026-10-26T08:00:00Z"
+			fixture.payload["comment"] = comment
+			fixture.payload["issue"] = map[string]any{
+				"number":       fixture.payload["pull_request"].(map[string]any)["number"],
+				"pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widget/pulls/2019"},
+			}
+			initial, edited := fixture.issueID+"-comment-1", fixture.issueID+"-comment-2"
+			post := func(delivery, action, updated, body string) {
+				fixture.payload["action"] = action
+				comment["updated_at"], comment["body"] = updated, body
+				if response := fixture.post("issue_comment", fixture.secret, delivery); response.Code != http.StatusAccepted {
+					test.Fatalf("comment intake = %d: %s", response.Code, response.Body.String())
+				}
+			}
+			postInitial := func() {
+				action := "created"
+				if scenario == "updated_time_outranks_receipt" || scenario == "same_update_tick" {
+					action = "edited"
+				}
+				post(initial, action, "2026-10-26T08:00:00Z", "older comment body")
+			}
+			postEdited := func() {
+				updated := "2026-10-26T08:05:00Z"
+				if scenario == "same_update_tick" {
+					updated = "2026-10-26T08:00:00Z"
+				}
+				post(edited, "edited", updated, "newer comment body")
+			}
+			if scenario == "edited_first" || scenario == "updated_time_outranks_receipt" {
+				postEdited()
+				postInitial()
+			} else {
+				postInitial()
+				postEdited()
+			}
+			admit := worker.admit
+			var admitted []string
+			worker.admit = func(ctx context.Context, queries *db.Queries, revision db.GithubWebhookRevision, payload githubIntakePayload) (githubIntakeDecision, error) {
+				admitted = append(admitted, revision.SourceDeliveryGuid.String)
+				return admit(ctx, queries, revision, payload)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := worker.runOnce(context.Background()); err != nil {
+					test.Fatal(err)
+				}
+			}
+			if len(admitted) != 1 || admitted[0] != edited {
+				test.Fatalf("comment admission called for %v, want only %s", admitted, edited)
+			}
+			var state, reason string
+			dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, initial).Scan(&state, &reason)
+			if state != "denied" || reason != "superseded" {
+				test.Fatalf("older comment revision = %s/%s, want denied/superseded", state, reason)
+			}
+			assertIntakeWorkerState(test, initial, "denied")
+			assertIntakeWorkerState(test, edited, "dispatched")
+			assertIntakeWorkerDispatch(test, fixture, 1)
+		})
+	}
 }

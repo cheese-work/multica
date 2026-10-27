@@ -158,7 +158,18 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 			return "", "", nil, errors.New("github: missing canonical revision delivery")
 		}
 		decision := githubIntakeDecision{State: revision.State, Reason: revision.Reason}
-		if revision.State == "deferred" || revision.State == "dispatched" {
+		needsAdmission := revision.State == "deferred"
+		if revision.State == "dispatched" {
+			recorded, err := queries.HasGitHubWebhookRevisionDispatch(ctx, db.HasGitHubWebhookRevisionDispatchParams{
+				WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
+				BodyHash: revision.BodyHash, SourceDeliveryGuid: revision.SourceDeliveryGuid.String,
+			})
+			if err != nil {
+				return "", "", nil, err
+			}
+			needsAdmission = !recorded
+		}
+		if needsAdmission {
 			if worker.admit == nil {
 				return "", "", nil, errors.New("github: admission unavailable")
 			}
