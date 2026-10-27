@@ -18,7 +18,12 @@ One transaction writes:
   an initial disposition. Revision identity includes workspace, installation,
   repository, object kind/ID, event/action, body hash, sender/author IDs, review
   state and signed object timestamps. Different GUIDs for the same revision
-  share one work item. A same-body edit or state change is a separate revision.
+  share one work item. Comment update timestamps distinguish same-body edits.
+  Reviews carry only `submitted_at`, not `created_at` or `updated_at`. Review
+  edits are distinguished by body hash, action, sender and review state, not
+  edit time. Returning to an earlier edited body with the same identity reuses
+  that row rather than creating a fresh revision. If that row is already denied,
+  it stays denied. A changed review state creates a separate revision.
 
 Only a successful commit returns `202`. A database error returns `500` and
 rolls back both writes. Reusing a GUID with different signed bytes or a
