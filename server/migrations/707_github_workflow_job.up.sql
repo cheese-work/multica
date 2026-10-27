@@ -1,7 +1,7 @@
 -- CHE-2147 D1a: GitHub Actions workflow jobs, kept only to track environment
 -- approval gates ("waiting"). One row per (workspace, repo, job_id); job IDs are
 -- unique per attempt. phase only moves forward: 1 waiting, 2 in_progress,
--- 3 completed. The indexes are built CONCURRENTLY in 697-699.
+-- 3 completed. The indexes are built CONCURRENTLY in 708-710.
 CREATE TABLE IF NOT EXISTS github_workflow_job (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
