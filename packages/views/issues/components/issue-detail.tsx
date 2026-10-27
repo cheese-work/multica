@@ -115,7 +115,12 @@ import { CommentInput } from "./comment-input";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
-import { ThreadMinimap, type ThreadMinimapThread } from "./thread-minimap";
+import {
+  ThreadMinimap,
+  createRowRangeSource,
+  type MountedRows,
+  type ThreadMinimapThread,
+} from "./thread-minimap";
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
@@ -2314,6 +2319,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Which rows Virtuoso has mounted, for the thread rail. A store rather than
+  // state: a scroll must not re-render this page. A new issue remounts
+  // Virtuoso, which reports its range afresh.
+  const [rowRange] = useState(createRowRangeSource);
+  const onRowRangeChanged = useCallback(
+    ({ startIndex, endIndex }: { startIndex: number; endIndex: number }) =>
+      rowRange.set({ start: startIndex, end: endIndex }),
+    [rowRange],
+  );
+  const mountedRows = useMemo<MountedRows>(
+    () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
+    [items, rowRange],
+  );
   revealFindDocumentRef.current = (documentId) => {
     if (!documentId.startsWith("comment-")) {
       const element = document.getElementById(documentId);
@@ -4692,6 +4710,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       // scrollTop to maxScrollTop on every height-change
                       // tick — issue-detail is document-shaped, not chat.
                       itemContent={renderItem}
+                      rangeChanged={onRowRangeChanged}
                     />
                   </div>
                 )
@@ -4753,6 +4772,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             threads={minimapThreads}
             scrollContainerEl={scrollContainerEl}
             onJump={jumpToMinimapTarget}
+            mountedRows={mountedRows}
             className="absolute bottom-0 right-3 top-12"
           />
         )}
