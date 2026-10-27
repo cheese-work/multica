@@ -33,7 +33,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 ## Gap list to close before an upstream PR
 
 1. **Reconcile overlaps first.** Every `overlaps` row needs the ledger's merge choice (R01 to R20) applied. Two need a product choice from Cheese: R08 and R09.
-2. **CLI parity.** Missing verbs, in the order CHE-2071 sets: workflow create/delete/handoff set; project set-workflow; project and workspace wakeups; status catalog (owner-only); DM rename, archive and pin. Also no `chat search` verb (C15) and no CLI for wakeup definitions (W06) or the pool and budget views (W07 to W09).
+2. **CLI parity.** Missing verbs, in the order CHE-2071 sets: workflow create/delete/handoff set; project set-workflow; project and workspace wakeups; status catalog (owner-only); DM archive and pin (`multica chat rename` exists). Also no `chat search` verb (C15) and no CLI for wakeup definitions (W06) or the pool and budget views (W07 to W09).
 3. **Builtin-skill docs.** Done. Every registered command is named in the skill or the brief, with no exemption list. `TestEveryCommandIsDocumentedInTheBuiltinSkill` fails on any new command that is not.
 4. **Tests.** Rows whose PRs touched no test file are marked partial below; add behavior tests (or point at existing ones) before proposing them.
 5. **Split the proposal.** Do not send governance (G01 to G18) or Jev rows upstream as one PR. Offer small, stand-alone features first (comment resolve `known_as_of`, DM fork/continue, decision requests) and ask upstream about the subsystems.
@@ -55,7 +55,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 | C11 | DM continuation, saved compact prompts, slash command, announcements and pin preservation | complete | yes | TUCDMS | - |
 | C12 | Automatic compaction settings, prompt-size reporting, context meter and manual compact action | complete | yes | TUCDMS | - |
 | C13 | Full-copy DM forks, optional first message, attachment transfer and fork-point links | complete | yes | TUCDMS | - |
-| C14 | DM rename without an agent turn | partial | yes | TUMS | reconcile with upstream first (51aa92412); No `multica chat rename` (UI `/rename` only); needs R20 merge with upstream title API. |
+| C14 | DM rename without an agent turn | partial | yes | TUMS | reconcile with upstream first (51aa92412); `multica chat rename` exists and is documented; the gap is the R20 merge with the upstream title API. |
 | C15 | DM search endpoint and anchored message navigation | partial | yes | TUMS | No `chat search` verb. |
 | C16 | Per-channel notification settings and coalesced DM inbox replies, off by default | complete | yes | TUDMS | - |
 | C17 | Web and desktop DM back-stack restoration | complete | yes | TUS | - |
