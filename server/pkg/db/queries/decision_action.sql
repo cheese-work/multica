@@ -104,3 +104,16 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- Row 2 of the approve lock sequence (agent.copy only): the same mode as
 -- LockAgentRuntimeForAccessChange, the runtime-access fence of agent create.
 SELECT * FROM agent_runtime WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE NOWAIT;
+
+-- name: LockPendingDecisionAction :one
+-- Cancel, withdraw and expiry end the action after their own last lock. This
+-- one waits: approve never does, so no cycle can form through it.
+SELECT * FROM decision_action
+WHERE workspace_id = $1 AND decision_request_id = $2 AND state = 'pending'
+FOR UPDATE;
+
+-- name: EndDecisionAction :one
+UPDATE decision_action SET state = sqlc.arg('state'), updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND state = 'pending'
+  AND sqlc.arg('state') IN ('expired', 'cancelled')
+RETURNING *;

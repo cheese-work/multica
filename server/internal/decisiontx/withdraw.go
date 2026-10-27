@@ -94,5 +94,10 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	if err != nil {
 		return Withdrawal{}, err
 	}
+	if cancelReason != "" {
+		if _, err := EndAction(ctx, queries, result.Request, cancelReason); err != nil {
+			return Withdrawal{}, err
+		}
+	}
 	return result, nil
 }
