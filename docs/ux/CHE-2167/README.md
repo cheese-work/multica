@@ -18,7 +18,7 @@ pnpm --filter @multica/views exec vitest run rich-content/self-mention.test.tsx 
 
 Observed red: `2 failed | 4 passed (6)`. Both new cases expect `var(--brand)` but receive `color-mix(in oklab, var(--warning) 25%, var(--background))`.
 
-Observed green: `6 passed (6)`. Raw output is preserved in [test-red.log](test-red.log) and [test-green.log](test-green.log). An earlier test-loading error was corrected before this behavioral red; it is not counted as red evidence.
+Observed green: `6 passed (6)`. Raw output is preserved in [test-red.txt](test-red.txt) and [test-green.txt](test-green.txt). An earlier test-loading error was corrected before this behavioral red; it is not counted as red evidence. Log start times use ICT.
 
 Additional verification:
 
