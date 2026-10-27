@@ -1491,16 +1491,24 @@ const getLastAutoCompactTriggerForSession = `-- name: GetLastAutoCompactTriggerF
 SELECT compact_trigger_tokens FROM agent_task_queue
 WHERE chat_session_id = $1
   AND task_kind = 'compact'
+  AND COALESCE(chat_compaction_epoch, 0) >= $2::bigint
   AND compact_trigger_tokens IS NOT NULL
 ORDER BY created_at DESC, id DESC
 LIMIT 1
 `
 
+type GetLastAutoCompactTriggerForSessionParams struct {
+	ChatSessionID   pgtype.UUID `json:"chat_session_id"`
+	CompactionEpoch int64       `json:"compaction_epoch"`
+}
+
 // Prompt size that triggered the most recent automatic compaction of a DM, for
 // the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
-// trigger size and are ignored.
-func (q *Queries) GetLastAutoCompactTriggerForSession(ctx context.Context, chatSessionID pgtype.UUID) (pgtype.Int8, error) {
-	row := q.db.QueryRow(ctx, getLastAutoCompactTriggerForSession, chatSessionID)
+// trigger size and are ignored. Only attempts in the DM's current compaction
+// epoch count: an in-place compaction that succeeded bumped the epoch, so its
+// trigger no longer holds the guard.
+func (q *Queries) GetLastAutoCompactTriggerForSession(ctx context.Context, arg GetLastAutoCompactTriggerForSessionParams) (pgtype.Int8, error) {
+	row := q.db.QueryRow(ctx, getLastAutoCompactTriggerForSession, arg.ChatSessionID, arg.CompactionEpoch)
 	var compact_trigger_tokens pgtype.Int8
 	err := row.Scan(&compact_trigger_tokens)
 	return compact_trigger_tokens, err

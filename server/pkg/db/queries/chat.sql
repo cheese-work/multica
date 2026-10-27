@@ -2163,10 +2163,13 @@ SELECT EXISTS (
 -- name: GetLastAutoCompactTriggerForSession :one
 -- Prompt size that triggered the most recent automatic compaction of a DM, for
 -- the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
--- trigger size and are ignored.
+-- trigger size and are ignored. Only attempts in the DM's current compaction
+-- epoch count: an in-place compaction that succeeded bumped the epoch, so its
+-- trigger no longer holds the guard.
 SELECT compact_trigger_tokens FROM agent_task_queue
 WHERE chat_session_id = $1
   AND task_kind = 'compact'
+  AND COALESCE(chat_compaction_epoch, 0) >= sqlc.arg('compaction_epoch')::bigint
   AND compact_trigger_tokens IS NOT NULL
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
