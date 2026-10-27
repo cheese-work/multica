@@ -516,6 +516,38 @@ func (q *Queries) DecisionRecordEffectiveAt(ctx context.Context, arg DecisionRec
 	return effective_at, err
 }
 
+const findRecentOpenDecisionAsk = `-- name: FindRecentOpenDecisionAsk :one
+SELECT created_at FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2
+  AND asking_agent_id = $3 AND human_user_id = $4
+  AND status = 'open' AND btrim(ask) = btrim($5::text)
+  AND created_at > clock_timestamp() - interval '24 hours'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type FindRecentOpenDecisionAskParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+	Ask           string      `json:"ask"`
+}
+
+// The earlier open ask of the same text by this agent to this person on this issue within 24 h.
+func (q *Queries) FindRecentOpenDecisionAsk(ctx context.Context, arg FindRecentOpenDecisionAskParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, findRecentOpenDecisionAsk,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AskingAgentID,
+		arg.HumanUserID,
+		arg.Ask,
+	)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
 const getDecisionAnswer = `-- name: GetDecisionAnswer :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
@@ -987,6 +1019,58 @@ func (q *Queries) ListDecisionIntentTargets(ctx context.Context, arg ListDecisio
 			&i.ConsumedAt,
 			&i.ConsumedByRequestID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionLaneIssueReferences = `-- name: ListDecisionLaneIssueReferences :many
+SELECT reference.chat_session_id, max(reference.referenced_at)::timestamptz AS referenced_at
+FROM (
+    SELECT request.chat_session_id, request.created_at AS referenced_at
+    FROM decision_request request
+    WHERE request.workspace_id = $1 AND request.issue_id = $2
+      AND request.chat_session_id = ANY($3::uuid[])
+    UNION ALL
+    SELECT message.chat_session_id, message.created_at
+    FROM chat_message message
+    WHERE message.chat_session_id = ANY($3::uuid[])
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.failure_reason IS NULL
+      AND position('](mention://issue/' || $2::text || ')' IN message.content) > 0
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+) reference
+GROUP BY reference.chat_session_id
+`
+
+type ListDecisionLaneIssueReferencesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	IssueID     pgtype.UUID   `json:"issue_id"`
+	SessionIds  []pgtype.UUID `json:"session_ids"`
+}
+
+type ListDecisionLaneIssueReferencesRow struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ReferencedAt  pgtype.Timestamptz `json:"referenced_at"`
+}
+
+// Per DM: when the issue was last named there, by a decision request or by a
+// message that mentions it. Ping messages are covered by their request.
+func (q *Queries) ListDecisionLaneIssueReferences(ctx context.Context, arg ListDecisionLaneIssueReferencesParams) ([]ListDecisionLaneIssueReferencesRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionLaneIssueReferences, arg.WorkspaceID, arg.IssueID, arg.SessionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionLaneIssueReferencesRow{}
+	for rows.Next() {
+		var i ListDecisionLaneIssueReferencesRow
+		if err := rows.Scan(&i.ChatSessionID, &i.ReferencedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

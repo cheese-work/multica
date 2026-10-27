@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,12 +159,23 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 				snippet = strings.ReplaceAll(strings.ReplaceAll(snippet, mention.IssueKey, ""), mention.IssueTitle, "")
 				bySession[mention.ChatSessionID] = append(bySession[mention.ChatSessionID], protocol.DecisionIssueMention{IssueID: uuidToString(mention.IssueID), IssueKey: mention.IssueKey, IssueTitle: mention.IssueTitle, MentionedAt: timestampToString(mention.MentionedAt), RelativeTime: decisionMentionAge(now.Sub(mention.MentionedAt.Time)), Snippet: strings.Join(strings.Fields(snippet), " ")})
 			}
+			var references map[pgtype.UUID]time.Time
+			if err == nil {
+				references, err = decisionLaneReferences(request.Context(), handler.Queries, issue, sessionIDs)
+			}
+			// Most recent reference to this issue first; DMs that never named it keep their order, last.
+			sort.SliceStable(rows, func(i, j int) bool {
+				left, leftOK := references[rows[i].ID]
+				right, rightOK := references[rows[j].ID]
+				return leftOK && (!rightOK || left.After(right))
+			})
 			for _, row := range rows {
+				_, eligible := references[row.ID]
 				issueMentions := bySession[row.ID]
 				if issueMentions == nil {
 					issueMentions = []protocol.DecisionIssueMention{}
 				}
-				response = append(response, decisionLaneResponse{ID: uuidToString(row.ID), Title: row.Title, UpdatedAt: timestampToString(row.UpdatedAt), IssueMentions: issueMentions})
+				response = append(response, decisionLaneResponse{ID: uuidToString(row.ID), Title: row.Title, UpdatedAt: timestampToString(row.UpdatedAt), IssueMentions: issueMentions, Eligible: eligible})
 			}
 		}
 		if err == nil {

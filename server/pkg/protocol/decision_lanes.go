@@ -5,6 +5,8 @@ type DecisionLane struct {
 	Title         string                 `json:"title"`
 	UpdatedAt     string                 `json:"updated_at"`
 	IssueMentions []DecisionIssueMention `json:"issue_mentions"`
+	// Eligible: the issue was discussed in this DM, so a request for it may go here.
+	Eligible bool `json:"eligible"`
 }
 
 type DecisionIssueMention struct {

@@ -63,7 +63,7 @@ func TestDecisionSingleCallOwnerRecipientIDs(test *testing.T) {
 					body["for"] = memberID
 				}
 				if lane == "session" {
-					body["session_id"] = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Owner decisions"})
+					body["session_id"] = insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Owner decisions"})
 				} else if lane == "new_dm" || lane == "intent" {
 					body["new_dm"] = true
 				}
@@ -79,8 +79,12 @@ func TestDecisionSingleCallOwnerRecipientIDs(test *testing.T) {
 				if lane == "intent" {
 					wantComments++
 				}
-				if comments, messages, pings := fixture.counts(test); comments != wantComments || messages != 1 || pings != 1 {
-					test.Fatalf("comments=%d messages=%d pings=%d, want %d/1/1", comments, messages, pings, wantComments)
+				wantMessages := 1
+				if lane == "session" {
+					wantMessages++ // the DM's own mention of the issue
+				}
+				if comments, messages, pings := fixture.counts(test); comments != wantComments || messages != wantMessages || pings != 1 {
+					test.Fatalf("comments=%d messages=%d pings=%d, want %d/%d/1", comments, messages, pings, wantComments, wantMessages)
 				}
 			})
 		}
@@ -154,13 +158,14 @@ func TestDecisionSingleCallLaneSelection(test *testing.T) {
 	})
 	test.Run("latest_request_lane_on_this_issue", func(test *testing.T) {
 		fixture := newSingleCallFixture(test)
-		first := lane(test, fixture, "first")
+		first := insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "first"})
 		lane(test, fixture, "newer unrelated")
 		var created map[string]any
 		body := fixture.body()
 		body["session_id"] = first
 		testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
 		dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() WHERE title = 'newer unrelated' AND creator_id = $1`, fixture.humanID)
+		dbfx.Exec(test, `UPDATE decision_request SET created_at = created_at - interval '25 hours' WHERE issue_id = $1`, fixture.issueID)
 		testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&created)
 		if sessionID, _ := sessionOf(test, fixture, created); sessionID != first {
 			test.Fatalf("second ask went to %s, want the lane of the latest request %s", sessionID, first)

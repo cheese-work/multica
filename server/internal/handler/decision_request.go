@@ -177,9 +177,61 @@ func decisionAskContent(input decisionRequestInput) string {
 	return input.Ask + "\n\n" + input.Footer
 }
 
+// decisionLaneReferences maps each DM to when the issue was last named there.
+func decisionLaneReferences(ctx context.Context, queries *db.Queries, issue db.Issue, sessionIDs []pgtype.UUID) (map[pgtype.UUID]time.Time, error) {
+	rows, err := queries.ListDecisionLaneIssueReferences(ctx, db.ListDecisionLaneIssueReferencesParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, SessionIds: sessionIDs})
+	references := make(map[pgtype.UUID]time.Time, len(rows))
+	for _, row := range rows {
+		references[row.ChatSessionID] = row.ReferencedAt.Time
+	}
+	return references, err
+}
+
+// rejectUnreferencedDecisionLane enforces one DM lane per issue: the request goes
+// only to a DM where this issue was discussed, and the refusal lists those DMs.
+func rejectUnreferencedDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, lanes []db.ListDecisionLanesRow, sessionID pgtype.UUID) error {
+	ids := make([]pgtype.UUID, len(lanes))
+	for index, lane := range lanes {
+		ids[index] = lane.ID
+	}
+	references, err := decisionLaneReferences(ctx, queries, issue, ids)
+	if err != nil {
+		return err
+	}
+	if _, ok := references[sessionID]; ok {
+		return nil
+	}
+	var matching []string
+	for _, lane := range lanes {
+		if _, ok := references[lane.ID]; ok {
+			matching = append(matching, uuidToString(lane.ID)+" ("+lane.Title+")")
+		}
+	}
+	message := "DM " + uuidToString(sessionID) + " never discussed this issue; a decision request goes only to a DM that did. "
+	if len(matching) == 0 {
+		return decisionIntentRefusal{http.StatusForbidden, message + "No DM matches: use --new-dm."}
+	}
+	return decisionIntentRefusal{http.StatusForbidden, message + "Matching DMs: " + strings.Join(matching, ", ")}
+}
+
+// rejectDecisionReask refuses the same open ask, from the same agent to the same
+// person on the same issue, inside 24 h of the earlier one.
+func rejectDecisionReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, ask string) error {
+	askedAt, err := queries.FindRecentOpenDecisionAsk(ctx, db.FindRecentOpenDecisionAskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID, Ask: ask})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	ict := time.FixedZone("ICT", 7*60*60)
+	return decisionIntentRefusal{http.StatusConflict, "this decision is still open and was asked at " + askedAt.Time.In(ict).Format("2006-01-02 15:04 ICT") + "; re-ask at most once per 24 h"}
+}
+
 // lockDecisionLane locks an existing DM and proves it is one of the agent's
-// listed decision lanes.
-func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+// listed decision lanes and that it discussed the issue.
+func lockDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+	workspaceID := issue.WorkspaceID
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: sessionID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -210,6 +262,9 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
 		return db.ChatSession{}, deny
 	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+	if err := rejectUnreferencedDecisionLane(ctx, queries, issue, lanes, session.ID); err != nil {
 		return db.ChatSession{}, err
 	}
 	return session, nil
@@ -276,7 +331,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		session = db.ChatSession{AgentID: agent.ID, CreatorID: targetID, Title: "Decisions: " + agent.Name}
 	} else {
-		session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, input.SessionID, located.AgentID)
+		session, err = lockDecisionLane(ctx, queries, issue, input.SessionID, located.AgentID)
 		if err != nil {
 			return empty, err
 		}
@@ -300,6 +355,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	}
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
 		return prior, err
+	}
+	if err := rejectDecisionReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+		return empty, err
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil {
@@ -485,7 +543,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	var session db.ChatSession
 	if sessionID.Valid {
-		if session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, sessionID, agentID); err != nil {
+		if session, err = lockDecisionLane(ctx, queries, issue, sessionID, agentID); err != nil {
 			return empty, err
 		}
 		if session.CreatorID != input.HumanUserID {
@@ -505,6 +563,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
 		return prior, err
+	}
+	if err := rejectDecisionReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+		return empty, err
 	}
 	if agent.Kind == "system" {
 		return empty, deny

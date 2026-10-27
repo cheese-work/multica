@@ -25,13 +25,18 @@ type requestCoreFixture struct {
 
 func newRequestCoreFixture(test *testing.T, group bool) requestCoreFixture {
 	test.Helper()
-	fixture := newIntentFixture(test)
+	return newRequestCoreFixtureFor(test, newIntentFixture(test), group)
+}
+
+// newRequestCoreFixtureFor opens an intent and a DM that names the issue.
+func newRequestCoreFixtureFor(test *testing.T, fixture intentFixture, group bool) requestCoreFixture {
+	test.Helper()
 	content := fixture.mention()
 	if group {
 		content += " [@Owner](mention://member/" + testUserID + ")"
 	}
 	intentID, tagID := openLaneIntent(test, fixture, content)
-	sessionID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Decision lane"})
+	sessionID := insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Decision lane"})
 	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
 	if err != nil {
 		test.Fatal(err)
@@ -63,7 +68,7 @@ func (fixture requestCoreFixture) assertCounts(test *testing.T, wanted int) {
 			test.Fatalf("%s = %d, want %d", label, count, wanted)
 		}
 	}
-	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID) != 0 {
+	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND role = 'assistant'`, fixture.sessionID) != 0 {
 		test.Fatal("refusal left a DM message")
 	}
 }
@@ -227,7 +232,7 @@ func TestDecisionRequestCoreGroupConsumption(test *testing.T) {
 	_, err = testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
 	requireRequestRefusal(test, err)
 	fixture.assertCounts(test, 1)
-	secondSession := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"})
+	secondSession := insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"})
 	input := fixture.input()
 	input.SessionID = parseUUID(secondSession)
 	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
@@ -274,7 +279,7 @@ func TestDecisionRequestCoreConcurrentConsumption(test *testing.T) {
 			fixture := newRequestCoreFixture(test, group)
 			input := fixture.input()
 			if group {
-				input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Concurrent owner lane"}))
+				input.SessionID = parseUUID(insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Concurrent owner lane"}))
 			}
 			first := startRequestCore(test, fixture, fixture.input())
 			second := startRequestCore(test, fixture, input)
@@ -594,7 +599,7 @@ func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"}))
+	input.SessionID = parseUUID(insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"}))
 	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
 	if err != nil {
 		test.Fatal(err)

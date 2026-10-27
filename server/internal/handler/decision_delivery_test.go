@@ -135,7 +135,7 @@ func readyDecisionDeliveryGroup(test *testing.T) decisionDeliveryGroupFixture {
 	group := decisionDeliveryGroupFixture{core: core}
 	for _, humanID := range []string{core.humanID, testUserID} {
 		person := core
-		person.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": humanID, "title": "Concurrent group answer"})
+		person.sessionID = insertIssueDM(test, core.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": humanID, "title": "Concurrent group answer"})
 		request, err := testHandler.createDecisionRequest(person.request(), core.issue, person.input())
 		if err != nil {
 			test.Fatal(err)
@@ -286,7 +286,7 @@ func TestDecisionDeliveryCompleteGroupAndReanswer(test *testing.T) {
 	var members []askedRecordFixture
 	for _, humanID := range []string{fixture.humanID, testUserID} {
 		person := fixture
-		person.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": humanID, "title": "Group answer"})
+		person.sessionID = insertIssueDM(test, fixture.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": humanID, "title": "Group answer"})
 		request, err := testHandler.createDecisionRequest(person.request(), fixture.issue, person.input())
 		if err != nil {
 			test.Fatal(err)
@@ -671,7 +671,7 @@ func TestDecisionDeliveryCrossDMMemberLockOrderConcurrent(test *testing.T) {
 	secondPerson := core
 	secondPerson.taskID, secondPerson.intentID, secondPerson.tagID = secondTaskID, secondIntentID, secondTagComment.ID
 	secondPerson.humanID = testUserID
-	secondPerson.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": testUserID, "title": "Second decision DM"})
+	secondPerson.sessionID = insertIssueDM(test, core.issueID, testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": testUserID, "title": "Second decision DM"})
 	secondRequestContext := laneRequest(core.intentFixture, "")
 	secondRequestContext.Header.Set("X-Task-ID", secondTaskID)
 	secondRequest, err := testHandler.createDecisionRequest(secondRequestContext, core.issue, secondPerson.input())

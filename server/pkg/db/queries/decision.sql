@@ -438,3 +438,33 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id'
   AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: ListDecisionLaneIssueReferences :many
+-- Per DM: when the issue was last named there, by a decision request or by a
+-- message that mentions it. Ping messages are covered by their request.
+SELECT reference.chat_session_id, max(reference.referenced_at)::timestamptz AS referenced_at
+FROM (
+    SELECT request.chat_session_id, request.created_at AS referenced_at
+    FROM decision_request request
+    WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.issue_id = sqlc.arg('issue_id')
+      AND request.chat_session_id = ANY(sqlc.arg('session_ids')::uuid[])
+    UNION ALL
+    SELECT message.chat_session_id, message.created_at
+    FROM chat_message message
+    WHERE message.chat_session_id = ANY(sqlc.arg('session_ids')::uuid[])
+      AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+      AND message.failure_reason IS NULL
+      AND position('](mention://issue/' || sqlc.arg('issue_id')::text || ')' IN message.content) > 0
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+) reference
+GROUP BY reference.chat_session_id;
+
+-- name: FindRecentOpenDecisionAsk :one
+-- The earlier open ask of the same text by this agent to this person on this issue within 24 h.
+SELECT created_at FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND status = 'open' AND btrim(ask) = btrim(sqlc.arg('ask')::text)
+  AND created_at > clock_timestamp() - interval '24 hours'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
