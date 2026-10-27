@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"690_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
 	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
 	"651_inbox_item_dedupe_index":                               "idx_inbox_item_dedupe_unread",
