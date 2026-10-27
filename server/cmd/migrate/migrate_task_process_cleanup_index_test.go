@@ -64,7 +64,7 @@ func TestTaskProcessCleanupIndexMigrationAndPlans(t *testing.T) {
 		queries[name] = query
 		t.Logf("before index, %s:\n%s", name, explainAnalyze(t, ctx, pool, query))
 	}
-	const version = "732_agent_task_process_cleanup_index"
+	const version = "738_agent_task_process_cleanup_index"
 	const indexName = "idx_agent_task_queue_process_cleanup"
 	options := runOptions{
 		Direction: "up", Files: realMigrationFiles(t, []string{version}, "up"),

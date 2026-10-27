@@ -37,7 +37,7 @@ func TestUpstreamV071Migrations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	versions := []string{"731_runtime_profile_add_devin", "732_agent_task_process_cleanup_index"}
+	versions := []string{"737_runtime_profile_add_devin", "738_agent_task_process_cleanup_index"}
 	for _, direction := range []string{"up", "up", "down"} {
 		var files []string
 		for _, version := range versions {
