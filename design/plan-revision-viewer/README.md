@@ -6,14 +6,14 @@ Source: [Cheese's recorded D2 decision](mention://issue/01a1774a-7021-768d-bdb6-
 
 - Issue: [CHE-2124](mention://issue/01a1774a-7021-768d-bdb6-a8a955fe982b)
 - Pages in scope: shared attachment preview dialog and standalone attachment preview, web and desktop.
-- Status: rev-1 prepared for independent UX scoring; no direction selected or approved.
+- Status: direction A selected; rev-2 prepared for fresh independent UX scoring. Approved only when PR #402 merges. The PR stays draft for this return.
 - Designer: x99-codex-sol (OpenAI). Independent UX reviewer: not yet assigned by x99-claude-sonnet.
 
 ## Admission boundary
 
 This is a design-only candidate. No application UI changes are admitted before Cheese merges a selected design revision, unless Cheese records a design waiver.
 
-The implementation PR will deliver and close CHE-2124. This design PR references the issue only; it does not deliver its implementation acceptance criteria.
+The implementation PR will deliver the complete scope of CHE-2124. This design PR references the issue only; it does not deliver its implementation acceptance criteria.
 
 ## Revision linking proposal
 
@@ -25,16 +25,20 @@ Use the exact filename convention `plan-rev-N.md`, where N is a positive safe in
 4. Default to the greatest smaller revision number, not the newest upload timestamp. If that revision has multiple attachments, require an explicit attachment choice instead of guessing.
 5. Retrieve a chosen base by its immutable attachment ID using the existing authorized content endpoint. Keep source-issue read access as the permission boundary.
 
-Picker options identify the revision and filename. Duplicate revision numbers also show an immutable attachment ID, with its full value available for inspection. A stale or denied base fails visibly and never substitutes another file. The current document remains readable. Unlinked Markdown files retain the existing viewer.
+Picker options identify the revision, filename, upload time in ICT, and uploader. Duplicate revision numbers also show an immutable attachment ID, with its full value available for inspection. A stale or denied base fails visibly and never substitutes another file. The current document remains readable. Unlinked Markdown files retain the existing viewer.
 
 The implementation must verify the server's actual issue access checks and test them before claiming permission equivalence. This design is not authorization evidence.
 
-## Directions
+## Selected direction
 
-- A — Compact compare bar: one centered document, a Diff switch, an earlier-revision picker, and a unified line diff.
-- B — Revision rail: earlier revisions in a narrow rail, with a two-column comparison on wide screens and a unified diff on narrow screens.
+- A, rev-2 — One-row toolbar with file identity, issue, revision, Readonly, Diff, counts, change navigation, Split/Unify, base picker, and download. Minimal document padding. Unified and split modes share this toolbar. Split uses aligned row pairs without a revision rail.
+- B — Dropped by Cheese. The immutable rev-1 files remain historical evidence, not an active direction.
 
-Both directions open with Diff off, preserve a readable rendered document, and use the previous available revision as the default base. Source diffs use literal Markdown text, not executable HTML. Added and removed lines have explicit plus/minus markers; color is not the only signal.
+Cheese selected A in comment `01a17b0f-ac0d-759e-be25-27f067fbc0a2` on 27 Oct 2026: "Tôi chọn A. Nhưng cho phần diện tích bên trên bên dưới gọn vào nhé. Để diện tích hiển thị nội dung file là lớn nhất. Thêm nữa là có 2 mode diff là unify và split; unify thì giống A, còn split thì giống B". The requested toolbar is one line, not the rev-1 filename row plus control row.
+
+Diff opens off, preserves a readable rendered document, and uses the previous available revision as the default base. It also reads off whenever no diff renders. Source diffs use literal Markdown text, not executable HTML. Added and removed lines have explicit plus/minus markers and announced text; color is not the only signal. Three context lines surround each change; large unchanged spans collapse with explicit counts and ranges. Previous/next controls navigate changed blocks. At narrow widths only the toolbar and split comparison scroll horizontally; unified source wraps and three-digit gutters retain their width.
+
+The rev-2 fixture contains 339 base lines and 342 current lines, with +5/-2 spread across three changed blocks. `rev-2/A.html` embeds its CSS, JavaScript and font and must render when copied alone. It is a static design mockup, not product implementation.
 
 ## Required states
 
@@ -72,3 +76,5 @@ flowchart TD
   J --> G
   G -->|Load denied or failed| K[Keep current document and offer Retry]
 ```
+
+Reflect attempted for rev-2: unavailable, HTTP 503 `No available accounts`. The existing Multica design-direction knowledge page has no approved record for this topic. The live Cheese decision above governs this revision.
