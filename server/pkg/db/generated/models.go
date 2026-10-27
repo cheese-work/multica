@@ -582,6 +582,7 @@ type ChatSession struct {
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet       bool               `json:"title_manually_set"`
 }
 
 type ChatWakeup struct {
@@ -741,6 +742,20 @@ type DecisionClassChange struct {
 	ToClass           string             `json:"to_class"`
 	ChangedByUserID   pgtype.UUID        `json:"changed_by_user_id"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigest struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	HumanUserID pgtype.UUID        `json:"human_user_id"`
+	DigestDay   pgtype.Date        `json:"digest_day"`
+	InboxItemID pgtype.UUID        `json:"inbox_item_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigestRequest struct {
+	RequestID pgtype.UUID `json:"request_id"`
+	DigestID  pgtype.UUID `json:"digest_id"`
 }
 
 type DecisionIntent struct {

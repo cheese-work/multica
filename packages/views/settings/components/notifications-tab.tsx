@@ -56,6 +56,7 @@ export function NotificationsTab() {
   };
 
   const systemEnabled = preferences.system_notifications !== "muted";
+  const focusedDelivery = preferences.unassigned_activity === "muted";
 
   return (
     <SettingsTab title={t(($) => $.page.tabs.notifications)} scope="workspace-only">
@@ -65,6 +66,16 @@ export function NotificationsTab() {
         anchor="inbox"
       >
         <SettingsCard>
+            <SettingsRow
+              anchor="unassigned_activity"
+              label={t(($) => $.notifications.focused_delivery)}
+            >
+              <Switch
+                checked={focusedDelivery}
+                aria-label={t(($) => $.notifications.focused_delivery)}
+                onCheckedChange={(checked) => handleToggle("unassigned_activity", !checked)}
+              />
+            </SettingsRow>
             {INBOX_GROUP_KEYS.map((key: InboxGroupKey) => {
               const enabled = preferences[key] !== "muted";
               return (

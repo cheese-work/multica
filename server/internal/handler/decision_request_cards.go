@@ -55,6 +55,9 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		if row.Status == "cancelled" {
 			card.State = "withdrawn"
 			card.Reason = row.WithdrawReason
+			if row.CancelReason.String == "expired" {
+				card.Reason = decisionExpiryExplanation
+			}
 			if card.Reason == "" {
 				card.Reason = strings.ReplaceAll(row.CancelReason.String, "_", " ")
 			}
