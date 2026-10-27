@@ -84,7 +84,9 @@ import {
 } from "@/data/realtime/chat-ws-updaters";
 import {
   ArchivedSendInterceptedError,
+  buildArchivedSendAlertButtons,
   splitChatSessions,
+  unarchiveThenSendOnce,
 } from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import {
@@ -560,58 +562,33 @@ export default function ChatTab() {
 
         return new Promise<void>((resolve, reject) => {
           const confirmUnarchiveAndSend = () => {
-            void (async () => {
-              const ok = await handleUnarchive(archivedSession);
-              if (!ok) {
-                reject(new ArchivedSendInterceptedError());
-                return;
-              }
-              try {
-                await executeSend(content, attachmentIds, options);
-                resolve();
-              } catch (err) {
-                reject(err);
-              }
-            })();
+            unarchiveThenSendOnce(
+              () => handleUnarchive(archivedSession),
+              () => executeSend(content, attachmentIds, options),
+            ).then(resolve, reject);
           };
 
           const cancelIntercept = () => {
             reject(new ArchivedSendInterceptedError());
           };
 
-          const buttons = newerSession
-            ? [
-                {
-                  text: t("archived_send.open_newer"),
-                  isPreferred: true,
-                  onPress: () => {
-                    setSelectedAgentId(null);
-                    setActiveSessionId(newerSession.id);
-                    reject(new ArchivedSendInterceptedError());
-                  },
-                },
-                {
-                  text: t("archived_send.confirm"),
-                  onPress: confirmUnarchiveAndSend,
-                },
-                {
-                  text: t("archived_send.cancel"),
-                  style: "cancel" as const,
-                  onPress: cancelIntercept,
-                },
-              ]
-            : [
-                {
-                  text: t("archived_send.cancel"),
-                  style: "cancel" as const,
-                  onPress: cancelIntercept,
-                },
-                {
-                  text: t("archived_send.confirm"),
-                  isPreferred: true,
-                  onPress: confirmUnarchiveAndSend,
-                },
-              ];
+          const buttons = buildArchivedSendAlertButtons({
+            platform: Platform.OS,
+            hasNewer: newerSession !== null,
+            labels: {
+              openNewer: t("archived_send.open_newer"),
+              confirm: t("archived_send.confirm"),
+              cancel: t("archived_send.cancel"),
+            },
+            onOpenNewer: () => {
+              if (!newerSession) return;
+              setSelectedAgentId(null);
+              setActiveSessionId(newerSession.id);
+              reject(new ArchivedSendInterceptedError());
+            },
+            onConfirm: confirmUnarchiveAndSend,
+            onCancel: cancelIntercept,
+          });
 
           Alert.alert(
             t("archived_send.title"),

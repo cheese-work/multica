@@ -5,13 +5,16 @@ import {
 } from "@/data/stores/chat-session-actions-store";
 import {
   ArchivedSendInterceptedError,
+  buildArchivedSendAlertButtons,
   buildChatMoreMenuItems,
   deriveChatStatisticsState,
   formatIctTime,
   formatStatsDuration,
   isArchivedSendIntercepted,
+  patchSessionArchived,
   resolveRelatedSessions,
   splitChatSessions,
+  unarchiveThenSendOnce,
 } from "./chat-dm-stats-archive";
 
 function makeSession(overrides: Partial<ChatSession> & { id: string }): ChatSession {
@@ -305,5 +308,105 @@ describe("ArchivedSendInterceptedError & helpers", () => {
     expect(formatStatsDuration(45_000)).toBe("45s");
     expect(formatStatsDuration(125_000)).toBe("2m 5s");
     expect(formatIctTime(Date.parse("2026-10-21T07:05:00Z"))).toBe("14:05 ICT");
+  });
+});
+
+describe("archived-send alert (A2)", () => {
+  const labels = { openNewer: "Open the newer DM", confirm: "Unarchive and send", cancel: "Cancel" };
+  const build = (platform: string, hasNewer: boolean) =>
+    buildArchivedSendAlertButtons({
+      platform,
+      hasNewer,
+      labels,
+      onOpenNewer: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+  it("android with a newer DM: Open newer is positive (last), Unarchive negative, Cancel neutral (first)", () => {
+    // RN Android maps buttons by array order: [neutral, negative, positive].
+    expect(build("android", true).map((b) => b.text)).toEqual([
+      "Cancel",
+      "Unarchive and send",
+      "Open the newer DM",
+    ]);
+  });
+
+  it("ios with a newer DM keeps Open newer preferred first and Cancel last", () => {
+    const buttons = build("ios", true);
+    expect(buttons.map((b) => b.text)).toEqual([
+      "Open the newer DM",
+      "Unarchive and send",
+      "Cancel",
+    ]);
+    expect(buttons[0]!.isPreferred).toBe(true);
+    expect(buttons[2]!.style).toBe("cancel");
+  });
+
+  it("without a newer DM: Cancel then preferred Unarchive and send on both platforms", () => {
+    for (const platform of ["ios", "android"]) {
+      const buttons = build(platform, false);
+      expect(buttons.map((b) => b.text)).toEqual(["Cancel", "Unarchive and send"]);
+      expect(buttons[1]!.isPreferred).toBe(true);
+    }
+  });
+
+  it("wires each button to its handler", () => {
+    const onOpenNewer = vi.fn();
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    const buttons = buildArchivedSendAlertButtons({
+      platform: "android", hasNewer: true, labels, onOpenNewer, onConfirm, onCancel,
+    });
+    for (const b of buttons) b.onPress();
+    expect(onOpenNewer).toHaveBeenCalledTimes(1);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("unarchiveThenSendOnce (single send, draft retention)", () => {
+  it("sends exactly once after a successful unarchive", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    await unarchiveThenSendOnce(() => Promise.resolve(true), send);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send and rejects as intercepted when unarchive fails, so the draft is kept", async () => {
+    const send = vi.fn();
+    const err = await unarchiveThenSendOnce(() => Promise.resolve(false), send).catch(
+      (e: unknown) => e,
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(isArchivedSendIntercepted(err)).toBe(true);
+  });
+
+  it("propagates a send failure without a second send", async () => {
+    const boom = new Error("send failed");
+    const send = vi.fn().mockRejectedValue(boom);
+    await expect(unarchiveThenSendOnce(() => Promise.resolve(true), send)).rejects.toBe(boom);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("patchSessionArchived (A2 cache patch)", () => {
+  it("archiving unpins, marks archived and clears unread", () => {
+    const s = makeSession({ id: "a", pinned: true, has_unread: true, unread_count: 3 });
+    expect(patchSessionArchived(s, true)).toMatchObject({
+      status: "archived",
+      pinned: false,
+      has_unread: false,
+      unread_count: 0,
+    });
+  });
+
+  it("unarchiving does not resurrect a pin and keeps unread state", () => {
+    const s = makeSession({ id: "a", status: "archived", pinned: true, has_unread: true, unread_count: 2 });
+    expect(patchSessionArchived(s, false)).toMatchObject({
+      status: "active",
+      pinned: false,
+      has_unread: true,
+      unread_count: 2,
+    });
   });
 });

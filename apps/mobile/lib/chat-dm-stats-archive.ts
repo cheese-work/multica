@@ -63,6 +63,80 @@ export function isArchivedSendIntercepted(err: unknown): boolean {
   );
 }
 
+export interface ArchivedSendAlertButton {
+  text: string;
+  style?: "cancel";
+  isPreferred?: boolean;
+  onPress: () => void;
+}
+
+/**
+ * Buttons for the archived-DM send alert. iOS lists them in display order.
+ * React Native Android maps array order to [neutral, negative, positive] for
+ * three buttons, so with a newer DM the order is flipped there: "Open the
+ * newer DM" is the positive (primary) action, "Unarchive and send" the
+ * negative (secondary), and Cancel the neutral one (A2).
+ */
+export function buildArchivedSendAlertButtons({
+  platform,
+  hasNewer,
+  labels,
+  onOpenNewer,
+  onConfirm,
+  onCancel,
+}: {
+  platform: string;
+  hasNewer: boolean;
+  labels: { openNewer: string; confirm: string; cancel: string };
+  onOpenNewer: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}): ArchivedSendAlertButton[] {
+  const cancel: ArchivedSendAlertButton = {
+    text: labels.cancel,
+    style: "cancel",
+    onPress: onCancel,
+  };
+  if (!hasNewer) {
+    return [cancel, { text: labels.confirm, isPreferred: true, onPress: onConfirm }];
+  }
+  const openNewer: ArchivedSendAlertButton = {
+    text: labels.openNewer,
+    isPreferred: true,
+    onPress: onOpenNewer,
+  };
+  const confirm: ArchivedSendAlertButton = { text: labels.confirm, onPress: onConfirm };
+  return platform === "android"
+    ? [cancel, confirm, openNewer]
+    : [openNewer, confirm, cancel];
+}
+
+/**
+ * Unarchive, then send exactly once. A failed unarchive rejects with
+ * `ArchivedSendInterceptedError` without sending, so the composer keeps the draft.
+ */
+export async function unarchiveThenSendOnce(
+  unarchive: () => Promise<boolean>,
+  send: () => Promise<void>,
+): Promise<void> {
+  if (!(await unarchive())) throw new ArchivedSendInterceptedError();
+  await send();
+}
+
+/**
+ * Optimistic cache patch for archive/unarchive. Archived DMs are unpinned and
+ * unarchiving never restores an old pin (A2).
+ */
+export function patchSessionArchived(session: ChatSession, archived: boolean): ChatSession {
+  return {
+    ...session,
+    status: archived ? "archived" : "active",
+    pinned: false,
+    has_unread: archived ? false : session.has_unread,
+    unread_count: archived ? 0 : session.unread_count,
+  };
+}
+
 export function sessionActivityTime(session: ChatSession): string {
   const lastMsgAt = session.last_message?.created_at;
   if (lastMsgAt && lastMsgAt > session.updated_at) return lastMsgAt;

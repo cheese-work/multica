@@ -14,7 +14,7 @@ import type { ChatSession } from "@multica/core/types";
 import { api } from "@/data/api";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { chatKeys } from "@/data/queries/chat";
-import { sortAllChatSessions } from "@/lib/chat-dm-stats-archive";
+import { patchSessionArchived, sortAllChatSessions } from "@/lib/chat-dm-stats-archive";
 
 export function useCreateChatSession() {
   const qc = useQueryClient();
@@ -143,19 +143,11 @@ export function useSetChatSessionArchived() {
       const key = chatKeys.sessions(wsId);
       await qc.cancelQueries({ queryKey: key });
       const prev = qc.getQueryData<ChatSession[]>(key);
-      const status: ChatSession["status"] = archived ? "archived" : "active";
       qc.setQueryData<ChatSession[]>(key, (old) =>
         old
           ? sortAllChatSessions(
               old.map((s) =>
-                s.id === sessionId
-                  ? {
-                      ...s,
-                      status,
-                      has_unread: archived ? false : s.has_unread,
-                      unread_count: archived ? 0 : s.unread_count,
-                    }
-                  : s,
+                s.id === sessionId ? patchSessionArchived(s, archived) : s,
               ),
             )
           : old,
