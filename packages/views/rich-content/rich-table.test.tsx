@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const copyText = vi.hoisted(() => vi.fn(async () => true));
@@ -137,6 +137,52 @@ describe("RichTable", () => {
         expect(probe.passes()).toBe(1);
         expect(cols()).toEqual(fitted);
       } finally {
+        probe.restore();
+      }
+    });
+
+    function stubFonts(status: "loaded" | "loading") {
+      let settle = () => {};
+      const ready = status === "loaded" ? Promise.resolve() : new Promise<void>((resolve) => (settle = resolve));
+      Object.defineProperty(document, "fonts", { configurable: true, value: { status, ready } });
+      return {
+        loaded: async () => {
+          settle();
+          await act(async () => {});
+        },
+        restore: () => Reflect.deleteProperty(document, "fonts"),
+      };
+    }
+
+    it("keeps the cached widths on remount once fonts have loaded", async () => {
+      const probe = probeMeasurePasses();
+      const fonts = stubFonts("loaded");
+      try {
+        const content = TABLE.replace("harness switch", "loaded fonts remount");
+        const first = render(<RichContent content={content} />);
+        await act(async () => {});
+        expect(probe.passes()).toBe(1);
+
+        first.unmount();
+        render(<RichContent content={content} />);
+        await act(async () => {});
+        expect(probe.passes()).toBe(1);
+      } finally {
+        fonts.restore();
+        probe.restore();
+      }
+    });
+
+    it("measures again when a font finishes loading after the table mounted", async () => {
+      const probe = probeMeasurePasses();
+      const fonts = stubFonts("loading");
+      try {
+        render(<RichContent content={TABLE.replace("harness switch", "font swap")} />);
+        expect(probe.passes()).toBe(1);
+        await fonts.loaded();
+        expect(probe.passes()).toBe(2);
+      } finally {
+        fonts.restore();
         probe.restore();
       }
     });

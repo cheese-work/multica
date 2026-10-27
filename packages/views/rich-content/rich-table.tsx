@@ -204,11 +204,14 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     };
     fit();
     const unsubscribe = onResize(fit);
-    // Content widths change when a web font replaces its fallback.
-    void document.fonts?.ready.then(() => {
-      measuredAt = -1;
-      fit(true);
-    });
+    // Content widths change when a web font replaces its fallback. Fonts that
+    // are already loaded cannot change them, so a remount keeps its cached fit.
+    if (document.fonts?.status === "loading") {
+      void document.fonts.ready.then(() => {
+        measuredAt = -1;
+        fit(true);
+      });
+    }
     return () => {
       active = false;
       unsubscribe();
