@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { SELF_MENTION_COLORS, emphasizeSelfMentions, selfMentionLinkVariants } from "./self-mention";
+import {
+  SELF_MENTION_COLORS,
+  emphasizeSelfMentions,
+  emphasizeSelfMentionSegments,
+  selfMentionLinkVariants,
+} from "./self-mention";
+import { splitMarkdown } from "./split-markdown";
 
 const VIEWER = "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff";
 const OTHER = "8f14e45f-ceea-4d0e-a1a2-9b1c0d3e4f5a";
@@ -78,4 +84,69 @@ describe("emphasizeSelfMentions", () => {
     const md = `[@a*b](mention://member/${VIEWER})`;
     expect(emphasizeSelfMentions(md, VIEWER)).toBe(md);
   });
+
+  it.each([
+    ["@john_doe", "@john_doe"],
+    ["@David\\[TF\\]", "@David\\[TF\\]"],
+    ["@a\\*b", "@a\\*b"],
+  ])("bolds the valid label %s", (label) => {
+    const md = `[${label}](mention://member/${VIEWER})`;
+    expect(emphasizeSelfMentions(md, VIEWER)).toBe(`[**${label}**](mention://member/${VIEWER})`);
+  });
+
+  it("leaves inline code and fenced code (``` and ~~~) verbatim", () => {
+    const link = `[@Me](mention://member/${VIEWER})`;
+    const md = [
+      `inline \`${link}\` and ${link}`,
+      "",
+      "```md",
+      link,
+      "```",
+      "",
+      "~~~",
+      link,
+      "~~~",
+      "",
+      `> \`\`\``,
+      `> ${link}`,
+      `> \`\`\``,
+    ].join("\n");
+    const out = emphasizeSelfMentions(md, VIEWER);
+
+    expect(out.match(/\*\*/g)).toHaveLength(2); // only the prose mention
+    expect(out).toContain(`inline \`${link}\` and [**@Me**](mention://member/${VIEWER})`);
+    expect(out).toContain(`\`\`\`md\n${link}\n\`\`\``);
+    expect(out).toContain(`~~~\n${link}\n~~~`);
+    expect(out).toContain(`> ${link}`);
+  });
 });
+
+describe("emphasizeSelfMentions in multi-line and unterminated fences", () => {
+  const link = `[@Me](mention://member/${VIEWER})`;
+
+  it("keeps every line of a multi-line fence and an unterminated fence verbatim", () => {
+    const closed = ["```", link, link, "```", `after ${link}`].join("\n");
+    expect(emphasizeSelfMentions(closed, VIEWER)).toBe(
+      ["```", link, link, "```", `after [**@Me**](mention://member/${VIEWER})`].join("\n"),
+    );
+
+    const open = ["```", link, link].join("\n");
+    expect(emphasizeSelfMentions(open, VIEWER)).toBe(open);
+  });
+});
+
+describe("emphasizeSelfMentionSegments", () => {
+  const link = `[@Me](mention://member/${VIEWER})`;
+
+  it("keeps top-level fenced and indented code blocks verbatim", () => {
+    const md = [`hi ${link}`, "", "```", link, "```", "", `    ${link}`, "", `bye ${link}`].join("\n");
+    const segments = emphasizeSelfMentionSegments(splitMarkdown(md), VIEWER);
+    const code = segments.filter((s) => s.type === "code");
+    const prose = segments.filter((s) => s.type === "prose");
+
+    expect(code.map((s) => (s as { code: string }).code)).toEqual([link, link]);
+    expect(prose.map((s) => (s as { content: string }).content).join("")).toContain("[**@Me**]");
+    expect(JSON.stringify(code)).not.toContain("**");
+  });
+});
+

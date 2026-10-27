@@ -51,7 +51,7 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
-import { SELF_MENTION_COLORS, emphasizeSelfMentions, selfMentionLinkVariants } from "./self-mention";
+import { SELF_MENTION_COLORS, emphasizeSelfMentionSegments, selfMentionLinkVariants } from "./self-mention";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 
@@ -141,7 +141,7 @@ export function Markdown({
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);
-    return splitMarkdown(emphasizeSelfMentions(processed, viewerId));
+    return emphasizeSelfMentionSegments(splitMarkdown(processed), viewerId);
   }, [content, viewerId]);
 
   const onLinkPress = useCallback(
