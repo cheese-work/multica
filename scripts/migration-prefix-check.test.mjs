@@ -31,6 +31,19 @@ test("renumbered fixture passes", () => {
   }).collisions, []);
 });
 
+for (const owner of ["main", "another open PR"]) {
+  test(`same-path candidate and ${owner} reservation pass without rename suggestions`, () => {
+    const files = pair(631, "wakeup_scoped_event");
+    const result = checkMigrationPrefixes({
+      files,
+      main: owner === "main" ? files : [],
+      pulls: owner === "another open PR" ? [{ number: 424, files }] : [],
+    });
+    assert.deepEqual(result.collisions, []);
+    assert.deepEqual(result.commands, []);
+  });
+}
+
 test("main collisions and multiple candidate collisions get distinct safe slots", () => {
   const result = checkMigrationPrefixes({
     files: [...pair("0691", "first"), ...pair(691, "second"), ...pair(700, "free")],

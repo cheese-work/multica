@@ -24,7 +24,7 @@ export function checkMigrationPrefixes({ files, main, pulls }) {
   for (const stem of new Set(candidate.map((file) => file.stem))) {
     const group = candidate.filter((file) => file.stem === stem);
     const conflicts = [
-      ...reservations.filter((file) => file.number === group[0].number),
+      ...reservations.filter((file) => file.number === group[0].number && file.stem !== stem),
       ...candidate.filter((file) => file.number === group[0].number && file.stem !== stem)
         .map((file) => ({ ...file, owner: "this PR" })),
     ];
