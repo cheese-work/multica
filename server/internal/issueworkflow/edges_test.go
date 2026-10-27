@@ -29,6 +29,8 @@ func TestParseGuard(t *testing.T) {
 		{"pr.closed_unmerged", Guard{Kind: "pr.closed_unmerged"}},
 		{"children_done", Guard{Kind: "children_done"}},
 		{" issue_status(CHE-1, done) ", Guard{Kind: "issue_status", Args: []string{"CHE-1", "done"}}},
+		{"webhook(ci)", Guard{Kind: "webhook", Args: []string{"ci"}}},
+		{"webhook( deploy_2-a )", Guard{Kind: "webhook", Args: []string{"deploy_2-a"}}},
 	}
 	for _, c := range cases {
 		got, err := ParseGuard(c.in)
@@ -36,7 +38,8 @@ func TestParseGuard(t *testing.T) {
 			t.Errorf("ParseGuard(%q) = %+v, %v; want %+v", c.in, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"", "pr.checks_blue", "agent_verdict(MAYBE)", "agent_verdict", "issue_status(CHE-1)", "pr.merged(1)", "agent_done)"} {
+	for _, bad := range []string{"", "pr.checks_blue", "agent_verdict(MAYBE)", "agent_verdict", "issue_status(CHE-1)", "pr.merged(1)", "agent_done)",
+		"webhook", "webhook()", "webhook(CI)", "webhook(a b)", "webhook(a,b)", "webhook(" + strings.Repeat("a", 33) + ")"} {
 		if _, err := ParseGuard(bad); err == nil {
 			t.Errorf("ParseGuard(%q) accepted", bad)
 		}
@@ -94,6 +97,8 @@ func TestValidateEdges(t *testing.T) {
 		{"no blocked, no default", []Edge{{To: "done", Guard: "pr.merged", Timeout: "1h"}}, func() Definition {
 			return Definition{Steps: stepsFor(ArrangeKeys([]string{"code_review"}))}
 		}, "on_timeout"},
+		{"webhook needs timeout", []Edge{{To: "done", Guard: "webhook(ci)", OnTimeout: "blocked"}}, nil, "timeout"},
+		{"webhook with timeout", []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {
@@ -290,5 +295,30 @@ func TestEffectiveMaxRunsDefaultsWhenUnset(t *testing.T) {
 	}
 	if got := (Definition{MaxRunsPerIssue: 3}).EffectiveMaxRuns(); got != 3 {
 		t.Fatalf("set budget = %d, want 3", got)
+	}
+}
+
+func TestWebhookGuardHoldsOnlyForTheNamedEndpoint(t *testing.T) {
+	edges := []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "1h"}}
+	if _, ok := FirstMatch(edges, Facts{Webhooks: map[string]bool{"ci": true}}); !ok {
+		t.Error("a success call for ci must fire webhook(ci)")
+	}
+	if _, ok := FirstMatch(edges, Facts{Webhooks: map[string]bool{"deploy": true}}); ok {
+		t.Error("a call for another endpoint must not fire webhook(ci)")
+	}
+	if _, ok := FirstMatch(edges, Facts{}); ok {
+		t.Error("no call must not fire the guard")
+	}
+	if got := FactEdges(edges); len(got) != 1 {
+		t.Errorf("webhook edges are watched by the engine, got %d", len(got))
+	}
+}
+
+func TestWebhookGuardTimesOutLikeAPRGuard(t *testing.T) {
+	entered := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	edges := []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "1h", OnTimeout: "implement"}}
+	d, move, _ := Decide(edges, Facts{}, entered, entered.Add(2*time.Hour), true)
+	if !move || d.To != "implement" || d.Reason != ReasonTimeout {
+		t.Errorf("a sender that never calls must hit on_timeout, got %+v move=%v", d, move)
 	}
 }
