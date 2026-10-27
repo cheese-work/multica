@@ -72,8 +72,10 @@ func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType,
 
 // invokeAgentDecision is canInvokeAgent's pure verdict, split out so the gate has
 // exactly one place to observe a denial from. A non-nil error means a lookup
-// failed and the verdict is false only because it fails closed: callers that
-// must tell "denied" from "could not decide" (GitHub routing, can_route) read it.
+// failed: the bool is what canInvokeAgent has always returned (a failed lookup
+// counts as not-a-member), but callers that must tell "decided" from "could not
+// decide" (GitHub routing, can_route) must treat any error as undecided, even
+// when the bool is true.
 func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) (bool, error) {
 	effectiveUser := actorID
 	if actorType != "member" {
@@ -125,13 +127,13 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 		switch t.TargetType {
 		case "workspace":
 			if isWorkspaceMember || workspaceBroad {
-				return true, nil
+				return true, lookupErr
 			}
 		case "member":
 			// Requires a resolved human. agent/system triggers with no
 			// originator (effectiveUser == "") never match here — fail closed.
 			if effectiveUser != "" && uuidToString(t.TargetID) == effectiveUser {
-				return true, nil
+				return true, lookupErr
 			}
 		case "team":
 			// Reserved: team membership does not exist yet in V1, so team

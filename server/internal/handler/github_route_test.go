@@ -154,13 +154,23 @@ func TestCanRouteDeniesEveryOtherFailedCondition(t *testing.T) {
 type failingDB struct {
 	db.DBTX
 	match string
+	skip  *int // successful matches to let through before failing; nil fails the first
 }
 
 type routeErrRow struct{}
 
 func (routeErrRow) Scan(...any) error { return errors.New("injected lookup failure") }
 
-func (f failingDB) fails(sql string) bool { return strings.Contains(sql, f.match) }
+func (f failingDB) fails(sql string) bool {
+	if !strings.Contains(sql, f.match) {
+		return false
+	}
+	if f.skip != nil && *f.skip > 0 {
+		*f.skip--
+		return false
+	}
+	return true
+}
 
 func (f failingDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if f.fails(sql) {
@@ -199,6 +209,26 @@ func TestCanRouteDefersOnAnyLookupError(t *testing.T) {
 			h.Queries = db.New(failingDB{DBTX: testPool, match: match})
 			f.want(t, &h, routeDeferred)
 		})
+	}
+}
+
+// A member-target match must not hide a failed membership lookup inside the
+// invocation check: canRoute defers, while canInvokeAgent keeps its old verdict.
+func TestCanRouteDefersWhenInvocationMembershipLookupFails(t *testing.T) {
+	f := newRouteFixture(t)
+	f.grant(t)
+	dbfx.Exec(t, `DELETE FROM agent_invocation_target WHERE agent_id=$1`, uuidToString(f.agent.ID))
+	dbfx.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1,'member',$2)`, uuidToString(f.agent.ID), f.userID)
+	f.want(t, testHandler, routeAllowed)
+
+	skip := 1 // canRoute's own member check passes; the invocation check's fails
+	h := *testHandler
+	h.Queries = db.New(failingDB{DBTX: testPool, match: "FROM member", skip: &skip})
+	f.want(t, &h, routeDeferred)
+
+	skip = 1
+	if !h.canInvokeAgent(context.Background(), f.agent, "member", f.userID, "", testWorkspaceID) {
+		t.Fatal("canInvokeAgent must keep admitting a matching member target despite the lookup error")
 	}
 }
 
