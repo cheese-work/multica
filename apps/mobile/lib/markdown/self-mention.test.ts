@@ -136,6 +136,48 @@ describe("emphasizeSelfMentions in multi-line and unterminated fences", () => {
   });
 });
 
+describe("emphasizeSelfMentions with source that looks like scratch tags", () => {
+  const link = `[@Me](mention://member/${VIEWER})`;
+  const bold = `[**@Me**](mention://member/${VIEWER})`;
+  const tagged = `[**@Me**](mention://member/${VIEWER}#sm0)`;
+  const prose = (content: string) => [{ type: "prose", content }];
+  const run = (source: string) => emphasizeSelfMentionSegments(splitMarkdown(source), VIEWER);
+
+  it.each([
+    ["inline code", `\`${link}\``],
+    ["an escaped mention", `\\${link}`],
+    ["an image nested in a quote", `> !${link}`],
+  ])("keeps %s verbatim beside an existing #sm0 link", (_name, literal) => {
+    const source = `${literal}\n\n${tagged}`;
+    expect(run(source)).toEqual(prose(source));
+  });
+
+  it("still bolds a real mention beside look-alikes and keeps its own fragment", () => {
+    const source = `\`${link}\`\n\n${tagged}\n\n${link}\n\n[@all](mention://all/all#sm20)`;
+    expect(run(source)).toEqual(
+      prose(`\`${link}\`\n\n${tagged}\n\n${bold}\n\n[**@all**](mention://all/all#sm20)`),
+    );
+  });
+
+  it("survives sources that already contain longer tag prefixes", () => {
+    const head = `[x](https://e.com/#smx0) #sm0 #smxx1\n\n\`${link}\`\n\n`;
+    expect(run(head + link)).toEqual(prose(head + bold));
+  });
+
+  it("leaves reference definitions, link labels and html blocks alone", () => {
+    const ref = `[@Me][r]\n\n[r]: mention://member/${VIEWER}#sm0`;
+    expect(run(ref)).toEqual(prose(ref));
+    const html = `<div>\n${link}\n</div>`;
+    expect(run(html)).toEqual(prose(html));
+  });
+
+  it("bolds a mention in a table cell next to a tagged look-alike", () => {
+    expect(run(`| a |\n| - |\n| ${link} |\n\n\`${link}\`\n\n${tagged}`)).toEqual(
+      prose(`| a |\n| - |\n| ${bold} |\n\n\`${link}\`\n\n${tagged}`),
+    );
+  });
+});
+
 describe("emphasizeSelfMentions render cost", () => {
   it("lexes a long segment a constant number of times", () => {
     const count = 800;
