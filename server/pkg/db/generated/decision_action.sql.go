@@ -158,3 +158,270 @@ func (q *Queries) GetDecisionActionByRequest(ctx context.Context, arg GetDecisio
 	)
 	return i, err
 }
+
+const lockDecisionActionMemberNowait = `-- name: LockDecisionActionMemberNowait :one
+SELECT id FROM member
+WHERE workspace_id = $1 AND user_id = $2
+FOR SHARE NOWAIT
+`
+
+type LockDecisionActionMemberNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDecisionActionMemberNowaitParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionActionMemberNowait, arg.WorkspaceID, arg.UserID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockDecisionActionNowait = `-- name: LockDecisionActionNowait :one
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR UPDATE NOWAIT
+`
+
+type LockDecisionActionNowaitParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) LockDecisionActionNowait(ctx context.Context, arg LockDecisionActionNowaitParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, lockDecisionActionNowait, arg.ID, arg.WorkspaceID)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockDecisionLiveAnswerNowait = `-- name: LockDecisionLiveAnswerNowait :one
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source FROM decision_answer answer
+JOIN decision_request request ON request.id = answer.decision_request_id
+WHERE request.workspace_id = $1 AND request.id = $2
+  AND answer.disclaimed_at IS NULL
+FOR UPDATE OF answer NOWAIT
+`
+
+type LockDecisionLiveAnswerNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDecisionLiveAnswerNowaitParams) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, lockDecisionLiveAnswerNowait, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.AnsweredByUserID,
+		&i.AnswerSource,
+	)
+	return i, err
+}
+
+const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id FROM decision_request
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockDecisionRequestNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisionRequestNowaitParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, lockDecisionRequestNowait, arg.WorkspaceID, arg.ID)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.SourceContentSnapshot,
+		&i.RequestFingerprint,
+		&i.WithdrawReason,
+		&i.WithdrawnAt,
+		&i.WithdrawnByTaskID,
+		&i.WithdrawnByUserID,
+	)
+	return i, err
+}
+
+const lockDecisionSessionNowait = `-- name: LockDecisionSessionNowait :one
+SELECT id FROM chat_session
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockDecisionSessionNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionSessionNowait(ctx context.Context, arg LockDecisionSessionNowaitParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionSessionNowait, arg.WorkspaceID, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockWorkspaceKeyShareNowait = `-- name: LockWorkspaceKeyShareNowait :one
+
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT
+`
+
+// The approve and reject transaction takes every row lock NOWAIT (plan 3.2):
+// it is never a waiter in a lock cycle. Each row is locked once, at the
+// strongest mode a later statement needs.
+func (q *Queries) LockWorkspaceKeyShareNowait(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceKeyShareNowait, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const readDecisionActionForShare = `-- name: ReadDecisionActionForShare :one
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR SHARE
+`
+
+type ReadDecisionActionForShareParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The synchronized readback: blocks (under the caller's lock_timeout) until the
+// transaction that holds the row FOR UPDATE has committed or aborted.
+func (q *Queries) ReadDecisionActionForShare(ctx context.Context, arg ReadDecisionActionForShareParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, readDecisionActionForShare, arg.ID, arg.WorkspaceID)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const rejectDecisionActionRow = `-- name: RejectDecisionActionRow :one
+UPDATE decision_action SET state = 'rejected', updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND state = 'pending'
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+`
+
+type RejectDecisionActionRowParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisionActionRowParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, rejectDecisionActionRow, arg.ID, arg.WorkspaceID)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
