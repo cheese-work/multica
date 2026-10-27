@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -21,6 +22,7 @@ func githubForkGateCases() []struct {
 		want int
 	}{
 		{"same_repository", map[string]any{"id": 10, "full_name": "acme/widget", "fork": false}, 1},
+		{"same_repository_case", map[string]any{"id": 10, "full_name": "ACME/Widget", "fork": false}, 1},
 		{"fork", map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true}, 0},
 		{"fork_flag", map[string]any{"id": 10, "full_name": "acme/widget", "fork": true}, 0},
 		{"different_id", map[string]any{"id": 20, "full_name": "acme/widget", "fork": false}, 0},
@@ -43,7 +45,7 @@ func githubForkGatePR(t *testing.T, fixture githubReviewFixture, head any) map[s
 	return map[string]any{
 		"number": 2019, "title": fmt.Sprintf("Closes HAN-%d", issue.Number), "body": "",
 		"html_url": "https://github.com/acme/widget/pull/2019", "state": "open", "draft": false, "merged": false,
-		"created_at": "2026-10-27T00:00:00Z", "updated_at": "2026-10-27T01:00:00Z",
+		"created_at": "2026-10-27T00:00:00Z", "updated_at": time.Now().Add(time.Minute).Format(time.RFC3339Nano),
 		"head": map[string]any{"ref": branch, "sha": "review-head", "repo": head},
 		"base": map[string]any{"ref": "main"},
 	}
@@ -72,6 +74,10 @@ func TestGitHubForkGateAutoLinkAndManualLink(t *testing.T) {
 			}
 			request := withURLParam(newRequest("POST", "/api/issues/"+fixture.issueID+"/pull-requests", map[string]any{"pull_request_id": uuidToString(mirrored.ID)}), "id", fixture.issueID)
 			testutil.Call(t, fixture.handler.LinkIssuePullRequest, request).Want(http.StatusOK)
+			fixture.payload["action"] = "edited"
+			if response := fixture.post("pull_request", fixture.secret, candidate.name+"-redelivered"); response.Code != http.StatusAccepted {
+				t.Fatalf("redelivery: %d %s", response.Code, response.Body.String())
+			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM issue_pull_request WHERE pull_request_id=$1 AND linked_by_type='member'`, mirrored.ID); count != 1 {
 				t.Fatalf("member links = %d, want 1", count)
 			}
@@ -146,7 +152,7 @@ func TestGitHubForkGateLinkedPRWake(t *testing.T) {
 				fixture.handler.broadcastPRSnapshotApplied(context.Background(), parseUUID(pullID))
 			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
-				t.Errorf("fork %s created %d runs", event, count)
+				t.Fatalf("fork %s created %d runs", event, count)
 			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 0 {
 				t.Errorf("fork %s created %d comments", event, count)
