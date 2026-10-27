@@ -546,7 +546,8 @@ describe("workflow editor draft preservation during a save", () => {
 
     expect(screen.getByDisplayValue("Delivery v3")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(saveButton().disabled).toBe(false);
+    // The save settles on a later tick under load; wait instead of reading once.
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
 
     apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
     await startSave();
@@ -567,7 +568,7 @@ describe("workflow editor draft preservation during a save", () => {
     });
 
     expect(screen.getByDisplayValue("Delivery v2")).toBeTruthy();
-    expect(saveButton().disabled).toBe(true);
+    await waitFor(() => expect(saveButton().disabled).toBe(true));
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
