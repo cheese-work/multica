@@ -4,20 +4,20 @@
 
 Upstream v0.7.1 migrations 593 and 594 collide with the fork's
 `593_chat_continuation` and `594_chat_message_auth_provenance`.
-The fork files keep their names. A live open-PR check found that PR #462
-reserves 725, so the new upstream migrations use the next free numbers:
+The fork files keep their names. A refreshed live open-PR check found that
+PR #474 reserves 730, so the new upstream migrations use the next free numbers:
 
-- `593_runtime_profile_add_devin` becomes `726_runtime_profile_add_devin`.
-- `594_agent_task_process_cleanup_index` becomes `727_agent_task_process_cleanup_index`.
+- `593_runtime_profile_add_devin` becomes `731_runtime_profile_add_devin`.
+- `594_agent_task_process_cleanup_index` becomes `732_agent_task_process_cleanup_index`.
 
 Both up and down files are byte-identical to upstream tag
 `v0.7.1` (`aec9b0b1699939a6d993da9ca2ebd2c62900a8e0`).
-The migration runner registers invalid-index cleanup under the new 727
+The migration runner registers invalid-index cleanup under the new 732
 version. These upstream versions have not previously run on the fork, so
 there is no historical version-row mapping or replay requirement.
 
-The 726 rollback rejects new Devin runtime profiles but retains existing
-rows. The 727 rollback drops only the process-cleanup lookup index.
+The 731 rollback rejects new Devin runtime profiles but retains existing
+rows. The 732 rollback drops only the process-cleanup lookup index.
 Agents do not run production migrations or deploy this sync.
 
 ## Squad leader failure marker renumbering
