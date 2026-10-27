@@ -59,6 +59,22 @@ func Sign(secret []byte, timestamp, nonce string, body []byte) string {
 	return "v1=" + hex.EncodeToString(mac(secret, timestamp, nonce, body))
 }
 
+// CheckHeaders reports ErrBadRequest when a header has the wrong shape. It runs
+// before the endpoint is loaded, so a malformed call costs no database read.
+func CheckHeaders(timestamp, nonce, signature string) error {
+	sent, ok := strings.CutPrefix(signature, "v1=")
+	if !ok || !nonceRe.MatchString(nonce) {
+		return ErrBadRequest
+	}
+	if _, err := hex.DecodeString(sent); err != nil {
+		return ErrBadRequest
+	}
+	if _, err := strconv.ParseInt(timestamp, 10, 64); err != nil {
+		return ErrBadRequest
+	}
+	return nil
+}
+
 // Verify checks header shape (ErrBadRequest), then the timestamp window and
 // the signature against each candidate secret, current first (ErrUnauthorized).
 // Every secret is tried so timing does not reveal which one matched.
