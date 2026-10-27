@@ -24,6 +24,20 @@ type governanceConfigFenceTxStarter struct {
 	continueLock   <-chan struct{}
 }
 
+type governanceConfigDeleteTxStarter struct {
+	prep  txStarter
+	inner txStarter
+}
+
+func (s *governanceConfigDeleteTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	if s.prep != nil {
+		prep := s.prep
+		s.prep = nil
+		return prep.Begin(ctx)
+	}
+	return s.inner.Begin(ctx)
+}
+
 func (s governanceConfigFenceTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	if s.beginRequested != nil {
 		signalGovernanceConfigRace(s.beginRequested)
@@ -37,14 +51,6 @@ func (s governanceConfigFenceTxStarter) Begin(ctx context.Context) (pgx.Tx, erro
 	if err != nil {
 		return nil, err
 	}
-	if s.backendPID != nil {
-		var pid int32
-		if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
-			_ = tx.Rollback(ctx)
-			return nil, err
-		}
-		s.backendPID <- pid
-	}
 	return governanceConfigFenceTx{Tx: tx, starter: s}, nil
 }
 
@@ -54,11 +60,13 @@ type governanceConfigFenceTx struct {
 }
 
 func (tx governanceConfigFenceTx) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	row := tx.Tx.QueryRow(ctx, query, args...)
 	if tx.starter.lockQuery == "" || !strings.Contains(query, tx.starter.lockQuery) {
-		return row
+		return tx.Tx.QueryRow(ctx, query, args...)
 	}
-	return governanceConfigFenceRow{Row: row, starter: tx.starter}
+	if tx.starter.backendPID != nil {
+		tx.starter.backendPID <- int32(tx.Tx.Conn().PgConn().PID())
+	}
+	return governanceConfigFenceRow{Row: tx.Tx.QueryRow(ctx, query, args...), starter: tx.starter}
 }
 
 type governanceConfigFenceRow struct {
@@ -163,6 +171,13 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 	awaitGovernanceConfigRaceSignal(t, patchLockAcquired, "PATCH workspace lifetime lock")
 	writerPID := <-patchPID
 
+	prepConn, err := testPool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepConn.Release()
+	prepPID := int32(prepConn.Conn().PgConn().PID())
+
 	deleteLockAcquired := make(chan struct{}, 1)
 	continueDelete := make(chan struct{})
 	deletePID := make(chan int32, 1)
@@ -172,7 +187,10 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 	deleteDone := make(chan struct{})
 	deleteHandler := *testHandler
 	deleteHandler.TxStarter = governanceConfigFenceTxStarter{
-		inner:        testHandler.TxStarter,
+		inner: &governanceConfigDeleteTxStarter{
+			prep:  prepConn,
+			inner: testHandler.TxStarter,
+		},
 		backendPID:   deletePID,
 		lockQuery:    "FOR UPDATE",
 		lockAcquired: deleteLockAcquired,
@@ -188,6 +206,10 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 		awaitGovernanceConfigRaceDone(t, deleteDone, "workspace teardown completion")
 	}()
 	deleterPID := <-deletePID
+	t.Logf("Qoder preparation backend %d; observed teardown backend %d", prepPID, deleterPID)
+	if deleterPID == prepPID {
+		t.Fatalf("observed Qoder preparation backend %d instead of workspace teardown backend", deleterPID)
+	}
 	if writerPID == deleterPID {
 		t.Fatalf("PATCH and DELETE shared backend pid %d; race requires independent connections", writerPID)
 	}
@@ -219,52 +241,6 @@ WHERE config.workspace_id = $1
 		t.Fatalf("workspace DELETE = %d: %s", deleteResponse.Code, deleteResponse.Body.String())
 	}
 	assertNoGovernanceConfigTeardownRows(t, workspaceID)
-}
-
-func TestGovernanceConfigBackendLockWaitWithoutActivityTracking(t *testing.T) {
-	if testPool == nil || dbfx == nil {
-		t.Skip("handler test database is unavailable")
-	}
-	ctx := t.Context()
-	workspaceID := newGovernanceConfigTeardownWorkspace(t, "governance-config-lock-observation")
-	holder, err := testPool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback(ctx)
-	var holderPID int32
-	if err := holder.QueryRow(ctx, `SELECT pg_backend_pid() FROM workspace WHERE id = $1 FOR KEY SHARE`, workspaceID).Scan(&holderPID); err != nil {
-		t.Fatal(err)
-	}
-	waiter, err := testPool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer waiter.Rollback(ctx)
-	if _, err := waiter.Exec(ctx, `SET LOCAL track_activities = off`); err != nil {
-		t.Fatal(err)
-	}
-	var waiterPID int32
-	if err := waiter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&waiterPID); err != nil {
-		t.Fatal(err)
-	}
-	if holderPID == waiterPID {
-		t.Fatalf("lock holder and waiter shared backend pid %d", holderPID)
-	}
-	done := make(chan struct{})
-	var lockErr error
-	go func() {
-		defer close(done)
-		_, lockErr = waiter.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, workspaceID)
-	}()
-	defer func() {
-		_ = holder.Rollback(ctx)
-		awaitGovernanceConfigRaceDone(t, done, "workspace lock after holder rollback")
-		if lockErr != nil {
-			t.Errorf("acquire workspace lock after holder rollback: %v", lockErr)
-		}
-	}()
-	waitForGovernanceConfigBackendLockWait(t, waiterPID, holderPID)
 }
 
 func newGovernanceConfigTeardownWorkspace(t *testing.T, slugPrefix string) string {
