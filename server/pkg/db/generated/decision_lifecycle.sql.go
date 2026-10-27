@@ -402,7 +402,7 @@ func (q *Queries) ListDecisionReaskCandidates(ctx context.Context, batchSize int
 }
 
 const listDecisionRetractionCandidates = `-- name: ListDecisionRetractionCandidates :many
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, request.workspace_id FROM decision_answer answer
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, request.workspace_id FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
@@ -437,6 +437,8 @@ type ListDecisionRetractionCandidatesRow struct {
 	WithdrawalCommentID     pgtype.UUID        `json:"withdrawal_comment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	AnsweredByUserID        pgtype.UUID        `json:"answered_by_user_id"`
+	AnswerSource            string             `json:"answer_source"`
 	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
 }
 
@@ -474,6 +476,8 @@ func (q *Queries) ListDecisionRetractionCandidates(ctx context.Context, batchSiz
 			&i.WithdrawalCommentID,
 			&i.CreatedAt,
 			&i.SourceCommentID,
+			&i.AnsweredByUserID,
+			&i.AnswerSource,
 			&i.WorkspaceID,
 		); err != nil {
 			return nil, err

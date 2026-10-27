@@ -54,6 +54,7 @@ type Agent struct {
 	DisabledRuntimeSkills []byte      `json:"disabled_runtime_skills"`
 	ServiceTier           pgtype.Text `json:"service_tier"`
 	ConversationStarters  []byte      `json:"conversation_starters"`
+	CustomEnvVersion      int64       `json:"custom_env_version"`
 }
 
 type AgentBuilderDraft struct {
@@ -740,6 +741,8 @@ type DecisionAnswer struct {
 	WithdrawalCommentID     pgtype.UUID        `json:"withdrawal_comment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	AnsweredByUserID        pgtype.UUID        `json:"answered_by_user_id"`
+	AnswerSource            string             `json:"answer_source"`
 }
 
 type DecisionClassChange struct {
