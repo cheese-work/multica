@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -103,6 +104,12 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 		return err
 	}
 	if pull.InstallationID != payload.Installation.ID {
+		return nil
+	}
+	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: pull.RepoOwner, RepoName: pull.RepoName}); err != nil {
+		return err
+	} else if halted {
+		slog.Warn("github dispatch halted: review wakeup dropped", "workspace_id", uuidToString(workspaceID), "repo", pull.RepoOwner+"/"+pull.RepoName)
 		return nil
 	}
 	var authorID pgtype.UUID
