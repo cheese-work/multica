@@ -142,9 +142,12 @@ try {
           console.log("DESCRIPTION", width, item.kind);
           await page.goto(`${webOrigin}/capture/issues/CAP-1`, { timeout: 1200000, waitUntil: "domcontentloaded" });
           const description = page.locator("[data-comment-content^='description:']").first();
+          await description.waitFor({ timeout: 180000 });
+          const expand = page.getByRole("button", { name: /^Show more/ }).first();
+          if (await expand.isVisible()) await expand.click();
           const block = description.locator(".code-block-wrapper").nth(item.kind === "mermaid" ? 0 : 1);
-          await block.scrollIntoViewIfNeeded();
           const trigger = block.getByRole("button", { name: item.kind === "mermaid" ? "Open diagram viewer" : "Fullscreen", exact: true });
+          await trigger.scrollIntoViewIfNeeded();
           await trigger.click();
           const dialog = page.getByRole("dialog");
           await waitForMedia(dialog, item.kind);
