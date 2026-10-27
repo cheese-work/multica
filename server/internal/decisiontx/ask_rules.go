@@ -16,7 +16,6 @@ var (
 	numberedAsk = regexp.MustCompile(`(?i)\bnumbered answers\b|\banswer per number\b`)
 	// inlineList: one line holding enumerators 1 and 2 (`1.` or `1)`, then a space).
 	inlineList  = regexp.MustCompile(`(?:^|[\s(])1[.)]\s.*\s2[.)]\s`)
-	linkTarget  = regexp.MustCompile(`\]\([^)]*\)`)
 	anyLink     = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|https?://\S+`)
 	uuidPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	hexPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
@@ -60,7 +59,7 @@ func (ask Ask) validateReadable() error {
 	}
 	for _, field := range fields {
 		// Only a Markdown link destination is exempt; link text and bare URLs are not.
-		if uuidPattern.MatchString(linkTarget.ReplaceAllString(field.text, "]")) {
+		if uuidPattern.MatchString(maskLinkDestinations(field.text)) {
 			return &AskError{field.path, "has a bare ID; link it as [what it is](link)"}
 		}
 	}
@@ -68,6 +67,58 @@ func (ask Ask) validateReadable() error {
 		return &AskError{"ask.agent_did", "must say in at least one plain sentence what the agent did; an ID alone is not enough"}
 	}
 	return nil
+}
+
+// maskLinkDestinations drops the (destination) of each real Markdown link,
+// [label](destination), and keeps all other text. A code span is literal text,
+// so its content is kept; a "](" with no opening "[" is not a link either.
+func maskLinkDestinations(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		switch text[i] {
+		case '`':
+			run := len(text[i:]) - len(strings.TrimLeft(text[i:], "`"))
+			end := strings.Index(text[i+run:], text[i:i+run])
+			if end < 0 {
+				end = -run // no closing run: the backticks are literal
+			}
+			out.WriteString(text[i : i+run+end+run])
+			i += run + end + run
+		case '[':
+			if label := closingIndex(text, i, '[', ']'); label > 0 && label+1 < len(text) && text[label+1] == '(' {
+				if dest := closingIndex(text, label+1, '(', ')'); dest > 0 {
+					out.WriteString(text[i : label+1])
+					i = dest + 1
+					continue
+				}
+			}
+			out.WriteByte('[')
+			i++
+		default:
+			out.WriteByte(text[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+// closingIndex returns the index of the delimiter that closes the one at text[start],
+// counting nested pairs and skipping backslash-escaped characters, or -1.
+func closingIndex(text string, start int, open, closer byte) int {
+	depth := 0
+	for i := start; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case open:
+			depth++
+		case closer:
+			if depth--; depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func asksSeveral(ask Ask) bool {

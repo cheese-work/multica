@@ -180,3 +180,34 @@ func TestValidateRefusesIDOnlyAgentDid(test *testing.T) {
 		test.Fatalf("sentence refused: %v", err)
 	}
 }
+
+// Only a real Markdown link destination is exempt from rule 3 (Sol review F1).
+func TestBareUUIDMasksOnlyRealLinkDestinations(test *testing.T) {
+	cases := []struct {
+		name, text string
+		refused    bool
+	}{
+		{"unmatched closing bracket", "Read ](" + uuidCHE2126 + ") before deciding.", true},
+		{"inline code span", "Read `[proof](" + uuidCHE2126 + ")` before deciding.", true},
+		{"double-backtick code span", "Read ``[proof](" + uuidCHE2126 + ")`` first.", true},
+		{"id after a link", "[proof](https://example.com/a) then " + uuidCHE2126, true},
+		{"id in the label of a link", "[" + uuidCHE2126 + "](https://example.com/a)", true},
+		{"balanced parentheses in destination", "Read [proof](https://example.com/doc_(draft)/" + uuidCHE2126 + ") first.", false},
+		{"escaped parenthesis in destination", `Read [proof](https://example.com/a\)b/` + uuidCHE2126 + ") first.", false},
+		{"destination with title", `Read [proof](https://example.com/` + uuidCHE2126 + ` "the proof") first.`, false},
+		{"brackets in label", "Read [proof [v2]](https://example.com/" + uuidCHE2126 + ") first.", false},
+		{"two links", "[a](https://example.com/" + uuidCHE2126 + ") and [b](mention://issue/" + uuidCHE2126 + ")", false},
+		{"code span elsewhere, real link kept", "Run `go test` and read [proof](https://example.com/" + uuidCHE2126 + ").", false},
+		{"unterminated destination", "Read [proof](https://example.com/" + uuidCHE2126, true},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			err := decodeWith(func(ask map[string]any) { ask["context_eli10"] = tc.text })
+			if got := errString(err); tc.refused && got != "ask.context_eli10"+bareIDMsg {
+				test.Fatalf("error = %q, want bare-ID refusal for %q", got, tc.text)
+			} else if !tc.refused && err != nil {
+				test.Fatalf("valid text refused: %v", err)
+			}
+		})
+	}
+}
