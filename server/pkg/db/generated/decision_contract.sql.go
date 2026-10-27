@@ -69,7 +69,7 @@ func (q *Queries) FindDecisionRequestRetry(ctx context.Context, arg FindDecision
 }
 
 const getDecisionAnswerReference = `-- name: GetDecisionAnswerReference :one
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids FROM chat_message message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message message
 JOIN chat_session session ON session.id = message.chat_session_id
 WHERE session.workspace_id = $1 AND message.decision_answer_id = $2
   AND message.message_kind = 'decision_reference'
@@ -106,6 +106,7 @@ func (q *Queries) GetDecisionAnswerReference(ctx context.Context, arg GetDecisio
 		&i.SentVia,
 		&i.DecisionAnswerID,
 		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }

@@ -1,0 +1,12 @@
+issue: CHE-2088
+design: design/dm-decision-quote-cards/rev-8/B.html @ 9ac3541dba50d3e1f06687779694b08095c21b79
+pages:
+  - id: dm-decision-request
+    url: /cheese-work/chat
+    keep: [chat-user-message, decision-dm-card]
+    change:
+      - decision-request-card: "Render open, answered and withdrawn requests with the original ask and ICT time."
+      - decision-request-source-issue: "Show the source issue as a linked chip."
+      - decision-request-source-comment: "Link the source comment when a valid source exists."
+      - decision-request-reason: "Keep the withdrawal reason visible inside the card."
+    remove: []

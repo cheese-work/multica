@@ -94,6 +94,7 @@ type CommentResponse struct {
 	// reports that here instead of silently dropping the trigger, so the client
 	// can show "comment posted, but N targets were not triggered".
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	Hints           []string                `json:"hints,omitempty"`
 	// StatusAnswer is populated only when this comment's content exactly
 	// matched one of the five reserved status-query phrases (CHE-487 Unit
 	// D1): "status", "eta", "active runs", "ci", "pr head". When set, agent
@@ -1999,6 +2000,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	groupedAtt := h.groupAttachments(r, []pgtype.UUID{comment.ID})
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
+	resp.Hints = commentDecisionHints(comment, req.DecisionIntent)
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
 	commentEvent := map[string]any{
 		"comment":             resp,

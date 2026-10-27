@@ -564,15 +564,28 @@ than the workflow run's default-branch SHA.
 `candidate-preflight` runs on X99 without the `c00-production` environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
 does not need to contain the new preflight script. Before requesting approval,
-it checks that no newer `main` commit supersedes the candidate, waits for
-required checks, and checks again. A newer commit supersedes the candidate only
-if it would be admitted itself or its required checks are still running; one
-whose checks settled without passing never can deploy, so it does not. The
+`require-current.sh` requires the candidate to be an ancestor of (or equal to)
+`main` and a strict descendant of C00's running commit (CHE-2159). A qualified
+older `main` commit is eligible even when a newer commit has pending or passing
+checks. Same-version, downgrade, divergent and off-main candidates are skipped.
+The guard reads C00's public `/api/config` over verified HTTPS using the
+repository Actions variable `C00_CONFIG_URL`, without SSH or deployment
+credentials. Set that variable to the live C00 HTTPS `/api/config` endpoint
+reachable from the X99 runner before enabling this workflow revision. An unset
+URL fails closed; the endpoint is not embedded in the public repository. The
+reported short `server_commit` is resolved to a full SHA through GitHub; missing,
+malformed, ambiguous or unknown versions fail closed. The bounded version read
+and ancestry checks run before and after waiting for required checks. The
 recorder keeps the newest run of each check, so a green re-run replaces the
-failure it re-ran. A superseded candidate or non-admissible check
+failure it re-ran. A non-forward candidate or non-admissible check
 result leaves `eligible=false`; `prepare-release-candidate` and the automatic
 admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
+
+`cd-qualification.yml` groups pushes by `github.ref` with
+`cancel-in-progress: true`: a new `main` push cancels superseded qualification
+work instead of waiting for the old build. This group is separate from every
+approval and C00 mutation lock; cancellation cannot interrupt a started deploy.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual

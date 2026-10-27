@@ -129,6 +129,48 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(result.current.activeIndex).toBe(-1);
   });
 
+  it("reveals and scrolls a new query in the same source document", async () => {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>first match then a distant second match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, this.startOffset === 0 ? 600 : 1200, 100, 20)] as unknown as DOMRectList;
+    };
+    const revealDocument = vi.fn();
+    const documents = [{ id: "comment-long", text: "first match then a distant second match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument }));
+    act(() => { result.current.openFind(); result.current.setQuery("first"); });
+    await flushFrames();
+    expect(result.current.activeIndex).toBe(0);
+    expect(container.scrollTop).toBeGreaterThan(0);
+    container.scrollTop = 0;
+    revealDocument.mockClear();
+
+    act(() => result.current.setQuery("second"));
+    await flushFrames();
+    expect(result.current.matchCount).toBe(1);
+    expect(result.current.activeIndex).toBe(0);
+    expect(result.current.activeDocumentId).toBe("comment-long");
+    expect(container.scrollTop).toBeGreaterThan(0);
+    expect(revealDocument).toHaveBeenCalledWith("comment-long");
+  });
+
+  it("does not reveal an unchanged match after a timeline refresh", async () => {
+    const revealDocument = vi.fn();
+    const documents = [{ id: "first", text: "needle needle" }];
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: 0, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
+    await waitFor(() => expect(result.current.matchCount).toBe(2));
+    revealDocument.mockClear();
+    rerender({ entries: [...documents.map(entry => ({ ...entry })), { id: "new", text: "unrelated" }] });
+    await flushFrames();
+    expect(revealDocument).not.toHaveBeenCalled();
+    act(() => result.current.goNext());
+    expect(revealDocument).toHaveBeenCalledWith("first");
+  });
+
   it("counts off-screen source occurrences, wraps navigation and updates after edits", async () => {
     const revealDocument = vi.fn();
     const documents = [
