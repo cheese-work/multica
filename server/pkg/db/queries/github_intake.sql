@@ -29,12 +29,48 @@ LIMIT 1 FOR UPDATE SKIP LOCKED;
 SELECT * FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
   AND object_kind = $3 AND object_id = $4 AND body_hash = $5
+  AND event = $6 AND action = $7 AND sender_id = $8 AND author_id = $9
+  AND review_state = $10
+  AND object_created_at IS NOT DISTINCT FROM sqlc.narg(object_created_at)::timestamptz
+  AND object_updated_at IS NOT DISTINCT FROM sqlc.narg(object_updated_at)::timestamptz
+  AND object_submitted_at IS NOT DISTINCT FROM sqlc.narg(object_submitted_at)::timestamptz
 ORDER BY workspace_id
 FOR UPDATE;
 
+-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.* FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND newer.object_updated_at IS NOT NULL
+      AND (
+        newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at)
+        OR (pending.action IN ('submitted', 'created')
+            AND newer.object_updated_at >= COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at, newer.object_updated_at))
+      )
+  );
+
 -- name: SetGitHubWebhookRevisionState :exec
-UPDATE github_webhook_revision SET state = $5, reason = $6, updated_at = now()
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4;
+UPDATE github_webhook_revision SET state = $8, reason = $9, updated_at = now()
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5 AND body_hash = $6 AND source_delivery_guid = $7;
 
 -- name: ScheduleGitHubWebhookIntakeRetry :exec
 UPDATE github_webhook_intake
@@ -51,16 +87,22 @@ ORDER BY received_at LIMIT $1;
 
 -- name: HasGitHubWebhookDispatch :one
 SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4 AND issue_id = $5);
+WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4
+  AND source_delivery_guid = $5 AND issue_id = $6);
 
 -- name: RecordGitHubWebhookDispatch :execrows
-INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id)
-SELECT $1, $2, $3, $4, $5, $6, $7
+INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, source_delivery_guid, issue_id, comment_id, task_id)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8
 WHERE EXISTS (
     SELECT 1 FROM agent_task_queue task JOIN comment ON comment.id = task.trigger_comment_id
     JOIN issue ON issue.id = task.issue_id
-    WHERE task.id = $7 AND issue.workspace_id = $1 AND task.issue_id = $5
-      AND comment.id = $6 AND comment.workspace_id = $1 AND comment.issue_id = $5
+    WHERE task.id = $8 AND issue.workspace_id = $1 AND task.issue_id = $6
+      AND comment.id = $7 AND comment.workspace_id = $1 AND comment.issue_id = $6
+)
+AND EXISTS (
+    SELECT 1 FROM github_webhook_revision revision
+    WHERE revision.workspace_id = $1 AND revision.object_kind = $2 AND revision.object_id = $3
+      AND revision.body_hash = $4 AND revision.source_delivery_guid = $5
 );
 -- name: DenyPendingGitHubWebhookRevisions :exec
 UPDATE github_webhook_revision SET state = 'denied', reason = $6, updated_at = now()

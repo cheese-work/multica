@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 
@@ -82,6 +81,7 @@ func TestGitHubIntakeWorkerT8Resume(t *testing.T) {
 func TestGitHubIntakeWorkerUncommittedReceiptInvisible(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
 	worker := intakeWorkerForTest(t, fixture)
+	delivery := postIntakeForWorker(t, fixture, "-uncommitted-receipt")
 	ctx := context.Background()
 	transaction, err := fixture.handler.TxStarter.Begin(ctx)
 	if err != nil {
@@ -89,7 +89,11 @@ func TestGitHubIntakeWorkerUncommittedReceiptInvisible(t *testing.T) {
 	}
 	defer transaction.Rollback(ctx)
 	queries := fixture.handler.Queries.WithTx(transaction)
-	revision := db.GithubWebhookRevision{WorkspaceID: parseUUID(testWorkspaceID), ObjectKind: "review", ObjectID: 77, BodyHash: strings.Repeat("a", 64)}
+	var revision db.GithubWebhookRevision
+	dbfx.QueryRow(t, `SELECT workspace_id, object_kind, object_id, body_hash, source_delivery_guid
+		FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(
+		&revision.WorkspaceID, &revision.ObjectKind, &revision.ObjectID, &revision.BodyHash, &revision.SourceDeliveryGuid,
+	)
 	decision, err := worker.admit(ctx, queries, revision, githubIntakePayload{})
 	if err != nil {
 		t.Fatal(err)

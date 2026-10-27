@@ -63,15 +63,17 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 
 const hasGitHubWebhookDispatch = `-- name: HasGitHubWebhookDispatch :one
 SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4 AND issue_id = $5)
+WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4
+  AND source_delivery_guid = $5 AND issue_id = $6)
 `
 
 type HasGitHubWebhookDispatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ObjectKind  string      `json:"object_kind"`
-	ObjectID    int64       `json:"object_id"`
-	BodyHash    string      `json:"body_hash"`
-	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	ObjectKind         string      `json:"object_kind"`
+	ObjectID           int64       `json:"object_id"`
+	BodyHash           string      `json:"body_hash"`
+	SourceDeliveryGuid string      `json:"source_delivery_guid"`
+	IssueID            pgtype.UUID `json:"issue_id"`
 }
 
 func (q *Queries) HasGitHubWebhookDispatch(ctx context.Context, arg HasGitHubWebhookDispatchParams) (bool, error) {
@@ -80,6 +82,7 @@ func (q *Queries) HasGitHubWebhookDispatch(ctx context.Context, arg HasGitHubWeb
 		arg.ObjectKind,
 		arg.ObjectID,
 		arg.BodyHash,
+		arg.SourceDeliveryGuid,
 		arg.IssueID,
 	)
 	var exists bool
@@ -228,16 +231,29 @@ const listGitHubWebhookRevisionsForWork = `-- name: ListGitHubWebhookRevisionsFo
 SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
   AND object_kind = $3 AND object_id = $4 AND body_hash = $5
+  AND event = $6 AND action = $7 AND sender_id = $8 AND author_id = $9
+  AND review_state = $10
+  AND object_created_at IS NOT DISTINCT FROM $11::timestamptz
+  AND object_updated_at IS NOT DISTINCT FROM $12::timestamptz
+  AND object_submitted_at IS NOT DISTINCT FROM $13::timestamptz
 ORDER BY workspace_id
 FOR UPDATE
 `
 
 type ListGitHubWebhookRevisionsForWorkParams struct {
-	InstallationID int64  `json:"installation_id"`
-	RepositoryID   int64  `json:"repository_id"`
-	ObjectKind     string `json:"object_kind"`
-	ObjectID       int64  `json:"object_id"`
-	BodyHash       string `json:"body_hash"`
+	InstallationID    int64              `json:"installation_id"`
+	RepositoryID      int64              `json:"repository_id"`
+	ObjectKind        string             `json:"object_kind"`
+	ObjectID          int64              `json:"object_id"`
+	BodyHash          string             `json:"body_hash"`
+	Event             string             `json:"event"`
+	Action            string             `json:"action"`
+	SenderID          int64              `json:"sender_id"`
+	AuthorID          int64              `json:"author_id"`
+	ReviewState       string             `json:"review_state"`
+	ObjectCreatedAt   pgtype.Timestamptz `json:"object_created_at"`
+	ObjectUpdatedAt   pgtype.Timestamptz `json:"object_updated_at"`
+	ObjectSubmittedAt pgtype.Timestamptz `json:"object_submitted_at"`
 }
 
 func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg ListGitHubWebhookRevisionsForWorkParams) ([]GithubWebhookRevision, error) {
@@ -247,6 +263,14 @@ func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg Lis
 		arg.ObjectKind,
 		arg.ObjectID,
 		arg.BodyHash,
+		arg.Event,
+		arg.Action,
+		arg.SenderID,
+		arg.AuthorID,
+		arg.ReviewState,
+		arg.ObjectCreatedAt,
+		arg.ObjectUpdatedAt,
+		arg.ObjectSubmittedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -292,24 +316,30 @@ func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg Lis
 }
 
 const recordGitHubWebhookDispatch = `-- name: RecordGitHubWebhookDispatch :execrows
-INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id)
-SELECT $1, $2, $3, $4, $5, $6, $7
+INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, source_delivery_guid, issue_id, comment_id, task_id)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8
 WHERE EXISTS (
     SELECT 1 FROM agent_task_queue task JOIN comment ON comment.id = task.trigger_comment_id
     JOIN issue ON issue.id = task.issue_id
-    WHERE task.id = $7 AND issue.workspace_id = $1 AND task.issue_id = $5
-      AND comment.id = $6 AND comment.workspace_id = $1 AND comment.issue_id = $5
+    WHERE task.id = $8 AND issue.workspace_id = $1 AND task.issue_id = $6
+      AND comment.id = $7 AND comment.workspace_id = $1 AND comment.issue_id = $6
+)
+AND EXISTS (
+    SELECT 1 FROM github_webhook_revision revision
+    WHERE revision.workspace_id = $1 AND revision.object_kind = $2 AND revision.object_id = $3
+      AND revision.body_hash = $4 AND revision.source_delivery_guid = $5
 )
 `
 
 type RecordGitHubWebhookDispatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ObjectKind  string      `json:"object_kind"`
-	ObjectID    int64       `json:"object_id"`
-	BodyHash    string      `json:"body_hash"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	CommentID   pgtype.UUID `json:"comment_id"`
-	TaskID      pgtype.UUID `json:"task_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	ObjectKind         string      `json:"object_kind"`
+	ObjectID           int64       `json:"object_id"`
+	BodyHash           string      `json:"body_hash"`
+	SourceDeliveryGuid string      `json:"source_delivery_guid"`
+	IssueID            pgtype.UUID `json:"issue_id"`
+	CommentID          pgtype.UUID `json:"comment_id"`
+	TaskID             pgtype.UUID `json:"task_id"`
 }
 
 func (q *Queries) RecordGitHubWebhookDispatch(ctx context.Context, arg RecordGitHubWebhookDispatchParams) (int64, error) {
@@ -318,6 +348,7 @@ func (q *Queries) RecordGitHubWebhookDispatch(ctx context.Context, arg RecordGit
 		arg.ObjectKind,
 		arg.ObjectID,
 		arg.BodyHash,
+		arg.SourceDeliveryGuid,
 		arg.IssueID,
 		arg.CommentID,
 		arg.TaskID,
@@ -364,27 +395,82 @@ func (q *Queries) SetGitHubWebhookIntakeState(ctx context.Context, arg SetGitHub
 }
 
 const setGitHubWebhookRevisionState = `-- name: SetGitHubWebhookRevisionState :exec
-UPDATE github_webhook_revision SET state = $5, reason = $6, updated_at = now()
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4
+UPDATE github_webhook_revision SET state = $8, reason = $9, updated_at = now()
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5 AND body_hash = $6 AND source_delivery_guid = $7
 `
 
 type SetGitHubWebhookRevisionStateParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ObjectKind  string      `json:"object_kind"`
-	ObjectID    int64       `json:"object_id"`
-	BodyHash    string      `json:"body_hash"`
-	State       string      `json:"state"`
-	Reason      string      `json:"reason"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	InstallationID     int64       `json:"installation_id"`
+	RepositoryID       int64       `json:"repository_id"`
+	ObjectKind         string      `json:"object_kind"`
+	ObjectID           int64       `json:"object_id"`
+	BodyHash           string      `json:"body_hash"`
+	SourceDeliveryGuid pgtype.Text `json:"source_delivery_guid"`
+	State              string      `json:"state"`
+	Reason             string      `json:"reason"`
 }
 
 func (q *Queries) SetGitHubWebhookRevisionState(ctx context.Context, arg SetGitHubWebhookRevisionStateParams) error {
 	_, err := q.db.Exec(ctx, setGitHubWebhookRevisionState,
 		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
 		arg.ObjectKind,
 		arg.ObjectID,
 		arg.BodyHash,
+		arg.SourceDeliveryGuid,
 		arg.State,
 		arg.Reason,
+	)
+	return err
+}
+
+const supersedePendingGitHubWebhookRevisions = `-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.workspace_id, scoped.installation_id, scoped.repository_id, scoped.pull_request_id, scoped.pr_number, scoped.object_kind, scoped.object_id, scoped.body_hash, scoped.source_delivery_guid, scoped.event, scoped.action, scoped.sender_id, scoped.author_id, scoped.author_login, scoped.author_type, scoped.head_sha, scoped.review_state, scoped.object_created_at, scoped.object_updated_at, scoped.object_submitted_at, scoped.state, scoped.reason, scoped.created_at, scoped.updated_at FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND newer.object_updated_at IS NOT NULL
+      AND (
+        newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at)
+        OR (pending.action IN ('submitted', 'created')
+            AND newer.object_updated_at >= COALESCE(pending.object_updated_at, pending.object_submitted_at, pending.object_created_at, newer.object_updated_at))
+      )
+  )
+`
+
+type SupersedePendingGitHubWebhookRevisionsParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepositoryID   int64  `json:"repository_id"`
+	ObjectKind     string `json:"object_kind"`
+	ObjectID       int64  `json:"object_id"`
+}
+
+func (q *Queries) SupersedePendingGitHubWebhookRevisions(ctx context.Context, arg SupersedePendingGitHubWebhookRevisionsParams) error {
+	_, err := q.db.Exec(ctx, supersedePendingGitHubWebhookRevisions,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
 	)
 	return err
 }

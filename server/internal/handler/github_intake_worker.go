@@ -134,10 +134,18 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	if invalid != "" {
 		return "denied", invalid, nil, nil
 	}
+	if err := queries.SupersedePendingGitHubWebhookRevisions(ctx, db.SupersedePendingGitHubWebhookRevisionsParams{
+		InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID, ObjectKind: kind, ObjectID: object.ID,
+	}); err != nil {
+		return "", "", nil, err
+	}
 	digest := sha256.Sum256([]byte(object.Body))
 	revisions, err := queries.ListGitHubWebhookRevisionsForWork(ctx, db.ListGitHubWebhookRevisionsForWorkParams{
 		InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
 		ObjectKind: kind, ObjectID: object.ID, BodyHash: hex.EncodeToString(digest[:]),
+		Event: intake.Event, Action: payload.Action, SenderID: payload.Sender.ID, AuthorID: object.User.ID,
+		ReviewState: object.State, ObjectCreatedAt: githubIntakeTimestamp(object.CreatedAt),
+		ObjectUpdatedAt: githubIntakeTimestamp(object.UpdatedAt), ObjectSubmittedAt: githubIntakeTimestamp(object.SubmittedAt),
 	})
 	if err != nil {
 		return "", "", nil, err
@@ -146,6 +154,9 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	priority := map[string]int{"denied": 0, "dispatched": 1, "projected": 2, "unsigned": 3, "quarantined": 4, "deferred": 5}
 	var publications []githubIntakePublication
 	for _, revision := range revisions {
+		if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
+			return "", "", nil, errors.New("github: missing canonical revision delivery")
+		}
 		decision := githubIntakeDecision{State: revision.State, Reason: revision.Reason}
 		if revision.State == "deferred" || revision.State == "dispatched" {
 			if worker.admit == nil {
@@ -178,7 +189,8 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 			}
 			if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
 				WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-				BodyHash: revision.BodyHash, State: decision.State, Reason: decision.Reason,
+				InstallationID: revision.InstallationID, RepositoryID: revision.RepositoryID,
+				BodyHash: revision.BodyHash, SourceDeliveryGuid: revision.SourceDeliveryGuid, State: decision.State, Reason: decision.Reason,
 			}); err != nil {
 				return "", "", nil, err
 			}
@@ -191,6 +203,9 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 }
 
 func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queries, revision db.GithubWebhookRevision, target githubIntakeTarget) (*githubIntakePublication, error) {
+	if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
+		return nil, errors.New("github: missing canonical revision delivery")
+	}
 	issue, err := queries.GetIssue(ctx, target.IssueID)
 	if err != nil {
 		return nil, err
@@ -206,13 +221,13 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	seen, err := queries.HasGitHubWebhookDispatch(ctx, db.HasGitHubWebhookDispatchParams{
 		WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-		BodyHash: revision.BodyHash, IssueID: issue.ID,
+		BodyHash: revision.BodyHash, SourceDeliveryGuid: revision.SourceDeliveryGuid.String, IssueID: issue.ID,
 	})
 	if err != nil || seen {
 		return nil, err
 	}
-	key := fmt.Sprintf("github.intake:%s:%s:%d:%s:%s", uuidToString(revision.WorkspaceID), revision.ObjectKind,
-		revision.ObjectID, revision.BodyHash, uuidToString(issue.ID))
+	key := fmt.Sprintf("github.intake:%s:%s:%d:%s:%s:%s", uuidToString(revision.WorkspaceID), revision.ObjectKind,
+		revision.ObjectID, revision.BodyHash, revision.SourceDeliveryGuid.String, uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
 	params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, issue, target.AgentID, commentID, target.UserID, service.OriginDerived)
 	if err != nil {
@@ -231,7 +246,8 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	inserted, err := queries.RecordGitHubWebhookDispatch(ctx, db.RecordGitHubWebhookDispatchParams{
 		WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-		BodyHash: revision.BodyHash, IssueID: issue.ID, CommentID: commentID, TaskID: task.ID,
+		BodyHash: revision.BodyHash, SourceDeliveryGuid: revision.SourceDeliveryGuid.String,
+		IssueID: issue.ID, CommentID: commentID, TaskID: task.ID,
 	})
 	if err != nil {
 		return nil, err

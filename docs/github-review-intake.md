@@ -72,9 +72,18 @@ subscription update, webhook replay or deployment is enabled here.
 The server starts a context-bound worker that drains up to 25 due deliveries
 every 5 seconds. PostgreSQL row locks with `SKIP LOCKED` let multiple servers
 claim different deliveries. Normalized revision rows are locked in workspace
-order, so different GUIDs for the same revision serialize on the same work.
+and canonical delivery order, so different GUIDs for the same revision serialize
+on the same work. Reads match the full normalized revision identity, including
+event/action, sender/author, review state and signed timestamps, not body hash
+alone. State writes address only that canonical revision.
 The original signed payload supplies the content; the worker does not fetch
 replacement content from GitHub.
+
+Before calling admission, the worker denies older pending revisions as
+`superseded` when a newer signed self-edit for the same workspace, installation,
+repository, object and author is stored. An edit at the initial revision's
+timestamp also supersedes that initial revision. Foreign edits do not supersede
+the author's pending work. Denied and dispatched history remains intact.
 
 The production admission function currently rechecks the intake guards and
 leaves eligible items `deferred` with `awaiting_admission`. Full provenance
@@ -100,8 +109,10 @@ GUIDs retain separate delivery dispositions but share revision work.
 The dormant dispatch primitive writes the system comment, queued task,
 `github_webhook_dispatch` receipt and final revision/delivery state in one
 transaction. Receipts are keyed by workspace, object kind, object ID, body
-hash and target issue, not delivery GUID. A receipt is inserted only when its
-matching task and trigger comment exist. Notifications publish only after
+hash, canonical revision source GUID and target issue. Redeliveries select the
+original canonical revision; a different redelivery GUID does not create another
+receipt. Same-body edits retain separate receipts. A receipt is inserted only
+when its matching canonical revision, task and trigger comment exist. Notifications publish only after
 commit. A failed or interrupted transaction cannot commit a receipt alone;
 a retry reads the committed receipt before creating another dispatch.
 Workspace teardown removes that workspace's dispatch receipts with its
@@ -174,9 +185,10 @@ update timestamps may differ. GraphQL review-state enums are compared with their
 signed lowercase equivalents. No GraphQL author login is used for trust.
 
 Tests cover T3, T4, T13, T14, T15, T22, T23, T24 and T25 in
-`admission_test.go` and `github_admission_test.go`. Dispatch exactly-once receipts,
-replacement of pending self-edits and withdrawal projection remain worker duties
-(CHE-2208/CHE-2209), not side effects of this admission check.
+`admission_test.go` and `github_admission_test.go`. Dispatch exactly-once receipts
+and replacement of pending self-edits are worker duties (CHE-2208), not side
+effects of this admission check. Withdrawal projection remains a separate
+CHE-2209 duty.
 
 Migrations 728/729 replace body-only uniqueness with revision identity using
 concurrent indexes. Rolling back 729 can fail safely if newer revisions share a

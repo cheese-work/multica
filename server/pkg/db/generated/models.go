@@ -959,14 +959,15 @@ type GithubPullRequestCheckSuite struct {
 }
 
 type GithubWebhookDispatch struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ObjectKind  string             `json:"object_kind"`
-	ObjectID    int64              `json:"object_id"`
-	BodyHash    string             `json:"body_hash"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	CommentID   pgtype.UUID        `json:"comment_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	CommittedAt pgtype.Timestamptz `json:"committed_at"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ObjectKind         string             `json:"object_kind"`
+	ObjectID           int64              `json:"object_id"`
+	BodyHash           string             `json:"body_hash"`
+	SourceDeliveryGuid string             `json:"source_delivery_guid"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	CommentID          pgtype.UUID        `json:"comment_id"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	CommittedAt        pgtype.Timestamptz `json:"committed_at"`
 }
 
 type GithubWebhookIntake struct {
