@@ -32,10 +32,12 @@ type decisionRecordInput struct {
 }
 
 type decisionRecordResult struct {
-	Request         db.DecisionRequest
-	Answer          db.DecisionAnswer
-	Comment         db.Comment
-	Message         db.ChatMessage
+	Request db.DecisionRequest
+	Answer  db.DecisionAnswer
+	Comment db.Comment
+	Message db.ChatMessage
+	// AnswerMessage is the task-less user row a card answer writes.
+	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
 	Replayed        bool
 }

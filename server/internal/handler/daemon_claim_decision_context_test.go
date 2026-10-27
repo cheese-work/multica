@@ -69,7 +69,7 @@ func TestClaimChatBindsBareReplyToTheOnlyOpenDecisionRequest(t *testing.T) {
 	}
 	block, seeded := claimDecisionContext(t, "open")
 	d := seeded[0]
-	for _, want := range []string{"Ask number 1?", d.requestID, d.askCommentID, d.issueID, recordCommand(d), "answers it"} {
+	for _, want := range []string{"Ask number 1?", d.requestID, d.askCommentID, d.issueID, recordCommand(d), "Do not record"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("chat_decision_context missing %q:\n%s", want, block)
 		}
@@ -91,7 +91,7 @@ func TestClaimChatDoesNotGuessBetweenTwoOpenDecisionRequests(t *testing.T) {
 			}
 		}
 	}
-	for _, banned := range []string{"answers it", "earliest"} {
+	for _, banned := range []string{"earliest"} {
 		if strings.Contains(block, banned) {
 			t.Errorf("chat_decision_context binds a reply by age (%q):\n%s", banned, block)
 		}
@@ -108,7 +108,7 @@ func TestClaimChatOmitsAnsweredDecisionRequest(t *testing.T) {
 		t.Skip("database not available")
 	}
 	block, _ := claimDecisionContext(t, "answered")
-	for _, banned := range []string{"Ask number 1?", "--parent", "[request ", "answers it", "Do not guess"} {
+	for _, banned := range []string{"Ask number 1?", "--parent", "[request ", "does not answer a card", "Do not guess"} {
 		if strings.Contains(block, banned) {
 			t.Fatalf("answered request reached the carrier (%q):\n%s", banned, block)
 		}
@@ -131,7 +131,7 @@ func TestChatDecisionContextCountsOnlyEligibleAsks(t *testing.T) {
 	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "assistant", "content": "Decision request cancelled: lane_archived.", "message_kind": "decision_reference", "sent_via": "task_token", "created_at": testutil.Raw("now() - interval '1 hour'")})
 
 	block := carrierFor(t, sessionID, time.Now())
-	for _, want := range []string{"Eligible ask?", eligibleID, "answers it", "lane_archived"} {
+	for _, want := range []string{"Eligible ask?", eligibleID, "Do not record", "lane_archived"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("carrier missing %q:\n%s", want, block)
 		}

@@ -224,6 +224,6 @@ func (ask Ask) Content() string {
 	for index, option := range ask.Options {
 		labels[index] = option.Label
 	}
-	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
-		ask.AgentDid, ask.Decision, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
+	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Stakes if wrong**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
+		ask.AgentDid, ask.Decision, ask.StakesIfWrong, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
 }

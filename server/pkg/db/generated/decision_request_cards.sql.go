@@ -58,7 +58,7 @@ const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
-    request.withdraw_reason, request.cancel_reason,
+    request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -89,6 +89,7 @@ type ListDecisionRequestCardsRow struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	WithdrawReason  string             `json:"withdraw_reason"`
 	CancelReason    pgtype.Text        `json:"cancel_reason"`
+	Options         []byte             `json:"options"`
 	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
 }
 
@@ -113,6 +114,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.CreatedAt,
 			&i.WithdrawReason,
 			&i.CancelReason,
+			&i.Options,
 			&i.WithdrawnAt,
 		); err != nil {
 			return nil, err

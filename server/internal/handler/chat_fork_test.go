@@ -552,7 +552,7 @@ func TestForkChatSessionLeavesDecisionAndTaskOwnership(test *testing.T) {
 	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusCreated).JSON(&child)
 	cleanupChatFork(test, child.Session.ID)
 	stored, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.issue.WorkspaceID, ID: decision.Request.ID})
-	if err != nil || stored != decision.Request {
+	if err != nil || !reflect.DeepEqual(stored, decision.Request) {
 		test.Fatalf("fork transferred or changed the decision: %+v, %v", stored, err)
 	}
 	after, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))

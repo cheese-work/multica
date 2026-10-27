@@ -815,6 +815,7 @@ type DecisionRequest struct {
 	WithdrawnAt           pgtype.Timestamptz `json:"withdrawn_at"`
 	WithdrawnByTaskID     pgtype.UUID        `json:"withdrawn_by_task_id"`
 	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
+	Options               []byte             `json:"options"`
 }
 
 type DecisionWorkerLease struct {

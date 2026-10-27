@@ -2,7 +2,7 @@
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
-    request.withdraw_reason, request.cancel_reason,
+    request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
