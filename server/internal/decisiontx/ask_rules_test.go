@@ -199,6 +199,9 @@ func TestBareUUIDMasksOnlyRealLinkDestinations(test *testing.T) {
 		{"two links", "[a](https://example.com/" + uuidCHE2126 + ") and [b](mention://issue/" + uuidCHE2126 + ")", false},
 		{"code span elsewhere, real link kept", "Run `go test` and read [proof](https://example.com/" + uuidCHE2126 + ").", false},
 		{"unterminated destination", "Read [proof](https://example.com/" + uuidCHE2126, true},
+		{"escaped opening bracket", `Read \[proof](` + uuidCHE2126 + ") before deciding.", true},
+		{"escaped opening bracket with web link", `Read \[proof](https://example.com/` + uuidCHE2126 + ") before deciding.", true},
+		{"escaped backslash before a real link", `Read \\[proof](https://example.com/` + uuidCHE2126 + ") first.", false},
 	}
 	for _, tc := range cases {
 		test.Run(tc.name, func(test *testing.T) {

@@ -71,7 +71,8 @@ func (ask Ask) validateReadable() error {
 
 // maskLinkDestinations drops the (destination) of each real Markdown link,
 // [label](destination), and keeps all other text. A code span is literal text,
-// so its content is kept; a "](" with no opening "[" is not a link either.
+// so its content is kept; a "](" with no opening "[", or one opened by an
+// escaped "\[", is not a link either.
 func maskLinkDestinations(text string) string {
 	var out strings.Builder
 	for i := 0; i < len(text); {
@@ -84,6 +85,10 @@ func maskLinkDestinations(text string) string {
 			}
 			out.WriteString(text[i : i+run+end+run])
 			i += run + end + run
+		case '\\': // an escaped character is literal, so "\[" never opens a link
+			end := min(i+2, len(text))
+			out.WriteString(text[i:end])
+			i = end
 		case '[':
 			if label := closingIndex(text, i, '[', ']'); label > 0 && label+1 < len(text) && text[label+1] == '(' {
 				if dest := closingIndex(text, label+1, '(', ')'); dest > 0 {
