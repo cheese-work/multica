@@ -34,6 +34,16 @@ multica chat continue --fork                                # keeps this DM, ope
 - A retry of the same turn returns the same child (`--idempotency-key`
   defaults to the current chat task id).
 
+## Rename a DM
+
+```bash
+multica chat rename <session-id> <title> --output json
+```
+
+Sets the DM title and posts a message announcing the new title and who
+changed it, without reading the DM's contents. JSON carries `id`, `title`,
+`previous_title` and `message_id`.
+
 ## DM lanes for decisions
 
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a
