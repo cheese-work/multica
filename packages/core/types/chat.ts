@@ -24,6 +24,8 @@ export type ChatMessageKind =
   | "onboarding_opening"
   | "continuation_summary"
   | "compact_notice"
+  | "decision_request"
+  | "decision_cancel_notice"
   | "decision_reference";
 
 /**
@@ -249,6 +251,8 @@ export interface ChatMessage {
   decision_quotes?: import("./decision").DecisionCard[];
   /** The card a `decision_reference` message announces. */
   decision_ref?: import("./decision").DecisionCard;
+  decision_request?: import("./decision").DecisionRequestCard;
+  decision_requests?: import("./decision").DecisionRequestCard[];
 }
 
 export interface ChatMessagesCursor {

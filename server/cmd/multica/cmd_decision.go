@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,10 @@ var decisionListCmd = &cobra.Command{
 	Use: "list", Short: "List decision requests on an issue", Args: cobra.NoArgs, RunE: runDecisionList,
 }
 
+var decisionWithdrawCmd = &cobra.Command{
+	Use: "withdraw <id>", Short: "Withdraw an unanswered decision request", Args: cobra.ExactArgs(1), RunE: runDecisionWithdraw,
+}
+
 func init() {
 	for _, command := range []*cobra.Command{decisionRequestCmd, decisionListCmd} {
 		command.Flags().String("issue", "", "Issue UUID or identifier")
@@ -33,19 +38,39 @@ func init() {
 	}
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
-	decisionRequestCmd.Flags().String("for", "", "Named person's user ID (required unless an open intent names the person)")
+	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 file containing the exact ask")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: agent_did, decision, options, recommendation, default_if_no_reply, source_issue_id, source_comment_id")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
 	}
-	for _, command := range []*cobra.Command{decisionRequestCmd, decisionGetCmd, decisionListCmd} {
+	decisionWithdrawCmd.Flags().String("reason", "", "Why the ask no longer needs an answer")
+	_ = decisionWithdrawCmd.MarkFlagRequired("reason")
+	for _, command := range []*cobra.Command{decisionRequestCmd, decisionGetCmd, decisionListCmd, decisionWithdrawCmd} {
 		command.Flags().String("output", "json", "Output format: table or json")
 		decisionCmd.AddCommand(command)
 	}
 	rootCmd.AddCommand(decisionCmd)
+}
+
+func runDecisionWithdraw(command *cobra.Command, args []string) error {
+	reason, _ := command.Flags().GetString("reason")
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("--reason must not be empty")
+	}
+	client, err := newAPIClient(command)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/decisions/"+url.PathEscape(args[0])+"/withdraw", map[string]any{"reason": reason}, &result); err != nil {
+		return fmt.Errorf("withdraw decision: %w", err)
+	}
+	return printDecisions(command, []map[string]any{result}, false)
 }
 
 func runDecisionRequest(command *cobra.Command, _ []string) error {
@@ -63,7 +88,11 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if newDM && (sessionID != "" || humanID == "") || !newDM && sessionID == "" && humanID == "" {
 		return fmt.Errorf("choose --session, or --for (add --new-dm to force a new DM)")
 	}
-	ask, err := readDecisionText(askPath, "ask")
+	askText, err := readDecisionText(askPath, "ask")
+	if err != nil {
+		return err
+	}
+	ask, err := decisiontx.ParseAsk(askText)
 	if err != nil {
 		return err
 	}
@@ -82,6 +111,9 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	issue, err := resolveIssueRef(ctx, client, issueRef)
 	if err != nil {
 		return err
+	}
+	if !strings.EqualFold(ask.SourceIssueID, issue.ID) {
+		return fmt.Errorf("ask.source_issue_id must match --issue")
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", map[string]any{

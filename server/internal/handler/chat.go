@@ -1311,10 +1311,18 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	groupedAtt := h.groupChatMessageAttachments(ctx, workspaceID, messageIDs)
 
 	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
+	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
+			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
+				resp[i].DecisionRequests = cards
+			} else {
+				resp[i].DecisionRequest = &cards[0]
+			}
+		}
 		if cards := quotes[uuidToString(m.ID)]; len(cards) > 0 {
 			resp[i].DecisionQuotes = cards
 		}
@@ -2204,7 +2212,9 @@ type ChatMessageResponse struct {
 	DecisionQuotes []DecisionCard `json:"decision_quotes"`
 	// DecisionRef is the card a decision_reference message announces; nil for
 	// other kinds and for rows written before the link was stored.
-	DecisionRef *DecisionCard `json:"decision_ref,omitempty"`
+	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
+	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
+	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
@@ -2296,6 +2306,8 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingOpening
 	case protocol.ChatMessageKindDecisionReference:
 		return protocol.ChatMessageKindDecisionReference
+	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
+		return kind
 	default:
 		return protocol.ChatMessageKindMessage
 	}

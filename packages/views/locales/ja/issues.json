@@ -444,6 +444,7 @@
     "prop_labels": "ラベル",
     "add_property_action": "プロパティを追加",
     "prop_created_by": "作成者",
+    "prop_requested_by": "依頼者",
     "prop_created": "作成日",
     "prop_updated": "更新日",
     "activity_section": "アクティビティ",
@@ -1479,7 +1480,8 @@
       "member": "メンバー",
       "project_lead": "プロジェクトリード",
       "creator": "タスク作成者",
-      "project_lead_named": "{{name}}（プロジェクトリード）"
+      "project_lead_named": "{{name}}（プロジェクトリード）",
+      "human_by_role": "役割で人に割り当て"
     },
     "settings": {
       "title": "ワークフロー",
@@ -1657,7 +1659,8 @@
       "override_follow_project": "プロジェクトのワークフローに従う",
       "override_error": "ワークフローを変更できませんでした",
       "no_workflow": "ワークフローなし",
-      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う"
+      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
+      "flowchart": "フローチャート"
     },
     "list_separator": "、",
     "handoff": {
@@ -1676,6 +1679,7 @@
       "mode_member": "メンバーに渡す",
       "mode_member_hint": "担当者だけが変わり、自動では実行されません",
       "project_lead_hint": "プロジェクトリードがエージェントの場合は実行を始めます。",
+      "human_by_role_hint": "依頼者、プロジェクトリード、ワークスペースオーナーの順。",
       "pick_agent": "エージェントを選択",
       "pick_member": "メンバーを選択",
       "search_agents": "エージェントを検索",
@@ -1704,7 +1708,30 @@
       "title": "ワークフロー「{{workflow}}」",
       "scope_own": "このワークフローを使用しているのはこのプロジェクトだけです。",
       "no_handoff_here": "引き継ぎなし",
-      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。"
+      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。",
+      "graph_label": "ワークフロー図",
+      "exits_label": "ワークフローの出口",
+      "exit_item": "{{guard}} のとき {{from}} から {{to}} へ",
+      "edit": {
+        "title": "{{step}} からの遷移",
+        "pick": "ステップを選ぶと遷移を編集できます。",
+        "empty": "遷移はありません。",
+        "group": "遷移 {{n}}: {{to}}",
+        "guard": "条件",
+        "target": "遷移先",
+        "timeout": "タイムアウト",
+        "on_timeout": "タイムアウト時",
+        "add": "遷移を追加",
+        "remove": "遷移を削除",
+        "issues": {
+          "too_many_edges": "{{from}} の遷移が {{max}} 件を超えています。",
+          "missing_target": "{{from}} の遷移先が存在しません。",
+          "bad_guard": "{{from}} の遷移に不明な条件があります。",
+          "bad_timeout": "{{from}} の遷移には 1m〜720h のタイムアウトが必要です（例: 72h）。",
+          "bad_on_timeout": "{{from}} の遷移には有効なタイムアウト時のステップが必要です。",
+          "ci_green_source": "{{from}} は CI 成功では進められません。"
+        }
+      }
     },
     "templates": {
       "delivery": {
