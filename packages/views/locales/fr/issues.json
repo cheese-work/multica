@@ -1782,7 +1782,27 @@
       "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous.",
       "graph_label": "Graphe du workflow",
       "exits_label": "Sorties du workflow",
-      "exit_item": "De {{from}} vers {{to}} quand {{guard}}"
+      "exit_item": "De {{from}} vers {{to}} quand {{guard}}",
+      "edit": {
+        "title": "Sorties de {{step}}",
+        "pick": "Sélectionnez une étape pour modifier ses sorties.",
+        "empty": "Aucune sortie.",
+        "group": "Sortie {{n}} : {{to}}",
+        "guard": "Condition",
+        "target": "Mène à",
+        "timeout": "Délai",
+        "on_timeout": "À l’expiration",
+        "add": "Ajouter une sortie",
+        "remove": "Supprimer la sortie",
+        "issues": {
+          "too_many_edges": "{{from}} a plus de {{max}} sorties.",
+          "missing_target": "Une sortie de {{from}} mène à une étape absente.",
+          "bad_guard": "Une sortie de {{from}} a une condition inconnue.",
+          "bad_timeout": "Une sortie de {{from}} exige un délai entre 1m et 720h, par ex. 72h.",
+          "bad_on_timeout": "Une sortie de {{from}} exige une étape valide à l’expiration.",
+          "ci_green_source": "{{from}} ne peut pas avancer quand la CI est verte."
+        }
+      }
     },
     "templates": {
       "delivery": {
