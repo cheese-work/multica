@@ -34,7 +34,7 @@ export function IssueWindow({ context }: { context: IssueWindowContext | MediaWi
         ],
         { initialEntries: [context.path] },
       ),
-    [context.path],
+    [context.kind, context.path],
   );
 
   return <RouterProvider router={router} />;

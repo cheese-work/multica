@@ -3,6 +3,8 @@
 Runtime source: `0bb2d04d80ca3b689986b5badbe33d7e3d16c87d`.
 Approved design: `design/viewer-media-pages/rev-1/A.html` @ `13613770066f99d1e8389e73fe877d11a20c4ee0`.
 
+The lint follow-up adds `context.kind` to the desktop router memo dependencies. The captures above predate this source change; they have not been rerun on the corrected head. Source-dialog before/after captures remain NOT-CAPTURED.
+
 The capture build uses real product Electron main IPC, preload, routing, and shared viewers. Only daemon-manager and updater startup are stubbed. The build does not start or modify the workspace daemon. Web uses the real Next application. Both use a synthetic local API with a fixture user, workspace, issue, and four persisted media items. No real account data or credentials are used.
 
 This is frontend fixture evidence, not a backend authorization acceptance run. The fixture returns minimal responses for unrelated endpoints and does not implement WebSocket upgrades. The resulting schema and WebSocket warnings are fixture limitations. Earlier web logs also include sandbox localStorage errors from the capture initializer running inside opaque iframes; the checked-in initializer catches that expected denial.
@@ -41,6 +43,22 @@ Committed console transcripts remove trailing whitespace and final blank lines o
 The new media route has no baseline page. Source-dialog before/after captures at 1440 and 390 px remain NOT-CAPTURED. The UI review pack is incomplete. Independent code and UX review remain pending. Do not mark the PR ready until those gates are satisfied.
 
 Visual diff: NOT-RUN (CHE-1485 Layer B pending).
+
+## Warning-Budget Follow-Up
+
+Parent: `67cecb3eeb2a62ec68ebffb6bf4fc93aac66334f`. CI run `40500415876` reported one new `react-hooks/exhaustive-deps` warning in `issue-window.tsx` (baseline 0, current 1). The focused local reproduction identifies the missing dependency as `context.kind`. The fix adds that dependency; no warning budget or lint configuration changes.
+
+Command before and after the fix:
+
+```bash
+pnpm --filter @multica/desktop exec eslint src/renderer/src/components/issue-window.tsx --max-warnings 0
+```
+
+Observed lint failure: exit 1, one missing-`context.kind` warning. Observed lint pass: exit 0, no warnings. Raw command output is retained in `logs/desktop-hook-lint-red.txt` and `logs/desktop-hook-lint-green.txt`. This is lint evidence, not a new behavioral-red claim. The original permission behavioral-red/green receipt remains above.
+
+The focused desktop rerun passes 33 tests in 5 files: `issue-window.test.tsx`, shared `issue-window.test.ts`, `issue-window-navigation.test.tsx`, `App.auth-recovery.test.tsx`, and `auth-session-coordinator.test.ts`.
+
+`pnpm --filter @multica/desktop typecheck` also passes both the main/preload and renderer checks. `git diff --check` passes.
 
 ## Cleanup Receipt
 
