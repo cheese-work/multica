@@ -3013,7 +3013,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// write leaves the record NULL and the claim succeeds.
 	preset := h.resolveClaimPreset(r.Context(), task, agent, runtime.Provider)
 	customArgs = agentpreset.MergeContextArgs(runtime.Provider, customArgs, preset.Settings.ContextArgs)
-	if h.recordClaimSnapshot(r.Context(), task, preset) {
+	if h.recordClaimSnapshot(r.Context(), task, preset, agentpreset.ContextArgsOf(runtime.Provider, customArgs)) {
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
 	}

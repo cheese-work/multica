@@ -328,6 +328,19 @@ func MergeContextArgs(provider string, custom, ctx []string) []string {
 	return append(out, ctx...)
 }
 
+// ContextArgsOf returns the allow-listed context-window args in args, in
+// order. It is never nil: no such arg is an empty slice.
+func ContextArgsOf(provider string, args []string) []string {
+	out := []string{}
+	for i := 0; i < len(args); i++ {
+		if n := contextArgLen(provider, args[i:]); n > 0 {
+			out = append(out, args[i:i+n]...)
+			i += n - 1
+		}
+	}
+	return out
+}
+
 // contextArgLen is how many leading args of rest form one context-window arg
 // for the provider, or 0 when rest does not start with one.
 func contextArgLen(provider string, rest []string) int {

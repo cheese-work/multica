@@ -146,6 +146,41 @@ func TestClaimPreset_NoPresetRecordsBase(t *testing.T) {
 	}
 }
 
+// A successful claim records the context args the daemon is handed, even when
+// they are inherited from the agent's custom_args (base, or a preset that sets
+// none). Known-empty is `[]`; NULL is reserved for a failed snapshot write.
+func TestClaimPreset_SnapshotRecordsInheritedContextArgs(t *testing.T) {
+	requireDB(t)
+	cases := []struct {
+		name       string
+		customArgs string
+		preset     *presetSpec
+		want       string
+	}{
+		{"base", `["--autocompact","100k","--add-dir","/safe"]`, nil, `["--autocompact", "100k"]`},
+		{"model-only preset", `["--autocompact","100k","--add-dir","/safe"]`, &presetSpec{model: sp("claude-sonnet-5-5")}, `["--autocompact", "100k"]`},
+		{"preset replaces", `["--autocompact","100k","--add-dir","/safe"]`, &presetSpec{ctxArgs: []string{"--autocompact", "200k"}}, `["--autocompact", "200k"]`},
+		{"equals form", `["--autocompact=100k"]`, nil, `["--autocompact=100k"]`},
+		{"no context args", `["--add-dir","/safe"]`, nil, `[]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agentID, sessionID, runtimeID, daemonID := presetAgent(t, "claude", "claude-opus-5-5", "high")
+			dbfx.Exec(t, `UPDATE agent SET custom_args = $1::jsonb WHERE id = $2`, tc.customArgs, agentID)
+			if tc.preset != nil {
+				addPreset(t, agentID, "p", *tc.preset)
+				setDMPreset(t, sessionID, "p")
+			}
+
+			s, _ := claimAfter(t, agentID, sessionID, runtimeID, daemonID)
+
+			if s.ContextArgs == nil || string(s.ContextArgs) != tc.want {
+				t.Fatalf("claimed_context_args = %s, want %s", s.ContextArgs, tc.want)
+			}
+		})
+	}
+}
+
 // I3 + I4: a preset changes only model, thinking level, service tier and
 // context args. Everything else in the daemon payload is byte-equal, and the
 // agent's sandbox flags keep their order.

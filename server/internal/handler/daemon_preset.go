@@ -78,10 +78,11 @@ func (h *Handler) resolveClaimPreset(ctx context.Context, task *db.AgentTaskQueu
 }
 
 // recordClaimSnapshot stores the requested (preset name, source, skips) and
-// claimed (effective settings) record for this claim generation. It reports
-// whether the record was written; on false every column stays NULL and the
-// claim still succeeds.
-func (h *Handler) recordClaimSnapshot(ctx context.Context, task *db.AgentTaskQueue, res agentpreset.Result) bool {
+// claimed (effective settings) record for this claim generation. contextArgs
+// are the allow-listed context args of the merged payload, inherited or from
+// the preset; known-empty is `[]`. It reports whether the record was written;
+// on false every column stays NULL and the claim still succeeds.
+func (h *Handler) recordClaimSnapshot(ctx context.Context, task *db.AgentTaskQueue, res agentpreset.Result, contextArgs []string) bool {
 	skips := make([]map[string]string, 0, len(res.Skips))
 	for _, s := range res.Skips {
 		skips = append(skips, map[string]string{"level": string(s.Level), "name": s.Name, "reason": s.Reason})
@@ -97,8 +98,8 @@ func (h *Handler) recordClaimSnapshot(ctx context.Context, task *db.AgentTaskQue
 		ClaimedServiceTier:   pgtype.Text{String: res.Settings.ServiceTier, Valid: true},
 	}
 	var err error
-	if params.PresetSkips, err = json.Marshal(skips); err == nil && res.Settings.ContextArgs != nil {
-		params.ClaimedContextArgs, err = json.Marshal(res.Settings.ContextArgs)
+	if params.PresetSkips, err = json.Marshal(skips); err == nil {
+		params.ClaimedContextArgs, err = json.Marshal(contextArgs)
 	}
 	if err == nil {
 		var rows int64
