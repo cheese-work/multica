@@ -6,7 +6,7 @@ Source: Cheese's 26 Oct 2026 DM, quoted in the issue description.
 
 - Issue: [CHE-2133](mention://issue/01a177ba-fbeb-7a93-a11d-5920b30ebf6a)
 - Pages in scope: issue detail discussion; member-authored roots and replies; web and desktop shared views. Native mobile is separate and is not implemented by this design PR.
-- Status: exploring rev-1; no selection or approval.
+- Status: selected — approved when PR #405 merges. Direction C of rev-1 (fill + "You" label), chosen by Cheese on CHE-2133.
 - Current live before capture: NOT-CAPTURED. This X99 run has no authorized signed-in browser session. Authenticated resources remain with the browser owner; no session import or live mutation was attempted. The reconstructed baseline below is not a live capture.
 
 ## Existing implementation
