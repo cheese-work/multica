@@ -75,3 +75,15 @@ func TestUpdateIssueWorkflowWithoutAnExpectedVersionStillWrites(t *testing.T) {
 	patchWorkflow(t, wf.ID, map[string]any{"description": "one"}).Want(http.StatusOK)
 	patchWorkflow(t, wf.ID, map[string]any{"description": "two"}).Want(http.StatusOK)
 }
+
+// A caller who may not edit the workflow is refused with 403 even when the
+// version they name is stale; the 409 would tell them the workflow changed
+// without letting them act on it.
+func TestUpdateIssueWorkflowChecksEditRightsBeforeTheVersion(t *testing.T) {
+	seedTestCatalog(t)
+	wf := createTestWorkflow(t, "Rights first "+workflowTestSuffix(), "in_progress")
+	_, asOther := addWorkflowTestMember(t, "other")
+
+	req := asOther(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"description": "x", "expected_version": "stale"}))
+	testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(req, "id", wf.ID)).Want(http.StatusForbidden)
+}

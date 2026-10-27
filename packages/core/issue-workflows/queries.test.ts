@@ -25,6 +25,7 @@ const defaultWorkflow: IssueWorkflow = {
   name: "Default",
   description: "",
   is_default: true,
+  owner_id: null,
   steps: columns("in_progress", "in_review"),
   project_ids: [],
   created_at: "",
@@ -36,6 +37,7 @@ const content: IssueWorkflow = {
   id: "wf-content",
   name: "Content",
   is_default: false,
+  owner_id: null,
   steps: columns("drafting", "editing"),
 };
 

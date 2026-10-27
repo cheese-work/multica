@@ -63,6 +63,10 @@ import { useT } from "../../i18n";
 import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
+import { DecisionDmCard } from "./decision-dm-card";
+import { DecisionRequestCard } from "./decision-request-card";
+import { PredecessorDms } from "./predecessor-dms";
+import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -78,6 +82,8 @@ interface ChatMessageListProps {
   /** Last message copied from the source DM; the "Forked from" divider sits below it. */
   forkLastMessageId?: string | null;
   forkMessageCount?: number | null;
+  /** Puts a predecessor DM's message into the composer as a quote. Without it, earlier DMs have no quote action. */
+  onQuoteMessage?: (content: string) => void;
   /**
    * Session list cache (includes archived), the title source for fork links.
    * Leave undefined while it is loading so a source isn't mistaken for deleted.
@@ -112,7 +118,19 @@ interface ChatMessageListProps {
    * that reply until chat:quick_actions resolves it.
    */
   quickActionsPendingMessageId?: string | null;
+  /**
+   * Message to bring into view and flash (a DM decision card's jump link).
+   * Older pages are requested until it is loaded or nothing older is left.
+   */
+  jumpToMessageId?: string | null;
+  /** Fires once per target: "landed" after the scroll, "missing" if it cannot be found. */
+  onJumpSettled?: (outcome: "landed" | "missing") => void;
 }
+
+/** How long a jumped-to message keeps its highlight. */
+const FLASH_MS = 1500;
+/** How long the jump keeps re-aiming while Virtuoso measures rows. */
+const JUMP_AIM_MS = 1000;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -129,6 +147,9 @@ interface ChatMessageListProps {
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
   continuedFromSessionId?: string | null;
+  /** Earlier DMs of the continuation chain, oldest first; empty while the session list is unknown. */
+  predecessors: ChatSession[];
+  onQuoteMessage?: (content: string) => void;
   continuedIntoSessionId?: string | null;
   showForkHint: boolean;
   showStatusPill: boolean;
@@ -172,6 +193,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
     <div className={cn(CHAT_COLUMN, "pt-4")}>
       {context?.continuedFromSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
+      )}
+      {context && context.predecessors.length > 0 && (
+        <PredecessorDms sessions={context.predecessors} onQuoteMessage={context.onQuoteMessage} />
       )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
@@ -326,6 +350,7 @@ export function ChatMessageList({
   forkedFromSessionId,
   forkLastMessageId,
   forkMessageCount,
+  onQuoteMessage,
   sessions,
   pendingTask,
   availability,
@@ -338,6 +363,8 @@ export function ChatMessageList({
   quickActionsDisabled = false,
   onRegenerateQuickActions,
   quickActionsPendingMessageId = null,
+  jumpToMessageId = null,
+  onJumpSettled,
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
@@ -352,7 +379,7 @@ export function ChatMessageList({
   const pinToLiveEnd = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, []);
-  const { isFollowing, onContentHeightChanged, hasReachedLiveEnd } = useStickToBottom(
+  const { isFollowing, onContentHeightChanged, disengage, hasReachedLiveEnd } = useStickToBottom(
     scrollContainerEl,
     pinToLiveEnd,
     active,
@@ -414,8 +441,16 @@ export function ChatMessageList({
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
+    const updatedRequests = new Set(messages.flatMap((message) => message.decision_requests ?? []).map((card) => card.id));
     const items: ChatRenderItem[] = messages
-      .filter((message) => message.message_kind !== "onboarding_kickoff")
+      .filter(
+        (message) =>
+          message.message_kind !== "onboarding_kickoff" &&
+          // The quote card replaces the plain "Decision recorded" line; one
+          // without a card (legacy row) still renders as text.
+          !(message.message_kind === "decision_reference" && message.decision_ref) &&
+          !(message.decision_request && updatedRequests.has(message.decision_request.id)),
+      )
       .map((message, i, visible) => ({
         key: messageRowKey(message),
         kind: "message" as const,
@@ -428,6 +463,90 @@ export function ChatMessageList({
     }
     return items;
   }, [messages, hasLive, pendingTaskId]);
+
+  // Jump to a message: scroll once it is loaded, ask for older pages until it
+  // is, and settle "missing" when none are left. The target is settled once so
+  // a re-render (or the caller clearing it) never re-scrolls or re-flashes.
+  const [flashId, setFlashId] = useState<string | null>(null);
+  // Set once a jump has landed: the list is shown where it landed rather than
+  // staying hidden until the newest message is in view.
+  const [jumped, setJumped] = useState(false);
+  const settledJumpRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpToMessageId) {
+      settledJumpRef.current = null;
+      return;
+    }
+    // Virtuoso mounts only once the scroll container exists.
+    if (settledJumpRef.current === jumpToMessageId || !scrollContainerEl) return;
+    const index = renderItems.findIndex(
+      (item) => item.kind === "message" && item.message.id === jumpToMessageId,
+    );
+    if (index >= 0) {
+      settledJumpRef.current = jumpToMessageId;
+      const reduceMotion =
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // The live-end follow would pull the list straight back to the newest
+      // message; and while the list is still hidden waiting for that, the jump
+      // is the first thing the reader should see, so it lands without animation.
+      disengage();
+      virtuosoRef.current?.scrollToIndex({
+        index,
+        align: "center",
+        behavior: reduceMotion || !hasReachedLiveEnd ? "auto" : "smooth",
+      });
+      setJumped(true);
+      setFlashId(jumpToMessageId);
+      onJumpSettled?.("landed");
+    } else if (hasOlderMessages) {
+      if (!isFetchingOlderMessages) onLoadOlderMessages?.();
+    } else {
+      settledJumpRef.current = jumpToMessageId;
+      onJumpSettled?.("missing");
+    }
+  }, [jumpToMessageId, scrollContainerEl, renderItems, hasOlderMessages, isFetchingOlderMessages, onLoadOlderMessages, onJumpSettled, disengage, hasReachedLiveEnd]);
+  useEffect(() => {
+    if (!flashId) return;
+    const timer = setTimeout(() => setFlashId(null), FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [flashId]);
+  // Virtuoso re-positions as it measures rows, and the open-at-newest scroll
+  // can land after the jump. Re-aim until the target sits inside the viewport,
+  // for a short window, and give up the moment the reader scrolls.
+  useEffect(() => {
+    if (!flashId || !scrollContainerEl) return;
+    const target = renderItems.findIndex(
+      (item) => item.kind === "message" && item.message.id === flashId,
+    );
+    if (target < 0) return;
+    let frame = 0;
+    let cancelled = false;
+    const stop = () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+    const deadline = performance.now() + JUMP_AIM_MS;
+    const aim = () => {
+      if (cancelled || performance.now() > deadline) return;
+      const row = scrollContainerEl.querySelector(`[data-message-id="${CSS.escape(flashId)}"]`);
+      const view = scrollContainerEl.getBoundingClientRect();
+      const rect = row?.getBoundingClientRect();
+      const inView = !!rect && rect.height > 0 && rect.top >= view.top && rect.bottom <= view.bottom;
+      if (!inView) virtuosoRef.current?.scrollToIndex({ index: target, align: "center", behavior: "auto" });
+      frame = requestAnimationFrame(aim);
+    };
+    frame = requestAnimationFrame(aim);
+    scrollContainerEl.addEventListener("wheel", stop, { passive: true });
+    scrollContainerEl.addEventListener("touchstart", stop, { passive: true });
+    return () => {
+      stop();
+      scrollContainerEl.removeEventListener("wheel", stop);
+      scrollContainerEl.removeEventListener("touchstart", stop);
+    };
+  // renderItems is read once at landing; later rows must not restart the aim.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flashId, scrollContainerEl]);
 
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
@@ -450,9 +569,19 @@ export function ChatMessageList({
   const showForkHint = !!forkLastMessageId
     && !messages.slice(forkPointIndex + 1).some((m) => m.role === "user");
 
+  // Earlier DMs sit above the oldest loaded message, like the link to them.
+  const predecessors = useMemo(
+    () => (!hasOlderMessages && continuedFromSessionId && sessions
+      ? predecessorChain(sessions, continuedFromSessionId)
+      : []),
+    [hasOlderMessages, sessions, continuedFromSessionId],
+  );
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
+    predecessors,
+    onQuoteMessage,
     continuedIntoSessionId,
     showForkHint,
     showStatusPill,
@@ -493,7 +622,7 @@ export function ChatMessageList({
       // container paints nothing for that whole window anyway — the rows are
       // not measured yet — so this costs no visible time and spares the
       // reader a frame of the wrong messages (see stick-to-bottom.ts).
-      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && "invisible")}
+      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && !jumped && "invisible")}
     >
       {/* Already inside the gutter + column, so this pre-mount frame renders the
        *  skeleton BODY rather than <ChatMessageSkeleton>, which brings its own
@@ -547,7 +676,13 @@ export function ChatMessageList({
         components={LIST_COMPONENTS}
         itemContent={(_, item) => (
           <div
-            className={cn(CHAT_COLUMN, "py-2")}
+            className={cn(
+              CHAT_COLUMN,
+              "py-2 transition-colors duration-700",
+              item.kind === "message" && item.message.id === flashId && "bg-primary/10",
+            )}
+            {...(item.kind === "message" ? { "data-message-id": item.message.id } : {})}
+            {...(item.kind === "message" && item.message.id === flashId ? { "data-flash": "" } : {})}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
             {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
@@ -669,6 +804,14 @@ const MessageBubble = memo(function MessageBubble({
 
   const { message } = item;
 
+  if (message.decision_requests?.length) {
+    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionRequestCard key={card.id} card={card} />)}</div>;
+  }
+
+  if (message.decision_request) {
+    return <DecisionRequestCard card={message.decision_request} />;
+  }
+
   if (message.message_kind === "continuation_summary") {
     return <ContinuationSummary message={message} />;
   }
@@ -705,6 +848,9 @@ const MessageBubble = memo(function MessageBubble({
           />
         </div>
         <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
+        {message.decision_quotes?.map((card) => (
+          <DecisionDmCard key={card.answer_id} card={card} />
+        ))}
       </div>
     );
   }

@@ -1412,7 +1412,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha) {
+			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
@@ -1482,6 +1482,12 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
+	case "pull_request_review":
+		if err := h.handlePullRequestReviewEvent(ctx, body); err != nil {
+			slog.Error("github: pull_request_review event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process pull_request_review event")
+			return
+		}
 	case "pull_request":
 		if err := h.handlePullRequestEvent(ctx, body); err != nil {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
@@ -1732,6 +1738,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	if p.Action == "closed" && p.PullRequest.Merged {
+		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	}
 	if p.PullRequest.Merged {
 		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
 			errs = append(errs, err)

@@ -786,6 +786,7 @@
     "toast_profile_failed": "更新资料失败"
   },
   "notifications": {
+    "focused_delivery": "仅接收决策和分配给我的 issue 通知",
     "title": "收件箱通知",
     "description": "关闭通知后，仍可在任务中查看相关动态。",
     "toast_failed": "更新通知设置失败",
@@ -817,8 +818,7 @@
     },
     "system": {
       "title": "系统通知",
-      "description": "Multica 在后台时显示系统通知。",
-      "label": "显示系统通知"
+      "label": "Multica 在后台时显示系统通知"
     },
     "browser": {
       "label": "浏览器通知",

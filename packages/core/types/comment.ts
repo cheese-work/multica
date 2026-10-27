@@ -15,7 +15,9 @@ export interface Reaction {
   comment_revision?: number;
 }
 
-export interface Comment {
+import type { DecisionCommentFields } from "./decision";
+
+export interface Comment extends DecisionCommentFields {
   id: string;
   issue_id: string;
   author_type: CommentAuthorType;
@@ -35,6 +37,7 @@ export interface Comment {
   resolved_by_type: CommentAuthorType | null;
   resolved_by_id: string | null;
   source_task_id?: string | null;
+  hints?: string[];
   // The quick action that produced this comment (MUL-5465). A quick action
   // posts an ORDINARY comment and marks it with this id; the collapsed card
   // keys off the id rather than a dedicated `type`, because `type` is
