@@ -580,6 +580,7 @@
     "wakeup_link_run": "実行を表示"
   },
   "comment": {
+    "you": "あなた",
     "add_reaction": "リアクションを追加",
     "collapse_thread": "スレッドを折りたたむ",
     "expand_thread": "スレッドを展開",
