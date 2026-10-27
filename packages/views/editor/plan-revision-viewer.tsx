@@ -37,6 +37,8 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
   const [change, setChange] = useState(0);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const anchors = useRef<(HTMLElement | null)[]>([]);
+  const contentPane = useRef<HTMLElement>(null);
+  const diffHeader = useRef<HTMLDivElement>(null);
   const current = useAttachmentHtmlText(attachment.id);
   const attachments = useQuery({
     queryKey: ["plan-revisions", attachment.workspace_id, attachment.issue_id],
@@ -76,8 +78,12 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
   const navigate = (direction: number) => {
     const next = (change + direction + changes) % changes;
     setChange(next);
-    anchors.current[next]?.scrollIntoView({ block: "start" });
-    anchors.current[next]?.focus({ preventScroll: true });
+    const section = anchors.current[next];
+    const pane = contentPane.current;
+    if (section && pane) {
+      pane.scrollTop += section.getBoundingClientRect().top - pane.getBoundingClientRect().top - (diffHeader.current?.offsetHeight ?? 0);
+      section.focus({ preventScroll: true });
+    }
   };
   const modeControls = <>
     <Button variant="ghost" size="sm" className="aria-pressed:bg-muted" aria-pressed={mode === "split"} onClick={() => setMode("split")}>{t(($) => $.plan_revision.split)}</Button>
@@ -132,7 +138,7 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
       {onClose && <Button variant="ghost" size="icon-sm" data-testid="revision-close" aria-label={t(($) => $.plan_revision.close)} onClick={onClose}><X className="size-4" /></Button>}
     </header>
     <div className="flex min-h-0 flex-1">
-      <main data-testid="revision-content" className="min-w-0 flex-1 overflow-auto">
+      <main ref={contentPane} data-testid="revision-content" className="min-w-0 flex-1 overflow-auto">
         {attachments.isPending && <p role="status" className="px-4 py-2 text-caption">{t(($) => $.plan_revision.loading_revisions)}</p>}
         {attachments.isError && <p role="alert" className="px-4 py-2 text-caption">{t(($) => $.plan_revision.revisions_error)} <Button variant="ghost" size="sm" onClick={() => void attachments.refetch()}>{t(($) => $.plan_revision.retry)}</Button></p>}
         {attachments.isSuccess && !revisions.length && <p className="px-4 py-2 text-caption text-muted-foreground">{t(($) => $.plan_revision.no_earlier)}</p>}
@@ -142,7 +148,7 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
           {requested && base.isError && <p role="alert" className="px-4 py-2 text-caption">{t(($) => $.plan_revision.comparison_error)} <Button variant="outline" size="sm" onClick={() => void base.refetch()}>{t(($) => $.plan_revision.retry)}</Button></p>}
           {comparison?.tooLarge && <p role="alert" className="px-4 py-2 text-caption">{t(($) => $.plan_revision.too_large)}</p>}
           {showingDiff ? <div data-testid="revision-diff" data-mode={mode}>
-            <div className="sticky top-0 z-10 flex border-b bg-background px-3 py-1 text-caption text-muted-foreground">
+            <div ref={diffHeader} className="sticky top-0 z-10 flex border-b bg-background px-3 py-1 text-caption text-muted-foreground">
               <span className="min-w-0 flex-1 truncate" title={label(selected!.attachment)}>{t(($) => $.plan_revision.base)}: {label(selected!.attachment)}</span>
               <span className="min-w-0 flex-1 truncate text-right">{t(($) => $.plan_revision.current)}: {attachment.filename}</span>
             </div>

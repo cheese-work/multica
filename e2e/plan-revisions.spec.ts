@@ -96,6 +96,8 @@ test.describe("plan revision viewer", () => {
     await expect(page.getByText("Change 2 / 2", { exact: true })).toBeVisible();
     await expect(page.getByText(/Ship the compact toolbar/)).toBeVisible();
     await expectFocusedChange(page, 2);
+    await expect(page.getByRole("button", { name: "Next change", exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByText(/Ship the compact toolbar/)).toBeInViewport({ ratio: 1 });
     await capture("web-1440-next");
     expect(await page.evaluate(() => "planRevisionInjected" in window)).toBe(false);
     await page.getByRole("button", { name: "Split", exact: true }).click();
@@ -127,6 +129,13 @@ test.describe("plan revision viewer", () => {
     await capture("web-390-unify");
     await page.getByRole("button", { name: "Next change", exact: true }).click();
     await expectFocusedChange(page, 2);
+    await expect(page.getByRole("button", { name: "Next change", exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(diff).toBeInViewport({ ratio: 1 });
+    await expect(page.getByText("Change 2 / 2", { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole("button", { name: "Previous change", exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole("button", { name: "More options", exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByText(/Ship the compact toolbar/)).toBeInViewport({ ratio: 1 });
+    expect(await page.getByTestId("revision-content").evaluate((pane) => pane.scrollTop)).toBeGreaterThan(0);
     await capture("web-390-next");
     await page.getByRole("button", { name: "More options", exact: true }).click();
     await expect(page.getByRole("menuitemradio", { name: "Split", exact: true })).toBeVisible();
