@@ -101,7 +101,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 | G12 | Canonical inherited rule revision resolution | complete | needs design talk | TUS | - |
 | G13 | Workspace governance control gate and proposal task credential restriction | complete | needs design talk | TUDMS | - |
 | G14 | Immutable cases, fenced lifecycle transitions and expired-evidence refresh | complete | needs design talk | TUMS | - |
-| G15 | Case evidence redaction, retention and audited provenance export | partial | needs design talk | TUCDMS | Export has CLI (`provenance export`) but no builtin-skill doc yet (gap list). |
+| G15 | Case evidence redaction, retention and audited provenance export | partial | needs design talk | TUCDMS | Export has CLI (`provenance export`) and a builtin-skill doc. |
 | G16 | Export privacy modes, retention and admin controls | complete | needs design talk | TUMS | - |
 | G17 | Atomic case admission and budget reservation across windows, crash recovery and bounded ledger queries | complete | needs design talk | TUCDMIS | - |
 | G18 | Bounded observation, rollback deadlines, timeout classification and real-budget test controls | complete | needs design talk | TUCDMS | - |
