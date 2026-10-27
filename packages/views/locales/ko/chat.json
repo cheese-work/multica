@@ -68,6 +68,7 @@
     "continuation_summary": "대화 요약",
     "earlier_dm": "이전 대화",
     "quote_message": "인용",
+    "speaker_you": "나",
     "load_older_messages": "이전 메시지 더 보기",
     "show_details": "세부 정보 보기",
     "replied_in": "{{elapsed}} 만에 답변",
