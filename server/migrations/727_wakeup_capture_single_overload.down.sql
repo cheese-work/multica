@@ -1,4 +1,4 @@
--- Restore the state before 726: both overloads, as left by 636 (7-argument,
+-- Restore the state before 727: both overloads, as left by 636 (7-argument,
 -- scoped capture) and 666 (6-argument, handoff tag).
 CREATE OR REPLACE FUNCTION capture_issue_wakeup(p_issue uuid, p_type text, p_key text, p_agent uuid, p_task uuid, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
