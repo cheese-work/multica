@@ -371,3 +371,23 @@ func TestRouteTargetIssuesFollowsTheBindingChain(t *testing.T) {
 		t.Errorf("PR row on another installation: got %v, %v; want no targets", got, err)
 	}
 }
+
+// Grants have no workspace_id, so workspace teardown must reach them through
+// the workspace's projects.
+func TestWorkspaceTeardownRemovesRouteGrants(t *testing.T) {
+	ctx := context.Background()
+	workspace := dbfx.Workspace(t, "Route teardown", "route-teardown")
+	user := dbfx.User(t, "Route Teardown", "route-teardown@multica.ai")
+	var project string
+	if err := testPool.QueryRow(ctx, `INSERT INTO project (workspace_id, title) VALUES ($1,'p') RETURNING id`, workspace).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	dbfx.Exec(t, `INSERT INTO github_route_grant (project_id, user_id) VALUES ($1,$2)`, project, user)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM github_route_grant WHERE project_id=$1`, project) })
+	if err := testHandler.Queries.DeleteWorkspaceLeafData(ctx, parseUUID(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_route_grant WHERE project_id=$1`, project); n != 0 {
+		t.Fatalf("grants left after workspace teardown = %d, want 0", n)
+	}
+}

@@ -510,6 +510,10 @@ deleted_squad_members AS (
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
 ),
+deleted_github_route_grants AS (
+    DELETE FROM github_route_grant
+    WHERE project_id IN (SELECT id FROM project WHERE workspace_id = $1)
+),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
