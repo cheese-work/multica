@@ -32,18 +32,26 @@ type assertionEnvelope struct {
 // the approval transaction after the payload hash matched; it locks the
 // challenge and the credential (NOWAIT) and returns the credential used.
 func (service *Service) VerifyApproval(ctx context.Context, queries *db.Queries, userID, actionID pgtype.UUID, payloadSHA256 string, assertion json.RawMessage) (pgtype.UUID, error) {
+	challengeID, credential, err := parseEnvelope(assertion)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return service.verifyAssertion(ctx, queries, verification{
+		UserID: userID, Purpose: PurposeDecisionApprove, SubjectID: actionID, ChallengeID: challengeID, Credential: credential,
+		Expect: func(nonce []byte) []byte { return approvalChallenge(actionID, payloadSHA256, nonce) },
+	})
+}
+
+func parseEnvelope(assertion json.RawMessage) (pgtype.UUID, json.RawMessage, error) {
 	var envelope assertionEnvelope
 	if len(assertion) == 0 || json.Unmarshal(assertion, &envelope) != nil || len(envelope.Credential) == 0 {
-		return pgtype.UUID{}, errAssertionRequired
+		return pgtype.UUID{}, nil, errAssertionRequired
 	}
 	challengeID, err := util.ParseUUID(envelope.ChallengeID)
 	if err != nil {
-		return pgtype.UUID{}, errAssertionRejected
+		return pgtype.UUID{}, nil, errAssertionRejected
 	}
-	return service.verifyAssertion(ctx, queries, verification{
-		UserID: userID, Purpose: PurposeDecisionApprove, SubjectID: actionID, ChallengeID: challengeID, Credential: envelope.Credential,
-		Expect: func(nonce []byte) []byte { return approvalChallenge(actionID, payloadSHA256, nonce) },
-	})
+	return challengeID, envelope.Credential, nil
 }
 
 type verification struct {
@@ -52,6 +60,9 @@ type verification struct {
 	SubjectID   pgtype.UUID
 	ChallengeID pgtype.UUID
 	Credential  json.RawMessage
+	// Also names a second credential the verifier must lock together with the
+	// signing one, in ascending id order.
+	Also pgtype.UUID
 	// Expect rebuilds the challenge bytes the server must have issued.
 	Expect func(nonce []byte) []byte
 }
@@ -81,10 +92,7 @@ func (service *Service) verifyAssertion(ctx context.Context, queries *db.Queries
 	if err != nil {
 		return pgtype.UUID{}, errAssertionRejected
 	}
-	key, err := queries.LockPasskeyByCredentialNowait(ctx, parsed.RawID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return pgtype.UUID{}, errAssertionRejected
-	}
+	key, err := lockSigningPasskey(ctx, queries, parsed.RawID, request.Also)
 	if err != nil {
 		return pgtype.UUID{}, err
 	}
@@ -118,6 +126,33 @@ func (service *Service) verifyAssertion(ctx context.Context, queries *db.Queries
 		return pgtype.UUID{}, err
 	}
 	return key.ID, nil
+}
+
+func lockSigningPasskey(ctx context.Context, queries *db.Queries, credentialID []byte, also pgtype.UUID) (db.UserPasskey, error) {
+	if !also.Valid {
+		key, err := queries.LockPasskeyByCredentialNowait(ctx, credentialID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.UserPasskey{}, errAssertionRejected
+		}
+		return key, err
+	}
+	signingID, err := queries.GetPasskeyIDByCredential(ctx, credentialID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.UserPasskey{}, errAssertionRejected
+	}
+	if err != nil {
+		return db.UserPasskey{}, err
+	}
+	locked, err := queries.LockPasskeysNowait(ctx, []pgtype.UUID{signingID, also})
+	if err != nil {
+		return db.UserPasskey{}, err
+	}
+	for _, key := range locked {
+		if key.ID == signingID {
+			return key, nil
+		}
+	}
+	return db.UserPasskey{}, errAssertionRejected
 }
 
 func decodeChallenge(encoded string) []byte {

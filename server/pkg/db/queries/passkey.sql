@@ -34,6 +34,21 @@ ORDER BY id;
 -- name: LockPasskeyByCredentialNowait :one
 SELECT * FROM user_passkey WHERE credential_id = $1 FOR UPDATE NOWAIT;
 
+-- name: GetPasskey :one
+SELECT * FROM user_passkey WHERE id = $1;
+
+-- name: GetPasskeyIDByCredential :one
+SELECT id FROM user_passkey WHERE credential_id = $1;
+
+-- Locks in ascending id order, all NOWAIT, so two revocations that touch the
+-- same pair of credentials take them in the same order.
+
+-- name: LockPasskeysNowait :many
+SELECT * FROM user_passkey WHERE id = ANY(@ids::uuid[]) ORDER BY id FOR UPDATE NOWAIT;
+
+-- name: RevokePasskey :exec
+UPDATE user_passkey SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
+
 -- name: AdvancePasskey :exec
 UPDATE user_passkey SET sign_count = $2, last_used_at = now() WHERE id = $1;
 

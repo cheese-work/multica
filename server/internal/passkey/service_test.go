@@ -76,28 +76,35 @@ func (f *fixture) issueFor(user, action pgtype.UUID, payload string) (Issued, st
 	if err != nil {
 		f.test.Fatal(err)
 	}
+	return issued, challengeOf(f.test, issued)
+}
+
+// challengeOf reads the challenge a client would sign out of the issued options.
+func challengeOf(test *testing.T, issued Issued) string {
+	test.Helper()
 	var options struct {
 		PublicKey struct {
-			Challenge        string `json:"challenge"`
-			UserVerification string `json:"userVerification"`
-			Allow            []struct {
-				ID string `json:"id"`
-			} `json:"allowCredentials"`
+			Challenge string `json:"challenge"`
 		} `json:"publicKey"`
 	}
 	if err := json.Unmarshal(issued.Options, &options); err != nil {
-		f.test.Fatalf("options %s: %v", issued.Options, err)
+		test.Fatalf("options %s: %v", issued.Options, err)
 	}
-	return issued, options.PublicKey.Challenge
+	return options.PublicKey.Challenge
 }
 
 func (f *fixture) sign(issued Issued, challenge string, counter uint32, mutate func(*passkeytest.Signing)) json.RawMessage {
+	f.test.Helper()
+	return f.signAs(f.device, issued, challenge, counter, mutate)
+}
+
+func (f *fixture) signAs(device *passkeytest.Authenticator, issued Issued, challenge string, counter uint32, mutate func(*passkeytest.Signing)) json.RawMessage {
 	f.test.Helper()
 	s := passkeytest.Signing{Challenge: challenge, RPID: testRPID, Origin: testOrigin, Flags: passkeytest.FlagUserPresent | passkeytest.FlagUserVerified, Counter: counter, UserID: f.user.Bytes[:]}
 	if mutate != nil {
 		mutate(&s)
 	}
-	envelope, err := json.Marshal(map[string]any{"challenge_id": uuid.UUID(issued.ChallengeID.Bytes).String(), "credential": f.device.Assert(f.test, s)})
+	envelope, err := json.Marshal(map[string]any{"challenge_id": uuid.UUID(issued.ChallengeID.Bytes).String(), "credential": device.Assert(f.test, s)})
 	if err != nil {
 		f.test.Fatal(err)
 	}

@@ -108,6 +108,31 @@ func (q *Queries) EnsurePasskeyEnrollLimit(ctx context.Context, userID pgtype.UU
 	return err
 }
 
+const getPasskey = `-- name: GetPasskey :one
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey WHERE id = $1
+`
+
+func (q *Queries) GetPasskey(ctx context.Context, id pgtype.UUID) (UserPasskey, error) {
+	row := q.db.QueryRow(ctx, getPasskey, id)
+	var i UserPasskey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CredentialID,
+		&i.PublicKey,
+		&i.AttestationType,
+		&i.Aaguid,
+		&i.SignCount,
+		&i.Transports,
+		&i.Flags,
+		&i.SuspectAt,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const getPasskeyChallenge = `-- name: GetPasskeyChallenge :one
 SELECT id, nonce, user_id, purpose, subject_id, session_data, expires_at, consumed_at, superseded_at, created_at FROM passkey_assertion_challenge WHERE id = $1
 `
@@ -128,6 +153,17 @@ func (q *Queries) GetPasskeyChallenge(ctx context.Context, id pgtype.UUID) (Pass
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getPasskeyIDByCredential = `-- name: GetPasskeyIDByCredential :one
+SELECT id FROM user_passkey WHERE credential_id = $1
+`
+
+func (q *Queries) GetPasskeyIDByCredential(ctx context.Context, credentialID []byte) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getPasskeyIDByCredential, credentialID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const insertPasskey = `-- name: InsertPasskey :one
@@ -460,12 +496,62 @@ func (q *Queries) LockPasskeyEnrollment(ctx context.Context, userID pgtype.UUID)
 	return err
 }
 
+const lockPasskeysNowait = `-- name: LockPasskeysNowait :many
+
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE NOWAIT
+`
+
+// Locks in ascending id order, all NOWAIT, so two revocations that touch the
+// same pair of credentials take them in the same order.
+func (q *Queries) LockPasskeysNowait(ctx context.Context, ids []pgtype.UUID) ([]UserPasskey, error) {
+	rows, err := q.db.Query(ctx, lockPasskeysNowait, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserPasskey{}
+	for rows.Next() {
+		var i UserPasskey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.PublicKey,
+			&i.AttestationType,
+			&i.Aaguid,
+			&i.SignCount,
+			&i.Transports,
+			&i.Flags,
+			&i.SuspectAt,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPasskeySuspect = `-- name: MarkPasskeySuspect :exec
 UPDATE user_passkey SET suspect_at = now() WHERE id = $1 AND suspect_at IS NULL
 `
 
 func (q *Queries) MarkPasskeySuspect(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markPasskeySuspect, id)
+	return err
+}
+
+const revokePasskey = `-- name: RevokePasskey :exec
+UPDATE user_passkey SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokePasskey(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, revokePasskey, id)
 	return err
 }
 
