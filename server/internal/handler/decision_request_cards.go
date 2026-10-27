@@ -21,6 +21,8 @@ type DecisionRequestCard struct {
 	CreatedAt       string  `json:"created_at"`
 	WithdrawnAt     *string `json:"withdrawn_at,omitempty"`
 	Reason          string  `json:"reason,omitempty"`
+	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
+	RecordCommentID *string `json:"record_comment_id,omitempty"`
 }
 
 func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspaceID string, messages []db.ChatMessage) map[string][]DecisionRequestCard {
@@ -51,6 +53,10 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)
 			card.SourceCommentID = &sourceID
+		}
+		if row.RecordCommentID.Valid {
+			recordID := uuidToString(row.RecordCommentID)
+			card.RecordCommentID = &recordID
 		}
 		if row.Status == "cancelled" {
 			card.State = "withdrawn"
