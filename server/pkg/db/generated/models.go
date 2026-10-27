@@ -582,6 +582,21 @@ type ChatSession struct {
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet       bool               `json:"title_manually_set"`
+}
+
+type ChatWakeup struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	Instruction     string             `json:"instruction"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	Status          string             `json:"status"`
+	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
+	FiredTaskID     pgtype.UUID        `json:"fired_task_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
 }
 
 type ClientUsageDaily struct {
@@ -656,6 +671,12 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentTriggerRateLimit struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	TriggeredAt pgtype.Timestamptz `json:"triggered_at"`
+}
+
 type ContactSalesInquiry struct {
 	ID              pgtype.UUID        `json:"id"`
 	FirstName       string             `json:"first_name"`
@@ -727,6 +748,20 @@ type DecisionClassChange struct {
 	ToClass           string             `json:"to_class"`
 	ChangedByUserID   pgtype.UUID        `json:"changed_by_user_id"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigest struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	HumanUserID pgtype.UUID        `json:"human_user_id"`
+	DigestDay   pgtype.Date        `json:"digest_day"`
+	InboxItemID pgtype.UUID        `json:"inbox_item_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigestRequest struct {
+	RequestID pgtype.UUID `json:"request_id"`
+	DigestID  pgtype.UUID `json:"digest_id"`
 }
 
 type DecisionIntent struct {

@@ -2594,3 +2594,20 @@ func TestEveryBriefThatTeachesJSONOutputAlsoWarnsAgainstMergingStderr(t *testing
 		}
 	}
 }
+
+// CHE-2070: the brief points agents at the Status summary first and tells them
+// to rewrite it at each handoff.
+func TestWorkflowBriefTeachesStatusSummary(t *testing.T) {
+	var b strings.Builder
+	writeWorkflowIssue(&b, TaskContextForEnv{})
+	got := b.String()
+	for _, want := range []string{
+		"`metadata.status_summary`",
+		"before the comment history",
+		"multica issue metadata set <issue-id> --key status_summary",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("workflow brief missing %q", want)
+		}
+	}
+}

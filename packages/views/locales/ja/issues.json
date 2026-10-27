@@ -1,4 +1,22 @@
 {
+  "relations": {
+    "title": "関連グラフ",
+    "direction": "矢印は親から子、監視対象タスクから再開するタスク、メンション元から参照先へ向かいます。現在のタスクは太い枠線で表示されます。",
+    "depth": "深さ",
+    "loading": "関連を読み込み中…",
+    "load_failed": "関連を読み込めませんでした。",
+    "render_failed": "グラフを表示できませんでした。",
+    "retry": "再試行",
+    "empty": "関連するタスクはありません。",
+    "omitted": "ほか {{count}} 件は非表示です（上限40ノード）。",
+    "parent": "親 → 子",
+    "duplicate": "重複元",
+    "wakeup": "再開",
+    "children_done": "子の完了 → 再開",
+    "mention": "参照",
+    "shared_pr": "共通のPR",
+    "unknown": "関連"
+  },
   "inline_run": {
     "label": "{{name}} の実行",
     "stop": "停止",
@@ -399,6 +417,7 @@
     "section_parent_issue": "親タスク",
     "section_pull_requests": "Pull requests",
     "section_metadata": "メタデータ",
+    "status_summary_label": "ステータスの概要",
     "section_details": "詳細",
     "section_quick_actions": "クイックアクション",
     "quick_actions_more": "残り {{count}} 件を表示",
@@ -561,6 +580,7 @@
     "wakeup_link_run": "実行を表示"
   },
   "comment": {
+    "you": "あなた",
     "add_reaction": "リアクションを追加",
     "collapse_thread": "スレッドを折りたたむ",
     "expand_thread": "スレッドを展開",
@@ -1658,7 +1678,8 @@
       "override_follow_project": "プロジェクトのワークフローに従う",
       "override_error": "ワークフローを変更できませんでした",
       "no_workflow": "ワークフローなし",
-      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う"
+      "card_title": "「{{workflow}}」· プロジェクト「{{project}}」に従う",
+      "flowchart": "フローチャート"
     },
     "list_separator": "、",
     "handoff": {
@@ -1706,7 +1727,30 @@
       "title": "ワークフロー「{{workflow}}」",
       "scope_own": "このワークフローを使用しているのはこのプロジェクトだけです。",
       "no_handoff_here": "引き継ぎなし",
-      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。"
+      "scope_shared_other": "{{count}} 件のプロジェクトがこのワークフローを使用しています。引き継ぎはそのすべてに適用されます。",
+      "graph_label": "ワークフロー図",
+      "exits_label": "ワークフローの出口",
+      "exit_item": "{{guard}} のとき {{from}} から {{to}} へ",
+      "edit": {
+        "title": "{{step}} からの遷移",
+        "pick": "ステップを選ぶと遷移を編集できます。",
+        "empty": "遷移はありません。",
+        "group": "遷移 {{n}}: {{to}}",
+        "guard": "条件",
+        "target": "遷移先",
+        "timeout": "タイムアウト",
+        "on_timeout": "タイムアウト時",
+        "add": "遷移を追加",
+        "remove": "遷移を削除",
+        "issues": {
+          "too_many_edges": "{{from}} の遷移が {{max}} 件を超えています。",
+          "missing_target": "{{from}} の遷移先が存在しません。",
+          "bad_guard": "{{from}} の遷移に不明な条件があります。",
+          "bad_timeout": "{{from}} の遷移には 1m〜720h のタイムアウトが必要です（例: 72h）。",
+          "bad_on_timeout": "{{from}} の遷移には有効なタイムアウト時のステップが必要です。",
+          "ci_green_source": "{{from}} は CI 成功では進められません。"
+        }
+      }
     },
     "templates": {
       "delivery": {
