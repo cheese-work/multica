@@ -26,6 +26,8 @@ export const workspaceKeys = {
     ["workspaces", wsId, "export-privacy"] as const,
   jevGovernance: (wsId: string) =>
     ["workspaces", wsId, "jev-governance"] as const,
+  jevCredential: (wsId: string) =>
+    ["workspaces", wsId, "jev-credential"] as const,
 };
 
 export function workspaceListOptions() {
@@ -242,6 +244,16 @@ export function workspaceJevGovernanceOptions(wsId: string) {
     queryKey: workspaceKeys.jevGovernance(wsId),
     queryFn: () => api.getGovernanceConfig(wsId),
     select: resolveJevGovernance,
+    enabled: wsId !== "",
+    retry: false,
+  });
+}
+
+/** CHE-1853: whether a Jev provider key is stored. A failed read stays an error: it is never shown as "not set". */
+export function workspaceJevCredentialOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.jevCredential(wsId),
+    queryFn: () => api.getJevCredential(wsId),
     enabled: wsId !== "",
     retry: false,
   });

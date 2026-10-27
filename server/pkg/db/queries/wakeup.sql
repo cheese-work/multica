@@ -96,7 +96,7 @@ WITH candidates AS (
  -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
  -- (everything but the closed category; see systemWakeupIssueActive).
  SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
- WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention')
+ WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed')
   AND i.status<>'cancelled'
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
@@ -176,6 +176,18 @@ UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WH
 -- Active-run defer: stamps the facts a running target held back and returns
 -- only those not stamped before, so the reason is recorded once per fact.
 UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY(@ids::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING *;
+-- name: ConsumeHandoffWakeupReceipts :exec
+-- A write that handed the issue to an agent starts that agent's run after it
+-- commits. Once the run exists, the agent's issue-event receipts from the same
+-- write are handled. A receipt that merged with earlier pending events keeps
+-- its place, and a receipt already reserved by a run is left to that run.
+UPDATE issue_wakeup_receipt r SET processed_at=now()
+FROM issue_wakeup w
+WHERE w.id=r.wakeup_id AND w.issue_id= @issue_id AND w.agent_id= @agent_id
+  AND r.processed_at IS NULL AND r.task_id IS NULL
+  AND r.event_type LIKE 'issue.%'
+  AND r.payload->>'handoff_write'= @write::text
+  AND COALESCE((r.payload->>'coalesced_count')::bigint,1)=1;
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
@@ -209,7 +221,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    id
+    workflow_step, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -234,6 +246,14 @@ SELECT
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
+    -- The workflow step this run works on (MUL-7420). A wakeup continues the
+    -- run that registered it, so it keeps that run's step: a status change it
+    -- makes after someone else moved the issue is refused like the run's own
+    -- would be. A wakeup a member registered starts from the issue's status.
+    COALESCE(
+        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = $3),
+        (SELECT i.status FROM issue i WHERE i.id = $3)
+    ),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
@@ -276,7 +296,7 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
 -- run block together, and only while the rolling limit has room. Manual,
 -- loop and max_fires pauses never match.
 UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention') AND w.paused_reason='rate'
+WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed') AND w.paused_reason='rate'
  AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> @since) < @max_runs::bigint;
 
 -- name: CountWakeupFires :exec

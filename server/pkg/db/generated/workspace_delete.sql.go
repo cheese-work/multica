@@ -239,6 +239,8 @@ func (q *Queries) DeleteWorkspaceConnections(ctx context.Context, workspaceID pg
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
 WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_ci_advances AS (
+ DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id=$1)
 ), deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
@@ -349,6 +351,9 @@ deleted_draft_restores AS (
 deleted_agent_builder_drafts AS (
     DELETE FROM agent_builder_draft WHERE workspace_id = $1
 ),
+deleted_chat_wakeups AS (
+    DELETE FROM chat_wakeup WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -363,6 +368,12 @@ deleted_stage_generations AS (
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
+),
+deleted_governed_vote_records AS (
+    DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
+deleted_run_gate_events AS (
+    DELETE FROM run_gate_event WHERE workspace_id = $1
 ),
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
@@ -595,6 +606,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
+// CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
+// and no FK. Outlives issues and receipts; goes with the workspace.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 // CHE-714 Jev provider credentials are workspace-owned encrypted material.

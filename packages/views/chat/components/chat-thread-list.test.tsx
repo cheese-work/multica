@@ -149,6 +149,34 @@ describe("ChatThreadList archive delegation", () => {
   });
 });
 
+describe("ChatThreadList continuation chains", () => {
+  const chain: ChatSession[] = [
+    makeSession({ id: "c1", title: "Chain first", status: "archived", continued_into_session_id: "c2", updated_at: "2026-07-08T01:00:00Z" }),
+    makeSession({ id: "c2", title: "Chain second", status: "archived", continued_from_session_id: "c1", continued_into_session_id: "c3", updated_at: "2026-07-08T02:00:00Z" }),
+    makeSession({ id: "c3", title: "Chain newest", continued_from_session_id: "c2", updated_at: "2026-07-08T03:00:00Z" }),
+    makeSession({ id: "solo", title: "Archived alone", status: "archived", updated_at: "2026-07-08T00:00:00Z" }),
+  ];
+
+  it("lists one row per chain: the newest DM; archived predecessors are not rows", () => {
+    renderList(null, { renderedSessions: chain });
+    expect(screen.getByText("Chain newest")).toBeInTheDocument();
+    expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
+    expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
+    // The Archived entry counts only the unrelated archived DM.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    expect(screen.getByText("Archived alone")).toBeInTheDocument();
+    expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
+    expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
+  });
+
+  it("keeps an archived DM whose successor is not in the list", () => {
+    const orphan = makeSession({ id: "o1", title: "Orphan source", status: "archived", continued_into_session_id: "gone" });
+    renderList(null, { renderedSessions: [orphan] });
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    expect(screen.getByText("Orphan source")).toBeInTheDocument();
+  });
+});
+
 describe("ChatThreadList no_response preview (MUL-4351)", () => {
   it("shows a localized 'no text reply' preview instead of the fallback body", () => {
     const session = makeSession({

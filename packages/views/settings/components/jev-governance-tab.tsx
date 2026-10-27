@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Lock, WifiOff } from "lucide-react";
+import { Check, Lock, Minus, WifiOff } from "lucide-react";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentMember } from "@multica/core/permissions";
-import { workspaceJevGovernanceOptions } from "@multica/core/workspace/queries";
+import { workspaceJevCredentialOptions, workspaceJevGovernanceOptions } from "@multica/core/workspace/queries";
 import { useUpdateWorkspaceJevGovernance } from "@multica/core/workspace/mutations";
 import type { JevRoutingMode, WorkspaceJevGovernance } from "@multica/core/types";
 import { createSafeId } from "@multica/core/utils";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 import {
@@ -24,27 +25,12 @@ import {
   SettingsTab,
   type SettingsSaveStatus,
 } from "./settings-layout";
+import { DEFAULT_MIN_CONFIDENCE, formatConfidence } from "./jev-history";
+import { JevCredentialPane } from "./jev-credential-pane";
+import { JevHistoryPane } from "./jev-history-pane";
+import { useOnline } from "./use-online";
 
-// The server falls back to this when the workspace never set a confidence.
-const DEFAULT_MIN_CONFIDENCE = 0.9;
 const SELECTABLE_MODES = ["off", "shadow"] as const;
-
-function subscribeOnline(onChange: () => void) {
-  window.addEventListener("online", onChange);
-  window.addEventListener("offline", onChange);
-  return () => {
-    window.removeEventListener("online", onChange);
-    window.removeEventListener("offline", onChange);
-  };
-}
-
-function useOnline() {
-  return useSyncExternalStore(
-    subscribeOnline,
-    () => navigator.onLine,
-    () => true,
-  );
-}
 
 /** A confidence is a number from 0 to 1; anything else is not sent. */
 function parseConfidence(text: string): number | null {
@@ -54,13 +40,6 @@ function parseConfidence(text: string): number | null {
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
-/** Two decimals, unless that would round the stored value: an untouched confidence is never rewritten. */
-function formatConfidence(value: number | null) {
-  const v = value ?? DEFAULT_MIN_CONFIDENCE;
-  const fixed = v.toFixed(2);
-  return Number(fixed) === v ? fixed : String(v);
-}
-
 /** What the user is editing, and the version they started from. */
 interface Draft {
   baseVersion: number;
@@ -68,31 +47,149 @@ interface Draft {
   confidence: string;
 }
 
+const TAB_KEYS = ["ArrowRight", "ArrowLeft", "Home", "End"];
+
 /**
- * Jev / Governance, routing pane: the squad routing mode and the minimum
- * confidence, from the workspace governance config. Members see it read-only;
- * owners and admins save with the version they read (`expected_version`), so a
- * concurrent save is a conflict they can recover from, not an overwrite.
+ * Left and Right move between the tabs, Home and End jump (the model in
+ * DESIGN.md). The primitive moves focus a frame after the key; this moves it in
+ * the same event, so what the screen reader announces and what is focused never
+ * disagree, and the primitive's own handler never sees these keys.
+ */
+function moveTabFocus(event: KeyboardEvent<HTMLElement>) {
+  if (!TAB_KEYS.includes(event.key)) return;
+  const tabs = Array.from(
+    event.currentTarget.closest<HTMLElement>('[role="tablist"]')?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [],
+  );
+  const at = tabs.indexOf(event.currentTarget);
+  if (at < 0) return;
+  const next =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (at + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  event.stopPropagation();
+  tabs[next]?.focus();
+}
+
+type Notice = { kind: "key_saved" | "key_removed" | "url_saved" | "url_cleared" } | { kind: "rolled_back"; version: number };
+
+/**
+ * Jev / Governance: Routing, Credential and History as one tab group, from the
+ * workspace governance config. Members see it read-only; owners and admins save
+ * with the version they read (`expected_version`), so a concurrent save is a
+ * conflict they can recover from, not an overwrite.
  *
- * Design: design/jev-governance-tab/rev-4/C.html. Credential and history
- * panes of that design are later layers and are not offered here.
+ * Design: design/jev-governance-tab/rev-4/C.html. The routing pane stays
+ * mounted while another tab is open, so a pending edit survives a look at the
+ * history or the key.
  */
 export function JevGovernanceTab() {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const { role } = useCurrentMember(wsId);
+  const online = useOnline();
   const query = useQuery(workspaceJevGovernanceOptions(wsId));
+  const credential = useQuery(workspaceJevCredentialOptions(wsId));
+  const [notice, setNotice] = useState<Notice | null>(null);
   const title = t(($) => $.page.tabs.jev_governance);
   const config = query.data;
+  const canManage = role === "owner" || role === "admin";
+  const reload = async () => (await query.refetch()).isSuccess;
 
   return (
     <SettingsTab title={title} scope="workspace">
       {config ? (
-        <RoutingPane
-          config={config}
-          canManage={role === "owner" || role === "admin"}
-          reload={async () => (await query.refetch()).isSuccess}
-        />
+        <div className="space-y-6">
+          {!online ? (
+            <div
+              role="status"
+              className="flex items-start gap-3 rounded-xl border border-warning/40 bg-warning/5 px-4 py-3"
+            >
+              <WifiOff aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+              <div className="min-w-0">
+                <p className="text-body font-medium">{t(($) => $.jev_governance.offline_title)}</p>
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.jev_governance.offline_body, { version: config.version })}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {!canManage ? <SettingsReadOnlyNotice wsId={wsId} /> : null}
+
+          {notice ? (
+            <p role="status" className="flex items-center gap-1.5 text-caption text-muted-foreground">
+              <Check aria-hidden="true" className="size-3 text-success" />
+              {notice.kind === "rolled_back"
+                ? t(($) => $.jev_governance.history.done, { version: notice.version })
+                : notice.kind === "key_saved"
+                  ? t(($) => $.jev_governance.credential.saved)
+                  : notice.kind === "key_removed"
+                    ? t(($) => $.jev_governance.credential.removed)
+                    : notice.kind === "url_saved"
+                      ? t(($) => $.jev_governance.api_url.saved)
+                      : t(($) => $.jev_governance.api_url.cleared)}
+            </p>
+          ) : null}
+
+          <Tabs defaultValue="routing" onValueChange={() => setNotice(null)}>
+            <TabsList
+              aria-label={t(($) => $.jev_governance.tabs_label)}
+              data-testid="jev-governance-tabs"
+              className="h-auto sm:h-8"
+            >
+              <TabsTrigger value="routing" className="h-11 px-3 sm:h-auto" onKeyDown={moveTabFocus}>
+                {t(($) => $.jev_governance.tab_routing)}
+              </TabsTrigger>
+              <TabsTrigger value="credential" className="h-11 px-3 sm:h-auto" onKeyDown={moveTabFocus}>
+                {t(($) => $.jev_governance.tab_credential)}
+                {credential.data ? (
+                  <>
+                    {credential.data.present ? (
+                      <Check aria-hidden="true" className="size-3" />
+                    ) : (
+                      <Minus aria-hidden="true" className="size-3" />
+                    )}
+                    <span className="sr-only">
+                      {" "}
+                      (
+                      {credential.data.present
+                        ? t(($) => $.jev_governance.key_set)
+                        : t(($) => $.jev_governance.key_not_set)}
+                      )
+                    </span>
+                  </>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="history" className="h-11 px-3 sm:h-auto" onKeyDown={moveTabFocus}>
+                {t(($) => $.jev_governance.tab_history, { count: config.history.length })}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="routing" keepMounted className="pt-4">
+              <RoutingPane config={config} canManage={canManage} online={online} reload={reload} />
+            </TabsContent>
+            <TabsContent value="credential" className="pt-4">
+              <JevCredentialPane
+                credential={credential}
+                config={config}
+                canManage={canManage}
+                online={online}
+                onNotice={(kind) => setNotice({ kind })}
+              />
+            </TabsContent>
+            <TabsContent value="history" className="pt-4">
+              <JevHistoryPane
+                config={config}
+                canManage={canManage}
+                online={online}
+                reload={reload}
+                onNotice={(version) => setNotice({ kind: "rolled_back", version })}
+              />
+            </TabsContent>
+          </Tabs>
+        </div>
       ) : query.isError ? (
         <div
           role="alert"
@@ -125,16 +222,17 @@ export function JevGovernanceTab() {
 function RoutingPane({
   config,
   canManage,
+  online,
   reload,
 }: {
   config: WorkspaceJevGovernance;
   canManage: boolean;
+  online: boolean;
   /** Resolves true only when the latest config loaded. */
   reload: () => Promise<boolean>;
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
-  const online = useOnline();
   const update = useUpdateWorkspaceJevGovernance(wsId);
   const groupId = useId();
   const confidenceId = useId();
@@ -214,23 +312,6 @@ function RoutingPane({
           errorLabel={t(($) => $.jev_governance.save_error)}
         />
       </div>
-
-      {!online ? (
-        <div
-          role="status"
-          className="flex items-start gap-3 rounded-xl border border-warning/40 bg-warning/5 px-4 py-3"
-        >
-          <WifiOff aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
-          <div className="min-w-0">
-            <p className="text-body font-medium">{t(($) => $.jev_governance.offline_title)}</p>
-            <p className="text-caption text-muted-foreground">
-              {t(($) => $.jev_governance.offline_body, { version: config.version })}
-            </p>
-          </div>
-        </div>
-      ) : null}
-
-      {!canManage ? <SettingsReadOnlyNotice wsId={wsId} /> : null}
 
       <SettingsSection title={t(($) => $.jev_governance.routing_title)} anchor="routing">
         <SettingsCard>

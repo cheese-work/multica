@@ -228,6 +228,34 @@ RETURNING *;
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
+-- name: HasGitHubReviewWakeup :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = sqlc.arg(issue_id)
+      AND context->>'github_review_key' = sqlc.arg(review_key)::text
+);
+
+-- name: ListGitHubReviewAuthorCandidates :many
+SELECT DISTINCT task.agent_id
+FROM agent_task_queue task
+JOIN agent author ON author.id = task.agent_id
+JOIN github_pull_request pr ON pr.id = sqlc.arg(pull_request_id)
+WHERE pr.workspace_id = sqlc.arg(workspace_id)
+  AND author.workspace_id = pr.workspace_id
+  AND (
+    (sqlc.arg(task_key)::text <> '' AND right(replace(task.id::text, '-', ''), 12) = sqlc.arg(task_key)::text)
+    OR (task.branch_name = pr.branch AND task.created_at <= pr.pr_created_at AND EXISTS (
+        SELECT 1 FROM issue_pull_request link
+        WHERE link.pull_request_id = pr.id AND link.issue_id = task.issue_id
+    ))
+  )
+LIMIT 2;
+
+-- name: MarkGitHubReviewWakeup :exec
+UPDATE agent_task_queue
+SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_review_key', sqlc.arg(review_key)::text)
+WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
+
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the GitHub API snapshot (MUL-5265): the
 -- mergeability verdict, the CI rollup, and per-check counts for the PR's

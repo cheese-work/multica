@@ -36,6 +36,7 @@ for (const [name, files, selected] of [
   ["shell installer", ["scripts/install.sh"], ["scripts", "installer"]],
   ["PowerShell installer", ["scripts/install.ps1.test.ps1"], ["installer"]],
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
+  ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
@@ -50,8 +51,8 @@ for (const [name, files, selected] of [
   ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "backend", "sqlc"]],
   ["CI configuration", [".github/ci-paths.json"], Object.keys(filters)],
 ]) {
-  test(`PR and main select only affected scopes: ${name}`, () => {
-    for (const event of ["pull_request", "push"]) {
+  test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
+    for (const event of ["pull_request", "push", "merge_group"]) {
       const outputs = decideScopes(event, filterFiles(files));
       assert.equal(outputs.full, "false");
       assert.deepEqual(Object.keys(filters).filter((scope) => outputs[scope] === "true").sort(),
@@ -89,16 +90,16 @@ test("upstream-sync heads never select the X99 self-hosted scopes", () => {
 });
 
 // A candidate controls scripts/ci-scope.mjs, which the runner does not block.
-// Simulate a candidate whose helper ignores the head ref: the X99 jobs must
+// Simulate a candidate whose helper ignores the head ref: the sync-sensitive jobs must
 // still be skipped by their own job-level `if`, and the gate fails closed.
-test("a tampered ci-scope helper cannot admit a sync head to X99", () => {
+test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive jobs", () => {
   const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
   const syncHead = "upstream-sync/multica/" + "a".repeat(40);
   const tampered = decideScopes("pull_request", { ...everything, frontend: "false" });
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: .*cheese-x99/m);
+    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
@@ -107,8 +108,10 @@ test("a tampered ci-scope helper cannot admit a sync head to X99", () => {
 });
 
 test("missing, malformed and unsupported filter results fail closed", () => {
-  for (const value of [undefined, "", "unknown", true]) {
-    assert.throws(() => decideScopes("push", { ...filterFiles([]), backend: value }), /backend/);
+  for (const event of ["push", "merge_group"]) {
+    for (const value of [undefined, "", "unknown", true]) {
+      assert.throws(() => decideScopes(event, { ...filterFiles([]), backend: value }), /backend/);
+    }
   }
   assert.throws(() => decideScopes("unknown", filterFiles([])), /Unsupported/);
 });
@@ -147,6 +150,28 @@ function productionNeeds(gate, outputs, headRef = "") {
     return [job, { result: outputs[scope] === "true" && !excluded ? "success" : "skipped" }];
   }));
 }
+
+test("merge groups filter the complete candidate against the queue base", () => {
+  assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
+  assert.match(jobs.changes, /if: github\.event_name == 'pull_request' \|\| github\.event_name == 'push' \|\| github\.event_name == 'merge_group'/);
+  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| github\.base_ref\) \}\}/);
+  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| github\.sha \}\}/);
+});
+
+test("a merge-group migration failure cannot pass the backend gate", () => {
+  const outputs = decideScopes("merge_group", filterFiles([
+    "server/migrations/999_first.up.sql",
+    "server/migrations/999_second.up.sql",
+  ]));
+  assert.equal(outputs.backend, "true");
+  assert.equal(outputs.sqlc, "true");
+  assert.equal(productionMapping("backend")["backend-tests"], "always");
+  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  const needs = productionNeeds("backend", outputs);
+  checkGate(needs, productionMapping("backend"));
+  needs["backend-tests"].result = "failure";
+  assert.throws(() => checkGate(needs, productionMapping("backend")), /backend-tests/);
+});
 
 for (const gate of ["frontend", "backend"]) {
   test(`production ${gate} gate matches every dependency, condition and scope output`, () => {

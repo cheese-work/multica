@@ -18,6 +18,7 @@ import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
+import { issueWorkflowKeys } from "../issue-workflows/queries";
 import {
   agentTaskSnapshotKeys,
   workspaceWorkingAgentsKeys,
@@ -96,6 +97,7 @@ import type {
   CommentDeletedPayload,
   CommentResolvedPayload,
   CommentUnresolvedPayload,
+  DecisionAnswerUpdatedPayload,
   ActivityCreatedPayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
@@ -167,6 +169,19 @@ export function refetchPendingChatAggregate(
 ) {
   if (!wsId) return;
   qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+}
+
+/**
+ * A decision card changed state. Both surfaces render the same state, so
+ * refresh the issue's quote card and every DM message list.
+ */
+export function applyDecisionAnswerUpdated(
+  qc: QueryClient,
+  payload: DecisionAnswerUpdatedPayload,
+) {
+  qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }
 
 /**
@@ -674,6 +689,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     // 5-minute staleTime — long enough to offer a status the server already
     // archived, or to keep painting its old name.
     qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
   }
   // Cross-workspace, so outside the wsId guard: a reconnect may have missed
   // inbox events from any workspace, so re-pull the switcher-dot summary.
@@ -833,6 +849,9 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) {
           qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
+          // Workflow responses include the projects using them. Creating,
+          // deleting or changing a project also changes that usage list.
+          qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
           // The issue table can filter on a project's status, so a
           // project create/update/delete changes which issues a filtered
           // window holds. The payload carries no previous status to compare
@@ -887,6 +906,12 @@ export function useRealtimeSync(
             },
           });
         }
+      },
+      // Workspace workflows (MUL-7420). Same contract as the status catalog:
+      // the event carries no row, so every write answers with one list read.
+      issue_workflow: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: issueWorkflowKeys.all(wsId) });
       },
       pin: () => {
         const wsId = getCurrentWsId();
@@ -1042,7 +1067,7 @@ export function useRealtimeSync(
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
-      "comment:resolved", "comment:unresolved",
+      "comment:resolved", "comment:unresolved", "decision_answer:updated",
       "activity:created",
       "reaction:added", "reaction:removed",
       "issue_reaction:added", "issue_reaction:removed",
@@ -1220,6 +1245,10 @@ export function useRealtimeSync(
           invalidateIssueOwnerProjections(qc, wsId, comment.issue_id);
         }
       }
+    });
+
+    const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
+      applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1842,6 +1871,7 @@ export function useRealtimeSync(
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();
+      unsubDecisionAnswerUpdated();
       unsubActivityCreated();
       unsubReactionAdded();
       unsubReactionRemoved();

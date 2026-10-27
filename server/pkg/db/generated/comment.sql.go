@@ -910,6 +910,27 @@ func (q *Queries) HasAgentRepliedInThread(ctx context.Context, arg HasAgentRepli
 	return has_replied, err
 }
 
+const isCommentTriggerRateLimited = `-- name: IsCommentTriggerRateLimited :one
+SELECT EXISTS (
+    SELECT 1 FROM comment_trigger_rate_limit
+    WHERE issue_id = $1
+      AND agent_id = $2
+      AND triggered_at > now() - interval '10 minutes'
+)
+`
+
+type IsCommentTriggerRateLimitedParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) IsCommentTriggerRateLimited(ctx context.Context, arg IsCommentTriggerRateLimitedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isCommentTriggerRateLimited, arg.IssueID, arg.AgentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listChildCommentsForParents = `-- name: ListChildCommentsForParents :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind FROM comment
 WHERE parent_id = ANY($1::uuid[])
@@ -1078,6 +1099,116 @@ func (q *Queries) ListCommentAncestorPath(ctx context.Context, arg ListCommentAn
 			&i.DeletedAt,
 			&i.Depth,
 			&i.Cycle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentThreadContext = `-- name: ListCommentThreadContext :many
+WITH RECURSIVE thread_history AS (
+  SELECT root.id, root.created_at, root.deleted_at, root.parent_id
+  FROM comment root
+  WHERE root.id = $1
+    AND root.workspace_id = $3
+    AND root.issue_id = $4
+    AND root.parent_id IS NULL
+    AND (root.created_at, root.id) <= (
+      $5::timestamptz,
+      $2::uuid
+    )
+
+  UNION ALL
+
+  SELECT child.id, child.created_at, child.deleted_at, child.parent_id
+  FROM comment child
+  JOIN thread_history parent ON child.parent_id = parent.id
+  WHERE child.workspace_id = $3
+    AND child.issue_id = $4
+    AND (child.created_at, child.id) <= (
+      $5::timestamptz,
+      $2::uuid
+    )
+),
+recent_replies AS (
+  SELECT th.id
+  FROM thread_history th
+  WHERE th.parent_id IS NOT NULL
+    AND th.id <> $2::uuid
+    AND th.deleted_at IS NULL
+  ORDER BY th.created_at DESC, th.id DESC
+  LIMIT $6
+)
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, c.decision_request_id, c.decision_answer_id, c.decision_intent_id, c.decision_comment_kind
+FROM comment c
+WHERE c.id IN (SELECT id FROM recent_replies)
+   OR (c.id = $1
+       AND c.id <> $2::uuid
+       AND c.workspace_id = $3
+       AND c.issue_id = $4
+       AND c.parent_id IS NULL
+       AND c.deleted_at IS NULL)
+ORDER BY c.created_at, c.id
+`
+
+type ListCommentThreadContextParams struct {
+	RootID          pgtype.UUID        `json:"root_id"`
+	AnchorID        pgtype.UUID        `json:"anchor_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	AnchorCreatedAt pgtype.Timestamptz `json:"anchor_created_at"`
+	ReplyLimit      int32              `json:"reply_limit"`
+}
+
+// The thread root plus the newest reply_limit live replies before the anchor,
+// oldest first. Unlike ListCommentThreadHistory it ranks replies newest-first
+// before capping, so a long thread keeps its recent tail (CHE-2070).
+func (q *Queries) ListCommentThreadContext(ctx context.Context, arg ListCommentThreadContextParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listCommentThreadContext,
+		arg.RootID,
+		arg.AnchorID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AnchorCreatedAt,
+		arg.ReplyLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+			&i.DeletedAt,
+			&i.SuppressedAgentIds,
+			&i.DecisionRequestID,
+			&i.DecisionAnswerID,
+			&i.DecisionIntentID,
+			&i.DecisionCommentKind,
 		); err != nil {
 			return nil, err
 		}
@@ -1728,6 +1859,25 @@ WHERE c.issue_id = $1
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
         AND bound.agent_id = $4
+  )
+  -- An explicit member/agent cancellation acknowledges the planned input for
+  -- this agent only for completing tasks already in flight at cancellation;
+  -- automatic cancellations deliberately remain replayable.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_task_queue cancelled
+      WHERE cancelled.issue_id = c.issue_id
+        AND cancelled.agent_id = $4
+        AND cancelled.status = 'cancelled'
+        AND cancelled.cancelled_by_type IN ('member', 'agent')
+        AND cancelled.cancelled_by_id IS NOT NULL
+        AND cancelled.completed_at IS NOT NULL
+        AND cancelled.completed_at >= $5
+        AND c.updated_at <= cancelled.completed_at
+        AND (
+            cancelled.trigger_comment_id = c.id
+            OR c.id = ANY(cancelled.coalesced_comment_ids)
+        )
   )
   -- Nor does a comment whose author chose not to start this agent for it.
   AND NOT COALESCE($4::uuid = ANY(c.suppressed_agent_ids), false)

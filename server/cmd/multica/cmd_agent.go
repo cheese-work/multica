@@ -195,6 +195,7 @@ func init() {
 	agentUpdateCmd.Flags().Bool("instructions-stdin", false, "Read the new instructions byte-for-byte from stdin")
 	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
 	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
+	agentUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
 	agentUpdateCmd.Flags().String("runtime-config", "", "New runtime config as JSON string")
@@ -532,9 +533,7 @@ func requireWorkspaceID(cmd *cobra.Command) (string, error) {
 	return id, nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent commands
-// ---------------------------------------------------------------------------
 
 func runAgentList(cmd *cobra.Command, _ []string) error {
 	client, err := newAPIClient(cmd)
@@ -761,16 +760,20 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 
 	// --expected-before-digest -> owner-only guarded CAS on exactly
 	// `instructions`; see governed_cas.go.
+	if err := checkVoteIssueFlag(cmd); err != nil {
+		return err
+	}
 	if cmd.Flags().Changed("expected-before-digest") {
 		body, err := buildAgentUpdateDigestBody(cmd)
 		if err != nil {
 			return err
 		}
+		body = withVoteReceipt(cmd, body, "instructions")
 		ctx, cancel := cli.APIContext(context.Background())
 		defer cancel()
 		var result map[string]any
 		if err := client.PutJSON(ctx, "/api/agents/"+args[0], body, &result); err != nil {
-			return digestWriteError("update agent", err, bodyText(body, "instructions"), bodyText(body, "expected_before_digest"))
+			return digestWriteError("update agent", err, bodyText(body, "instructions"), bodyBefore(body))
 		}
 		return printDigestSwapResult(cmd, "agent", result)
 	}
@@ -1048,9 +1051,7 @@ func runAgentAvatar(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent skills subcommands
-// ---------------------------------------------------------------------------
 
 func runAgentSkillsList(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
@@ -1178,9 +1179,7 @@ func printAgentSkillsMutationResult(cmd *cobra.Command, agentID string, result j
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Agent env subcommands
-// ---------------------------------------------------------------------------
 
 // runAgentEnvGet fetches the plaintext custom_env for a single agent
 // via the audited `/env` endpoint. The CLI prints raw JSON in JSON
@@ -1296,9 +1295,7 @@ func runAgentEnvPatch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 // parseCustomEnv parses the --custom-env flag value (a JSON object literal)
 // into a string map suitable for the request body. The clear-all signal is

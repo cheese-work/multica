@@ -1,0 +1,29 @@
+# Decision quote cards (CHE-1870). PR 2 (issue quote card) and PR 3 (DM card and jump-to-message)
+# build this sheet. PR 1 (draft PR 315) is data only and changes no page.
+# Fork lineage A (CHE-1945 comment 01a15f27-2c41-7530-8da5-dc5276e6bd05): a forked DM shows the
+# card as read-only provenance. It has no Disclaim and opens the original issue comment.
+# Disclaim sends no reason. A 409 shows a Refresh or Review notice and keeps any draft.
+issue: CHE-1870
+design: design/dm-decision-quote-cards/rev-8/B.html @ 9ac3541dba50d3e1f06687779694b08095c21b79
+pages:
+  - id: issue-detail-decision-quote
+    url: /<workspace-slug>/issues/<issue-id>   # the decision quote comment in the activity block; same path on base and preview
+    keep:
+      - comment-card
+      - comment-reply-input
+    change:
+      - decision-quote-card: "the agent-authored quote renders as Cheese's receipt card: class and state strip, quote text, the recording agent as a sub-line; the agent's own note is muted"
+      - decision-quote-open-dm: "Open DM, shown only to the request's human; others see 'from a private DM'"
+      - decision-disclaim-button: "Disclaim for the request's human while the decision is not withdrawn; confirms in an alert dialog with no reason field"
+      - decision-conflict-notice: "409 notice: 'changed while you were reading' with Refresh, or 'already withdrawn' with Review; the card keeps any draft"
+    remove: []
+  - id: dm-chat-decision-card
+    url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview
+    keep:
+      - chat-user-message
+      - chat-composer
+    change:
+      - decision-dm-card: "a chip under the quoted user bubble: 'Quoted in <issue>' with the state pill and Disclaim; on a forked DM it adds 'from the original DM' and an Inherited badge, with no Disclaim"
+      - decision-dm-jump: "opening the card from the issue scrolls to the exact bubble and flashes it once; reduced motion keeps the colour only; a missing message shows a toast and opens the DM at the bottom"
+    remove:
+      - decision-recorded-message: "the plain-text 'Decision recorded' assistant message is hidden when its card renders (Cheese chose D3 = A); the row stays in the database"

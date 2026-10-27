@@ -10,6 +10,25 @@ export type {
   UpdateIssueStatusRequest,
 } from "./issue-status";
 export type {
+  IssueWorkflow,
+  IssueWorkflowHandler,
+  IssueWorkflowHandlerType,
+  IssueWorkflowEdge,
+  IssueWorkflowStep,
+  ListIssueWorkflowsResponse,
+  IssueWorkflowWriteRequest,
+  IssueWorkflowMappingRequirement,
+  IssueWorkflowMappingPlan,
+  IssueWorkflowDryRunResponse,
+  SetProjectWorkflowRequest,
+  IssueWorkflowStatusCount,
+  WorkflowHandoffPreview,
+  WorkflowHandoffRun,
+  NewWorkflowStatus,
+  IssueWorkflowStepInput,
+  SetWorkflowHandoffRequest,
+} from "./issue-workflow";
+export type {
   Agent,
   AgentConversationStarter,
   AgentStatus,
@@ -91,7 +110,7 @@ export type {
   MikaBootstrapResponse,
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, RUNTIME_PROFILE_RUNTIME_TYPES } from "./agent";
-export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, WorkspaceExportPrivacy, JevRoutingMode, WorkspaceGovernanceConfig, WorkspaceJevGovernance, WorkspaceJevGovernancePatch, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
+export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, WorkspaceExportPrivacy, JevRoutingMode, GovernanceAuditEntry, WorkspaceGovernanceConfig, WorkspaceJevGovernance, WorkspaceGovernanceRollback, JevCredentialPresence, WorkspaceJevGovernancePatch, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {
   PluginInstallation,
   PluginConfigField,
@@ -128,6 +147,7 @@ export type {
   NotificationPreferenceResponse,
   UpdateNotificationChannelRequest,
 } from "./notification-preference";
+export type { DecisionCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard } from "./decision";
 export type { Comment, CommentType, CommentAuthorType, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, ListIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";

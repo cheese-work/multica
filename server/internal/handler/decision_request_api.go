@@ -15,20 +15,22 @@ import (
 )
 
 func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(writer, http.StatusForbidden, "decision request requires this issue's running task")
+		return
+	}
 	var input struct {
-		IssueID         string `json:"issue_id"`
-		SessionID       string `json:"session_id"`
-		NewDM           bool   `json:"new_dm"`
-		For             string `json:"for"`
-		Ask             string `json:"ask"`
-		EscalationClass string `json:"escalation_class"`
+		IssueID         string          `json:"issue_id"`
+		SessionID       string          `json:"session_id"`
+		NewDM           bool            `json:"new_dm"`
+		For             string          `json:"for"`
+		Ask             json.RawMessage `json:"ask"`
+		Footer          string          `json:"footer"`
+		ParentID        string          `json:"parent_id"`
+		EscalationClass string          `json:"escalation_class"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
-		return
-	}
-	if len(input.Ask) > maxCommentContentBytes {
-		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, input.IssueID)
@@ -38,22 +40,57 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	if input.NewDM == (input.SessionID != "") || input.NewDM && input.For == "" || !input.NewDM && input.For != "" {
-		writeError(writer, http.StatusBadRequest, "choose session_id or new_dm with for")
+	if len(input.Ask) == 0 || string(input.Ask) == "null" {
+		writeError(writer, http.StatusBadRequest, "a structured ask is required")
 		return
 	}
-	var sessionID, humanID pgtype.UUID
-	if input.NewDM {
-		humanID, ok = parseUUIDOrBadRequest(writer, input.For, "for")
-	} else {
-		sessionID, ok = parseUUIDOrBadRequest(writer, input.SessionID, "session_id")
+	parsed, err := decisiontx.DecodeAsk(input.Ask)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
 	}
+	hints := decisiontx.LintAsk(parsed)
+	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: input.Ask, EscalationClass: input.EscalationClass})
+	sourceCommentID, ok := parseUUIDOrBadRequest(writer, parsed.SourceCommentID, "ask.source_comment_id")
+	if !ok {
+		return
+	}
+	if sourceIssueID != issue.ID {
+		writeError(writer, http.StatusBadRequest, "ask.source_issue_id must match issue_id")
+		return
+	}
+	ask := parsed.Content()
+	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
+		writeError(writer, http.StatusBadRequest, "ask is too long")
+		return
+	}
+	if input.NewDM && (input.SessionID != "" || input.For == "") {
+		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
+		return
+	}
+	var sessionID, humanID, parentID pgtype.UUID
+	for _, field := range []struct {
+		value string
+		name  string
+		into  *pgtype.UUID
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+		if field.value == "" {
+			continue
+		}
+		if *field.into, ok = parseUUIDOrBadRequest(writer, field.value, field.name); !ok {
+			return
+		}
+	}
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
+		return
+	}
+	if result.Replayed {
+		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints})
 		return
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
@@ -63,10 +100,16 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
 		})
 	}
-	item, err := decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID)
-	if err != nil {
-		slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)
-	} else {
+	item, pinged := result.PingItem, result.PingRecorded
+	if !pinged {
+		var err error
+		if item, err = decisiontx.NotifyPing(request.Context(), handler.TxStarter, handler.Queries, issue.WorkspaceID, result.Request.ID); err != nil {
+			slog.Warn("decision ping inbox pending retry", "decision_request_id", uuidToString(result.Request.ID), "error", err)
+		} else {
+			pinged = true
+		}
+	}
+	if pinged {
 		if stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: issue.WorkspaceID, ID: result.Request.ID}); err == nil {
 			result.Request = stored
 		}
@@ -77,16 +120,27 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": response})
 		}
 	}
-	handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
-		"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
-		"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
-	})
+	if result.AttachedToIntent {
+		// The intent comment was already announced as created; only its decision fields changed.
+		handler.publish(protocol.EventCommentUpdated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(result.Comment, nil, nil)})
+	} else {
+		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
+			"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
+			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
+		})
+	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
-	writeJSON(writer, http.StatusCreated, result.Request)
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints})
+}
+
+// decisionRequestResponse adds advisory ask-lint hints to the stored request.
+type decisionRequestResponse struct {
+	db.DecisionRequest
+	Hints []string `json:"hints,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
