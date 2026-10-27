@@ -1,0 +1,12 @@
+◇ injected env (1) from .env // tip: ⌘ suppress logs { quiet: true }
+
+Running 1 test using 1 worker
+
+(node:681900) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:681900) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+  ✓  1 e2e/plan-revisions.spec.ts:166:3 › plan revision viewer › desktop captures use the real isolated Electron client (49.1s)
+
+  1 passed (51.0s)

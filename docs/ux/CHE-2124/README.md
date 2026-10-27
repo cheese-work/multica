@@ -1,5 +1,8 @@
 # CHE-2124 verification
 
+F1/F2 follow-up: [fixes.md](fixes.md), with fresh real web/Electron captures at `195a1e1eddffe1e87f9027da48e7d40301790cb0`.
+The evidence below records the original implementation and radius correction, not the new review candidate.
+
 Implementation: `8ad850eb95a98ac2a7c78fa27cee356e3b66ac30`.
 Baseline: `84afc806a3e4bf8ae474f788defafa3afaf68a43` from a detached checkout.
 Design: `design/plan-revision-viewer/rev-2/A.html` at `aa8306b19818658407f6eefcc495859b026b5a8a`.
