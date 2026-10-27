@@ -171,7 +171,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 			continue
 		}
 		mention := fmt.Sprintf("[@PR author](mention://agent/%s)", uuidToString(author.ID))
-		triggers, _ := h.resolveMentionedAgentCommentTriggers(ctx, issue, util.ParseMentions(mention), "member", uuidToString(userID), commentTriggerComputeOptions{OriginatorUserID: uuidToString(userID)})
+		triggers, _ := h.resolveMentionedAgentCommentTriggers(ctx, issue, util.ParseMentions(mention), nil, "member", uuidToString(userID), commentTriggerComputeOptions{OriginatorUserID: uuidToString(userID)})
 		if len(triggers) != 1 {
 			continue
 		}
