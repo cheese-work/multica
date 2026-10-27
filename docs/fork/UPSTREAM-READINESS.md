@@ -34,7 +34,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 
 1. **Reconcile overlaps first.** Every `overlaps` row needs the ledger's merge choice (R01 to R20) applied. Two need a product choice from Cheese: R08 and R09.
 2. **CLI parity.** Missing verbs, in the order CHE-2071 sets: workflow create/delete/handoff set; project set-workflow; project and workspace wakeups; status catalog (owner-only); DM rename, archive and pin. Also no `chat search` verb (C15) and no CLI for wakeup definitions (W06) or the pool and budget views (W07 to W09).
-3. **Builtin-skill docs.** 73 verbs are still not named in the skill; they are listed in `skillCoverageGaps` in `cmd_skill_coverage_test.go`. The check forbids new ones and forces a line to be deleted once documented.
+3. **Builtin-skill docs.** Done. Every registered command is named in the skill or the brief, with no exemption list. `TestEveryCommandIsDocumentedInTheBuiltinSkill` fails on any new command that is not.
 4. **Tests.** Rows whose PRs touched no test file are marked partial below; add behavior tests (or point at existing ones) before proposing them.
 5. **Split the proposal.** Do not send governance (G01 to G18) or Jev rows upstream as one PR. Offer small, stand-alone features first (comment resolve `known_as_of`, DM fork/continue, decision requests) and ask upstream about the subsystems.
 

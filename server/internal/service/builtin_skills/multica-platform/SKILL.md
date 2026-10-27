@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, skill import. Not for the product code you are working on."
+description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -30,6 +30,8 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes) |
 | `references/decisions.md` | Asking a named person to decide: `decision request/get/list/withdraw`, DM lane choice |
 | `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork) |
+| `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
+| `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
 

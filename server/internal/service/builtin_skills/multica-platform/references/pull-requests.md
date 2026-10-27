@@ -54,3 +54,16 @@ a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
   otherwise the raw `checks_rollup` value.
 - `SNAPSHOT` — `unavailable` with no snapshot; `stale` (with an age) when
   `snapshot_stale` is `true`; otherwise the age since `snapshot_fetched_at`.
+
+## Listing and unlinking
+
+```bash
+multica issue pull-requests list <issue-id> --output json
+multica issue pull-requests unlink <issue-id> <pr>
+```
+
+`<pr>` is a pull request UUID, a number (`42` or `#42`), `owner/repo#number`, or
+a URL. `unlink` removes the link and records an exclusion, so later webhooks for
+that pull request do not re-link it or auto-complete the issue. It is the
+supported way to detach a PR that should not drive this issue; it is not undone
+by pushing to the PR. Unlink only when the link is wrong.
