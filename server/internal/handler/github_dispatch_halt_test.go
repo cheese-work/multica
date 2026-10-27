@@ -425,6 +425,78 @@ func TestGitHubDispatchHaltIgnoresHaltedChangeBesideLivePR(t *testing.T) {
 	}
 }
 
+// A halted PR that stops matching (its checks go pending on a new head) is a
+// halted-only change: a live PR that did not change must not start a run.
+func TestGitHubDispatchHaltIgnoresHaltedCheckRemovalBesideLivePR(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 222096
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := handlerTestAgentID(t)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	halted := linkedPRForWakeup(t, fx, installationID, 222096, "che2220-removal-halted")
+	now := time.Now().UTC()
+	live, err := testHandler.Queries.UpsertGitHubPullRequest(context.Background(), db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		RepoOwner: "acme", RepoName: "other", PrNumber: 222097,
+		Title: fx.child.Identifier + ": live", State: "open",
+		HtmlUrl:     "https://github.com/acme/other/pull/222097",
+		PrCreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		PrUpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		HeadSha:     "che2220-removal-live", ClearMergeableState: pgtype.Bool{Bool: true, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("UpsertGitHubPullRequest: %v", err)
+	}
+	if _, err := testHandler.Queries.LinkIssueToPullRequest(context.Background(), db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(fx.child.ID), PullRequestID: live.ID,
+	}); err != nil {
+		t.Fatalf("LinkIssueToPullRequest: %v", err)
+	}
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() {
+		testHandler.TaskService.PRSnapshotsEnabled = false
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	finish := func(id pgtype.UUID, head, rollup string) {
+		dbfx.Exec(t, `UPDATE github_pull_request SET checks_rollup_state=$3, snapshot_head_sha=$2 WHERE id=$1`, id, head, rollup)
+	}
+	poll := func(ruleID string) {
+		dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() WHERE id = $1`, ruleID)
+		runWakeupTick(t)
+	}
+	finish(halted.ID, "che2220-removal-halted", "SUCCESS")
+	finish(live.ID, "che2220-removal-live", "SUCCESS")
+	ruleID := createRule(t, fx.child.ID, agentID, pgtype.UUID{}, service.WakeupInput{
+		Instruction: "Review finished checks", Kind: "event", Mode: "continuous",
+		Condition: json.RawMessage(`{"type":"pull_request","event":"checks_finished"}`),
+	})
+	finish(live.ID, "che2220-removal-live-2", "SUCCESS")
+	poll(ruleID)
+	if got := wakeupRunsOf(t, ruleID); got != 1 {
+		t.Fatalf("live finished checks dispatched %d runs, want 1", got)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed' WHERE context->>'wakeup_id' = $1`, ruleID)
+
+	setHalt(t, "acme/widget", true, false)
+	finish(halted.ID, "che2220-removal-halted-2", "PENDING")
+	poll(ruleID)
+	if got := wakeupRunsOf(t, ruleID); got != 1 {
+		t.Fatalf("halted check removal beside a live PR dispatched %d runs in total, want 1", got)
+	}
+	finish(live.ID, "che2220-removal-live-3", "SUCCESS")
+	poll(ruleID)
+	if got := wakeupRunsOf(t, ruleID); got != 2 {
+		t.Fatalf("new live fact during halt dispatched %d runs in total, want 2", got)
+	}
+	setHalt(t, "acme/widget", false, false)
+	poll(ruleID)
+	if got := wakeupRunsOf(t, ruleID); got != 2 {
+		t.Fatalf("resume replayed the halted change: %d runs in total, want 2", got)
+	}
+}
+
 // The CI-green mark goes on the run that move enqueued, not on whichever run
 // of the issue is newest when the mark is written.
 func TestGitHubDispatchHaltMarksOnlyTheCIGreenRun(t *testing.T) {

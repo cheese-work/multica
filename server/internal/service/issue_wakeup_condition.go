@@ -277,6 +277,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		var keys []string
 		var prs []map[string]any
 		var prRepos [][2]string
+		var linkedPRs []linkedPR
 		for rows.Next() {
 			var number int32
 			var state, head, checks, currentHead, mergeable, id, repoOwner, repoName string
@@ -285,6 +286,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				return false, "", nil, err
 			}
 			linked++
+			linkedPRs = append(linkedPRs, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
 			switch c.Event {
 			case "merged":
 				if state == "merged" {
@@ -327,8 +329,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// The kill switch (CHE-2220) drops a halted repository's PRs from what
 		// the rule reports. Their keys stay in the fingerprint, so a resume does
 		// not replay them; conditionDropped keeps them from starting a run.
-		var haltedKeys []string
-		if prs, haltedKeys, err = withoutHaltedRepos(ctx, q, w.WorkspaceID, prs, prRepos, keys); err != nil {
+		var haltedPRs []string
+		if prs, haltedPRs, err = splitHaltedPRs(ctx, q, w.WorkspaceID, prs, prRepos, linkedPRs); err != nil {
 			return false, "", nil, err
 		}
 		// Self-hosted VCS pull requests (Forgejo/Gitea/GitLab) live in their own
@@ -403,8 +405,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		}
 		sort.Strings(keys)
 		observed := map[string]any{"pull_requests": prs}
-		if len(haltedKeys) > 0 {
-			observed[haltedKeysField] = haltedKeys
+		if len(haltedPRs) > 0 {
+			observed[haltedPRsField] = haltedPRs
 		}
 		return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 	case "other_issue":
@@ -511,7 +513,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 		if condition.Type == "pull_request" && condition.Event == "conflicts" {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
-		if newlyMet && !conditionDropped(observed, state, fingerprint) {
+		if newlyMet && !conditionDropped(observed, state, fingerprint, condition.Event == "conflicts") {
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return w.NextFireAt, err
 			}
@@ -736,7 +738,7 @@ func stageProgress(children []subIssue) (bool, string, map[string]any) {
 func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, observed map[string]any, causes []string, now time.Time) error {
 	visible := make(map[string]any, len(observed))
 	for k, v := range observed {
-		if k != haltedKeysField {
+		if k != haltedPRsField {
 			visible[k] = v
 		}
 	}
@@ -749,48 +751,86 @@ func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, ob
 	return err
 }
 
-// haltedKeysField carries, in a pull_request condition's observed facts, the
-// fingerprint keys of PRs the GitHub dispatch kill switch covers.
-const haltedKeysField = "halted_keys"
+// haltedPRsField carries, in a pull_request condition's observed facts, the
+// identities (PR number and row id) of every linked PR in a repository the
+// GitHub dispatch kill switch covers, whether or not it matches the condition.
+const haltedPRsField = "halted_prs"
 
-// withoutHaltedRepos splits the PRs by the GitHub dispatch kill switch: it
-// returns those whose repository is not halted, and the fingerprint keys of
-// those that are. repos[i] and keys[i] belong to prs[i].
-func withoutHaltedRepos(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, keys []string) (live []map[string]any, haltedKeys []string, err error) {
+// linkedPR is one PR linked to the rule's issue. A fingerprint key starts with
+// its number, or with its row id for a conflicts condition.
+type linkedPR struct {
+	number, id string
+	repo       [2]string
+}
+
+// splitHaltedPRs returns the matching PRs outside halted repositories, and the
+// identities of all linked PRs inside them. repos[i] is the repository of prs[i].
+func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
+	halted := map[[2]string]bool{}
+	isHalted := func(repo [2]string) (bool, error) {
+		if h, ok := halted[repo]; ok {
+			return h, nil
+		}
+		h, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: repo[0], RepoName: repo[1]})
+		halted[repo] = h
+		return h, err
+	}
 	live = prs[:0:0]
 	for i, pr := range prs {
-		halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: repos[i][0], RepoName: repos[i][1]})
+		h, err := isHalted(repos[i])
 		if err != nil {
 			return nil, nil, err
 		}
-		if halted {
-			haltedKeys = append(haltedKeys, keys[i])
-		} else {
+		if !h {
 			live = append(live, pr)
 		}
 	}
-	return live, haltedKeys, nil
+	for _, pr := range linked {
+		h, err := isHalted(pr.repo)
+		if err != nil {
+			return nil, nil, err
+		}
+		if h {
+			haltedPRs = append(haltedPRs, pr.number, pr.id)
+		}
+	}
+	return live, haltedPRs, nil
 }
 
-// conditionDropped reports a satisfied pull_request condition with nothing
-// new outside the halted repositories: no key outside them occurs more often
-// than the rule has seen. A halted fact is consumed, never queued.
+// conditionDropped reports a satisfied pull_request condition whose change is
+// confined to halted repositories: with their PRs' keys removed from both
+// fingerprints, nothing is new to the rule. A halted fact is consumed, never
+// queued, whether its PR started matching or stopped (a new pending head).
+// additionsOnly follows the conflicts condition, where a key leaving is no news.
 // ponytail: keys carry only the PR number, so a number shared by a halted and
 // an unhalted repo can hide the unhalted one; widen the key if that bites.
-func conditionDropped(observed map[string]any, previous, current string) bool {
-	halted, _ := observed[haltedKeysField].([]string)
+func conditionDropped(observed map[string]any, previous, current string, additionsOnly bool) bool {
+	halted, _ := observed[haltedPRsField].([]string)
 	if len(halted) == 0 {
 		return false
 	}
-	live := prConditionKeys(current)
-	for _, key := range halted {
-		live[key]--
+	prev, cur := withoutPRs(previous, halted), withoutPRs(current, halted)
+	if additionsOnly {
+		return !conditionNewlyMet(prev, cur)
 	}
-	seen := prConditionKeys(previous)
-	for key, n := range live {
-		if n > seen[key] {
-			return false
+	return prev == cur
+}
+
+// withoutPRs removes the keys of the given PR identities from a "pr:" fingerprint.
+func withoutPRs(fingerprint string, identities []string) string {
+	rest, ok := strings.CutPrefix(fingerprint, "pr:")
+	if !ok {
+		return fingerprint
+	}
+	var kept []string
+	for _, key := range strings.Split(rest, ",") {
+		id, _, _ := strings.Cut(key, "@")
+		if key != "" && !slices.Contains(identities, id) {
+			kept = append(kept, key)
 		}
 	}
-	return true
+	if len(kept) == 0 {
+		return ""
+	}
+	return "pr:" + strings.Join(kept, ",")
 }
