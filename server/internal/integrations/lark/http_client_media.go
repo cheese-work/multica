@@ -155,7 +155,7 @@ func (c *httpAPIClient) doAuthedUpload(ctx context.Context, creds InstallationCr
 	c.invalidateToken(creds.AppID)
 	fresh, refreshErr := c.tenantAccessToken(ctx, creds)
 	if refreshErr != nil {
-		return fmt.Errorf("%w (token refresh failed: %v)", err, refreshErr)
+		return fmt.Errorf("%w (token refresh failed: %w)", err, refreshErr)
 	}
 	return attempt(fresh)
 }

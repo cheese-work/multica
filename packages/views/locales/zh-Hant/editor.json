@@ -112,8 +112,15 @@
     "no_skills_configured": "暫無配置的技能",
     "no_results": "沒有匹配的技能",
     "commands": {
-      "note": "新增備註——不觸發任何智慧體"
-    }
+      "note": "新增備註——不觸發任何智慧體",
+      "compact": "總結當前私聊並在新私聊中繼續",
+      "rename": "重命名當前私聊，不啓動智能體運行",
+      "fork": "將當前私聊複製到新私聊；可選消息會發送到新私聊"
+    },
+    "client_command": "Multica",
+    "focus_hint": "[focus]",
+    "title_hint": "[標題]",
+    "message_hint": "[消息]"
   },
   "code_block": {
     "html_preview": "HTML 預覽",

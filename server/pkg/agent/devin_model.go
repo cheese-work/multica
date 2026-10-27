@@ -107,7 +107,7 @@ func devinCatalogModelValues(data []byte, requested string) (map[string]bool, er
 		}
 	}
 	if matchedFamilies > 1 {
-		return nil, fmt.Errorf("Devin model name %q matches multiple families; choose a canonical model ID", requested)
+		return nil, fmt.Errorf("requested Devin model name %q matches multiple families; choose a canonical model ID", requested)
 	}
 	return values, nil
 }
@@ -129,7 +129,7 @@ func confirmDevinModel(ctx context.Context, request acpRequestFn, sessionID, req
 			devinNamedModelValues(option.Options, name, values)
 		}
 		if len(values) > 1 {
-			return "", fmt.Errorf("Devin model name %q matches multiple session choices; choose a canonical model ID", requested)
+			return "", fmt.Errorf("requested Devin model name %q matches multiple session choices; choose a canonical model ID", requested)
 		}
 		if len(values) == 0 && catalog != nil {
 			data, err := catalog(ctx)
@@ -151,7 +151,7 @@ func confirmDevinModel(ctx context.Context, request acpRequestFn, sessionID, req
 	for value := range values {
 		if devinModelAvailable(option.Options, value) {
 			if selected != "" {
-				return "", fmt.Errorf("Devin model name %q has multiple available variants; choose a canonical model ID", requested)
+				return "", fmt.Errorf("requested Devin model name %q has multiple available variants; choose a canonical model ID", requested)
 			}
 			selected = value
 		}
@@ -169,7 +169,7 @@ func confirmDevinModel(ctx context.Context, request acpRequestFn, sessionID, req
 	}
 	actual := devinSessionModel(result).CurrentValue
 	if actual != selected {
-		return "", fmt.Errorf("Devin did not confirm requested model %q (session model %q); no prompt was sent", requested, actual)
+		return "", fmt.Errorf("the Devin CLI did not confirm requested model %q (session model %q); no prompt was sent", requested, actual)
 	}
 	return actual, nil
 }

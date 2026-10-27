@@ -102,7 +102,9 @@ func (p imageSpanParser) Parse(parent ast.Node, reader text.Reader, pc parser.Co
 	return n
 }
 func (p imageSpanParser) CloseBlock(parent ast.Node, reader text.Reader, pc parser.Context) {
-	p.InlineParser.(parser.CloseBlocker).CloseBlock(parent, reader, pc)
+	if closer, ok := p.InlineParser.(parser.CloseBlocker); ok {
+		closer.CloseBlock(parent, reader, pc)
+	}
 }
 
 func mixedMediaMarkdown(markdown string, images []uploadedCardImage) string {
@@ -140,7 +142,22 @@ func mixedMediaMarkdown(markdown string, images []uploadedCardImage) string {
 				break
 			}
 			out.Write(source[last:pos])
-			writeImage(string(image.Text(source)), uploaded.key)
+			var label strings.Builder
+			_ = ast.Walk(image, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
+				if entering {
+					switch value := child.(type) {
+					case *ast.Text:
+						label.Write(value.Value(source))
+						if value.SoftLineBreak() {
+							label.WriteByte('\n')
+						}
+					case *ast.String:
+						label.Write(value.Value)
+					}
+				}
+				return ast.WalkContinue, nil
+			})
+			writeImage(label.String(), uploaded.key)
 			last = end
 			used[uploaded.id] = true
 			return ast.WalkSkipChildren, nil

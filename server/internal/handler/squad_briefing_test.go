@@ -576,13 +576,7 @@ func TestBuildSquadLeaderBriefing_MentionsRoundTrip(t *testing.T) {
 	addHumanMember(t, squad.ID, userID, "")
 
 	out := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
-	if mentions := util.ParseMentions(out); len(mentions) != 0 {
-		t.Fatalf("roster examples must remain inert inside code spans: %#v", mentions)
-	}
-	var mentions []util.Mention
-	for _, literal := range util.MentionRe.FindAllString(out, -1) {
-		mentions = append(mentions, util.ParseMentions(literal)...)
-	}
+	mentions := util.ParseMentions(out)
 
 	wantIDs := map[string]string{
 		leaderID: "agent",

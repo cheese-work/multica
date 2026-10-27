@@ -480,7 +480,8 @@
       "no_matches": "無匹配結果",
       "previous": "上一個",
       "next": "下一個",
-      "close": "關閉查詢"
+      "close": "關閉查詢",
+      "collapse_disabled": "查找已打開時無法收起"
     },
     "update_failed": "更新任務失敗",
     "link_copied": "已複製連結",
@@ -492,7 +493,14 @@
     "workdir_path_unavailable": "暫無本地 workdir — 這個任務還沒被本地智慧體執行過",
     "unsubscribe_subtree_succeeded": "已取消訂閱此任務及其子任務。",
     "subscription_update_failed": "無法更新訂閱狀態，請重試。",
-    "pull_requests_empty_title": "暫無關聯 PR。"
+    "pull_requests_empty_title": "暫無關聯 PR。",
+    "description_preview": "任務描述預覽",
+    "description_preview_loading": "正在加載任務描述預覽",
+    "description_show_more": "展開",
+    "description_show_less": "收起",
+    "description_more_lines_other": "還有 {{count}} 行",
+    "status_summary_label": "狀態摘要",
+    "prop_requested_by": "請求人"
   },
   "timeline": {
     "loading": "載入中…"
@@ -550,7 +558,20 @@
     "wakeup_checkin": "靜默檢查：{{note}}",
     "wakeup_checkin_coalesced_other": "靜默檢查 {{count}} 次 · 最近一次：{{note}}",
     "wakeup_chip_created_by": "{{name}} 建立",
-    "wakeup_chip_system": "系統規則"
+    "wakeup_chip_system": "系統規則",
+    "trigger_comment": "新評論",
+    "trigger_comment_by": "{{name}} 的評論",
+    "trigger_status": "狀態變更",
+    "trigger_status_by": "{{name}} 變更了狀態",
+    "trigger_pr_merged": "{{pr}} 已合併",
+    "trigger_pr_checks_failed": "{{pr}} 的 CI 未通過",
+    "trigger_pr_needs_attention": "{{pr}} 需要處理",
+    "trigger_unknown": "喚醒規則已觸發",
+    "wakeup_skipped": "{{condition}} · 跳過喚醒 {{agent}}：{{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · 跳過喚醒 {{agent}}",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "評論",
+    "wakeup_link_run": "查看運行"
   },
   "comment": {
     "add_reaction": "新增表情回應",
@@ -647,7 +668,10 @@
     "recipient_count_other": "{{count}} 個智慧體會收到",
     "steer_attachment_notice": "插話只支援文字，帶附件的訊息會在本輪結束後處理。",
     "restart_send": "停止併傳送",
-    "restart_failed": "沒能停止當前執行，訊息還沒有傳送。"
+    "restart_failed": "沒能停止當前執行，訊息還沒有傳送。",
+    "you": "你",
+    "thread_show_more_other": "顯示另外 {{count}} 條回復",
+    "thread_show_less": "收起"
   },
   "reply": {
     "placeholder": "回覆...",
@@ -832,7 +856,9 @@
     "delete_dialog_title_other": "刪除 {{count}} 個任務？",
     "delete_dialog_desc_other": "此操作無法撤銷，所選任務及其全部關聯資料都會被永久刪除。",
     "delete_dialog_warning": "任何工作區成員都可以刪除任務。",
-    "cancel": "取消"
+    "cancel": "取消",
+    "update_partial_named_other": "已更新 {{updated}}/{{count}} 個任務。未更新：{{issues}}",
+    "retry_not_updated": "重試"
   },
   "card": {
     "update_failed": "更新任務失敗",
@@ -1353,7 +1379,8 @@
       "time": "{{time}} 喚醒 {{agent}}",
       "header": "{{agent}} 在{{what}}",
       "paused": "喚醒已自動暫停",
-      "open": "檢視喚醒"
+      "open": "檢視喚醒",
+      "workspace_paused": "喚醒已暫停"
     },
     "paused": {
       "max_fires": "已觸發 {{count}} 次，達到上限後暫停",
@@ -1382,7 +1409,9 @@
       "max_fires": "達到 {{count}} 次上限",
       "loop": "與其他喚醒規則互相觸發",
       "rate": "1 小時內觸發超過 12 次"
-    }
+    },
+    "paused_banner": "{{name}} 已於 {{time}} 暫停喚醒",
+    "paused_banner_anonymous": "喚醒已於 {{time}} 暫停"
   },
   "duplicates": {
     "banner_prefix": "重複於",
@@ -1464,7 +1493,8 @@
       "member": "成員",
       "project_lead": "專案負責人",
       "creator": "任務建立者",
-      "project_lead_named": "{{name}}（專案負責人）"
+      "project_lead_named": "{{name}}（專案負責人）",
+      "human_by_role": "按角色指派給人"
     },
     "settings": {
       "title": "工作流",
@@ -1551,7 +1581,13 @@
       "step_off": "已關閉：這個工作流不使用這個狀態。在左側列表開啟開關即可使用。",
       "status_new_hint": "新狀態，儲存時加入狀態庫。",
       "no_other_status": "所有狀態都已經是步驟了。",
-      "no_handoff_step": "這一步不交接：任務進入時負責人不變，也不會啟動執行。"
+      "no_handoff_step": "這一步不交接：任務進入時負責人不變，也不會啟動執行。",
+      "advance_on_ci_green": "關聯 PR 的檢查通過後，自動移到下一列",
+      "load_error": "無法加載此工作流。",
+      "retry": "重試",
+      "changed_elsewhere": "編輯期間其他人修改了此工作流。你的修改已保留。",
+      "load_latest": "加載最新版本",
+      "keep_edits": "保留我的修改"
     },
     "mapping": {
       "title": "將任務移入「{{name}}」",
@@ -1610,7 +1646,12 @@
       "under_minute": "不到 1 分鐘",
       "error": "無法移動任務",
       "project_title": "將 {{issue}} 移到「{{project}}」？",
-      "project_confirm": "移到{{project}}"
+      "project_confirm": "移到{{project}}",
+      "batch_title_other": "將 {{count}} 個任務移到「{{status}}」？",
+      "batch_summary_other": "{{count}} 個任務會更換負責人。",
+      "batch_stop_label": "停止原負責人的運行",
+      "batch_confirm_other": "移動 {{count}} 個任務",
+      "batch_error": "無法檢查交接"
     },
     "board": {
       "drop_hint_run": "鬆開後交給 {{name}}，並開始執行",
@@ -1626,7 +1667,13 @@
     },
     "detail": {
       "follows_project": "（跟隨專案）",
-      "card_title": "「{{workflow}}」· 跟隨專案「{{project}}」"
+      "card_title": "「{{workflow}}」· 跟隨專案「{{project}}」",
+      "follows_override": "（此議題單獨設置）",
+      "override_title": "此議題的工作流",
+      "override_follow_project": "跟隨項目的工作流",
+      "override_error": "無法更改工作流",
+      "no_workflow": "無工作流",
+      "flowchart": "流程圖"
     },
     "list_separator": "、",
     "handoff": {
@@ -1658,7 +1705,8 @@
       "scope_all_hint": "{{projects}} 都按新的交接執行",
       "scope_project": "只用於{{project}}",
       "scope_project_hint": "複製一份「{{copy}}」給{{project}}用，其他專案不變",
-      "saved_copy": "已儲存到「{{workflow}}」，只有{{project}}使用"
+      "saved_copy": "已儲存到「{{workflow}}」，只有{{project}}使用",
+      "human_by_role_hint": "先請求人，再項目負責人，最後工作區所有者。"
     },
     "columns": {
       "new_status": "新建狀態…",
@@ -1673,7 +1721,30 @@
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有這個專案使用這個工作流。",
       "no_handoff_here": "不交接",
-      "scope_shared_other": "{{count}} 個專案使用這個工作流，它的交接對這些專案都生效。"
+      "scope_shared_other": "{{count}} 個專案使用這個工作流，它的交接對這些專案都生效。",
+      "graph_label": "工作流圖",
+      "exits_label": "工作流出口",
+      "exit_item": "{{guard}} 時，從 {{from}} 到 {{to}}",
+      "edit": {
+        "title": "{{step}} 的出口",
+        "pick": "選擇一個步驟以編輯其出口。",
+        "empty": "沒有出口。",
+        "group": "出口 {{n}}：{{to}}",
+        "guard": "條件",
+        "target": "前往",
+        "timeout": "超時",
+        "on_timeout": "超時後",
+        "add": "添加出口",
+        "remove": "刪除出口",
+        "issues": {
+          "too_many_edges": "{{from}} 的出口超過 {{max}} 個。",
+          "missing_target": "{{from}} 的某個出口指向不存在的步驟。",
+          "bad_guard": "{{from}} 的某個出口含有未知條件。",
+          "bad_timeout": "{{from}} 的某個出口需要 1m 到 720h 之間的超時，例如 72h。",
+          "bad_on_timeout": "{{from}} 的某個出口需要有效的超時後步驟。",
+          "ci_green_source": "{{from}} 不能在 CI 通過時推進。"
+        }
+      }
     },
     "templates": {
       "delivery": {
@@ -1701,9 +1772,63 @@
           "waiting": "等待反饋"
         }
       }
-    }
+    },
+    "create_handoff_unchecked": "無法確認該項目是否會交接任務",
+    "catalog_unresolved": "暫時無法確認這項修改是否會交接任務，因此沒有做任何修改。",
+    "catalog_retry": "重試"
   },
   "hover_card": {
     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
+  },
+  "relations": {
+    "title": "任務關係圖",
+    "direction": "箭頭從父任務指向子任務，從被監測的任務指向待喚醒的任務，從提及來源指向目標。當前任務以粗邊框標出。",
+    "depth": "深度",
+    "loading": "正在加載關係...",
+    "load_failed": "無法加載關係。",
+    "render_failed": "無法顯示關係圖。",
+    "filter_label": "顯示的關係類型",
+    "retry": "重試",
+    "empty": "沒有關聯任務。",
+    "omitted": "另有 {{count}} 個任務未顯示（最多 40 個節點）。",
+    "parent": "父任務 → 子任務",
+    "duplicate": "重復目標",
+    "wakeup": "喚醒",
+    "children_done": "子任務完成 → 喚醒",
+    "mention": "提及",
+    "shared_pr": "共享 PR",
+    "unknown": "關聯"
+  },
+  "decision": {
+    "class": {
+      "reversible": "可撤銷",
+      "spend": "支出",
+      "deploy": "部署",
+      "publish": "發佈",
+      "irreversible": "不可撤銷",
+      "product_direction": "產品方向"
+    },
+    "state": {
+      "pending": "待生效",
+      "effective": "已生效",
+      "disclaimed": "已撤回"
+    },
+    "via_dm": "來自私信",
+    "recorded_by": "由 {{name}} 記錄",
+    "open_dm": "打開私信",
+    "private_dm": "來自私人私信",
+    "disclaim_action": "撤回",
+    "disclaiming": "正在撤回…",
+    "disclaim_title": "撤回這個決定？",
+    "disclaim_desc": "智能體會收到該決定已撤回的通知，請求會重新打開。此操作無法撤銷。",
+    "keep_action": "保留決定",
+    "changed_title": "你閱讀期間這個決定已發生變化。",
+    "changed_body": "請先刷新查看當前狀態，再決定是否撤回。未撤回任何內容。",
+    "refresh_action": "刷新",
+    "withdrawn_title": "已被撤回。",
+    "withdrawn_body": "此次點擊未更改任何內容。",
+    "review_action": "查看",
+    "failed_notice": "無法撤回，決定保持不變。",
+    "try_again_action": "重試"
   }
 }

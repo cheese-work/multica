@@ -421,17 +421,18 @@ func markdownCardContent(markdown, summary string) (string, error) {
 
 // Only callers holding uploaded image keys may bypass URL-image degradation.
 func markdownCardJSON(markdown, summary string) (string, error) {
+	config := map[string]any{"update_multi": true}
+	if summary != "" {
+		config["summary"] = map[string]any{"content": summary}
+	}
 	card := map[string]any{
 		"schema": "2.0",
-		"config": map[string]any{"update_multi": true},
+		"config": config,
 		"body": map[string]any{
 			"elements": []any{
 				map[string]any{"tag": "markdown", "content": markdown},
 			},
 		},
-	}
-	if summary != "" {
-		card["config"].(map[string]any)["summary"] = map[string]any{"content": summary}
 	}
 	cardBytes, err := json.Marshal(card)
 	if err != nil {
