@@ -1,5 +1,4 @@
 "use client";
-import { MediaLinkAction, useMediaSource, ViewerActions } from "../media/media-context";
 
 /**
  * Shared full-window attachment viewer and standalone preview page.
@@ -67,6 +66,7 @@ import {
   UI_MOTION_DURATION,
 } from "@multica/ui/lib/motion";
 import { useT } from "../i18n";
+import { MediaLinkAction, useMediaSource, ViewerActions } from "../media/media-context";
 import { useNavigation } from "../navigation";
 import { openExternal } from "../platform";
 import { isDesktopShell } from "../platform/local-directory";

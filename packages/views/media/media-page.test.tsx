@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../test/i18n";
 import { MediaPage } from "./media-page";
+import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import type { MediaRoute } from "@multica/core/paths";
 
 const { resolve } = vi.hoisted(() => ({ resolve: vi.fn() }));
@@ -18,13 +19,24 @@ const route: MediaRoute = { workspaceSlug: "acme", type: "issues", id: "issue-1"
 const key = ["media-page", "ws-1", "user-1", "issues", "issue-1", "html", "html-1"];
 
 function renderPage(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  renderWithI18n(<QueryClientProvider client={client}><MediaPage route={route} /></QueryClientProvider>);
+  const navigation: NavigationAdapter = { push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/media/issues/issue-1/html/html-1", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path };
+  renderWithI18n(<NavigationProvider value={navigation}><QueryClientProvider client={client}><MediaPage route={route} /></QueryClientProvider></NavigationProvider>);
   return client;
 }
 
 beforeEach(() => { vi.resetAllMocks(); });
 
 describe("media route permission", () => {
+  it("matches the normal not-found page with a 404, description and recovery link", async () => {
+    resolve.mockRejectedValue(Object.assign(new Error("Not found"), { status: 403 }));
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+    expect(screen.getByText("404")).toBeInTheDocument();
+    expect(screen.getByText("The page you are looking for doesn't exist or has been moved.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Multica" })).toHaveAttribute("href", "/");
+    expect(document.querySelector("iframe, img, table")).toBeNull();
+  });
+
   it.each([401, 403, 404])("no access (%s) means no media bytes, even with a cached source", async (status) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(key, { kind: "html", content: "<h1>secret media bytes</h1>" });

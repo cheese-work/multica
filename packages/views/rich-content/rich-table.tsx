@@ -1,5 +1,4 @@
 "use client";
-import { useStandaloneMedia } from "../media/media-context";
 
 /**
  * Markdown tables: column resizing, an expanded view and copy. One frame
@@ -36,6 +35,7 @@ import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
+import { useStandaloneMedia } from "../media/media-context";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
 import {

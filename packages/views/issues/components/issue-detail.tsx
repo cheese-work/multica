@@ -1,5 +1,4 @@
 "use client";
-import { MediaSourceProvider } from "../../media/media-context";
 
 import {
   issueBehavesAs,
@@ -13,6 +12,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";

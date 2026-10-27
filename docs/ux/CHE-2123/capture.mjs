@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -7,7 +7,9 @@ import { resolve, join } from "node:path";
 import { chromium, _electron } from "@playwright/test";
 
 const root = process.cwd();
-const output = resolve(root, "evidence/che-2123/captures");
+const output = resolve(root, process.env.CAPTURE_OUTPUT ?? "evidence/che-2123/captures");
+const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+const sourcePhase = process.env.CAPTURE_SOURCE_PHASE;
 const home = "/tmp/che-2123-capture-home";
 mkdirSync(output, { recursive: true });
 mkdirSync(home, { recursive: true });
@@ -18,7 +20,9 @@ const table = "| Media | Web | Desktop |\n| --- | --- | --- |\n| Diagram | New t
 const html = '<!doctype html><html><head><style>body{font:16px system-ui;margin:0;padding:56px;background:#f7f8fa;color:#172033}main{max-width:760px;margin:auto;background:white;border:1px solid #dde2e9;border-radius:16px;padding:36px}h1{font-size:28px;margin:0 0 12px}.row{display:flex;align-items:center;gap:16px;margin:24px 0}.bar{height:24px;background:#5d78e7;border-radius:5px}span{width:120px}small{color:#586477}</style></head><body><main><small>VIEWER MEDIA</small><h1>One item. Its own page.</h1><p>No issue thread or application chrome.</p><div class="row"><span>Web tab</span><div class="bar" style="width:320px"></div></div><div class="row"><span>App window</span><div class="bar" style="width:260px;background:#3c9f81"></div></div><p>Reload and share the same permission-checked link.</p></main></body></html>';
 const imageUrl = `${apiOrigin}/fixture/image.png`;
 const content = `# Capture fixture\n\nSurrounding issue text must not appear on a media page.\n\n\`\`\`mermaid\n${chart}\n\`\`\`\n\n${table}\n\n![Media fixture](${imageUrl})\n\n\`\`\`html\n${html}\n\`\`\``;
-const issue = { id: "issue-1", workspace_id: "ws-1", number: 1, identifier: "CAP-1", title: "Viewer media fixture", description: content, status: "in_progress", priority: "medium", assignee_type: null, assignee_id: null, creator_type: "member", creator_id: "user-1", parent_issue_id: null, project_id: null, position: 0, start_date: null, due_date: null, metadata: {}, properties: {}, created_at: "2026-10-27T00:00:00Z", updated_at: "2026-10-27T00:00:00Z" };
+const issue = { id: "issue-1", workspace_id: "ws-1", number: 1, identifier: "CAP-1", title: "Viewer media fixture", description: "The persisted media source is in the comment below.", status: "in_progress", priority: "medium", assignee_type: null, assignee_id: null, creator_type: "member", creator_id: "user-1", parent_issue_id: null, project_id: null, position: 0, start_date: null, due_date: null, metadata: {}, properties: {}, created_at: "2026-10-27T00:00:00Z", updated_at: "2026-10-27T00:00:00Z" };
+const comment = { id: "comment-1", issue_id: issue.id, author_type: "member", author_id: "user-1", content, parent_id: null, attachments: [], reactions: [], revision: 1, created_at: issue.created_at, updated_at: issue.updated_at };
+const timeline = { ...comment, type: "comment", actor_type: "member", actor_id: "user-1", actor_name: "Capture fixture" };
 const user = { id: "user-1", name: "Capture fixture", email: "capture@example.invalid", onboarded_at: "2026-10-27T00:00:00Z", language: "en" };
 const workspace = { id: "ws-1", slug: "capture", name: "Capture fixture", description: null, context: null, settings: {}, repos: [], issue_prefix: "CAP", avatar_url: null, created_at: "", updated_at: "" };
 const requests = [];
@@ -44,6 +48,8 @@ const server = createServer((request, response) => {
   else if (url.pathname === "/api/workspaces") body = [workspace];
   else if (url.pathname === "/api/workspaces/ws-1") body = workspace;
   else if (url.pathname === "/api/issues/issue-1") body = issue;
+  else if (url.pathname === "/api/issues/issue-1/comments") body = [comment];
+  else if (url.pathname === "/api/issues/issue-1/timeline") body = [timeline];
   else if (url.pathname === "/api/issues") body = { issues: [issue], total: 1, limit: 50, offset: 0 };
   response.end(JSON.stringify(body));
 });
@@ -73,6 +79,51 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") console.log("WEB console", message.text().slice(0, 300)); });
   page.on("requestfailed", (request) => console.log("WEB request failed", request.url(), request.failure()?.errorText));
+  if (sourcePhase) {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+      for (const item of items) {
+        console.log("SOURCE", sourcePhase, width, item.kind);
+        await page.goto(`${webOrigin}/capture/issues/issue-1`, { timeout: 600000, waitUntil: "domcontentloaded" });
+        const source = page.locator("[data-comment-content='comment-1']").first();
+        await source.waitFor({ timeout: 180000 });
+        if (item.kind === "mermaid" || item.kind === "html") {
+          await source.locator("[data-rich-block-shell]").nth(item.kind === "mermaid" ? 0 : 1).scrollIntoViewIfNeeded();
+        }
+        const trigger = item.kind === "table" ? source.getByRole("button", { name: "Expand table", exact: true })
+          : item.kind === "image" ? source.getByAltText("Media fixture", { exact: true })
+          : source.locator(`[data-dynamic-block='${item.kind}']`).getByRole("button", { name: "Fullscreen", exact: true });
+        await trigger.waitFor({ timeout: 180000 });
+        await trigger.click();
+        const dialog = page.getByRole("dialog");
+        await dialog.waitFor();
+        await page.screenshot({ path: join(output, `source-${item.kind}-${width}-${sourcePhase}.png`) });
+        const more = dialog.locator("summary[aria-label='More']");
+        if (sourcePhase === "after" && width === 390) {
+          await more.focus();
+          await page.keyboard.press("Enter");
+          await page.keyboard.press("Tab");
+          if (!(await page.evaluate(() => document.activeElement?.tagName === "BUTTON" && !!document.activeElement.closest("details")))) throw new Error("Source More lacks a keyboard path");
+          await page.screenshot({ path: join(output, `source-${item.kind}-${width}-menu-after.png`) });
+          await page.keyboard.press("Escape");
+          if (!(await more.evaluate((element) => document.activeElement === element && !element.closest("details").open))) throw new Error("Source More did not close and restore focus");
+        }
+        if (sourcePhase === "after" && width === 1440) {
+          const opened = page.waitForEvent("popup");
+          await dialog.getByRole("button", { name: "Open in new tab", exact: true }).click();
+          const target = await opened;
+          await target.getByTestId("media-toolbar").waitFor({ timeout: 120000 });
+          if (target.url() !== `${webOrigin}${item.path}`) throw new Error(`Wrong source link: ${target.url()}`);
+          await target.close();
+        }
+        await page.keyboard.press("Escape");
+        await dialog.waitFor({ state: "hidden" });
+      }
+    }
+    console.log(`SOURCE PASS: ${sourcePhase}; four kinds; both widths; Escape dismissal`);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+  if (process.env.CAPTURE_MEDIA !== "0") {
   for (const item of items) {
     console.log("WEB", item.kind, item.path);
     await page.goto(`${webOrigin}${item.path}`, { timeout: 600000, waitUntil: "domcontentloaded" });
@@ -106,11 +157,13 @@ try {
   denied = true;
   await page.goto(`${webOrigin}${items.find((item) => item.kind === "image").path}`);
   await page.getByRole("heading", { name: "Page not found" }).waitFor();
+  await page.getByRole("link", { name: "Back to Multica" }).waitFor();
   if (await page.locator("img,iframe").count()) throw new Error("Denied route rendered media");
   if (requests.filter((path) => path === "/fixture/image.png").length !== beforeDenied) throw new Error("Denied route fetched image bytes");
   await page.screenshot({ path: join(output, "web-denied-1440.png") });
   denied = false;
   console.log("WEB PASS: four kinds; reload; copy link; phone keyboard; denied route zero media requests");
+  }
   writeFileSync(join(output, "web-page-errors.json"), JSON.stringify(errors, null, 2));
   }
   if (process.env.CAPTURE_DESKTOP !== "0") {
@@ -127,7 +180,7 @@ try {
     for (const item of items) {
       console.log("DESKTOP", item.kind);
       const opened = electron.waitForEvent("window");
-      const result = await main.evaluate((item) => window.desktopAPI.openMediaWindow({ path: item.path, title: item.kind }), item);
+      const result = await main.evaluate((item) => window.desktopAPI.openMediaWindow({ path: item.path, title: ({ mermaid: "Mermaid diagram", table: "Table", image: "View image", html: "HTML preview" })[item.kind] }), item);
       if (!result.ok) throw new Error(`Desktop open rejected ${item.path}`);
       const target = await opened;
       await target.setViewportSize({ width: 960, height: 760 });
@@ -149,7 +202,7 @@ try {
     }
     console.log("DESKTOP PASS: native IPC windows; four kinds; reload; public copy links");
   }
-  writeFileSync(join(output, "receipt.json"), JSON.stringify({ items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
+  writeFileSync(join(output, "receipt.json"), JSON.stringify({ revision, sourcePhase: sourcePhase ?? "NOT-RUN", mediaPages: process.env.CAPTURE_MEDIA !== "0", items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
 } finally {
   writeFileSync(join(output, "web-startup.txt"), logs);
   if (electron) await electron.close();

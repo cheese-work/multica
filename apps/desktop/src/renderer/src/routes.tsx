@@ -13,6 +13,7 @@ import {
   RuntimeSettingsPage,
 } from "./pages/runtime-detail-page";
 import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
+import { MediaPageRoute } from "./pages/media-page";
 import { IssuesPage } from "@multica/views/issues/components";
 import { ProjectsPage } from "@multica/views/projects/components";
 import { DashboardPage } from "@multica/views/dashboard";
@@ -260,4 +261,3 @@ export function createAppRouter() {
     initialEntries: ["/"],
   });
 }
-import { MediaPageRoute } from "./pages/media-page";

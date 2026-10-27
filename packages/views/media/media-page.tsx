@@ -5,6 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
 import type { MediaRoute } from "@multica/core/paths";
+import { buttonVariants } from "@multica/ui/components/ui/button";
+import { AppLink } from "../navigation";
 import { AttachmentSourceStandalone } from "../editor/attachment-preview-modal";
 import { MermaidDiagram } from "../editor/mermaid-diagram";
 import { HtmlBlockPreview } from "../editor/html-block-preview";
@@ -15,7 +17,20 @@ import { useT } from "../i18n";
 
 export function MediaUnavailablePage() {
   const { t } = useT("common");
-  return <main className="flex h-full w-full items-center justify-center"><h1>{t(($) => $.not_found.title)}</h1></main>;
+  return (
+    <main className="flex min-h-screen w-full flex-col items-center justify-center gap-6 px-6 py-24 text-center">
+      <p className="text-body font-medium text-muted-foreground">404</p>
+      <h1 className="text-display-sm font-semibold tracking-tight">
+        {t(($) => $.not_found.title)}
+      </h1>
+      <p className="max-w-md text-body text-muted-foreground">
+        {t(($) => $.not_found.description)}
+      </p>
+      <AppLink href="/" className={buttonVariants({ className: "mt-2" })}>
+        {t(($) => $.not_found.back_to_multica)}
+      </AppLink>
+    </main>
+  );
 }
 
 export function MediaPage({ route }: { route: MediaRoute }) {

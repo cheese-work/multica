@@ -2,13 +2,13 @@
 
 import { createContext, use, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, ExternalLink, Link, MoreHorizontal } from "lucide-react";
+import { toast } from "sonner";
 import { mediaPath, useWorkspaceSlug, type MediaKind, type MediaSource } from "@multica/core/paths";
 import { copyText } from "@multica/ui/lib/clipboard";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { useOptionalNavigation } from "../navigation/context";
 import { useT } from "../i18n";
 import { mediaContentId } from "./media-id";
-import { useIsMobile } from "@multica/ui/hooks/use-mobile";
-import { toast } from "sonner";
 
 const SourceContext = createContext<MediaSource | null>(null);
 const StandaloneContext = createContext(false);
@@ -62,7 +62,16 @@ export function MediaLinkAction({ kind, content, attachmentId, source: explicitS
       setCopied(succeeded);
       if (!succeeded) toast.error(t(($) => $.image.copy_link_failed));
     } else if (path) {
-      if (navigation?.openMediaWindow) await navigation.openMediaWindow(path, kind === "attachment" ? "Media" : kind);
+      if (navigation?.openMediaWindow) {
+        const titles: Record<MediaKind, string> = {
+          mermaid: t(($) => $.mermaid.diagram_label),
+          table: t(($) => $.table.expanded_title),
+          html: t(($) => $.code_block.html_preview),
+          image: t(($) => $.image.view),
+          attachment: t(($) => $.media.title),
+        };
+        await navigation.openMediaWindow(path, titles[kind]);
+      }
       else window.open(navigation?.getShareableUrl(path) ?? `${window.location.origin}${path}`, "_blank", "noopener,noreferrer");
     }
   };
@@ -74,7 +83,7 @@ export function ViewerActions({ children }: { children: ReactNode }) {
   const mobile = useIsMobile();
   if (!mobile) return <div className="ml-auto flex items-center gap-0.5">{children}</div>;
   return <details className="group relative ml-auto" onKeyDownCapture={(event) => {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && event.currentTarget.open) {
       event.currentTarget.open = false;
       event.currentTarget.querySelector("summary")?.focus();
       event.preventDefault();

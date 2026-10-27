@@ -11,6 +11,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useDebouncedValue } from "../../common/use-debounced-value";
 import { useT } from "../../i18n";
+import { MediaSourceProvider } from "../../media/media-context";
 import { MermaidDiagram } from "../mermaid-diagram";
 import { CodeBlockIframe } from "../code-block-iframe";
 
@@ -64,6 +65,7 @@ function CodeBlockView({ node }: NodeViewProps) {
     setView((v) => (v === "preview" ? "source" : "preview"));
 
   return (
+    <MediaSourceProvider source={null}>
     <NodeViewWrapper className="code-block-wrapper group/code relative my-3">
       {isMermaid && debouncedChart.trim() && (
         <div
@@ -187,6 +189,7 @@ function CodeBlockView({ node }: NodeViewProps) {
         <NodeViewContent as="code" />
       </pre>
     </NodeViewWrapper>
+    </MediaSourceProvider>
   );
 }
 
