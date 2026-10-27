@@ -166,7 +166,7 @@ test("a merge-group migration failure cannot pass the backend gate", () => {
   assert.equal(outputs.backend, "true");
   assert.equal(outputs.sqlc, "true");
   assert.equal(productionMapping("backend")["backend-tests"], "always");
-  assert.doesNotMatch(jobs["backend-tests"], /^    if:/m);
+  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
   const needs = productionNeeds("backend", outputs);
   checkGate(needs, productionMapping("backend"));
   needs["backend-tests"].result = "failure";

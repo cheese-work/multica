@@ -249,6 +249,16 @@ See [Daemon and runtimes](/daemon-runtimes) for how it works and for custom prof
 
 `multica chat` reads **the external chat session an agent is currently handling**; it is mainly for agents in chat integrations, not a general command for browsing arbitrary workspace conversations.
 
+### Rename a DM
+
+```bash
+multica chat rename <session-id> "Release decisions"
+```
+
+A running workspace agent task can rename a DM in that workspace, including a DM owned by another person. The rename and its announcement commit together. The announcement shows the old title, the new title, and the authenticated actor. Titles must be nonempty, single-line, and at most 200 characters.
+
+The agent receives only the session ID, new title, previous title, and announcement message ID. Rename does not grant permission to list DM lanes, read messages, access resume pointers, or change project context. Automatic title generation does not overwrite a manual rename, including a rename back to the original title.
+
 ### Decision lane metadata
 
 A running assigned issue task can open a three-minute decision window by posting a comment with `--decision-intent` and member mentions. Only that task can list active web DM lanes for the people named in the window:

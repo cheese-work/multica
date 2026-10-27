@@ -591,6 +591,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
+	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 
 	if h.IssueService != nil {
 		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {

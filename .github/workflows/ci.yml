@@ -16,6 +16,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  migration-prefix-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Test migration prefix checker
+        run: node --test scripts/migration-prefix-check.test.mjs
+      - name: Check main and open PR migration prefixes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: timeout 25s node scripts/migration-prefix-check.mjs
+
   # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
   # via a live kernel-version probe, not inference — the retired paid runner
   # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The
@@ -359,7 +380,8 @@ jobs:
   # than embedded, so a schema change is invisible to a test binary's hash and
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
-    needs: changes
+    needs: [changes, migration-prefix-check]
+    if: ${{ !cancelled() }}
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -419,6 +441,16 @@ jobs:
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
     steps:
+      - name: Require migration prefix result
+        env:
+          MIGRATION_RESULT: ${{ needs.migration-prefix-check.result }}
+          EXPECTED_RESULT: ${{ github.event_name == 'pull_request' && 'success' || 'skipped' }}
+        run: |
+          if [ "$MIGRATION_RESULT" != "$EXPECTED_RESULT" ]; then
+            echo "::error::Migration prefix check expected $EXPECTED_RESULT, got $MIGRATION_RESULT"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v6
 

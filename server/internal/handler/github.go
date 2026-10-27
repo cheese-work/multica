@@ -1412,7 +1412,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha) {
+			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{

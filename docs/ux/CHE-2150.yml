@@ -1,0 +1,11 @@
+issue: CHE-2150
+design: waived   # waiver: Cheese DM 27 Oct 2026, decision record CHE-2150 comment 01a17ad0-7976-771b-b6f5-6b6fd787015a (A3a #417 and A3b #419); CI, review and Cheese merge gates stay
+scope: "A3b workflow graph editor (drag nodes, draw edges, exits form, pre-save validation). A3a read-only graph is PR #417."
+capture: "X99 Chromium (Playwright) against the real WorkflowEditorPage with a synthetic 7-step workflow and a stubbed save API; not an authenticated product-route run."
+pages:
+  - id: workflow-editor
+    url: "workflow settings, editor page"
+    keep: [workflow-graph]
+    change:
+      - workflow-graph: "Nodes drag, a handle-to-handle drag adds an exit, and the exits form below edits guard and target."
+    remove: []

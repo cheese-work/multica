@@ -8,6 +8,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -193,4 +194,108 @@ func TestCIGreenDoesNotAdvanceUnflaggedStep(t *testing.T) {
 	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "in_progress" {
 		t.Fatalf("a step without the option moved to %s", got)
 	}
+}
+
+// An explicit pr.checks_green edge advances the issue like advance_on_ci_green
+// does, to the edge's own target, and an edge on another guard does not.
+func TestCIGreenEdgeAdvancesToItsTarget(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	const installationID int64 = 1966004
+	const prNumber int32 = 196604
+	fx := newPRMergeWebhookFixture(t, installationID)
+	wf := createTestWorkflowSteps(t, "CI edge "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "blocked", "guard": "pr.checks_red", "timeout": "72h"},
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CI edge project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-edge-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	snap := newGreenSnapshot("green-edge-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	status := func() string { s, _, _ := issueStatusAndAssignee(t, fx.child.ID); return s }
+
+	snap.set(t, prNumber, "green-edge-a", "PENDING")
+	refresh()
+	if got := status(); got != "in_progress" {
+		t.Fatalf("pending checks moved the issue to %s", got)
+	}
+	snap.set(t, prNumber, "green-edge-a", "SUCCESS")
+	refresh()
+	if got := status(); got != "in_review" {
+		t.Fatalf("green head left the issue at %s, want in_review", got)
+	}
+}
+
+// A ready PR with green checks satisfies pr.ready and pr.checks_green; the
+// first edge in list order wins, as in the ordered evaluator.
+func TestCIGreenAdvanceFollowsEdgeOrder(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	const installationID int64 = 1966005
+	const prNumber int32 = 196605
+	fx := newPRMergeWebhookFixture(t, installationID)
+	wf := createTestWorkflowSteps(t, "CI edge order "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "blocked", "guard": "pr.ready", "timeout": "72h"},
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	})
+	projectID := createWorkflowTestProject(t, "CI edge order project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress', assignee_type=NULL, assignee_id=NULL WHERE id=$1`, fx.child.ID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPRForWakeup(t, fx, installationID, prNumber, "green-order-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	snap := newGreenSnapshot("green-order-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	snap.set(t, prNumber, "green-order-a", "SUCCESS")
+	refresh()
+	if got, _, _ := issueStatusAndAssignee(t, fx.child.ID); got != "blocked" {
+		t.Fatalf("green head moved the issue to %s, want blocked (the first matching edge, pr.ready)", got)
+	}
+}
+
+// The handoff form knows nothing of edges, so saving a handoff through it
+// keeps the edges the step already has; an invalid edge is refused on write.
+func TestHandoffSaveKeepsEdgesAndValidatesThem(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	wf := createTestWorkflowSteps(t, "Edge keep "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "in_progress", "edges": []map[string]any{{"to": "blocked", "guard": "pr.checks_red", "timeout": "24h"}}},
+		{"status_key": "blocked"},
+	})
+	var saved IssueWorkflowResponse
+	setWorkflowHandoff(t, wf.ID, "in_progress", map[string]any{
+		"handler": map[string]any{"type": "none"}, "advance_on_ci_green": true,
+	}).Want(http.StatusOK).JSON(&saved)
+	for _, s := range saved.Steps {
+		if s.StatusKey == "in_progress" && (len(s.Edges) != 1 || s.Edges[0].Guard != "pr.checks_red") {
+			t.Fatalf("handoff save left edges %+v, want the stored pr.checks_red edge", s.Edges)
+		}
+	}
+	createBad := workflowRequest("POST", "/api/issue-workflows", map[string]any{
+		"name":  "Bad edge " + workflowTestSuffix(),
+		"steps": []map[string]any{{"status_key": "in_progress", "edges": []map[string]any{{"to": "done", "guard": "pr.merged"}}}},
+	})
+	testutil.Call(t, testHandler.CreateIssueWorkflow, createBad).Want(http.StatusBadRequest)
 }

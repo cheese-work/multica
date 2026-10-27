@@ -11,8 +11,6 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_SHA = "c689a72ae" + "1" * 31
-NEW_HEAD = "93ac2140b" + "2" * 31
 GATE = "approve-c00"
 STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
@@ -29,6 +27,15 @@ class DeployApprovalTests(unittest.TestCase):
     def setUp(self):
         self.workflow = yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())
         self.jobs = self.workflow["jobs"]
+
+    def test_baseline_reads_use_one_shared_capture_path(self):
+        for name in ["prepare-release-candidate", "deploy"]:
+            with self.subTest(job=name):
+                steps = self.jobs[name]["steps"]
+                capture_at = next(index for index, step in enumerate(steps)
+                                  if "capture-remote-baseline.sh" in step.get("run", ""))
+                before = json.dumps(steps[:capture_at])
+                self.assertIn("actions/setup-node", before)
 
     def ancestors(self, name):
         seen, todo = set(), list(needs(self.jobs[name]))
@@ -172,134 +179,6 @@ class StaleStageEvictionTests(unittest.TestCase):
         return yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
 
 
-SUCCESS = {"backend": "success", "frontend": "success", "cd-qualification": "success"}
-MIDDLE = "5d0e7c1a3" + "3" * 31
-BROKEN = {**SUCCESS, "backend": "failure"}
-RUNNING = {**SUCCESS, "backend": None}
-
-
-class RequireCurrentTests(unittest.TestCase):
-    """The guard compares against the newest main commit the preflight would
-    admit, not against the raw head of main."""
-
-    STUB = '''#!/usr/bin/env python3
-import json, os, sys
-if os.environ.get("STUB_API_ERROR") == "all":
-    sys.exit("simulated GitHub API failure")
-endpoint = sys.argv[2]
-newer = json.loads(os.environ.get("STUB_NEWER", "[]"))
-if endpoint.endswith("git/ref/heads/main"):
-    print(os.environ["STUB_MAIN"])
-elif "/compare/" in endpoint:
-    if os.environ.get("STUB_API_ERROR") == "compare":
-        sys.exit("simulated GitHub API failure")
-    if endpoint.endswith("per_page=1"):
-        print(os.environ.get("STUB_STATUS", "ahead"))
-    else:
-        failing = os.environ.get("STUB_API_ERROR")
-        if failing == "list-first":
-            sys.exit("simulated GitHub API failure")
-        if failing == "list-later":
-            # --paginate prints the pages it got before a later page fails.
-            print("\\n".join(newer[:-1]))
-            sys.exit("simulated GitHub API failure")
-        print("\\n".join(newer))
-elif "/check-runs?" in endpoint:
-    sha = endpoint.split("/commits/")[1].split("/")[0]
-    for name, conclusion in json.loads(os.environ["STUB_CHECKS"])[sha].items():
-        print(json.dumps({"name": name, "conclusion": conclusion, "id": 1}))
-elif "/commits/" in endpoint:
-    print(json.dumps({"files": ["server/only.go"], "truncated": False}))
-else:
-    sys.exit("unexpected API request: " + endpoint)
-'''
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
-        bin_dir = self.directory / "bin"
-        bin_dir.mkdir()
-        stub = bin_dir / "gh"
-        stub.write_text(self.STUB)
-        stub.chmod(0o755)
-        self.path = str(bin_dir) + os.pathsep + os.environ["PATH"]
-
-    def run_guard(self, main_sha, newer=(), checks=None, status="ahead", api_error=""):
-        output = self.directory / "output"
-        summary = self.directory / "summary"
-        output.write_text("")
-        result = subprocess.run(
-            ["bash", str(ROOT / "deploy/cd/require-current.sh"), SOURCE_SHA], cwd=ROOT,
-            env={**os.environ, "PATH": self.path, "STUB_MAIN": main_sha, "STUB_API_ERROR": api_error,
-                 "STUB_NEWER": json.dumps(list(newer)), "STUB_STATUS": status,
-                 "STUB_CHECKS": json.dumps(checks or {}),
-                 "GITHUB_REPOSITORY": "cheese-work/multica", "GITHUB_OUTPUT": str(output),
-                 "GITHUB_STEP_SUMMARY": str(summary)},
-            text=True, capture_output=True,
-        )
-        return result, output.read_text(), summary.read_text() if summary.exists() else ""
-
-    def test_current_candidate_proceeds(self):
-        result, output, _ = self.run_guard(SOURCE_SHA)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=true")
-
-    def test_newer_admissible_commit_supersedes(self):
-        result, output, summary = self.run_guard(NEW_HEAD, [NEW_HEAD], {NEW_HEAD: SUCCESS})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=false")
-        self.assertIn(SOURCE_SHA, summary)
-        self.assertIn(NEW_HEAD, summary)
-
-    def test_newer_commit_that_can_never_deploy_does_not_supersede(self):
-        # CHE-2027: the approved candidate was skipped because a later commit
-        # whose required checks failed became main's head.
-        result, output, summary = self.run_guard(NEW_HEAD, [NEW_HEAD], {NEW_HEAD: BROKEN})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=true")
-        self.assertIn(NEW_HEAD, summary)
-
-    def test_newer_commit_still_running_checks_supersedes(self):
-        result, output, _ = self.run_guard(NEW_HEAD, [NEW_HEAD], {NEW_HEAD: RUNNING})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=false")
-
-    def test_admissible_commit_behind_a_broken_head_still_supersedes(self):
-        result, output, _ = self.run_guard(
-            NEW_HEAD, [MIDDLE, NEW_HEAD], {MIDDLE: SUCCESS, NEW_HEAD: BROKEN},
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=false")
-
-    def test_candidate_off_the_main_history_is_not_current(self):
-        result, output, _ = self.run_guard(NEW_HEAD, [NEW_HEAD], {NEW_HEAD: BROKEN}, status="diverged")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "current=false")
-
-    def test_api_failure_fails_closed(self):
-        # list-later: the newest commit, which would supersede, is on the page
-        # that fails; the older broken one on the first page alone says current.
-        checks = {MIDDLE: BROKEN, NEW_HEAD: SUCCESS}
-        for failing in ["all", "compare", "list-first", "list-later"]:
-            with self.subTest(failing=failing):
-                result, output, _ = self.run_guard(
-                    NEW_HEAD, [MIDDLE, NEW_HEAD], checks, api_error=failing,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output.strip(), "")
-
-    def test_baseline_reads_use_one_shared_capture_path(self):
-        jobs = yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
-        for name in ["prepare-release-candidate", "deploy"]:
-            with self.subTest(job=name):
-                steps = jobs[name]["steps"]
-                capture_at = next(index for index, step in enumerate(steps)
-                                  if "capture-remote-baseline.sh" in step.get("run", ""))
-                before = json.dumps(steps[:capture_at])
-                self.assertIn("actions/setup-node", before)
-
-
 class ApprovedDeployBaselineTests(unittest.TestCase):
     STUB = '''#!/usr/bin/env python3
 import hashlib, json, os, pathlib, shutil, sys
@@ -363,7 +242,7 @@ else:
             executable.write_text(self.STUB)
             executable.chmod(0o755)
         github = self.bin / "gh"
-        github.write_text(RequireCurrentTests.STUB)
+        github.write_text('#!/usr/bin/env python3\nimport sys\nsys.exit("unexpected GitHub request after approval")\n')
         github.chmod(0o755)
         self.home = self.directory / "home"
         self.home.mkdir()
@@ -397,7 +276,6 @@ else:
             "CANDIDATE_SHA": candidate, "SOURCE_SHA": candidate,
             "GITHUB_REPOSITORY": "cheese-work/multica", "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary), "STUB_MAIN": main,
-            "STUB_NEWER": json.dumps([main]), "STUB_CHECKS": json.dumps({main: SUCCESS}),
             "C00_SSH_HOST": "synthetic.invalid", "C00_SSH_USER": "synthetic",
             "C00_SSH_KEY": "synthetic key", "C00_COMPOSE_DIR": "/synthetic/compose",
             "C00_STATE_DIR": "/synthetic/state", "C00_CUTOVER_STATE_DIR": "/synthetic/cutover",

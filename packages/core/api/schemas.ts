@@ -557,6 +557,13 @@ const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
 ]);
 
+const IssueWorkflowEdgeSchema = z.object({
+  to: z.string(),
+  guard: z.string(),
+  timeout: z.string().optional(),
+  on_timeout: z.string().optional(),
+});
+
 const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
   handler: IssueWorkflowHandlerSchema.default({ type: "none" }),
@@ -564,6 +571,7 @@ const IssueWorkflowStepSchema = z.object({
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
+  edges: z.array(IssueWorkflowEdgeSchema).optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -574,6 +582,9 @@ export const IssueWorkflowSchema = z.object({
   is_default: z.boolean().default(false),
   owner_id: z.string().nullable().default(null),
   steps: z.array(IssueWorkflowStepSchema).default([]),
+  // Run rules (CHE-2152): null keeps the server default budget.
+  max_runs_per_issue: z.number().nullable().default(null),
+  include_child_prs: z.boolean().default(true),
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
@@ -595,6 +606,8 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   is_default: false,
   owner_id: null,
   steps: [],
+  max_runs_per_issue: null,
+  include_child_prs: true,
   project_ids: [],
   created_at: "",
   updated_at: "",
@@ -1301,6 +1314,7 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
+  hints: z.array(z.string()).optional().catch(undefined),
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
