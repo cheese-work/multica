@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -31,6 +33,19 @@ sent. --summary-file is not accepted with --fork. A retry of the same turn
 returns the same child.`,
 	Args: cobra.NoArgs,
 	RunE: runChatContinue,
+}
+
+var chatCompactCmd = &cobra.Command{
+	Use:   "compact",
+	Short: "Compact this web DM in place with a summary",
+	Long: `Compact stores the --summary-file summary as the opening of the DM's next
+session. The DM keeps its id, history and URL; the agent's next turn starts from
+the summary instead of the full transcript.
+
+Unlike "continue", it never archives the DM or creates a new one. If the server
+does not support in-place compaction the command stops and the DM is unchanged.`,
+	Args: cobra.NoArgs,
+	RunE: runChatCompact,
 }
 
 var chatHistoryCmd = &cobra.Command{
@@ -69,6 +84,9 @@ func init() {
 	chatContinueCmd.Flags().String("idempotency-key", "", "Fork operation key (defaults to the current chat task ID)")
 	chatContinueCmd.Flags().String("output", "json", "Output format: table or json")
 	chatCmd.AddCommand(chatContinueCmd)
+	chatCompactCmd.Flags().String("summary-file", "", "UTF-8 handoff summary file (required)")
+	chatCompactCmd.Flags().String("output", "json", "Output format: table or json")
+	chatCmd.AddCommand(chatCompactCmd)
 	for _, c := range []*cobra.Command{chatHistoryCmd, chatThreadCmd} {
 		c.Flags().Int("limit", 0, "Maximum number of messages to return (the server clamps the range)")
 		c.Flags().String("before", "", "Opaque cursor (a next_cursor from a prior page) to read older messages")
@@ -76,6 +94,60 @@ func init() {
 	}
 	chatCmd.AddCommand(chatHistoryCmd)
 	chatCmd.AddCommand(chatThreadCmd)
+}
+
+// readChatSummary loads and validates a --summary-file the way the server will.
+func readChatSummary(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("--summary-file is required")
+	}
+	summary, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read summary file: %w", err)
+	}
+	if !utf8.Valid(summary) || strings.TrimSpace(string(summary)) == "" || len(summary) > 64<<10 {
+		return "", fmt.Errorf("summary must be UTF-8, non-empty and at most 65536 bytes")
+	}
+	return string(summary), nil
+}
+
+// serverLacksCompact reports a 404/405 from a server that predates
+// /api/chat/compact. The endpoint's own "chat session not found" 404 is not
+// skew. Skew never falls back to "continue": that archives the DM.
+func serverLacksCompact(err error) bool {
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	switch httpErr.StatusCode {
+	case http.StatusMethodNotAllowed:
+		return true
+	case http.StatusNotFound:
+		return !strings.Contains(httpErr.Body, "chat session not found")
+	}
+	return false
+}
+
+func runChatCompact(cmd *cobra.Command, _ []string) error {
+	path, _ := cmd.Flags().GetString("summary-file")
+	summary, err := readChatSummary(path)
+	if err != nil {
+		return err
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var response map[string]any
+	if err := client.PostJSON(ctx, "/api/chat/compact", map[string]string{"summary": summary}, &response); err != nil {
+		if serverLacksCompact(err) {
+			return fmt.Errorf("server does not support in-place compaction; DM unchanged")
+		}
+		return fmt.Errorf("compact chat: %w", err)
+	}
+	return cli.PrintJSON(cmd.OutOrStdout(), response)
 }
 
 func runChatContinue(cmd *cobra.Command, _ []string) error {
@@ -97,14 +169,11 @@ func runChatContinue(cmd *cobra.Command, _ []string) error {
 	case strings.TrimSpace(path) == "":
 		return fmt.Errorf("--summary-file is required")
 	default:
-		summary, err := os.ReadFile(path)
+		summary, err := readChatSummary(path)
 		if err != nil {
-			return fmt.Errorf("read summary file: %w", err)
+			return err
 		}
-		if !utf8.Valid(summary) || strings.TrimSpace(string(summary)) == "" || len(summary) > 64<<10 {
-			return fmt.Errorf("summary must be UTF-8, non-empty and at most 65536 bytes")
-		}
-		body["summary"] = string(summary)
+		body["summary"] = summary
 	}
 	client, err := newAPIClient(cmd)
 	if err != nil {
