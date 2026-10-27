@@ -1,0 +1,24 @@
+issue: CHE-2113
+design: "self-mention-highlight-design.md, approved by Cheese in DM message 01a176c6-0377-747d-b458-01bfa89d44e8; attachment 01a176ce-20f6-7465-9f0b-10bc18e348ed"
+scope: "Item A only: shared web/desktop RichContent; native mobile and @all are separate issues."
+approval_limit: "The assigned design is an approved attachment, not a merged design revision. The PR stays draft for independent review."
+capture: "X99 Chromium, real RichContent with synthetic data; not authenticated product-route E2E."
+pages:
+  - id: rich-content-issue-description
+    url: "issue detail description, RichContent document density"
+    keep: [member-mention]
+    change:
+      - member-mention: "Only the viewer member ID gets weight 700, amber highlight, 6px radius and 4px horizontal padding; label case and all other mentions stay unchanged."
+    remove: []
+  - id: rich-content-issue-comment
+    url: "issue comment, RichContent document density"
+    keep: [member-mention]
+    change:
+      - member-mention: "The same shared viewer-member variant."
+    remove: []
+  - id: rich-content-direct-message
+    url: "DM message, RichContent compact density"
+    keep: [member-mention]
+    change:
+      - member-mention: "The same shared viewer-member variant."
+    remove: []

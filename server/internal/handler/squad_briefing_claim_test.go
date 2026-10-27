@@ -20,8 +20,7 @@ func claimAgentInstructionsForTest(t *testing.T, runtimeID string) (taskID strin
 	t.Helper()
 
 	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "squad-briefing-claim")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
 
 	testHandler.ClaimTaskByRuntime(w, req)
@@ -285,7 +284,7 @@ func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
 		t.Fatalf("refresh runtime heartbeat: %v", err)
 	}
 	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-squad-briefing")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	testHandler.ClaimTaskByRuntime(w, req)
 	if w.Code != http.StatusOK {

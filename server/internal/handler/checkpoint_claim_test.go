@@ -28,8 +28,7 @@ func TestClaimTaskByRuntime_CheckpointBlock_EndToEnd(t *testing.T) {
 	// have persisted a first checkpoint row keyed on (issue_id, agent_id),
 	// which the second claim below depends on.
 	task1ID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
-	req1 := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "checkpoint-e2e-claim-1")
+	req1 := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req1 = withURLParam(req1, "runtimeId", runtimeID)
 	w1 := testutil.Call(t, testHandler.ClaimTaskByRuntime, req1).Want(http.StatusOK)
 
@@ -87,8 +86,7 @@ func TestClaimTaskByRuntime_CheckpointBlock_EndToEnd(t *testing.T) {
 	dbfx.Comment(t, issueID, "new feedback after the first claim")
 
 	task2ID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
-	req2 := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "checkpoint-e2e-claim-2")
+	req2 := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req2 = withURLParam(req2, "runtimeId", runtimeID)
 	w2 := testutil.Call(t, testHandler.ClaimTaskByRuntime, req2).Want(http.StatusOK)
 
@@ -158,8 +156,7 @@ func TestClaimTaskByRuntime_CheckpointDecodeFailure_DoesNotFailClaim(t *testing.
 	})
 
 	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "checkpoint-decode-failure-claim")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 

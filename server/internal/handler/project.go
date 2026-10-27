@@ -558,6 +558,9 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	// lookup here previously let a case-varied key ("Description") through
 	// both this guard and the identically-keyed write condition below.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if !h.allowProjectWrite(w, r, wsUUID, prevProject.ID) {
+		return
+	}
 
 	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
 	if voteEntered(actorType, descriptionKeyPresent, rawFields) {
@@ -649,8 +652,11 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
 	}
-	project, err := h.Queries.UpdateProject(r.Context(), params)
+	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent")
 	if err != nil {
+		if writeProjectAdmissionError(w, err) {
+			return
+		}
 		h.writeProjectWriteError(w, r, err, "update")
 		return
 	}

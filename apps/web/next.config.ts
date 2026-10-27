@@ -73,6 +73,12 @@ const nextConfig: NextConfig = {
     }
     return config;
   },
+  // `next dev` drops a compiled page after 60s idle and keeps only a few.
+  // The E2E global setup warms every route once, so keep them all for the run.
+  onDemandEntries: {
+    maxInactiveAge: 60 * 60 * 1000,
+    pagesBufferLength: 50,
+  },
   ...(allowedDevOrigins && allowedDevOrigins.length > 0
     ? { allowedDevOrigins }
     : {}),

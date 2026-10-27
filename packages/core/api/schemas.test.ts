@@ -217,6 +217,17 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
   });
+  it("reads the workflow override and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    expect(parse({ workflow_id: "wf-1" })?.workflow_id).toBe("wf-1");
+    expect(parse({ workflow_id: null })?.workflow_id).toBeNull();
+    expect(parse({})?.workflow_id ?? null).toBeNull();
+    for (const bad of [42, { id: "wf-1" }, true]) {
+      const issue = parse({ workflow_id: bad });
+      expect(issue?.id).toBe(baseIssue.id);
+      expect(issue?.workflow_id ?? null).toBeNull();
+    }
+  });
   it("keeps the issue while independently dropping a malformed source context", () => {
     const parsed = ListIssuesResponseSchema.parse({
       issues: [{ ...baseIssue, source_context: { snapshot: "bad" } }],
@@ -1396,14 +1407,26 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
   });
 
-  it("preserves plain version and build fields while rejecting malformed values", () => {
-    const parsed = AppConfigSchema.parse({ version: "0.6.0", build: "20261008-1331" });
-    expect(parsed.version).toBe("0.6.0");
-    expect(parsed.build).toBe("20261008-1331");
-    const malformed = AppConfigSchema.parse({ version: 123, build: { stamp: "bad" } });
-    expect(malformed.version).toBeUndefined();
-    expect(malformed.build).toBeUndefined();
-    expect(AppConfigSchema.parse({}).build).toBeUndefined();
+  it("preserves server_version, server_build, and server_commit fields while rejecting malformed values", () => {
+    const parsed = AppConfigSchema.parse({
+      server_version: "0.6.3",
+      server_build: "20261021-0856",
+      server_commit: "1de8883",
+    });
+    expect(parsed.server_version).toBe("0.6.3");
+    expect(parsed.server_build).toBe("20261021-0856");
+    expect(parsed.server_commit).toBe("1de8883");
+    const malformed = AppConfigSchema.parse({
+      server_version: 123,
+      server_build: { stamp: "bad" },
+      server_commit: ["bad"],
+    });
+    expect(malformed.server_version).toBeUndefined();
+    expect(malformed.server_build).toBeUndefined();
+    expect(malformed.server_commit).toBeUndefined();
+    const empty = AppConfigSchema.parse({});
+    expect(empty.server_build).toBeUndefined();
+    expect(empty.server_commit).toBeUndefined();
   });
 });
 

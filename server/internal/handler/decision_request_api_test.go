@@ -22,12 +22,24 @@ import (
 func (fixture requestCoreFixture) apiRequest() *http.Request {
 	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
 		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
-		"ask": fixture.input().Ask, "escalation_class": fixture.input().EscalationClass,
+		"ask": fixture.structuredAsk(), "escalation_class": fixture.input().EscalationClass,
 	})
 	request.Header.Set("X-Actor-Source", "task_token")
 	request.Header.Set("X-Agent-ID", fixture.agentID)
 	request.Header.Set("X-Task-ID", fixture.taskID)
 	return request
+}
+
+func structuredDecisionAsk(issueID, commentID, decision string) decisiontx.Ask {
+	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+}
+
+func testAskOption(label string) decisiontx.AskOption {
+	return decisiontx.AskOption{Label: label, WhatHappens: label + " happens.", Pros: []string{"A pro"}, Cons: []string{"A con"}, CostOrTime: "No extra time"}
+}
+
+func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
+	return structuredDecisionAsk(fixture.issueID, fixture.tagID, fixture.input().Ask)
 }
 
 func TestDecisionRequestAPIRoundTrip(test *testing.T) {
@@ -59,7 +71,7 @@ func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 	})
 	testutil.Call(test, testHandler.RequestDecision, fixture.apiRequest()).Want(http.StatusCreated).JSON(&created)
 	requestID, ok := created["id"].(string)
-	if !ok || created["ask"] != fixture.input().Ask || created["status"] != "open" || created["human_user_id"] != fixture.humanID || created["ping_notified_at"] == nil {
+	if !ok || created["ask"] != fixture.structuredAsk().Content() || created["status"] != "open" || created["human_user_id"] != fixture.humanID || created["ping_notified_at"] == nil {
 		test.Fatalf("wrong request response: %+v", created)
 	}
 	fixture.assertCounts(test, 1)
@@ -98,7 +110,9 @@ func TestDecisionRequestAPIAskContentLimit(test *testing.T) {
 		test.Run(map[bool]string{false: "at_limit", true: "over_limit"}[size > maxCommentContentBytes], func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
-			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": strings.Repeat("a", size), "escalation_class": "reversible"}
+			ask := fixture.structuredAsk()
+			ask.Decision = strings.Repeat("a", size-len(ask.Content())+len(ask.Decision))
+			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "reversible"}
 			request := newRequest(http.MethodPost, "/api/decisions", body)
 			request.Header.Set("X-Actor-Source", "task_token")
 			request.Header.Set("X-Agent-ID", fixture.agentID)
@@ -294,7 +308,7 @@ func TestDecisionRequestAPIMalformedInput(test *testing.T) {
 	for _, malformed := range []string{"json", "session", "ask", "class"} {
 		test.Run(malformed, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
-			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": fixture.input().Ask, "escalation_class": "reversible"}
+			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": fixture.structuredAsk(), "escalation_class": "reversible"}
 			var input any = body
 			switch malformed {
 			case "json":

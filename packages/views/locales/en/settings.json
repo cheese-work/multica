@@ -282,6 +282,8 @@
     "field_name": "Name",
     "field_name_placeholder": "Code Review",
     "field_target": "Runs as",
+    "no_target": "No target",
+    "no_target_hint": "Posts a message without mentioning anyone.",
     "field_prompt": "Prompt",
     "field_prompt_placeholder": "Review the code linked to this issue. Focus on correctness and edge cases.",
     "prompt_hint": "Sent as written. The agent already sees the issue.",
@@ -790,6 +792,7 @@
     "toast_profile_failed": "Failed to update profile"
   },
   "notifications": {
+    "focused_delivery": "Only decisions and issues assigned to me",
     "title": "Inbox Notifications",
     "description": "Muted events remain visible on the issue.",
     "toast_failed": "Failed to update notification settings",
@@ -821,8 +824,7 @@
     },
     "system": {
       "title": "System Notifications",
-      "description": "Show system notifications when Multica is in the background.",
-      "label": "Show system notifications"
+      "label": "Show system notifications when Multica is in the background"
     },
     "browser": {
       "label": "Browser notifications",
@@ -1400,6 +1402,15 @@
   "desktop": {
     "tabs": {
       "updates": "Updates"
+    },
+    "tab_bar": {
+      "pin": "Pin tab",
+      "unpin": "Unpin tab",
+      "close": "Close tab",
+      "close_others": "Close other tabs",
+      "open_window": "Open as new window",
+      "new": "New tab",
+      "pinned_name": "{{title}} (pinned)"
     },
     "updates": {
       "title": "Updates",

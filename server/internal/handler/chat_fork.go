@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -210,7 +211,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		child, err = qtx.SetChatForkSource(r.Context(), db.SetChatForkSourceParams{
 			ID: child.ID, ForkedFromSessionID: session.ID, ForkIdempotencyKey: key,
-			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
+			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkSourceMessageID: copied.sourceIDs[len(copied.sourceIDs)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
 		})
 	}
 	// Drafts uploaded in the source DM move to the child so the first send can
@@ -250,6 +251,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	})
 	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID)}
 	if sendFirst {
+		h.TaskService.RecordHumanDelegation(r.Context(), plan.Attribution)
 		h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(child.ID), protocol.ChatMessagePayload{
 			ChatSessionID: uuidToString(child.ID), MessageID: uuidToString(sent.Message.ID), Role: "user",
 			Content: message, TaskID: uuidToString(sent.Task.ID), CreatedAt: timestampToString(sent.Message.CreatedAt),
@@ -335,13 +337,33 @@ func forkChatURL(slug string, id pgtype.UUID) string {
 	return "/" + url.PathEscape(slug) + "/chat?session=" + uuidToString(id)
 }
 
-// forkTitle is "<source> (fork: <message>)", the message whitespace-collapsed
-// and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
+var (
+	markdownLink   = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	markdownPrefix = regexp.MustCompile(`^(?:>\s*|#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)+`)
+)
+
+// plainText reduces markdown to what a reader sees in a title: link and slash
+// chips become their label; fence lines and leading quote, heading and list
+// markers are dropped.
+func plainText(markdown string) string {
+	var lines []string
+	for _, line := range strings.Split(markdown, "\n") {
+		line = markdownPrefix.ReplaceAllString(strings.TrimSpace(line), "")
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			continue
+		}
+		lines = append(lines, markdownLink.ReplaceAllString(line, "$1"))
+	}
+	return strings.Join(lines, " ")
+}
+
+// forkTitle is "<source> (fork: <message>)", the message as plain text,
+// whitespace-collapsed and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
 func forkTitle(source, message string) string {
 	if message == "" {
 		return strings.TrimSpace(source + " (fork)")
 	}
-	label := strings.Join(strings.Fields(message), " ")
+	label := strings.Join(strings.Fields(plainText(message)), " ")
 	if runes := []rune(label); len(runes) > forkTitleMessageRunes {
 		label = string(runes[:forkTitleMessageRunes]) + "…"
 	}

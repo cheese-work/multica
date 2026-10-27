@@ -97,11 +97,19 @@ if [ "$resolved_commit" != "$ref" ]; then
   exit 1
 fi
 
-echo "Building multica CLI from $resolved_commit..."
+# main.version is <upstream>-YYYYMMDD-hhmm (CHE-1910), derived from the checked-out
+# source so the stamp matches the commit being installed. Fail closed: a bare
+# SHA here is the bug this guards against (CHE-1985).
+build_version="$(cd "$work_dir/src" && bash scripts/daemon-artifact-version.sh "$resolved_commit")" || {
+  echo "install-cli-from-ref: scripts/daemon-artifact-version.sh failed at $resolved_commit — refusing to stamp a non-conforming version" >&2
+  exit 1
+}
+
+echo "Building multica CLI $build_version from $resolved_commit..."
 staged_binary="$work_dir/multica"
 (
   cd "$work_dir/src/server"
-  go build -ldflags "-X main.version=$ref -X main.commit=${resolved_commit:0:9} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  go build -ldflags "-X main.version=$build_version -X main.commit=${resolved_commit:0:9} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     -o "$staged_binary" ./cmd/multica
 )
 

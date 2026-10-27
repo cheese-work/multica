@@ -100,7 +100,7 @@ const archiveContinuedChatSession = `-- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
 SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type ArchiveContinuedChatSessionParams struct {
@@ -136,6 +136,8 @@ func (q *Queries) ArchiveContinuedChatSession(ctx context.Context, arg ArchiveCo
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -336,7 +338,7 @@ const createChatMessage = `-- name: CreateChatMessage :one
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via
+    channel_context_revision, id, sent_via, decision_answer_id
 )
 VALUES (
     $1, $2, $3, $4, $5, $6,
@@ -354,9 +356,10 @@ VALUES (
     $11,
     COALESCE($12::uuid, gen_random_uuid()),
     CASE WHEN COALESCE($10::boolean, FALSE) THEN 'channel'
-         ELSE COALESCE(NULLIF($13::text, ''), 'system') END
+         ELSE COALESCE(NULLIF($13::text, ''), 'system') END,
+    $14
 )
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids
 `
 
 type CreateChatMessageParams struct {
@@ -373,6 +376,7 @@ type CreateChatMessageParams struct {
 	ChannelContextRevision  pgtype.Int8   `json:"channel_context_revision"`
 	ID                      pgtype.UUID   `json:"id"`
 	SentVia                 pgtype.Text   `json:"sent_via"`
+	DecisionAnswerID        pgtype.UUID   `json:"decision_answer_id"`
 }
 
 // message_kind and quick_actions default via COALESCE so every existing caller
@@ -393,6 +397,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 		arg.ChannelContextRevision,
 		arg.ID,
 		arg.SentVia,
+		arg.DecisionAnswerID,
 	)
 	var i ChatMessage
 	err := row.Scan(
@@ -415,6 +420,9 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
@@ -422,7 +430,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 const createChatSession = `-- name: CreateChatSession :one
 INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id, is_agent_intro, project_id, id)
 VALUES ($1, $2, $3, $4, (SELECT runtime_id FROM agent WHERE id = $2), $5, $6, COALESCE($7::uuid, gen_random_uuid()))
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type CreateChatSessionParams struct {
@@ -471,6 +479,8 @@ func (q *Queries) CreateChatSession(ctx context.Context, arg CreateChatSessionPa
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -629,7 +639,7 @@ VALUES (
     COALESCE($4::uuid, gen_random_uuid()),
     'system'
 )
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids
 `
 
 type CreateMikaOnboardingOpeningParams struct {
@@ -679,6 +689,9 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
@@ -859,7 +872,7 @@ DELETE FROM chat_message
 WHERE task_id = $1
   AND role = 'user'
   AND message_kind <> 'onboarding_kickoff'
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids
 `
 
 // Deletes the MEMBER-TYPED input of a cancelled/edited turn.
@@ -896,6 +909,9 @@ func (q *Queries) DeleteUserChatMessageByTask(ctx context.Context, taskID pgtype
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
@@ -938,7 +954,7 @@ func (q *Queries) GetChannelMediaPendingUntil(ctx context.Context, arg GetChanne
 }
 
 const getChatContinuationSummary = `-- name: GetChatContinuationSummary :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
 WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'
 ORDER BY created_at, id
 LIMIT 1
@@ -967,12 +983,15 @@ func (q *Queries) GetChatContinuationSummary(ctx context.Context, chatSessionID 
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
 
 const getChatForkByOperation = `-- name: GetChatForkByOperation :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE forked_from_session_id = $1 AND fork_idempotency_key = $2
 `
 
@@ -1009,12 +1028,14 @@ func (q *Queries) GetChatForkByOperation(ctx context.Context, arg GetChatForkByO
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
 
 const getChatForkFirstMessage = `-- name: GetChatForkFirstMessage :one
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 JOIN chat_session AS session ON session.id = message.chat_session_id
 JOIN agent_task_queue AS task ON task.id = message.task_id
 WHERE session.id = $1
@@ -1050,12 +1071,15 @@ func (q *Queries) GetChatForkFirstMessage(ctx context.Context, id pgtype.UUID) (
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
 
 const getChatMessage = `-- name: GetChatMessage :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
 WHERE id = $1
 `
 
@@ -1082,12 +1106,15 @@ func (q *Queries) GetChatMessage(ctx context.Context, id pgtype.UUID) (ChatMessa
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
 
 const getChatMessageByTaskAssistant = `-- name: GetChatMessageByTaskAssistant :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
 WHERE task_id = $1 AND role = 'assistant'
 ORDER BY created_at DESC
 LIMIT 1
@@ -1118,12 +1145,15 @@ func (q *Queries) GetChatMessageByTaskAssistant(ctx context.Context, taskID pgty
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
 
 const getChatSession = `-- name: GetChatSession :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE id = $1
 `
 
@@ -1155,12 +1185,14 @@ func (q *Queries) GetChatSession(ctx context.Context, id pgtype.UUID) (ChatSessi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
 
 const getChatSessionInWorkspace = `-- name: GetChatSessionInWorkspace :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -1197,6 +1229,8 @@ func (q *Queries) GetChatSessionInWorkspace(ctx context.Context, arg GetChatSess
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -1395,7 +1429,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized', 'opencode_clock_skew')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
@@ -1412,6 +1446,10 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%could not resolve authentication method%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
+      -- MUL-8188: a runtime that names its own transcript invalid (Kiro panics
+      -- with "invalid conversation history received" on every prompt) replays
+      -- the same failure on every resume. Mirrors taskfailure.UnresumableHistory.
+      AND NOT (COALESCE(error, '') ILIKE '%invalid conversation history%')
     )
   )
   -- MUL-5722, mirroring GetLastTaskSession: an overflowed resume records no
@@ -1487,7 +1525,7 @@ func (q *Queries) GetLastChatTaskSession(ctx context.Context, arg GetLastChatTas
 }
 
 const getLatestAssistantChatMessageForSession = `-- name: GetLatestAssistantChatMessageForSession :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
 WHERE chat_session_id = $1 AND role = 'assistant' AND task_id IS NOT NULL
 ORDER BY created_at DESC
 LIMIT 1
@@ -1520,12 +1558,15 @@ func (q *Queries) GetLatestAssistantChatMessageForSession(ctx context.Context, c
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
 
 const getOldestActiveChatSessionForCreatorAgent = `-- name: GetOldestActiveChatSessionForCreatorAgent :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE workspace_id = $1
   AND creator_id = $2
   AND agent_id = $3
@@ -1573,6 +1614,8 @@ func (q *Queries) GetOldestActiveChatSessionForCreatorAgent(ctx context.Context,
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -1607,7 +1650,7 @@ func (q *Queries) GetPendingChatTask(ctx context.Context, chatSessionID pgtype.U
 }
 
 const getPublicChatSessionInWorkspace = `-- name: GetPublicChatSessionInWorkspace :one
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count FROM chat_session AS cs
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id, cs.title_manually_set FROM chat_session AS cs
 WHERE cs.id = $1
   AND cs.workspace_id = $2
   AND (
@@ -1659,6 +1702,8 @@ func (q *Queries) GetPublicChatSessionInWorkspace(ctx context.Context, arg GetPu
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -1856,6 +1901,7 @@ const initializeChatSessionMediaTitle = `-- name: InitializeChatSessionMediaTitl
 UPDATE chat_session AS session
 SET title = $1
 WHERE session.id = $2
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -1871,7 +1917,7 @@ WHERE session.id = $2
       AND other_message.message_kind != 'channel_command'
       AND other_message.id != $3
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type InitializeChatSessionMediaTitleParams struct {
@@ -1908,6 +1954,8 @@ func (q *Queries) InitializeChatSessionMediaTitle(ctx context.Context, arg Initi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -1916,6 +1964,7 @@ const initializeChatSessionTitle = `-- name: InitializeChatSessionTitle :one
 UPDATE chat_session AS session
 SET title = $1
 WHERE session.id = $2
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -1923,7 +1972,7 @@ WHERE session.id = $2
       AND message.role = 'user'
       AND message.message_kind != 'channel_command'
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type InitializeChatSessionTitleParams struct {
@@ -1959,6 +2008,8 @@ func (q *Queries) InitializeChatSessionTitle(ctx context.Context, arg Initialize
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -1966,11 +2017,12 @@ func (q *Queries) InitializeChatSessionTitle(ctx context.Context, arg Initialize
 const insertForkChatMessages = `-- name: InsertForkChatMessages :exec
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
 )
 SELECT ($1::uuid[])[i], $2::uuid, source.role,
        ($3::text[])[i], NULL, source.created_at, source.failure_reason,
-       source.elapsed_ms, ($4::text[])[i], '[]'::jsonb, source.sent_via
+       source.elapsed_ms, ($4::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
+       source.lineage_message_ids || source.id
 FROM generate_subscripts($1::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = ($5::uuid[])[i]
 `
@@ -2186,7 +2238,7 @@ func (q *Queries) ListAgentBuilderSessionsByCreator(ctx context.Context, arg Lis
 }
 
 const listAllChatSessionsByCreator = `-- name: ListAllChatSessionsByCreator :many
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count,
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id, cs.title_manually_set,
        CASE WHEN cs.status = 'archived' THEN 0
             ELSE (SELECT count(*) FROM chat_message m
                     WHERE m.chat_session_id = cs.id
@@ -2246,6 +2298,8 @@ type ListAllChatSessionsByCreatorRow struct {
 	ForkIdempotencyKey       pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID        pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount         pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID      pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet         bool               `json:"title_manually_set"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
 	LastMessageRole          string             `json:"last_message_role"`
@@ -2297,6 +2351,8 @@ func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllC
 			&i.ForkIdempotencyKey,
 			&i.ForkLastMessageID,
 			&i.ForkMessageCount,
+			&i.ForkSourceMessageID,
+			&i.TitleManuallySet,
 			&i.UnreadCount,
 			&i.LastMessageContent,
 			&i.LastMessageRole,
@@ -2405,7 +2461,7 @@ func (q *Queries) ListChatDraftRestoresBySession(ctx context.Context, chatSessio
 }
 
 const listChatInputMessages = `-- name: ListChatInputMessages :many
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
 WHERE task_id = $1 AND role = 'user'
 ORDER BY created_at ASC, id ASC
 `
@@ -2446,6 +2502,9 @@ func (q *Queries) ListChatInputMessages(ctx context.Context, taskID pgtype.UUID)
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2458,7 +2517,7 @@ func (q *Queries) ListChatInputMessages(ctx context.Context, taskID pgtype.UUID)
 }
 
 const listChatMessages = `-- name: ListChatMessages :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind != 'channel_command'
   AND NOT (
@@ -2532,6 +2591,9 @@ func (q *Queries) ListChatMessages(ctx context.Context, chatSessionID pgtype.UUI
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2544,7 +2606,7 @@ func (q *Queries) ListChatMessages(ctx context.Context, chatSessionID pgtype.UUI
 }
 
 const listChatMessagesForFork = `-- name: ListChatMessagesForFork :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
   AND (
@@ -2615,6 +2677,9 @@ func (q *Queries) ListChatMessagesForFork(ctx context.Context, chatSessionID pgt
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2627,7 +2692,7 @@ func (q *Queries) ListChatMessagesForFork(ctx context.Context, chatSessionID pgt
 }
 
 const listChatMessagesForLegacyTask = `-- name: ListChatMessagesForLegacyTask :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND NOT (
     message.role = 'user'
@@ -2690,6 +2755,9 @@ func (q *Queries) ListChatMessagesForLegacyTask(ctx context.Context, chatSession
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2702,7 +2770,7 @@ func (q *Queries) ListChatMessagesForLegacyTask(ctx context.Context, chatSession
 }
 
 const listChatMessagesNewerPage = `-- name: ListChatMessagesNewerPage :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
   AND NOT (
@@ -2783,6 +2851,9 @@ func (q *Queries) ListChatMessagesNewerPage(ctx context.Context, arg ListChatMes
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2795,7 +2866,7 @@ func (q *Queries) ListChatMessagesNewerPage(ctx context.Context, arg ListChatMes
 }
 
 const listChatMessagesPage = `-- name: ListChatMessagesPage :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via FROM chat_message AS message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind != 'channel_command'
   AND NOT (
@@ -2874,6 +2945,9 @@ func (q *Queries) ListChatMessagesPage(ctx context.Context, arg ListChatMessages
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2886,7 +2960,7 @@ func (q *Queries) ListChatMessagesPage(ctx context.Context, arg ListChatMessages
 }
 
 const listChatMessagesPageForChannelContext = `-- name: ListChatMessagesPageForChannelContext :many
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids
 FROM chat_message AS message
 LEFT JOIN agent_task_queue AS owner ON owner.id = message.task_id
 WHERE message.chat_session_id = $1
@@ -2963,6 +3037,9 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 			&i.ChannelOutboundMessageIds,
 			&i.ChannelTypingSettled,
 			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2975,7 +3052,7 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 }
 
 const listChatSessionsByCreator = `-- name: ListChatSessionsByCreator :many
-SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count,
+SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id, cs.title_manually_set,
        (SELECT count(*) FROM chat_message m
           WHERE m.chat_session_id = cs.id
             AND m.role = 'assistant'
@@ -3033,6 +3110,8 @@ type ListChatSessionsByCreatorRow struct {
 	ForkIdempotencyKey       pgtype.Text        `json:"fork_idempotency_key"`
 	ForkLastMessageID        pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount         pgtype.Int4        `json:"fork_message_count"`
+	ForkSourceMessageID      pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet         bool               `json:"title_manually_set"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
 	LastMessageRole          string             `json:"last_message_role"`
@@ -3080,6 +3159,8 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.ForkIdempotencyKey,
 			&i.ForkLastMessageID,
 			&i.ForkMessageCount,
+			&i.ForkSourceMessageID,
+			&i.TitleManuallySet,
 			&i.UnreadCount,
 			&i.LastMessageContent,
 			&i.LastMessageRole,
@@ -3437,7 +3518,7 @@ func (q *Queries) LockChatSessionForDelete(ctx context.Context, id pgtype.UUID) 
 }
 
 const lockChatSessionForDraftWrite = `-- name: LockChatSessionForDraftWrite :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE id = $1
 FOR UPDATE
 `
@@ -3490,12 +3571,14 @@ func (q *Queries) LockChatSessionForDraftWrite(ctx context.Context, id pgtype.UU
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
 
 const lockChatSessionForEnqueue = `-- name: LockChatSessionForEnqueue :one
-SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count FROM chat_session
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set FROM chat_session
 WHERE id = $1
 FOR NO KEY UPDATE
 `
@@ -3564,6 +3647,8 @@ func (q *Queries) LockChatSessionForEnqueue(ctx context.Context, id pgtype.UUID)
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -3700,7 +3785,7 @@ const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCrea
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 func (q *Queries) MarkChatSessionExplicitlyCreated(ctx context.Context, id pgtype.UUID) (ChatSession, error) {
@@ -3731,6 +3816,8 @@ func (q *Queries) MarkChatSessionExplicitlyCreated(ctx context.Context, id pgtyp
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -3863,7 +3950,7 @@ SET created_at = GREATEST(message.created_at, (
     WHERE copied.chat_session_id = message.chat_session_id AND copied.id <> message.id
   ) + interval '1 microsecond')
 WHERE message.id = $1
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids
 `
 
 // A source send that committed after the fork transaction began is copied
@@ -3892,6 +3979,9 @@ func (q *Queries) PlaceForkFirstMessage(ctx context.Context, id pgtype.UUID) (Ch
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
@@ -4279,6 +4369,7 @@ const replaceImplicitChatSessionTitle = `-- name: ReplaceImplicitChatSessionTitl
 UPDATE chat_session AS session
 SET title = $1
 WHERE session.id = $2
+  AND NOT session.title_manually_set
   AND session.explicitly_created_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -4286,7 +4377,7 @@ WHERE session.id = $2
       AND message.role = 'user'
       AND message.message_kind != 'channel_command'
   )
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type ReplaceImplicitChatSessionTitleParams struct {
@@ -4326,6 +4417,8 @@ func (q *Queries) ReplaceImplicitChatSessionTitle(ctx context.Context, arg Repla
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4336,7 +4429,7 @@ SET continued_from_session_id = $2,
     last_read_at = $3::timestamptz - interval '1 microsecond',
     pinned_at = $4
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type SetChatContinuationSourceParams struct {
@@ -4379,6 +4472,8 @@ func (q *Queries) SetChatContinuationSource(ctx context.Context, arg SetChatCont
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4388,28 +4483,32 @@ UPDATE chat_session
 SET forked_from_session_id = $1,
     fork_idempotency_key = $2,
     fork_last_message_id = $3,
-    fork_message_count = $4,
+    fork_source_message_id = $4,
+    fork_message_count = $5,
     runtime_id = NULL,
-    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = $5)
-WHERE id = $5
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+    last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = $6)
+WHERE id = $6
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type SetChatForkSourceParams struct {
 	ForkedFromSessionID pgtype.UUID `json:"forked_from_session_id"`
 	ForkIdempotencyKey  pgtype.Text `json:"fork_idempotency_key"`
 	ForkLastMessageID   pgtype.UUID `json:"fork_last_message_id"`
+	ForkSourceMessageID pgtype.UUID `json:"fork_source_message_id"`
 	ForkMessageCount    pgtype.Int4 `json:"fork_message_count"`
 	ID                  pgtype.UUID `json:"id"`
 }
 
 // Runs after the copy, so the read cursor is the newest copied time and the
-// copied history counts as read.
+// copied history counts as read. fork_last_message_id is the child's own copy
+// of the last copied message; fork_source_message_id is the source row itself.
 func (q *Queries) SetChatForkSource(ctx context.Context, arg SetChatForkSourceParams) (ChatSession, error) {
 	row := q.db.QueryRow(ctx, setChatForkSource,
 		arg.ForkedFromSessionID,
 		arg.ForkIdempotencyKey,
 		arg.ForkLastMessageID,
+		arg.ForkSourceMessageID,
 		arg.ForkMessageCount,
 		arg.ID,
 	)
@@ -4439,6 +4538,8 @@ func (q *Queries) SetChatForkSource(ctx context.Context, arg SetChatForkSourcePa
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4489,7 +4590,7 @@ WHERE id = (
     ORDER BY inner_msg.created_at DESC
     LIMIT 1
 )
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids
 `
 
 type SetChatMessageQuickActionsByTaskParams struct {
@@ -4520,6 +4621,9 @@ func (q *Queries) SetChatMessageQuickActionsByTask(ctx context.Context, arg SetC
 		&i.ChannelOutboundMessageIds,
 		&i.ChannelTypingSettled,
 		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
 	)
 	return i, err
 }
@@ -4530,7 +4634,7 @@ SET status = CASE WHEN $2::bool THEN 'archived' ELSE 'active' END,
     pinned_at = CASE WHEN $2::bool THEN NULL ELSE pinned_at END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type SetChatSessionArchivedParams struct {
@@ -4571,6 +4675,8 @@ func (q *Queries) SetChatSessionArchived(ctx context.Context, arg SetChatSession
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4580,7 +4686,7 @@ UPDATE chat_session
 SET pinned_at = CASE WHEN $2::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE id = $1
   AND (NOT $2::bool OR status <> 'archived')
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type SetChatSessionPinnedParams struct {
@@ -4623,6 +4729,8 @@ func (q *Queries) SetChatSessionPinned(ctx context.Context, arg SetChatSessionPi
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4823,7 +4931,7 @@ const updateChatSessionProject = `-- name: UpdateChatSessionProject :one
 UPDATE chat_session
 SET project_id = $1
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type UpdateChatSessionProjectParams struct {
@@ -4862,6 +4970,8 @@ func (q *Queries) UpdateChatSessionProject(ctx context.Context, arg UpdateChatSe
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
@@ -4898,9 +5008,9 @@ func (q *Queries) UpdateChatSessionSession(ctx context.Context, arg UpdateChatSe
 }
 
 const updateChatSessionTitle = `-- name: UpdateChatSessionTitle :one
-UPDATE chat_session SET title = $2, updated_at = now()
+UPDATE chat_session SET title = $2, title_manually_set = true, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type UpdateChatSessionTitleParams struct {
@@ -4936,14 +5046,16 @@ func (q *Queries) UpdateChatSessionTitle(ctx context.Context, arg UpdateChatSess
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }
 
 const updateChatSessionTitleIfCurrent = `-- name: UpdateChatSessionTitleIfCurrent :one
 UPDATE chat_session SET title = $1, updated_at = now()
-WHERE id = $2 AND title = $3
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count
+WHERE id = $2 AND title = $3 AND NOT title_manually_set
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set
 `
 
 type UpdateChatSessionTitleIfCurrentParams struct {
@@ -4988,6 +5100,8 @@ func (q *Queries) UpdateChatSessionTitleIfCurrent(ctx context.Context, arg Updat
 		&i.ForkIdempotencyKey,
 		&i.ForkLastMessageID,
 		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
 	)
 	return i, err
 }

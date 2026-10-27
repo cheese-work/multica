@@ -605,6 +605,8 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
+  AND lock_active_project((SELECT a.project_id FROM autopilot a JOIN autopilot_run r ON r.autopilot_id=a.id WHERE r.id=$4),
+                          (SELECT a.workspace_id FROM agent a WHERE a.id=$1))
 RETURNING *;
 
 -- name: GetAutopilotTaskByRun :one

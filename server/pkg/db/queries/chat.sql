@@ -31,11 +31,13 @@ RETURNING *;
 
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
--- copied history counts as read.
+-- copied history counts as read. fork_last_message_id is the child's own copy
+-- of the last copied message; fork_source_message_id is the source row itself.
 UPDATE chat_session
 SET forked_from_session_id = sqlc.arg(forked_from_session_id),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
+    fork_source_message_id = sqlc.arg(fork_source_message_id),
     fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
     last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
@@ -90,11 +92,12 @@ ORDER BY message.created_at ASC, message.id ASC;
 -- ids in source order and the (possibly link-rewritten) content and kind.
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
 )
 SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
        (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
-       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via
+       source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
+       source.lineage_message_ids || source.id
 FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
@@ -337,7 +340,7 @@ WHERE cs.workspace_id = $1
 ORDER BY COALESCE(lm.created_at, d.updated_at, cs.updated_at) DESC;
 
 -- name: UpdateChatSessionTitle :one
-UPDATE chat_session SET title = $2, updated_at = now()
+UPDATE chat_session SET title = $2, title_manually_set = true, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -351,6 +354,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -368,6 +372,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.explicitly_created_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -381,6 +386,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -416,7 +422,7 @@ RETURNING *;
 -- (zero rows updated), which the caller treats as "someone renamed it — leave
 -- it alone", NOT as an error.
 UPDATE chat_session SET title = @new_title, updated_at = now()
-WHERE id = @id AND title = @expected_title
+WHERE id = @id AND title = @expected_title AND NOT title_manually_set
 RETURNING *;
 
 -- name: SetChatSessionPinned :one
@@ -660,7 +666,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via
+    channel_context_revision, id, sent_via, decision_answer_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -678,7 +684,8 @@ VALUES (
     sqlc.narg(channel_context_revision),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
-         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END
+         ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
+    sqlc.narg(decision_answer_id)
 )
 RETURNING *;
 
@@ -1496,7 +1503,7 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized', 'opencode_clock_skew')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%response protection is unavailable%')
       AND NOT (COALESCE(error, '') ILIKE '%agent executor error%' AND COALESCE(error, '') ILIKE '%requested entity was not found%')
@@ -1513,6 +1520,10 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND NOT (COALESCE(error, '') ILIKE '%could not resolve authentication method%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
+      -- MUL-8188: a runtime that names its own transcript invalid (Kiro panics
+      -- with "invalid conversation history received" on every prompt) replays
+      -- the same failure on every resume. Mirrors taskfailure.UnresumableHistory.
+      AND NOT (COALESCE(error, '') ILIKE '%invalid conversation history%')
     )
   )
   -- MUL-5722, mirroring GetLastTaskSession: an overflowed resume records no

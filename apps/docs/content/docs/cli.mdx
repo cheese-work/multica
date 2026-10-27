@@ -181,6 +181,34 @@ Cursors preserve `(created_at, id)` order, including timestamp precision.
 Invalid limits or cursors return HTTP 400; limits above 200 are capped.
 Clients that do not follow the cursor receive only the newest 200 runs.
 
+#### Task claim provenance
+
+`multica agent tasks <agent-id> --output json` and
+`multica issue runs <issue-id> --output json` (full execution log, not
+`--siblings`) return `claimed_model` on every run, beside `id`, `agent_id`,
+`issue_id`, `workspace_id`, `status` and `dispatched_at` (claim time). Both
+reads keep their existing workspace-membership and private-agent checks.
+
+```bash
+multica issue runs CHE-1962 --output json \
+  | jq '.[] | {id, agent_id, issue_id, workspace_id, status, dispatched_at, claimed_model}'
+multica agent tasks <agent-id> --output json | jq '.[] | {id, claimed_model}'
+```
+
+`claimed_model` is the model the daemon was told to run at claim, as stored on
+the task. It is not derived from the agent's current model.
+
+| Value | Meaning |
+| --- | --- |
+| a string | Exact stored value |
+| `null` | Nothing stored: not yet claimed, or the claim could not record it |
+| `""` | An empty string was stored |
+| key absent | Server predates this field; nothing can be concluded |
+
+It attests the claim only. It does not show which upstream model or provider
+served the run; that stays unverified. Task prompts, provider environment and
+tokens are not part of this field.
+
 
 ## Daemon and runtimes
 
@@ -221,6 +249,16 @@ See [Daemon and runtimes](/daemon-runtimes) for how it works and for custom prof
 
 `multica chat` reads **the external chat session an agent is currently handling**; it is mainly for agents in chat integrations, not a general command for browsing arbitrary workspace conversations.
 
+### Rename a DM
+
+```bash
+multica chat rename <session-id> "Release decisions"
+```
+
+A running workspace agent task can rename a DM in that workspace, including a DM owned by another person. The rename and its announcement commit together. The announcement shows the old title, the new title, and the authenticated actor. Titles must be nonempty, single-line, and at most 200 characters.
+
+The agent receives only the session ID, new title, previous title, and announcement message ID. Rename does not grant permission to list DM lanes, read messages, access resume pointers, or change project context. Automatic title generation does not overwrite a manual rename, including a rename back to the original title.
+
 ### Decision lane metadata
 
 A running assigned issue task can open a three-minute decision window by posting a comment with `--decision-intent` and member mentions. Only that task can list active web DM lanes for the people named in the window:
@@ -232,6 +270,23 @@ multica chat sessions --issue MUL-123 --for <user-id> --output json
 Omit `--for` only when the window names exactly one person. The person must still be an active workspace member who can invoke the asking agent, and their target must be unconsumed. A listing does not consume the window. Another run of the same agent, a chat task, PATs and JWTs cannot use this command.
 
 The response contains only `id`, `title`, `updated_at` and `issue_mentions`, newest lane first. It never includes messages, unread counts or transcript previews. Archived sessions and channel-origin sessions are excluded. If no lane exists, the server creates a web DM titled `Decisions: <agent name>` for the named person. Expired, closed, deleted-tag and consumed windows are refused.
+
+### Decision requests
+
+A running assigned issue task asks a person in one call:
+
+```bash
+multica decision request --issue MUL-123 --for <user-id> --class reversible \
+  --ask-file ./ask.md [--footer-file ./footer.md] [--parent <comment-id>]
+```
+
+`--for` accepts the person's user ID or their member ID in the issue's workspace, including workspace owners. The server stores the canonical user ID.
+
+One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
+
+The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
+
+If a decision-intent comment is still open for the task, the older two-step flow applies: pass `--session` or `--new-dm --for`, and the ask replies under the intent comment. `--parent` is refused there.
 
 ## IDs and output formats
 
@@ -287,7 +342,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 
 | Command | Subcommand | Purpose | Key flags |
 | --- | --- | --- | --- |
-| `issue` | `list` | List issues | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (repeatable), `--property` (repeatable, `"Name=Value"`; `__none__` matches unset), `--limit`, `--offset`, `--sort` (incl. `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON only; rows with property, option and member names beside the stored ids) |
+| `issue` | `list` | List issues | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (repeatable), `--property` (repeatable, `"Name=Value"` or a comparison such as `"Score>=3"`, `"Due<2026-01-01"`, `"Notes~=text"`; `__none__` matches unset), `--limit`, `--offset`, `--sort` (incl. `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON only; rows with property, option and member names beside the stored ids) |
 | | `get <id>` | Show a single issue | `--resolve-properties` (JSON only; rows with property, option and member names beside the stored ids) |
 | | `create` | Create an issue | `--title` (required), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (repeatable) |
 | | `update <id>` | Update issue fields | Same fields as `create`, plus `--position`, `--no-start`, `--duplicate-of` |

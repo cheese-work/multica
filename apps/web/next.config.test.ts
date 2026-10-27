@@ -14,3 +14,13 @@ describe("next.config build memory", () => {
     expect(nextConfig.experimental?.webpackBuildWorker).toBe(true);
   });
 });
+
+describe("next.config dev route retention", () => {
+  // The E2E global setup compiles every route once, minutes before the specs
+  // that use them. Next evicts a dev page after 60s idle and keeps a handful,
+  // so a warmed route recompiled (10 to 75s) mid-suite and timed out specs.
+  it("keeps compiled dev routes for the whole suite", () => {
+    expect(nextConfig.onDemandEntries?.maxInactiveAge).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    expect(nextConfig.onDemandEntries?.pagesBufferLength).toBeGreaterThanOrEqual(30);
+  });
+});

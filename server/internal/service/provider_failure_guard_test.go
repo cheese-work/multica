@@ -472,3 +472,155 @@ func TestScheduledAutopilotFailureLookupFindsIssueTasks(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduledCreateIssueAutopilotIgnoresLaterCommentAndRerunTasks(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	leaderID := f.privateAgentOwnedBy(t, ownerID, "brief-leader")
+	delegateID := f.privateAgentOwnedBy(t, ownerID, "brief-delegate")
+	autopilotID := f.Insert(t, "autopilot", testutil.Cols{
+		"workspace_id":    f.WorkspaceID,
+		"title":           "evening-brief",
+		"assignee_type":   "agent",
+		"assignee_id":     leaderID,
+		"status":          "active",
+		"execution_mode":  "create_issue",
+		"created_by_type": "member",
+		"created_by_id":   ownerID,
+	})
+	triggerID := f.trigger(t, autopilotID, "member", ownerID)
+
+	firstRun := f.dispatch(t, autopilotID, triggerID)
+	if firstRun.Status != "issue_created" || !firstRun.IssueID.Valid {
+		t.Fatalf("first dispatch = %+v, want issue_created with issue_id", firstRun)
+	}
+	firstIssueID := util.UUIDToString(firstRun.IssueID)
+	var initialTaskID string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT id::text FROM agent_task_queue WHERE issue_id=$1`, firstIssueID).Scan(&initialTaskID); err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now()-interval '2 hours' WHERE id=$1`, initialTaskID)
+	f.Exec(t, `UPDATE autopilot_run SET status='completed', completed_at=now()-interval '2 hours' WHERE id=$1`, util.UUIDToString(firstRun.ID))
+
+	commentID := f.Insert(t, "comment", testutil.Cols{
+		"issue_id":     firstIssueID,
+		"workspace_id": f.WorkspaceID,
+		"author_type":  "member",
+		"author_id":    ownerID,
+		"content":      "delegated follow-up",
+	})
+	f.Task(t, delegateID, testutil.Cols{
+		"issue_id":               firstIssueID,
+		"runtime_id":             testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + delegateID + "')"),
+		"trigger_comment_id":     commentID,
+		"delegated_from_task_id": initialTaskID,
+		"status":                 "failed",
+		"failure_reason":         "agent_error.provider_server_error",
+		"completed_at":           testutil.Raw("now()-interval '90 minutes'"),
+	})
+	f.Task(t, leaderID, testutil.Cols{
+		"issue_id":           firstIssueID,
+		"runtime_id":         testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + leaderID + "')"),
+		"trigger_comment_id": commentID,
+		"status":             "failed",
+		"failure_reason":     "agent_error.provider_server_error",
+		"completed_at":       testutil.Raw("now()-interval '85 minutes'"),
+	})
+	f.Task(t, leaderID, testutil.Cols{
+		"issue_id":          firstIssueID,
+		"runtime_id":        testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + leaderID + "')"),
+		"rerun_of_task_id":  initialTaskID,
+		"originator_source": "direct_human",
+		"status":            "failed",
+		"failure_reason":    "agent_error.provider_server_error",
+		"completed_at":      testutil.Raw("now()-interval '80 minutes'"),
+	})
+	f.Task(t, leaderID, testutil.Cols{
+		"issue_id":       firstIssueID,
+		"runtime_id":     testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + leaderID + "')"),
+		"status":         "failed",
+		"failure_reason": "agent_error.provider_server_error",
+		"created_at":     testutil.Raw("now()-interval '75 minutes'"),
+		"completed_at":   testutil.Raw("now()-interval '70 minutes'"),
+	})
+
+	row, err := f.q.FindLatestScheduledAutopilotTaskForTrigger(context.Background(), db.FindLatestScheduledAutopilotTaskForTriggerParams{
+		TriggerID: parseTestUUID(t, triggerID), ConditionKey: "",
+	})
+	if err != nil {
+		t.Fatalf("FindLatestScheduledAutopilotTaskForTrigger: %v", err)
+	}
+	if util.UUIDToString(row.ID) != initialTaskID || row.Status != "completed" {
+		t.Fatalf("latest scheduled task = %+v, want completed initial task %s", row, initialTaskID)
+	}
+
+	f.Exec(t, `UPDATE issue SET title='prior evening brief' WHERE id=$1`, firstIssueID)
+	secondRun := f.dispatch(t, autopilotID, triggerID)
+	if secondRun.Status != "issue_created" || !secondRun.IssueID.Valid {
+		t.Fatalf("second dispatch = %+v, want issue_created (not skipped by unrelated comment/rerun failure)", secondRun)
+	}
+	secondIssueID := util.UUIDToString(secondRun.IssueID)
+	var secondInitialTaskID string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT id::text FROM agent_task_queue WHERE issue_id=$1`, secondIssueID).Scan(&secondInitialTaskID); err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status='failed', failure_reason='agent_error.provider_server_error', completed_at=now()-interval '30 minutes' WHERE id=$1`, secondInitialTaskID)
+	f.Exec(t, `UPDATE autopilot_run SET status='failed', completed_at=now()-interval '30 minutes' WHERE id=$1`, util.UUIDToString(secondRun.ID))
+	secondCommentID := f.Insert(t, "comment", testutil.Cols{
+		"issue_id":     secondIssueID,
+		"workspace_id": f.WorkspaceID,
+		"author_type":  "member",
+		"author_id":    ownerID,
+		"content":      "comment after failed brief",
+	})
+	f.Task(t, delegateID, testutil.Cols{
+		"issue_id":           secondIssueID,
+		"runtime_id":         testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + delegateID + "')"),
+		"trigger_comment_id": secondCommentID,
+		"status":             "completed",
+		"completed_at":       testutil.Raw("now()-interval '10 minutes'"),
+	})
+	row, err = f.q.FindLatestScheduledAutopilotTaskForTrigger(context.Background(), db.FindLatestScheduledAutopilotTaskForTriggerParams{
+		TriggerID: parseTestUUID(t, triggerID), ConditionKey: "",
+	})
+	if err != nil {
+		t.Fatalf("FindLatestScheduledAutopilotTaskForTrigger after failed initial task: %v", err)
+	}
+	if util.UUIDToString(row.ID) != secondInitialTaskID || row.Status != "failed" {
+		t.Fatalf("latest scheduled task after failed run = %+v, want failed initial task %s", row, secondInitialTaskID)
+	}
+}
+
+func TestUnconfiguredHTTPProviderFailureProbeReportsNotConfigured(t *testing.T) {
+	f, _ := newPrincipalFixture(t)
+	wakeupID := dbid.NewV7()
+	seedProviderFailureWakeupTask(t, f, wakeupID, "head-a", "now()-interval '61 minutes'")
+
+	probe, err := NewHTTPProviderFailureProbe("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &TaskService{Queries: f.q}
+	if probe != nil {
+		service.ProviderFailureProbe = probe
+	}
+	attempt, err := service.prepareProviderFailureRecovery(context.Background(), f.q, providerFailureRecoveryScope{
+		Kind: "issue_wakeup", TriggerID: wakeupID, ConditionKey: "head-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt == nil || attempt.SkipReason != "cooldown expiry alone is not recovery evidence; probe is not configured" {
+		t.Fatalf("unconfigured probe decision = %+v, want not-configured skip reason", attempt)
+	}
+
+	typedNilService := &TaskService{Queries: f.q, ProviderFailureProbe: probe}
+	typedAttempt, err := typedNilService.prepareProviderFailureRecovery(context.Background(), f.q, providerFailureRecoveryScope{
+		Kind: "issue_wakeup", TriggerID: wakeupID, ConditionKey: "head-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typedAttempt == nil || typedAttempt.SkipReason != "cooldown expiry alone is not recovery evidence; probe is not configured" {
+		t.Fatalf("typed-nil probe decision = %+v, want not-configured skip reason", typedAttempt)
+	}
+}

@@ -4,6 +4,8 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 
 import {
+  CLI_STOP_WAIT_MS,
+  DAEMON_STOP_EXEC_TIMEOUT_MS,
   DEFAULT_HEALTH_PORT,
   deriveProfileName,
   healthPortForProfile,
@@ -105,5 +107,14 @@ describe("healthPortForProfile", () => {
     const port = healthPortForProfile("desktop-api.multica.ai");
     expect(port).toBeGreaterThan(DEFAULT_HEALTH_PORT);
     expect(port).toBe(healthPortForProfile("desktop-api.multica.ai"));
+  });
+});
+
+describe("DAEMON_STOP_EXEC_TIMEOUT_MS", () => {
+  // `multica daemon stop` waits CLI_STOP_WAIT_MS for the instance lock, plus up
+  // to 2s /health probe and 2s /shutdown request. Electron kills the CLI at
+  // this timeout, so a restart during a long drain would end at the stop step.
+  it("outlasts the CLI's full stop wait", () => {
+    expect(DAEMON_STOP_EXEC_TIMEOUT_MS).toBeGreaterThan(CLI_STOP_WAIT_MS + 4_000);
   });
 });
