@@ -51,6 +51,39 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PlanRevisionViewer", () => {
+  it("visually marks only the pressed diff mode", async () => {
+    mount();
+    await screen.findByRole("article");
+    const split = screen.getByRole("button", { name: "Split" });
+    const unify = screen.getByRole("button", { name: "Unify" });
+    expect(unify).toHaveAttribute("aria-pressed", "true");
+    expect(split).toHaveAttribute("aria-pressed", "false");
+    expect(unify).toHaveClass("aria-pressed:bg-muted");
+    expect(split).toHaveClass("aria-pressed:bg-muted");
+    fireEvent.click(split);
+    expect(split).toHaveAttribute("aria-pressed", "true");
+    expect(unify).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(unify);
+    expect(unify).toHaveAttribute("aria-pressed", "true");
+    expect(split).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("moves focus and a visible outline between change sections", async () => {
+    mount();
+    await screen.findByRole("article");
+    fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
+    const first = await screen.findByRole("region", { name: "Change 1 / 2" });
+    const second = screen.getByRole("region", { name: "Change 2 / 2" });
+    fireEvent.click(screen.getByRole("button", { name: "Next change" }));
+    expect(second).toHaveFocus();
+    expect(second).toHaveClass("outline-2", "outline-ring", "-outline-offset-2");
+    expect(first).not.toHaveClass("outline-2");
+    fireEvent.click(screen.getByRole("button", { name: "Previous change" }));
+    expect(first).toHaveFocus();
+    expect(first).toHaveClass("outline-2", "outline-ring", "-outline-offset-2");
+    expect(second).not.toHaveClass("outline-2");
+  });
+
   it("renders current Markdown first, without fetching a base, and preserves download/close", async () => {
     const { download, close } = mount();
     expect(await screen.findByRole("article")).toHaveTextContent("New conclusion");

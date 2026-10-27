@@ -80,8 +80,8 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
     anchors.current[next]?.focus({ preventScroll: true });
   };
   const modeControls = <>
-    <Button variant="ghost" size="sm" aria-pressed={mode === "split"} onClick={() => setMode("split")}>{t(($) => $.plan_revision.split)}</Button>
-    <Button variant="ghost" size="sm" aria-pressed={mode === "unify"} onClick={() => setMode("unify")}>{t(($) => $.plan_revision.unify)}</Button>
+    <Button variant="ghost" size="sm" className="aria-pressed:bg-muted" aria-pressed={mode === "split"} onClick={() => setMode("split")}>{t(($) => $.plan_revision.split)}</Button>
+    <Button variant="ghost" size="sm" className="aria-pressed:bg-muted" aria-pressed={mode === "unify"} onClick={() => setMode("unify")}>{t(($) => $.plan_revision.unify)}</Button>
   </>;
   const basePicker = <div className="flex min-w-0 items-center gap-1 text-caption" data-testid="revision-base">
     <span className="shrink-0">{t(($) => $.plan_revision.compare)}</span>
@@ -151,7 +151,7 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
               let changeIndex = 0;
               return comparison.segments.map((segment, index) => {
                 const activeIndex = segment.kind === "change" ? changeIndex++ : null;
-                return <section key={index} ref={activeIndex === null ? undefined : (element) => { anchors.current[activeIndex] = element; }} tabIndex={activeIndex === null ? undefined : -1} aria-label={activeIndex === null ? undefined : t(($) => $.plan_revision.change, { current: activeIndex + 1, total: changes })} className={cn("scroll-mt-8 outline-none", activeIndex === change && "ring-1 ring-inset ring-ring/30")}>
+                return <section key={index} ref={activeIndex === null ? undefined : (element) => { anchors.current[activeIndex] = element; }} tabIndex={activeIndex === null ? undefined : -1} aria-label={activeIndex === null ? undefined : t(($) => $.plan_revision.change, { current: activeIndex + 1, total: changes })} className={cn("scroll-mt-8", activeIndex === change && "outline-2 -outline-offset-2 outline-ring")}>
                   {segment.kind === "context" && <button type="button" className="w-full border-y bg-muted/40 px-3 py-2 text-left text-caption text-muted-foreground hover:bg-muted" aria-expanded={expanded.has(index)} onClick={() => setExpanded((previous) => { const next = new Set(previous); if (next.has(index)) next.delete(index); else next.add(index); return next; })}>{t(($) => $.plan_revision.unchanged, { count: segment.lines.length })}</button>}
                   {(segment.kind === "change" || expanded.has(index)) && <RevisionRows lines={segment.lines} split={mode === "split"} />}
                 </section>;

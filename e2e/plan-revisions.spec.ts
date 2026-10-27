@@ -9,6 +9,25 @@ const lines = Array.from({ length: 360 }, (_, index) => index === 0 ? "# Revisio
 const original = lines.join("\n");
 const revised = lines.with(8, "- Require explicit selection when two uploads have the same revision number.").with(309, "- Ship the compact toolbar on web and desktop. <script>window.planRevisionInjected = true</script>").join("\n");
 
+async function expectPressedMode(page: Page, mode: "Split" | "Unify") {
+  await page.mouse.move(0, 0);
+  const pressed = page.getByRole("button", { name: mode, exact: true });
+  const unpressed = page.getByRole("button", { name: mode === "Split" ? "Unify" : "Split", exact: true });
+  await expect(pressed).toHaveAttribute("aria-pressed", "true");
+  await expect(unpressed).toHaveAttribute("aria-pressed", "false");
+  await expect(unpressed).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(pressed).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+}
+
+async function expectFocusedChange(page: Page, number: number) {
+  const section = page.getByRole("region", { name: `Change ${number} / 2`, exact: true });
+  await expect(section).toBeFocused();
+  await expect(section).toHaveCSS("outline-style", "solid");
+  await expect(section).toHaveCSS("outline-width", "2px");
+  await expect(section).toHaveCSS("outline-offset", "-2px");
+  await expect(section).not.toHaveCSS("outline-color", "rgba(0, 0, 0, 0)");
+}
+
 test.describe("plan revision viewer", () => {
   let author: TestApiClient;
   let workspace: { id: string; slug: string };
@@ -71,13 +90,17 @@ test.describe("plan revision viewer", () => {
     await expect(page.getByTestId("revision-diff")).toHaveAttribute("data-mode", "unify");
     await expect(diff).toBeChecked();
     await expect(page.getByText("Change 1 / 2", { exact: true })).toBeVisible();
+    await expectPressedMode(page, "Unify");
     await capture("web-1440-unify");
     await page.getByRole("button", { name: "Next change", exact: true }).click();
     await expect(page.getByText("Change 2 / 2", { exact: true })).toBeVisible();
     await expect(page.getByText(/Ship the compact toolbar/)).toBeVisible();
+    await expectFocusedChange(page, 2);
+    await capture("web-1440-next");
     expect(await page.evaluate(() => "planRevisionInjected" in window)).toBe(false);
     await page.getByRole("button", { name: "Split", exact: true }).click();
     await expect(page.getByTestId("revision-diff")).toHaveAttribute("data-mode", "split");
+    await expectPressedMode(page, "Split");
     for (const row of await page.getByTestId("revision-split-row").all()) {
       const cells = await row.locator(":scope > div").all();
       const bounds = await Promise.all(cells.map((cell) => cell.boundingBox()));
@@ -85,6 +108,9 @@ test.describe("plan revision viewer", () => {
       expect(bounds[0]?.y).toBe(bounds[1]?.y);
     }
     await capture("web-1440-split");
+    await page.getByRole("button", { name: "Previous change", exact: true }).click();
+    await expectFocusedChange(page, 1);
+    await capture("web-1440-previous");
     await page.getByRole("combobox", { name: "Compare with", exact: true }).click();
     await expect(page.getByRole("option", { name: /plan-rev-2.md/ })).toBeVisible();
     await capture("web-1440-base");
@@ -99,6 +125,9 @@ test.describe("plan revision viewer", () => {
     await expect(page.getByRole("button", { name: "Next change", exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await capture("web-390-unify");
+    await page.getByRole("button", { name: "Next change", exact: true }).click();
+    await expectFocusedChange(page, 2);
+    await capture("web-390-next");
     await page.getByRole("button", { name: "More options", exact: true }).click();
     await expect(page.getByRole("menuitemradio", { name: "Split", exact: true })).toBeVisible();
     await expect(page.getByRole("menuitemradio", { name: /plan-rev-2.md/ })).toContainText("ICT · Plan reviewer");
@@ -168,9 +197,17 @@ test.describe("plan revision viewer", () => {
       await capture("desktop-1440-off");
       await page.getByRole("switch", { name: "Diff", exact: true }).click();
       await expect(page.getByTestId("revision-diff")).toHaveAttribute("data-mode", "unify");
+      await expectPressedMode(page, "Unify");
       await capture("desktop-1440-unify");
+      await page.getByRole("button", { name: "Next change", exact: true }).click();
+      await expectFocusedChange(page, 2);
+      await capture("desktop-1440-next");
       await page.getByRole("button", { name: "Split", exact: true }).click();
+      await expectPressedMode(page, "Split");
       await capture("desktop-1440-split");
+      await page.getByRole("button", { name: "Previous change", exact: true }).click();
+      await expectFocusedChange(page, 1);
+      await capture("desktop-1440-previous");
       await page.getByRole("combobox", { name: "Compare with", exact: true }).click();
       await expect(page.getByRole("option", { name: /plan-rev-2.md/ })).toBeVisible();
       await capture("desktop-1440-base");
