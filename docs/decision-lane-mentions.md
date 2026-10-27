@@ -5,7 +5,10 @@ Within that window, `multica chat sessions --issue <issue> --for <person-id>`
 returns at most 10 active web DMs between that person and the calling agent.
 Listing does not create a DM or consume the window.
 
-Each lane has `id`, `title`, `updated_at` and an `issue_mentions` array.
+Each lane has `id`, `title`, `updated_at`, `eligible` and an `issue_mentions` array.
+Lanes are ordered by relevance to the selected issue: the DM that named it most
+recently first, then DMs that never named it. `eligible` is true only when a
+message or decision request in the DM names the selected issue.
 Each mention has `issue_id`, `issue_key`, `issue_title`, `mentioned_at`,
 `relative_time` and `snippet`. Timestamps are RFC3339 machine values.
 The array contains at most 20 distinct same-workspace issues, newest first.
@@ -27,7 +30,16 @@ window checks inline for the named person, then writes one issue comment, one
 DM message and one ping. The server picks the lane: the person's lane with this
 agent that holds the latest request on this issue, else the newest listed lane
 that mentions this issue, else a new `Decisions: <agent name>` DM. Briefs and
-channel DMs are never listed lanes. `--session` and `--new-dm` still override.
+channel DMs are never listed lanes.
+
+A request goes only to a DM where that issue was discussed. `--session` is
+refused unless a message or decision request in that DM names the issue; the
+error lists the matching DMs. The check reads that DM, so an older discussion
+stays eligible however many newer DMs exist. `--new-dm` opens a DM for this
+issue only, and a request for another issue is refused there until that issue is
+discussed in it. The same open decision (same issue, agent and person, ask
+compared without its source link) is refused for 24 h after the earlier one; the
+error carries the earlier ask time.
 
 With an open decision-intent comment the two-step flow below is unchanged.
 
