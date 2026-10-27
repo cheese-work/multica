@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,12 +51,8 @@ type githubIntakePayload struct {
 	PullRequest struct {
 		Number int32 `json:"number"`
 		Head   struct {
-			SHA  string `json:"sha"`
-			Repo *struct {
-				ID       int64  `json:"id"`
-				FullName string `json:"full_name"`
-				Fork     bool   `json:"fork"`
-			} `json:"repo"`
+			SHA  string              `json:"sha"`
+			Repo *ghPRHeadRepository `json:"repo"`
 		} `json:"head"`
 	} `json:"pull_request"`
 	Issue struct {
@@ -218,10 +213,10 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		return pullID, "", "", err
 	}
 	headRepo := payload.PullRequest.Head.Repo
-	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" {
+	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
 		return pullID, "deferred", "missing_pull_request_metadata", nil
 	}
-	if headRepo.Fork || headRepo.ID != payload.Repository.ID || !strings.EqualFold(headRepo.FullName, payload.Repository.Owner.Login+"/"+payload.Repository.Name) {
+	if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
 		return pullID, "denied", "fork_pull_request", nil
 	}
 	pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{

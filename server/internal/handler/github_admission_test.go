@@ -98,6 +98,21 @@ func TestGitHubAdmissionT3ForeignEditQuarantined(test *testing.T) {
 	assertGitHubIntakeNoEffects(test, fixture)
 }
 
+func TestGitHubAdmissionMissingForkFlag(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	delete(fixture.payload["pull_request"].(map[string]any)["head"].(map[string]any)["repo"].(map[string]any), "fork")
+	delivery := fixture.issueID + "-missing-fork-flag"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("intake: %d %s", response.Code, response.Body.String())
+	}
+	var state, reason string
+	dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+	if state != "deferred" || reason != "missing_pull_request_metadata" {
+		test.Fatalf("missing fork flag = %s/%s, want deferred/missing_pull_request_metadata", state, reason)
+	}
+	assertGitHubIntakeNoEffects(test, fixture)
+}
+
 func TestGitHubAdmissionForeignEditPermanentDenials(test *testing.T) {
 	for _, scenario := range []struct{ name, reason string }{
 		{"fork", "fork_pull_request"},
