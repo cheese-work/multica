@@ -1,4 +1,22 @@
 {
+  "relations": {
+    "title": "Graphe des relations",
+    "direction": "Les flèches vont du parent à l’enfant, d’une tâche surveillée à celle qu’elle réveille, et d’une mention à sa cible. La tâche actuelle a une bordure épaisse.",
+    "depth": "Profondeur",
+    "loading": "Chargement des relations…",
+    "load_failed": "Impossible de charger les relations.",
+    "render_failed": "Impossible d’afficher le graphe.",
+    "retry": "Réessayer",
+    "empty": "Aucune tâche liée.",
+    "omitted": "{{count}} autres tâches masquées (limite de 40 nœuds).",
+    "parent": "parent → enfant",
+    "duplicate": "doublon de",
+    "wakeup": "réveille",
+    "children_done": "enfants terminés → réveil",
+    "mention": "mentionne",
+    "shared_pr": "PR partagée",
+    "unknown": "lié"
+  },
   "inline_run": {
     "label": "Exécution de {{name}}",
     "stop": "Arrêter",
@@ -404,6 +422,7 @@
     "section_parent_issue": "Tâche parente",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Métadonnées",
+    "status_summary_label": "Résumé du statut",
     "section_details": "Détails",
     "section_quick_actions": "Actions rapides",
     "quick_actions_more": "Afficher {{count}} de plus",

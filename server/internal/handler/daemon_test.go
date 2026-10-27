@@ -4975,3 +4975,45 @@ func TestDaemonRegister_ProfileUsesStoredRuntimeIdentity(t *testing.T) {
 		t.Fatalf("provider = %q, want stored omp identity", provider)
 	}
 }
+
+// CHE-2070: the claim carries the triggering thread (root + earlier replies,
+// excluding the trigger) so a mention-started run need not scroll the issue.
+func TestClaimTaskByRuntime_EmbedsTriggerThreadContext(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Thread context runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Thread context agent")
+	rootID := dbfx.Comment(t, issueID, "root question text")
+	replyID := dbfx.Comment(t, issueID, "earlier reply text", testutil.Cols{"parent_id": rootID})
+	unrelated := dbfx.Comment(t, issueID, "other thread text")
+	triggerID := dbfx.Comment(t, issueID, "mention trigger text", testutil.Cols{"parent_id": replyID})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":         runtimeID,
+		"issue_id":           issueID,
+		"trigger_comment_id": triggerID,
+	})
+	_ = unrelated
+
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
+	req = withURLParam(req, "runtimeId", runtimeID)
+	var resp struct {
+		Task *AgentTaskResponse `json:"task"`
+	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
+	if resp.Task == nil || resp.Task.ID != taskID {
+		t.Fatalf("expected claimed task %s, got %+v", taskID, resp.Task)
+	}
+	got := resp.Task.TriggerThreadContext
+	for _, want := range []string{"root question text", "earlier reply text"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("thread context missing %q: %q", want, got)
+		}
+	}
+	for _, bad := range []string{"mention trigger text", "other thread text"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("thread context must not contain %q: %q", bad, got)
+		}
+	}
+}

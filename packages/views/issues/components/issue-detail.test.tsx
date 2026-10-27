@@ -1277,6 +1277,12 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("Add property")).toBeInTheDocument();
   });
 
+  it("offers a relations graph in the sidebar without mounting a graph before click", async () => {
+    renderIssueDetail();
+    expect(await screen.findByRole("button", { name: "Relations graph" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Relations graph" })).not.toBeInTheDocument();
+  });
+
   it("hides every optional property row when none are set", async () => {
     // Override the default fixture: nothing optional set.
     mockApiObj.getIssue.mockResolvedValue({
