@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -174,6 +175,9 @@ type Step struct {
 	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
 	// when the checks of a linked PR pass on the current head.
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	// Edges are the step's exits, each taken when its guard holds. Without
+	// them the exits derive from the fields above (see EdgesOf).
+	Edges []Edge `json:"edges,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -182,6 +186,15 @@ type Definition struct {
 	Name      string
 	IsDefault bool
 	Steps     []Step
+	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
+	// (see EffectiveMaxRuns).
+	MaxRunsPerIssue int
+	// IncludeChildPRs makes the PRs of an issue's direct children count as
+	// its own for edge guards.
+	IncludeChildPRs bool
+	// RunBudgetSince is when the budget starts counting: runs before it are
+	// free, so issues in flight when the budget shipped start fresh.
+	RunBudgetSince time.Time
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
@@ -202,6 +215,7 @@ type storedStep struct {
 	NextStatusKey string   `json:"next_status_key,omitempty"`
 	BackStatusKey string   `json:"back_status_key,omitempty"`
 	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge   `json:"edges,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -210,7 +224,14 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	return Definition{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps}, nil
+	def := Definition{
+		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
+		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+	}
+	if row.RunBudgetSince.Valid {
+		def.RunBudgetSince = row.RunBudgetSince.Time
+	}
+	return def, nil
 }
 
 // DecodeSteps parses a stored steps array, normalizing a missing handler to
@@ -233,6 +254,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			BackStatusKey: s.BackStatusKey,
 
 			AdvanceOnCIGreen: s.AdvanceOnCI,
+			Edges:            s.Edges,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -254,7 +276,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -420,7 +442,14 @@ func NormalizeHandoff(s Step) Step {
 	}
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
+	s.Edges = normalizeEdges(s.Edges)
 	return s
+}
+
+// CanAdvanceOnCIGreen reports whether CI green may move an issue out of a
+// status: never out of a closed, parked or blocked one.
+func CanAdvanceOnCIGreen(key string) bool {
+	return AcceptsHandoff(key) && key != issuestatus.Blocked
 }
 
 // ValidateHandoff checks one normalized handoff against its workflow.
@@ -453,10 +482,10 @@ func ValidateHandoff(s Step, def Definition) error {
 			return invalid("%q is not another status of this workflow", ref)
 		}
 	}
-	if s.AdvanceOnCIGreen && (!AcceptsHandoff(s.StatusKey) || s.StatusKey == issuestatus.Blocked) {
+	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
-	return nil
+	return validateEdges(s, def)
 }
 
 // Querier is the read surface workflow resolution needs.
@@ -472,7 +501,7 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, nil
+			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys()), IncludeChildPRs: true}, nil
 		}
 		return Definition{}, err
 	}

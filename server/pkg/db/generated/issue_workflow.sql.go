@@ -105,7 +105,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since
 `
 
 type CreateDefaultIssueWorkflowParams struct {
@@ -134,6 +134,9 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.UpdatedAt,
 			&i.IsDefault,
 			&i.OwnerID,
+			&i.MaxRunsPerIssue,
+			&i.IncludeChildPrs,
+			&i.RunBudgetSince,
 		); err != nil {
 			return nil, err
 		}
@@ -146,16 +149,18 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 }
 
 const createIssueWorkflow = `-- name: CreateIssueWorkflow :one
-INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id)
+INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
 VALUES (
     $1::uuid,
     $2::text,
     $3::text,
     $4::text,
     $5::jsonb,
-    $6::uuid
+    $6::uuid,
+    NULLIF($7::int, 0),
+    COALESCE($8::boolean, true)
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since
 `
 
 type CreateIssueWorkflowParams struct {
@@ -165,6 +170,8 @@ type CreateIssueWorkflowParams struct {
 	InitialStatusKey string      `json:"initial_status_key"`
 	Steps            []byte      `json:"steps"`
 	OwnerID          pgtype.UUID `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4 `json:"max_runs_per_issue"`
+	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
 }
 
 func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkflowParams) (IssueWorkflow, error) {
@@ -175,6 +182,8 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		arg.InitialStatusKey,
 		arg.Steps,
 		arg.OwnerID,
+		arg.MaxRunsPerIssue,
+		arg.IncludeChildPrs,
 	)
 	var i IssueWorkflow
 	err := row.Scan(
@@ -188,6 +197,9 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
+		&i.MaxRunsPerIssue,
+		&i.IncludeChildPrs,
+		&i.RunBudgetSince,
 	)
 	return i, err
 }
@@ -223,7 +235,7 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 }
 
 const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
@@ -242,12 +254,15 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
+		&i.MaxRunsPerIssue,
+		&i.IncludeChildPrs,
+		&i.RunBudgetSince,
 	)
 	return i, err
 }
 
 const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
@@ -271,6 +286,9 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
+		&i.MaxRunsPerIssue,
+		&i.IncludeChildPrs,
+		&i.RunBudgetSince,
 	)
 	return i, err
 }
@@ -330,7 +348,7 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 
 const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
@@ -359,6 +377,9 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.UpdatedAt,
 			&i.IsDefault,
 			&i.OwnerID,
+			&i.MaxRunsPerIssue,
+			&i.IncludeChildPrs,
+			&i.RunBudgetSince,
 		); err != nil {
 			return nil, err
 		}
@@ -809,10 +830,17 @@ UPDATE issue_workflow SET
     description = $2::text,
     initial_status_key = $3::text,
     steps = $4::jsonb,
+    -- A rule left out of the write keeps its value; a max of 0 clears it back
+    -- to the platform default.
+    max_runs_per_issue = CASE
+        WHEN $5::int IS NULL THEN max_runs_per_issue
+        ELSE NULLIF($5::int, 0)
+    END,
+    include_child_prs = COALESCE($6::boolean, include_child_prs),
     updated_at = now()
-WHERE id = $5::uuid
-  AND workspace_id = $6::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
+WHERE id = $7::uuid
+  AND workspace_id = $8::uuid
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since
 `
 
 type UpdateIssueWorkflowParams struct {
@@ -820,6 +848,8 @@ type UpdateIssueWorkflowParams struct {
 	Description      string      `json:"description"`
 	InitialStatusKey string      `json:"initial_status_key"`
 	Steps            []byte      `json:"steps"`
+	MaxRunsPerIssue  pgtype.Int4 `json:"max_runs_per_issue"`
+	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
 	ID               pgtype.UUID `json:"id"`
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 }
@@ -830,6 +860,8 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		arg.Description,
 		arg.InitialStatusKey,
 		arg.Steps,
+		arg.MaxRunsPerIssue,
+		arg.IncludeChildPrs,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -845,6 +877,9 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
+		&i.MaxRunsPerIssue,
+		&i.IncludeChildPrs,
+		&i.RunBudgetSince,
 	)
 	return i, err
 }

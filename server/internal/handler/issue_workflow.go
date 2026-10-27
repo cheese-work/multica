@@ -85,6 +85,8 @@ type IssueWorkflowStepPayload struct {
 	// AdvanceOnCIGreen moves an issue on this step to its next status when a
 	// linked PR's checks pass on the current head.
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	// Edges are the step's guarded exits; see issueworkflow.Edge.
+	Edges []issueworkflow.Edge `json:"edges,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -102,6 +104,12 @@ type IssueWorkflowResponse struct {
 	// resolution, which two quick saves can share. A save names the version it
 	// edited in expected_version.
 	Version string `json:"version"`
+	// MaxRunsPerIssue is the run cap the workflow sets; null means the
+	// platform default applies (issueworkflow.DefaultMaxRunsPerIssue).
+	MaxRunsPerIssue *int `json:"max_runs_per_issue"`
+	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
+	// its direct children.
+	IncludeChildPRs bool `json:"include_child_prs"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -135,6 +143,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		BackStatusKey: s.BackStatusKey,
 
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
+		Edges:            s.Edges,
 	}
 }
 
@@ -147,6 +156,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		BackStatusKey: in.BackStatusKey,
 
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
+		Edges:            in.Edges,
 	}
 }
 
@@ -170,7 +180,33 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 		CreatedAt:   timestampToString(row.CreatedAt),
 		UpdatedAt:   timestampToString(row.UpdatedAt),
 		Version:     issueWorkflowVersion(row.UpdatedAt),
+
+		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
+		IncludeChildPRs: row.IncludeChildPrs,
 	}
+}
+
+func maxRunsPtr(v pgtype.Int4) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int32)
+	return &n
+}
+
+// runRuleParams turns a write's rule fields into query arguments and rejects a
+// cap outside 0..issueworkflow.MaxRunsPerIssueLimit.
+func runRuleParams(req IssueWorkflowWriteRequest) (maxRuns pgtype.Int4, includeChildPRs pgtype.Bool, msg string) {
+	if req.MaxRunsPerIssue != nil {
+		if *req.MaxRunsPerIssue < 0 || *req.MaxRunsPerIssue > issueworkflow.MaxRunsPerIssueLimit {
+			return maxRuns, includeChildPRs, fmt.Sprintf("max_runs_per_issue must be between 0 and %d", issueworkflow.MaxRunsPerIssueLimit)
+		}
+		maxRuns = pgtype.Int4{Int32: int32(*req.MaxRunsPerIssue), Valid: true}
+	}
+	if req.IncludeChildPRs != nil {
+		includeChildPRs = pgtype.Bool{Bool: *req.IncludeChildPRs, Valid: true}
+	}
+	return maxRuns, includeChildPRs, ""
 }
 
 // issueWorkflowVersion is the token a save sends back to say which version it edited.
@@ -335,7 +371,8 @@ type IssueWorkflowStepInput struct {
 	NextStatusKey string                       `json:"next_status_key,omitempty"`
 	BackStatusKey string                       `json:"back_status_key,omitempty"`
 	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
-	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	AdvanceOnCIGreen bool                 `json:"advance_on_ci_green,omitempty"`
+	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -356,6 +393,13 @@ type IssueWorkflowWriteRequest struct {
 	// 409 workflow_changed_elsewhere instead of replacing the newer one. Clients
 	// that predate the field omit it and keep last-writer-wins.
 	ExpectedVersion *string `json:"expected_version,omitempty"`
+	// MaxRunsPerIssue caps the runs one issue can use before the workflow
+	// blocks it. Omitted (null) keeps the stored value; 0 clears it back to the
+	// platform default; 1..1000 sets it.
+	MaxRunsPerIssue *int `json:"max_runs_per_issue,omitempty"`
+	// IncludeChildPRs sets whether a parent's PR guards read its children's
+	// PRs. Omitted keeps the stored value (true for a new workflow).
+	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -386,6 +430,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			BackStatusKey: in.BackStatusKey,
 
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
+			Edges:            in.Edges,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -508,6 +553,11 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
+	if ruleMsg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
+		return
+	}
 	var name, description string
 	if req.Name != nil {
 		name = *req.Name
@@ -578,6 +628,8 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		InitialStatusKey: issueworkflow.StartStatus,
 		Steps:            raw,
 		OwnerID:          member.UserID,
+		MaxRunsPerIssue:  maxRuns,
+		IncludeChildPrs:  includeChildPRs,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -689,6 +741,11 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	var req IssueWorkflowWriteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
+	if ruleMsg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
 	ctx := r.Context()
@@ -834,6 +891,8 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Description:      description,
 		InitialStatusKey: issueworkflow.StartStatus,
 		Steps:            raw,
+		MaxRunsPerIssue:  maxRuns,
+		IncludeChildPrs:  includeChildPRs,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -1203,6 +1262,12 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to read workflow")
 		return
 	}
+	// The handoff form knows nothing of edges: keep the step's own.
+	if step.Edges == nil {
+		if stored, ok := def.Step(step.StatusKey); ok {
+			step.Edges = stored.Edges
+		}
+	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", err.Error())
 		return
@@ -1285,6 +1350,8 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		InitialStatusKey: issueworkflow.StartStatus,
 		Steps:            steps,
 		OwnerID:          member.UserID,
+		MaxRunsPerIssue:  source.MaxRunsPerIssue,
+		IncludeChildPrs:  pgtype.Bool{Bool: source.IncludeChildPrs, Valid: true},
 	})
 	if err != nil {
 		slog.Warn("SetIssueWorkflowHandoff copy failed", append(logger.RequestAttrs(r), "error", err)...)

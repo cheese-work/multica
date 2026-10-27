@@ -418,7 +418,7 @@ LIMIT sqlc.arg('row_limit');
 -- for why the boundary is the claim. They reference a request by text, not by
 -- id, so they are read by message rather than through decision_request.
 SELECT message.content FROM chat_message message
-WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind = 'decision_reference'
+WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind IN ('decision_reference', 'decision_cancel_notice')
   AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id') AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT sqlc.arg('row_limit');

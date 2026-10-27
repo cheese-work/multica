@@ -163,15 +163,17 @@ export function useInPageFind(options: {
     });
   }, [documents, query, open]);
   const activeSourceMatch = sourceMatches[Math.max(0, Math.min(activeIndex, sourceMatches.length - 1))];
+  const activeSourceId = activeSourceMatch?.id;
+  const activeSourceOccurrence = activeSourceMatch?.occurrence;
   const revealDocumentRef = useRef(revealDocument);
   revealDocumentRef.current = revealDocument;
   const pendingSourceScroll = useRef(false);
   const navigationCountRef = useRef(0);
   useEffect(() => {
-    if (!documents || !open || !activeSourceMatch) return;
+    if (!open || !activeSourceId) return;
     pendingSourceScroll.current = true;
-    revealDocumentRef.current?.(activeSourceMatch.id);
-  }, [documents, open, activeSourceMatch]);
+    revealDocumentRef.current?.(activeSourceId);
+  }, [open, query, activeSourceId, activeSourceOccurrence, activeIndex]);
 
   const clearHighlights = useCallback(() => {
     if (!supported) return;
