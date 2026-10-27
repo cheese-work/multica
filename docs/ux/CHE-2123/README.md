@@ -1,9 +1,9 @@
 ## Candidate
 
-Runtime source: `4858f1dcd1795ebde79239fc8130699edf47f0d5`.
+Captured source: `6aa9943b2680749832c336fa2cd84050fb40ae0e`.
 Approved design: `design/viewer-media-pages/rev-1/A.html` @ `13613770066f99d1e8389e73fe877d11a20c4ee0`.
 
-The review correction fixes Escape on a closed phone More summary, matches the normal not-found recovery page, hides media links in unsaved editor previews, and uses translated native-window titles. Imports now use the existing import blocks.
+The current correction preserves Open for saved description blocks and hides it for unsaved blocks and composer content. The editor and route resolver use the same markdown-media parser. All four source dialogs keep Close outside phone More. Earlier corrections cover closed-summary Escape, normal not-found recovery, translated window titles, and import placement.
 
 The capture build uses real product Electron main IPC, preload, routing, and shared viewers. Only daemon-manager and updater startup are stubbed. The build does not start or modify the workspace daemon. Web uses the real Next application. Both use a synthetic local API with a fixture user, workspace, issue, and four persisted media items. No real account data or credentials are used.
 
@@ -25,7 +25,7 @@ CAPTURE_SOURCE_PHASE=after node docs/ux/CHE-2123/capture.mjs
 
 The harness needs `/usr/bin/google-chrome` and the installed Electron binary. Electron uses its headless native platform on X99; neither a physical device nor a MacBook is required. Ports 31953 and 31954 must be free. `CAPTURE_WEB=0` or `CAPTURE_DESKTOP=0` selects one surface. Output goes to `evidence/che-2123/captures/`. `CAPTURE_OUTPUT` overrides that directory.
 
-For the before captures, run this revision's harness with the baseline checkout as the working directory. Pin the baseline checkout to `13613770066f99d1e8389e73fe877d11a20c4ee0`. Set `CAPTURE_SOURCE_PHASE=before CAPTURE_MEDIA=0 CAPTURE_DESKTOP=0`. The fixture media lives in a persisted comment, not the issue description's editing-only surface. The harness reads both comment and timeline endpoints.
+For the before captures, run this revision's harness with the baseline checkout as the working directory. Pin the baseline checkout to `13613770066f99d1e8389e73fe877d11a20c4ee0`. Set `CAPTURE_SOURCE_PHASE=before CAPTURE_MEDIA=0 CAPTURE_DESKTOP=0`. The fixture includes comment media and saved Mermaid/HTML issue-description blocks. The harness reads both comment and timeline endpoints. The after phase separately opens the saved description blocks through the real ContentEditor and checks their popup URLs.
 
 Source pages use the canonical `CAP-1` issue URL. The fixture accepts that identifier and the source ID. This avoids a canonical-route replacement during capture. The harness waits for actual SVG/HTML/image/table content. Reduced motion and disabled screenshot animations avoid recording a dialog's transparent entry frame.
 
@@ -33,27 +33,32 @@ The harness closes its own browser, native windows, fixture API, and Next proces
 
 ## Capture Matrix
 
-After runtime: `4858f1dcd1795ebde79239fc8130699edf47f0d5`. Before runtime: `13613770066f99d1e8389e73fe877d11a20c4ee0`. Subsequent commits in this fix cycle contain documentation, capture tooling, logs, and PNGs only. Verify runtime-source parity with `git diff --exit-code 4858f1dcd1795ebde79239fc8130699edf47f0d5 HEAD -- apps packages`.
+After source: `6aa9943b2680749832c336fa2cd84050fb40ae0e`. Before source: `13613770066f99d1e8389e73fe877d11a20c4ee0`. Subsequent commits in this fix cycle contain documentation, logs, and PNGs only. Verify runtime-source parity with `git diff --exit-code 6aa9943b2680749832c336fa2cd84050fb40ae0e HEAD -- apps packages`.
 
 | Surface | Width | Before | After |
 | --- | --- | --- | --- |
 | Web Mermaid / table / image / HTML | 1440 / 390 | Not applicable: new route | `captures/web-{kind}-{width}-after.png` |
 | Desktop Mermaid / table / image / HTML | 960 | Not applicable: new route | `captures/desktop-{kind}-960-after.png` |
 | Source Mermaid / table / image / HTML dialogs | 1440 / 390 | `captures/source-{kind}-{width}-before.png` | `captures/source-{kind}-{width}-after.png` |
+| Saved description Mermaid / HTML | 1440 / 390 | Dialog baseline above | `captures/description-{kind}-{width}-after.png` |
 | Denied web route | 1440 | Not applicable: new route | `captures/web-denied-1440.png` |
 
-Contact sheets: `source-dialogs-1440-contact-sheet.png`, `source-dialogs-390-contact-sheet.png`, `web-contact-sheet.png`, and `desktop-contact-sheet.png`. Each sheet lives in `captures/`. The image fixture is the approved design board PNG. Apparent app chrome inside that image is image content, not the surrounding media route.
+Contact sheets: `source-dialogs-1440-contact-sheet.png`, `source-dialogs-390-contact-sheet.png`, `saved-description-contact-sheet.png`, `web-contact-sheet.png`, and `desktop-contact-sheet.png`. Each sheet lives in `captures/`. The image fixture is the approved design board PNG. Apparent app chrome inside that image is image content, not the surrounding media route.
 
 Manual Keep / Change / Remove check:
 - Keep: shared media toolbar and stage, source dialog dismissal, sandboxed HTML/diagram documents, and existing viewer tools.
 - Change: persisted source Open actions resolve actual media-page popups; standalone Copy link and reload pass; phone More has Enter/Tab/Escape paths.
-- Remove: standalone issue/comments/app shell/Close are absent. No unrelated removal is intended.
+- Remove: none from source dialogs. Close stays visible outside More at 390 px for Mermaid, table, image, and HTML. Standalone media pages intentionally omit issue/comments/app shell/Close.
 
-The web phase completed and printed `WEB PASS` before the combined capture command failed on Electron's 60-second launch timeout. `web-receipt.json` is an author summary of that observed phase, not an auto-generated successful-run receipt. Its raw requests and console transcript are retained. A desktop-only run with a 300-second launch allowance then completed with exit 0 and printed `DESKTOP PASS`. `desktop-receipt.json` is that run's unmodified harness receipt.
+The current web-only and desktop-only runs both completed with exit 0. `web-receipt.json` and `desktop-receipt.json` are unmodified successful harness receipts at the captured source. Web covers all four source dialogs at 1440/390, saved Mermaid/HTML description popups at both widths, standalone pages at both widths, reload/copy-link, phone keyboard paths, and denied-page zero-media requests. Desktop covers native IPC windows for all four kinds, reload, and public copy links. Logs: `logs/review2-{web,desktop}-capture.txt`.
+
+The saved-description capture expands the collapsed description and uses focus/Enter to open each preview. Mermaid's unchanged inline opener overlaps the editor's Copy control under pointer activation. No pointer-activation PASS or repair is claimed for that opener. The first provisional capture stopped at the collapsed block; the second stopped at the overlapping control. Only the completed keyboard-path run supplies final after PNGs. Comment-dialog Open buttons and saved-description Open buttons both resolve the expected popup URL.
 
 The baseline full capture receipt is `source-before-receipt.json`. A transparent table-dialog entry frame at 1440 required a reduced-motion recapture. The replacement has its own `source-table-before-receipt.json`. Other provisional failures involved missing root TypeScript links, canonical-route timing, and a missing required fixture comment `type`. Provisional screenshots do not serve as final evidence.
 
 Desktop emits security-configuration warnings and an expected missing daemon IPC handler in the isolated capture build. These warnings are retained in the raw log. Capture success does not certify desktop hardening. Preview: not available. Independent UX verdict: pending.
+
+Desktop's version metadata includes a dirty marker from uncommitted documentation/evidence. `git diff --exit-code 6aa9943b2680749832c336fa2cd84050fb40ae0e HEAD -- apps packages` is empty. No product source changed after capture.
 
 ## Checks
 
@@ -62,9 +67,9 @@ Committed console transcripts remove trailing whitespace and final blank lines o
 - `logs/permission-red.txt` and `logs/permission-green.txt`: observed test-first behavioral failure and pass for cached-media suppression on HTTP 403. This test targets the existing attachment route, not a new server endpoint. Parent: `13613770066f99d1e8389e73fe877d11a20c4ee0`.
 - `logs/more-escape-red.txt` and `logs/more-escape-green.txt`: observed failure and pass when a nested toolbar action consumes Escape. Parent: `335590f233c1eae9a170b4da2fd540e01f0ae690`.
 - Original new-route permission tests in `media-page.test.tsx` and `resolve-media.test.ts` are **retrospective**. No behavioral red was observed for those tests. The attachment-route red does not satisfy the new-route requirement. Only Cheese can waive this run-practice gap. No waiver is claimed or requested in this draft correction.
-- Current review rerun: 181 tests in 10 files, views/web/desktop typechecks, and focused views/desktop ESLint pass. The 404-display regression below does not supply authorization-red evidence.
+- Current review rerun: 184 tests in 12 files; views/web/desktop typechecks pass. Scoped ESLint passes with zero warnings outside the unchanged content-editor warning. The 404-display regression below does not supply authorization-red evidence.
 - Earlier execution: viewer suite 405 tests in 11 files; desktop suite 76 tests in 5 files; core suite 8 tests. Those counts are retained history, not a rerun on the review-corrected source.
-- Views, web, and desktop typechecks pass. Focused views ESLint reports no warnings or errors. Full repository suites and backend integration are NOT-RUN locally.
+- Full changed-file ESLint reports one pre-existing `react-hooks/exhaustive-deps` warning for `inFlightUploadsRef.current` in `content-editor.tsx`. Running ESLint on that file from parent `25da33c992dd409c1ffd0cf1c9d1733b99612c08` reports the same warning. No budget increase or suppression is added. Logs: `review2-lint.txt`, `review2-lint-baseline.txt`, and `review2-lint-scoped.txt`. Full repository suites and backend integration are NOT-RUN locally.
 - Web: four kinds at 1440 and 390 px, reload, copy-link, native Enter/Tab/Escape path, and denied image route with zero additional fixture-image requests.
 - Desktop: actual `openMediaWindow` IPC, four native windows at 960 by 760, reload, and public copy-link values.
 
@@ -82,6 +87,19 @@ Parent: `ee28bd4980c424531223b63857276aba02bec64d`. Each test was added and obse
 Prefix each suffix with `pnpm --filter @multica/views test`. The editor boundary clears persisted media context for both HTML and Mermaid drafts. HTML retains its preview without an invalid persisted-media action. The title test covers Mermaid, table, image, HTML, and attachment.
 
 The import-only edits have no behavioral-red claim. `review-suite-green.txt`, `review-lint.txt`, and `review-*-typecheck.txt` retain the current validation output.
+
+## Second Review Correction: Observed Red / Green
+
+Parent: `25da33c992dd409c1ffd0cf1c9d1733b99612c08`. Both test files were written and run before implementation. Prefix each command suffix with `pnpm --filter @multica/views exec vitest run`.
+
+| Fix | Command suffix | Observed red, exit 1 | Observed green, exit 0 |
+| --- | --- | --- | --- |
+| Saved description links | `editor/content-editor-media.test.tsx --reporter=verbose` | 2 failed, 2 passed. Saved Open is missing; edit/undo case also fails at its initial saved-action assertion. Unsaved and composer checks already pass. | 4 passed, including saved popup, unsaved block, edit/undo, and composer checks. |
+| Visible phone Close | `media/media-dialog-close.test.tsx --reporter=verbose` | 3 behavioral failures: Mermaid/table/HTML Close is inside details, expected null. Image also fails, but at API fixture setup, not the behavior. | 4 passed. Every dialog Close is outside More, focusable, and dismisses without opening More. |
+
+Raw logs: `logs/review2-{description,close}-{red,green}.txt`. The image setup was repaired after implementation, so that image assertion is retrospective; no image-specific behavioral red is claimed. The combined green suite is `logs/review2-suite-green.txt` (184 tests in 12 files). Failed intermediate green attempts remain local and are not presented as passes.
+
+Code-read-only optional finding: desktop `MediaUnavailablePage` still links to `/`, and the issue-window navigation adapter opens that destination in the browser. Its `min-h-screen` is inside the frame's remaining height below DragStrip. This optional behavior is unchanged. A denied desktop-window recovery/overflow capture is NOT-RUN; no scroll outcome is claimed.
 
 ## Draft Hold
 
@@ -138,3 +156,19 @@ Cleanup receipt
 ```
 
 These are observed shared-mount changes during the cleanup interval. Concurrent work consumed space on `/tmp`, despite removal of this task's isolated profile. No nominal file-size sum is reported as returned space.
+
+## Second Review Cleanup Receipt
+
+```text
+Cleanup receipt
+- Mount: workspace; df -B1 before: 306524028928; after: 307595808768; net returned: 1071779840 bytes.
+- Mount: /tmp; df -B1 before: 129421426688; after: 129425227776; net returned: 3801088 bytes.
+- Removed (exact paths): apps/web/.next; apps/desktop/out; /tmp/che-2123-capture-home.
+- Reference check: all local test/build/capture sessions collected; ports 31953 and 31954 returned ECONNREFUSED; git worktree list contains only the task checkout.
+- Recoverable because: generated Next/Electron output and the isolated capture profile can be recreated with the committed harness.
+- Preserved on purpose: published captures/transcripts, raw/provisional evidence, task dependencies, shared caches, and unrelated reference checkouts.
+- Health after: multica daemon status reports running, PID 1915359. No daemon restart or reload was performed.
+- Residual / owner decision: x99-codex-sol retains task dependencies and raw evidence for review corrections. No human decision is required.
+```
+
+These figures are observed shared-mount free-space changes, not sums of nominal artifact sizes.
