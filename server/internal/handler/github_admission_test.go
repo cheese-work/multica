@@ -98,6 +98,37 @@ func TestGitHubAdmissionT3ForeignEditQuarantined(test *testing.T) {
 	assertGitHubIntakeNoEffects(test, fixture)
 }
 
+func TestGitHubAdmissionForeignEditPermanentDenials(test *testing.T) {
+	for _, scenario := range []struct{ name, reason string }{
+		{"fork", "fork_pull_request"},
+		{"no_linked_issue", "no_linked_issue"},
+	} {
+		test.Run(scenario.name, func(test *testing.T) {
+			fixture := newGitHubIntakeFixture(test)
+			fixture.payload["action"] = "edited"
+			fixture.payload["sender"] = map[string]any{"id": 99, "login": "other-writer", "type": "User"}
+			switch scenario.name {
+			case "fork":
+				fixture.payload["pull_request"].(map[string]any)["head"].(map[string]any)["repo"] = map[string]any{"id": 9002, "full_name": "outsider/widget", "fork": true}
+			case "no_linked_issue":
+				dbfx.Exec(test, `DELETE FROM issue_pull_request WHERE issue_id=$1`, fixture.issueID)
+			}
+			delivery := fixture.issueID + "-foreign-" + scenario.name
+			if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+				test.Fatalf("intake = %d %s", response.Code, response.Body.String())
+			}
+			assertGitHubIntakeNoEffects(test, fixture)
+			var state, reason string
+			if err := testPool.QueryRow(context.Background(), `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason); err != nil {
+				test.Fatal(err)
+			}
+			if state != "denied" || reason != scenario.reason {
+				test.Fatalf("foreign edit = %s/%s, want denied/%s", state, reason, scenario.reason)
+			}
+		})
+	}
+}
+
 func TestGitHubAdmissionT23SameBodySelfEditIsNewRevision(test *testing.T) {
 	fixture := newGitHubIntakeFixture(test)
 	for _, suffix := range []string{"initial", "edit", "redelivery"} {

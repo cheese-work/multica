@@ -217,9 +217,6 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 		return pullID, "", "", err
 	}
-	if payload.Sender.ID != object.User.ID {
-		return pullID, "quarantined", "foreign_editor", nil
-	}
 	headRepo := payload.PullRequest.Head.Repo
 	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" {
 		return pullID, "deferred", "missing_pull_request_metadata", nil
@@ -253,6 +250,9 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 			return pullID, "", "", err
 		}
 		if issue.WorkspaceID == workspaceID {
+			if payload.Sender.ID != object.User.ID {
+				return pullID, "quarantined", "foreign_editor", nil
+			}
 			return pullID, "deferred", "awaiting_admission", nil
 		}
 	}

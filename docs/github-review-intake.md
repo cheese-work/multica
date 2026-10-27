@@ -108,6 +108,10 @@ Each call reads the signed node through installation-authenticated GraphQL. The
 node ID, full numeric database ID and object type must match. The API body is
 used only for a SHA-256 equality check and is never returned as actionable text.
 
+Permanent intake denials, including fork PRs and missing issue linkage, take
+precedence over foreign-editor quarantine. Only an otherwise eligible revision
+can be quarantined for a foreign signed sender.
+
 | Signed revision and GraphQL provenance | Decision |
 | --- | --- |
 | Initial: sender = author = trusted ID; `editor: null`, `lastEditedAt: null`, equal body hash | admitted |
