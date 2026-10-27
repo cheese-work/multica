@@ -484,6 +484,9 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "[NEW COMMENT] %s just left a new comment. Focus on THIS comment — do not confuse it with previous ones:\n\n", authorLabel)
 		}
 		fmt.Fprintf(&b, "> %s\n\n", task.TriggerCommentContent)
+		if editedSinceResume {
+			b.WriteString(buildEditedTriggerNote(task))
+		}
 		if task.TriggerThreadContext != "" {
 			fmt.Fprintf(&b, "Thread context (thread %s, earlier messages, oldest first; the comment above is the newest):\n\n```text\n%s\n```\n\n", task.TriggerThreadID, task.TriggerThreadContext)
 		}
