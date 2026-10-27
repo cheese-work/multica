@@ -226,3 +226,25 @@ func TestRunBudgetConcurrentReviewsOfOneHeadAdmitOne(t *testing.T) {
 		t.Fatalf("next run on the same head = %v, want ErrRunBudgetExhausted", err)
 	}
 }
+
+// A block says which run was refused and the exact command that lifts it.
+func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newEdgeCase(t, 2226001, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_progress")
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(context.Background(), issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("run over the cap = %v, want ErrRunBudgetExhausted", err)
+	}
+	settle()
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s, want blocked after a plain retry past the cap", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_command' LIKE 'multica issue budget raise % --runs %' AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
+		t.Fatalf("run_budget_exhausted activity with refused_run and raise_command = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
+		t.Fatalf("block comment naming the run and the raise command = %d, want 1", n)
+	}
+}
