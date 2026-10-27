@@ -84,7 +84,7 @@ jobs:
     # The manual path skips candidate-preflight, so this must not be skipped
     # just because that job did not run.
     if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: c00-production
     concurrency:
       group: cd-deploy-c00-approval
@@ -106,9 +106,10 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Install the YAML parser the path-filter reader needs
         shell: bash
@@ -159,9 +160,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       # Before anything reads C00: CI's required checks finish well after
       # this workflow is triggered, and the baseline read below should be as
@@ -181,7 +183,7 @@ jobs:
         run: bash deploy/cd/record-checks.sh "$SOURCE_SHA" cd-checks.json
 
       - name: Download D1 build evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-build-evidence-${{ github.event.workflow_run.head_sha }}
           path: d1-evidence
@@ -254,7 +256,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Upload the release-candidate evidence set
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
           path: |
@@ -275,7 +277,7 @@ jobs:
     # supplies an already-issued manifest), so this must not be skipped just
     # because that job did not run. Nothing runs without the approval.
     if: always() && needs.approve-c00.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
       ref: ${{ steps.paths.outputs.ref }}
@@ -314,13 +316,14 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Download the prepared evidence set
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
           path: cd-evidence
@@ -363,7 +366,7 @@ jobs:
           cp "$BASELINE_TUPLE_PATH" cutover-input/baseline-tuple.json
 
       - name: Upload exact cutover input layout
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-deploy-admitted-input
           path: cutover-input
@@ -400,12 +403,13 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Download exact cutover input layout
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-deploy-admitted-input
           path: cutover-input

@@ -68,6 +68,7 @@
     "continuation_summary": "会話の要約",
     "earlier_dm": "以前のDM",
     "quote_message": "引用",
+    "speaker_you": "あなた",
     "load_older_messages": "さらに前のメッセージを読み込む",
     "show_details": "詳細を表示",
     "replied_in": "{{elapsed}}で返信",
