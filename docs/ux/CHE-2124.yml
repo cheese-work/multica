@@ -1,0 +1,17 @@
+issue: CHE-2124
+design: design/plan-revision-viewer/rev-2/A.html @ aa8306b19818658407f6eefcc495859b026b5a8a
+decision: 01a17b74-7f95-703c-977d-9f0cbb1e8cbf
+pages:
+  - id: plan-revision-viewer
+    url: /:workspace/attachments/:attachmentId
+    keep: [revision-document, revision-download, revision-close]
+    change:
+      - revision-toolbar: One compact row. Below 700 px keep Diff and change navigation visible; secondary controls use one overflow menu.
+      - revision-content: Render current Markdown with Diff off; show literal unified or aligned split source with collapsed context when enabled.
+      - revision-base: Earlier same-issue revisions, explicit duplicate choice, ICT time and uploader.
+    remove: []
+verification:
+  before: NOT-CAPTURED pending isolated product environment
+  after: NOT-CAPTURED pending implementation
+  preview: not available
+  visual_diff: NOT-RUN
