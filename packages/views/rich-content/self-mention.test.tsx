@@ -33,16 +33,25 @@ const CONTENT = [
 ].join(" ");
 
 // WCAG relative luminance of an `oklch(L C H)` token (oklab -> linear sRGB).
+type Vec3 = [number, number, number];
+const cube = ([x, y, z]: Vec3): Vec3 => [x ** 3, y ** 3, z ** 3];
+
 function luminance(oklch: string) {
-  const [l, c, h] = oklch.match(/oklch\(([^)]+)\)/)![1].split(/\s+/).map(Number);
+  const [l, c, h] = oklch.match(/oklch\(([^)]+)\)/)![1]!.split(/\s+/).map(Number) as Vec3;
   const a = c * Math.cos((h * Math.PI) / 180);
   const b = c * Math.sin((h * Math.PI) / 180);
-  const [lp, mp, sp] = [l + 0.3963377774 * a + 0.2158037573 * b, l - 0.1055613458 * a - 0.0638541728 * b, l - 0.0894841775 * a - 1.291485548 * b].map((v) => v ** 3);
-  const [r, g, bl] = [
-    4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp,
-    -1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp,
-    -0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp,
-  ].map((v) => Math.min(1, Math.max(0, v)));
+  const [lp, mp, sp] = cube([
+    l + 0.3963377774 * a + 0.2158037573 * b,
+    l - 0.1055613458 * a - 0.0638541728 * b,
+    l - 0.0894841775 * a - 1.291485548 * b,
+  ]);
+  const [r, g, bl] = (
+    [
+      4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp,
+      -1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp,
+      -0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp,
+    ] as Vec3
+  ).map((v) => Math.min(1, Math.max(0, v))) as Vec3;
   return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
 }
 
