@@ -102,8 +102,8 @@ func newGitHubReviewFixture(t *testing.T) githubReviewFixture {
 		handler: &handler, issueID: fixture.child.ID, author: author, other: other, source: sourceTaskID, secret: fixture.secret,
 		payload: map[string]any{
 			"action": "submitted", "installation": map[string]any{"id": installationID},
-			"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
-			"pull_request": map[string]any{"number": 2019},
+			"repository":   githubRepositoryForTest("acme", "widget"),
+			"pull_request": map[string]any{"number": 2019, "head": map[string]any{"repo": githubRepositoryForTest("acme", "widget")}},
 			"review": map[string]any{
 				"id": 77, "state": "changes_requested", "body": "Please fix the error path.",
 				"html_url": "https://github.com/acme/widget/pull/2019#pullrequestreview-77",

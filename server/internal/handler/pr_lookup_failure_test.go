@@ -150,13 +150,13 @@ func TestPRIssueLookupFailurePreservesLinksAndRetry(t *testing.T) {
 						}
 						raw, err := json.Marshal(map[string]any{
 							"action": action, "installation": map[string]any{"id": installationID},
-							"repository": map[string]any{"name": "widget", "owner": map[string]any{"login": "acme", "username": "acme"}},
+							"repository": map[string]any{"id": 424242, "name": "widget", "owner": map[string]any{"login": "acme", "username": "acme"}},
 							"pull_request": map[string]any{
 								"number": number, "title": title, "body": "Closes " + identifier,
 								"state": state, "merged": merged, "html_url": fmt.Sprintf("https://example.test/acme/widget/pull/%d", number),
 								"merged_at": mergedAt, "closed_at": mergedAt,
 								"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
-								"head": map[string]any{"ref": "fix/lookup"},
+								"head": map[string]any{"ref": "fix/lookup", "repo": githubRepositoryForTest("acme", "widget")},
 							},
 						})
 						if err != nil {
