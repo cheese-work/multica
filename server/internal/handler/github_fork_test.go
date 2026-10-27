@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -91,8 +92,12 @@ func TestGitHubForkGateReviewWake(t *testing.T) {
 			fixture := newGitHubReviewFixture(t)
 			fixture.payload["repository"].(map[string]any)["id"] = 10
 			fixture.payload["pull_request"] = githubForkGatePR(t, fixture, candidate.head)
-			if response := fixture.post("pull_request_review", fixture.secret, candidate.name); response.Code != http.StatusAccepted {
-				t.Fatalf("review: %d %s", response.Code, response.Body.String())
+			body, err := json.Marshal(fixture.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
+				t.Fatal(err)
 			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != candidate.want {
 				t.Errorf("task-key resolved runs = %d, want %d", count, candidate.want)
@@ -109,8 +114,12 @@ func TestGitHubForkGateExplicitAuthorBinding(t *testing.T) {
 	fixture.payload["repository"].(map[string]any)["id"] = 10
 	fixture.payload["pull_request"] = githubForkGatePR(t, fixture, map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true})
 	dbfx.Exec(t, `UPDATE workspace SET settings=jsonb_set(settings,'{github_review_authors}',jsonb_build_object('acme/widget#2019',$1::text)) WHERE id=$2`, fixture.author, testWorkspaceID)
-	if response := fixture.post("pull_request_review", fixture.secret, "fork-explicit-author"); response.Code != http.StatusAccepted {
-		t.Fatalf("review: %d %s", response.Code, response.Body.String())
+	body, err := json.Marshal(fixture.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
+		t.Fatal(err)
 	}
 	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
 		t.Fatalf("explicit author binding bypassed fork gate: %d runs", count)
