@@ -169,7 +169,7 @@ export const SlashCommandList = forwardRef<
         return (
           <button
             key={item.id}
-            data-testid={isClientCommand(item) ? `chat-command-${item.id}` : undefined}
+            data-testid={isRegistryCommand(item) ? `chat-command-${item.id}` : undefined}
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
@@ -178,7 +178,7 @@ export const SlashCommandList = forwardRef<
             }`}
             onClick={() => selectItem(index)}
           >
-            {isClientCommand(item) ? (
+            {isRegistryCommand(item) ? (
               <span className="flex w-full items-center justify-between gap-2 font-medium">
                 <span className="font-mono">
                   /{item.label}{" "}
@@ -192,16 +192,18 @@ export const SlashCommandList = forwardRef<
                     </span>
                   )}
                 </span>
-                <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
-                  {t(($) => $.slash_command.client_command)}
-                </span>
+                {isClientCommand(item) ? (
+                  <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
+                    {t(($) => $.slash_command.client_command)}
+                  </span>
+                ) : null}
               </span>
             ) : (
               <span className="font-medium">/{item.label}</span>
             )}
             {description && (
               <span
-                className={isClientCommand(item)
+                className={isRegistryCommand(item)
                   ? "text-muted-foreground"
                   : "truncate text-muted-foreground"}
               >
@@ -220,9 +222,13 @@ export const SlashCommandList = forwardRef<
   );
 });
 
-/** Built-ins handled by the Multica client/server rather than the agent. */
-const isClientCommand = (item: SlashCommandItem) =>
+/** Built-ins in the command registry; they insert plain text, not a skill node. */
+const isRegistryCommand = (item: SlashCommandItem) =>
   item.descriptionKey !== undefined && getChatCommand(item.descriptionKey) !== undefined;
+
+/** Registry commands the client runs itself. A `prompt` command still runs the agent. */
+const isClientCommand = (item: SlashCommandItem) =>
+  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey)?.kind === "client";
 
 /** The DM commands that take no argument, so the menu shows no hint after them. */
 const isNoArgumentCommand = (item: SlashCommandItem) =>
@@ -345,7 +351,7 @@ export function createSlashCommandSuggestion(
         range.to += 1;
       }
 
-      if (isClientCommand(props)) {
+      if (isRegistryCommand(props)) {
         editor
           .chain()
           .focus()
