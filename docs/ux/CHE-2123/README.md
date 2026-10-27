@@ -1,9 +1,9 @@
 ## Candidate
 
-Runtime source: `0bb2d04d80ca3b689986b5badbe33d7e3d16c87d`.
+Runtime source: `4858f1dcd1795ebde79239fc8130699edf47f0d5`.
 Approved design: `design/viewer-media-pages/rev-1/A.html` @ `13613770066f99d1e8389e73fe877d11a20c4ee0`.
 
-The lint follow-up adds `context.kind` to the desktop router memo dependencies. The captures above predate this source change; they have not been rerun on the corrected head. Source-dialog before/after captures remain NOT-CAPTURED.
+The review correction fixes Escape on a closed phone More summary, matches the normal not-found recovery page, hides media links in unsaved editor previews, and uses translated native-window titles. Imports now use the existing import blocks.
 
 The capture build uses real product Electron main IPC, preload, routing, and shared viewers. Only daemon-manager and updater startup are stubbed. The build does not start or modify the workspace daemon. Web uses the real Next application. Both use a synthetic local API with a fixture user, workspace, issue, and four persisted media items. No real account data or credentials are used.
 
@@ -20,12 +20,40 @@ VITE_WS_URL=ws://127.0.0.1:31954/ws \
 pnpm --filter @multica/desktop exec electron-vite build \
   --config ../../docs/ux/CHE-2123/capture.config.ts
 
-node docs/ux/CHE-2123/capture.mjs
+CAPTURE_SOURCE_PHASE=after node docs/ux/CHE-2123/capture.mjs
 ```
 
-The harness needs `/usr/bin/google-chrome` and the installed Electron binary. Electron uses its headless native platform on X99; neither a physical device nor a MacBook is required. Ports 31953 and 31954 must be free. `CAPTURE_WEB=0` or `CAPTURE_DESKTOP=0` selects one surface. Output goes to `evidence/che-2123/captures/`.
+The harness needs `/usr/bin/google-chrome` and the installed Electron binary. Electron uses its headless native platform on X99; neither a physical device nor a MacBook is required. Ports 31953 and 31954 must be free. `CAPTURE_WEB=0` or `CAPTURE_DESKTOP=0` selects one surface. Output goes to `evidence/che-2123/captures/`. `CAPTURE_OUTPUT` overrides that directory.
+
+For the before captures, run this revision's harness with the baseline checkout as the working directory. Pin the baseline checkout to `13613770066f99d1e8389e73fe877d11a20c4ee0`. Set `CAPTURE_SOURCE_PHASE=before CAPTURE_MEDIA=0 CAPTURE_DESKTOP=0`. The fixture media lives in a persisted comment, not the issue description's editing-only surface. The harness reads both comment and timeline endpoints.
+
+Source pages use the canonical `CAP-1` issue URL. The fixture accepts that identifier and the source ID. This avoids a canonical-route replacement during capture. The harness waits for actual SVG/HTML/image/table content. Reduced motion and disabled screenshot animations avoid recording a dialog's transparent entry frame.
 
 The harness closes its own browser, native windows, fixture API, and Next process group in `finally`. Its isolated Electron profile is `/tmp/che-2123-capture-home`. The harness is a manual evidence tool, not a persistent preview service.
+
+## Capture Matrix
+
+After runtime: `4858f1dcd1795ebde79239fc8130699edf47f0d5`. Before runtime: `13613770066f99d1e8389e73fe877d11a20c4ee0`. Subsequent commits in this fix cycle contain documentation, capture tooling, logs, and PNGs only. Verify runtime-source parity with `git diff --exit-code 4858f1dcd1795ebde79239fc8130699edf47f0d5 HEAD -- apps packages`.
+
+| Surface | Width | Before | After |
+| --- | --- | --- | --- |
+| Web Mermaid / table / image / HTML | 1440 / 390 | Not applicable: new route | `captures/web-{kind}-{width}-after.png` |
+| Desktop Mermaid / table / image / HTML | 960 | Not applicable: new route | `captures/desktop-{kind}-960-after.png` |
+| Source Mermaid / table / image / HTML dialogs | 1440 / 390 | `captures/source-{kind}-{width}-before.png` | `captures/source-{kind}-{width}-after.png` |
+| Denied web route | 1440 | Not applicable: new route | `captures/web-denied-1440.png` |
+
+Contact sheets: `source-dialogs-1440-contact-sheet.png`, `source-dialogs-390-contact-sheet.png`, `web-contact-sheet.png`, and `desktop-contact-sheet.png`. Each sheet lives in `captures/`. The image fixture is the approved design board PNG. Apparent app chrome inside that image is image content, not the surrounding media route.
+
+Manual Keep / Change / Remove check:
+- Keep: shared media toolbar and stage, source dialog dismissal, sandboxed HTML/diagram documents, and existing viewer tools.
+- Change: persisted source Open actions resolve actual media-page popups; standalone Copy link and reload pass; phone More has Enter/Tab/Escape paths.
+- Remove: standalone issue/comments/app shell/Close are absent. No unrelated removal is intended.
+
+The web phase completed and printed `WEB PASS` before the combined capture command failed on Electron's 60-second launch timeout. `web-receipt.json` is an author summary of that observed phase, not an auto-generated successful-run receipt. Its raw requests and console transcript are retained. A desktop-only run with a 300-second launch allowance then completed with exit 0 and printed `DESKTOP PASS`. `desktop-receipt.json` is that run's unmodified harness receipt.
+
+The baseline full capture receipt is `source-before-receipt.json`. A transparent table-dialog entry frame at 1440 required a reduced-motion recapture. The replacement has its own `source-table-before-receipt.json`. Other provisional failures involved missing root TypeScript links, canonical-route timing, and a missing required fixture comment `type`. Provisional screenshots do not serve as final evidence.
+
+Desktop emits security-configuration warnings and an expected missing daemon IPC handler in the isolated capture build. These warnings are retained in the raw log. Capture success does not certify desktop hardening. Preview: not available. Independent UX verdict: pending.
 
 ## Checks
 
@@ -33,14 +61,31 @@ Committed console transcripts remove trailing whitespace and final blank lines o
 
 - `logs/permission-red.txt` and `logs/permission-green.txt`: observed test-first behavioral failure and pass for cached-media suppression on HTTP 403. This test targets the existing attachment route, not a new server endpoint. Parent: `13613770066f99d1e8389e73fe877d11a20c4ee0`.
 - `logs/more-escape-red.txt` and `logs/more-escape-green.txt`: observed failure and pass when a nested toolbar action consumes Escape. Parent: `335590f233c1eae9a170b4da2fd540e01f0ae690`.
-- Viewer suite: 405 tests in 11 files. Desktop suite: 76 tests in 5 files. Core suite: 8 tests. Total: 489 tests.
+- Original new-route permission tests in `media-page.test.tsx` and `resolve-media.test.ts` are **retrospective**. No behavioral red was observed for those tests. The attachment-route red does not satisfy the new-route requirement. Only Cheese can waive this run-practice gap. No waiver is claimed or requested in this draft correction.
+- Current review rerun: 181 tests in 10 files, views/web/desktop typechecks, and focused views/desktop ESLint pass. The 404-display regression below does not supply authorization-red evidence.
+- Earlier execution: viewer suite 405 tests in 11 files; desktop suite 76 tests in 5 files; core suite 8 tests. Those counts are retained history, not a rerun on the review-corrected source.
 - Views, web, and desktop typechecks pass. Focused views ESLint reports no warnings or errors. Full repository suites and backend integration are NOT-RUN locally.
 - Web: four kinds at 1440 and 390 px, reload, copy-link, native Enter/Tab/Escape path, and denied image route with zero additional fixture-image requests.
 - Desktop: actual `openMediaWindow` IPC, four native windows at 960 by 760, reload, and public copy-link values.
 
+## Review Correction: Observed Red / Green
+
+Parent: `ee28bd4980c424531223b63857276aba02bec64d`. Each test was added and observed failing before its corresponding implementation change. The same focused command then passed. Each log pair is in `logs/review-{slice}-{red,green}.txt`.
+
+| Slice | Focused views test command suffix | Observed red, exit 1 | Observed green, exit 0 |
+| --- | --- | --- | --- |
+| `escape` | `media/media-context.test.tsx -t 'closed More'` | Document listener called 0 times, expected once; 1 failed | 1 passed |
+| `not-found` | `media/media-page.test.tsx -t 'normal not-found'` | Missing `404` text; 1 failed | 1 passed |
+| `draft` | `editor/extensions/code-block-view.test.tsx -t 'unsaved HTML'` | Draft media-link action was not null; 1 failed | 1 passed |
+| `title` | `media/media-context.test.tsx -t 'readable title'` | 4 failed, 1 already passed | 5 passed |
+
+Prefix each suffix with `pnpm --filter @multica/views test`. The editor boundary clears persisted media context for both HTML and Mermaid drafts. HTML retains its preview without an invalid persisted-media action. The title test covers Mermaid, table, image, HTML, and attachment.
+
+The import-only edits have no behavioral-red claim. `review-suite-green.txt`, `review-lint.txt`, and `review-*-typecheck.txt` retain the current validation output.
+
 ## Draft Hold
 
-The new media route has no baseline page. Source-dialog before/after captures at 1440 and 390 px remain NOT-CAPTURED. The UI review pack is incomplete. Independent code and UX review remain pending. Do not mark the PR ready until those gates are satisfied.
+Independent code and UX review remain pending. The original new-route test-first gap remains open. The leader requests a Cheese waiver only at ready time. Do not mark the PR ready in this fix cycle. No merge or deploy is requested.
 
 Visual diff: NOT-RUN (CHE-1485 Layer B pending).
 
@@ -60,7 +105,7 @@ The focused desktop rerun passes 33 tests in 5 files: `issue-window.test.tsx`, s
 
 `pnpm --filter @multica/desktop typecheck` also passes both the main/preload and renderer checks. `git diff --check` passes.
 
-## Cleanup Receipt
+## Earlier Cleanup Receipt
 
 Initial free space before task writes: workspace 127366287360 bytes; `/tmp` 175870824448 bytes. The host is shared, so whole-run free-space changes are not attributable to this task alone.
 
@@ -77,3 +122,19 @@ Cleanup receipt
 ```
 
 The net figures are observed shared-mount free-space changes during cleanup, not sums of nominal file sizes.
+
+## Review-Correction Cleanup Receipt
+
+```text
+Cleanup receipt
+- Mount: workspace; df -B1 before: 314568343552; after: 316216238080; net returned: 1647894528 bytes.
+- Mount: /tmp; df -B1 before: 141650382848; after: 141356769280; net returned: -293613568 bytes.
+- Removed (exact paths): ../che-2123-ui-baseline worktree; apps/web/.next; apps/desktop/out; /tmp/che-2123-capture-home.
+- Reference check: all capture sessions collected; ports 31953 and 31954 returned ECONNREFUSED; git worktree list contains only the task checkout after cleanup.
+- Recoverable because: the detached baseline is pinned, and generated Next/Electron outputs and the isolated profile are reproducible with the documented harness.
+- Preserved on purpose: published captures and transcripts, local raw/provisional evidence, task dependencies, shared caches, and unrelated reference checkouts.
+- Health after: multica daemon status reports running. No daemon restart or reload was performed.
+- Residual / owner decision: x99-codex-sol retains task dependencies and raw evidence for review corrections. No human decision is required.
+```
+
+These are observed shared-mount changes during the cleanup interval. Concurrent work consumed space on `/tmp`, despite removal of this task's isolated profile. No nominal file-size sum is reported as returned space.

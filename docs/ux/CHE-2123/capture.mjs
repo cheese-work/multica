@@ -21,7 +21,7 @@ const html = '<!doctype html><html><head><style>body{font:16px system-ui;margin:
 const imageUrl = `${apiOrigin}/fixture/image.png`;
 const content = `# Capture fixture\n\nSurrounding issue text must not appear on a media page.\n\n\`\`\`mermaid\n${chart}\n\`\`\`\n\n${table}\n\n![Media fixture](${imageUrl})\n\n\`\`\`html\n${html}\n\`\`\``;
 const issue = { id: "issue-1", workspace_id: "ws-1", number: 1, identifier: "CAP-1", title: "Viewer media fixture", description: "The persisted media source is in the comment below.", status: "in_progress", priority: "medium", assignee_type: null, assignee_id: null, creator_type: "member", creator_id: "user-1", parent_issue_id: null, project_id: null, position: 0, start_date: null, due_date: null, metadata: {}, properties: {}, created_at: "2026-10-27T00:00:00Z", updated_at: "2026-10-27T00:00:00Z" };
-const comment = { id: "comment-1", issue_id: issue.id, author_type: "member", author_id: "user-1", content, parent_id: null, attachments: [], reactions: [], revision: 1, created_at: issue.created_at, updated_at: issue.updated_at };
+const comment = { id: "comment-1", issue_id: issue.id, type: "comment", author_type: "member", author_id: "user-1", content, parent_id: null, attachments: [], reactions: [], revision: 1, created_at: issue.created_at, updated_at: issue.updated_at };
 const timeline = { ...comment, type: "comment", actor_type: "member", actor_id: "user-1", actor_name: "Capture fixture" };
 const user = { id: "user-1", name: "Capture fixture", email: "capture@example.invalid", onboarded_at: "2026-10-27T00:00:00Z", language: "en" };
 const workspace = { id: "ws-1", slug: "capture", name: "Capture fixture", description: null, context: null, settings: {}, repos: [], issue_prefix: "CAP", avatar_url: null, created_at: "", updated_at: "" };
@@ -47,9 +47,11 @@ const server = createServer((request, response) => {
     return;
   }
   response.setHeader("Content-Type", "application/json");
+  url.pathname = url.pathname.replace("/api/issues/CAP-1", "/api/issues/issue-1");
   if (denied && url.pathname.startsWith("/api/issues/issue-1")) { response.writeHead(404).end(JSON.stringify({ error: "not found" })); return; }
   let body = [];
   if (url.pathname === "/api/me") body = user;
+  else if (url.pathname === "/api/auth/refresh") body = { renewed: false, expires_at: "", check_again_in_seconds: 3600 };
   else if (url.pathname === "/api/config") body = { auth: { google_enabled: false }, cdn_domain: "", features: {}, environment: "self_hosted" };
   else if (url.pathname === "/api/workspaces") body = [workspace];
   else if (url.pathname === "/api/workspaces/ws-1") body = workspace;
@@ -78,7 +80,7 @@ try {
   }
   writeFileSync(join(output, "web-startup.txt"), logs);
   browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce", permissions: ["clipboard-read", "clipboard-write"] });
   await context.addInitScript(() => { try { localStorage.setItem("multica_token", "capture-fixture-only"); localStorage.setItem("multica-theme", "light"); } catch {} });
   const page = await context.newPage();
   const errors = [];
@@ -86,11 +88,14 @@ try {
   page.on("console", (message) => { if (message.type() === "error") console.log("WEB console", message.text().slice(0, 300)); });
   page.on("requestfailed", (request) => console.log("WEB request failed", request.url(), request.failure()?.errorText));
   if (sourcePhase) {
-    for (const width of [1440, 390]) {
+    const widths = process.env.CAPTURE_SOURCE_WIDTH ? [Number(process.env.CAPTURE_SOURCE_WIDTH)] : [1440, 390];
+    const sourceItems = process.env.CAPTURE_SOURCE_KIND ? items.filter((item) => item.kind === process.env.CAPTURE_SOURCE_KIND) : items;
+    if (!sourceItems.length) throw new Error("Unknown source capture kind");
+    for (const width of widths) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-      for (const item of items) {
+      for (const item of sourceItems) {
         console.log("SOURCE", sourcePhase, width, item.kind);
-        await page.goto(`${webOrigin}/capture/issues/issue-1`, { timeout: 600000, waitUntil: "domcontentloaded" });
+        await page.goto(`${webOrigin}/capture/issues/CAP-1`, { timeout: 1200000, waitUntil: "domcontentloaded" });
         const source = page.locator("[data-comment-content='comment-1']").first();
         await source.waitFor({ timeout: 180000 });
         if (item.kind === "mermaid" || item.kind === "html") {
@@ -100,11 +105,12 @@ try {
           : item.kind === "image" ? source.getByAltText("Media fixture", { exact: true })
           : source.locator(`[data-dynamic-block='${item.kind}']`).getByRole("button", { name: "Fullscreen", exact: true });
         await trigger.waitFor({ timeout: 180000 });
+        if (item.kind === "mermaid" || item.kind === "html") await waitForMedia(source.locator(`[data-dynamic-block='${item.kind}']`), item.kind);
         await trigger.click();
         const dialog = page.getByRole("dialog");
-        await dialog.waitFor();
+        await dialog.waitFor({ timeout: 120000 });
         await waitForMedia(dialog, item.kind);
-        await page.screenshot({ path: join(output, `source-${item.kind}-${width}-${sourcePhase}.png`) });
+        await page.screenshot({ path: join(output, `source-${item.kind}-${width}-${sourcePhase}.png`), animations: "disabled" });
         const more = dialog.locator("summary[aria-label='More']");
         if (sourcePhase === "after" && width === 390) {
           await more.focus();
@@ -116,9 +122,10 @@ try {
           if (!(await more.evaluate((element) => document.activeElement === element && !element.closest("details").open))) throw new Error("Source More did not close and restore focus");
         }
         if (sourcePhase === "after" && width === 1440) {
-          const opened = page.waitForEvent("popup");
-          await dialog.getByRole("button", { name: "Open in new tab", exact: true }).click();
-          const target = await opened;
+          const [target] = await Promise.all([
+            page.waitForEvent("popup", { timeout: 1200000 }),
+            dialog.getByRole("button", { name: "Open in new tab", exact: true }).click(),
+          ]);
           await target.getByTestId("media-toolbar").waitFor({ timeout: 120000 });
           if (target.url() !== `${webOrigin}${item.path}`) throw new Error(`Wrong source link: ${target.url()}`);
           await target.close();
@@ -127,7 +134,7 @@ try {
         await dialog.waitFor({ state: "hidden" });
       }
     }
-    console.log(`SOURCE PASS: ${sourcePhase}; four kinds; both widths; Escape dismissal`);
+    console.log(`SOURCE PASS: ${sourcePhase}; ${sourceItems.length} kinds; widths ${widths.join(",")}; Escape dismissal`);
     await page.setViewportSize({ width: 1440, height: 900 });
   }
   if (process.env.CAPTURE_MEDIA !== "0") {
@@ -175,7 +182,7 @@ try {
   writeFileSync(join(output, "web-page-errors.json"), JSON.stringify(errors, null, 2));
   }
   if (process.env.CAPTURE_DESKTOP !== "0") {
-    electron = await _electron.launch({ executablePath: createRequire(resolve(root, "apps/desktop/package.json"))("electron"), args: ["--no-sandbox", "--disable-gpu", "--ozone-platform=headless", resolve(root, "apps/desktop/out/main/index.js")], env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), DESKTOP_APP_SUFFIX: "CHE-2123-Capture" }, timeout: 60000 });
+    electron = await _electron.launch({ executablePath: createRequire(resolve(root, "apps/desktop/package.json"))("electron"), args: ["--no-sandbox", "--disable-gpu", "--ozone-platform=headless", resolve(root, "apps/desktop/out/main/index.js")], env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), DESKTOP_APP_SUFFIX: "CHE-2123-Capture" }, timeout: 300000 });
     const main = await electron.firstWindow();
     main.on("console", (message) => console.log("DESKTOP", message.type(), message.text().slice(0, 180)));
     await main.waitForURL(/^file:/, { timeout: 60000 });
@@ -211,7 +218,14 @@ try {
     }
     console.log("DESKTOP PASS: native IPC windows; four kinds; reload; public copy links");
   }
-  writeFileSync(join(output, "receipt.json"), JSON.stringify({ revision, sourcePhase: sourcePhase ?? "NOT-RUN", mediaPages: process.env.CAPTURE_MEDIA !== "0", items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
+  writeFileSync(join(output, "receipt.json"), JSON.stringify({ revision, sourcePhase: sourcePhase ?? "NOT-RUN", sourceKind: process.env.CAPTURE_SOURCE_KIND ?? "all", sourceWidth: process.env.CAPTURE_SOURCE_WIDTH ?? "both", mediaPages: process.env.CAPTURE_MEDIA !== "0", items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
+} catch (error) {
+  writeFileSync(join(output, "failure-requests.json"), JSON.stringify(requests, null, 2));
+  for (const [index, page] of (browser?.contexts()[0]?.pages() ?? []).entries()) {
+    await page.screenshot({ path: join(output, `failure-${index}.png`) });
+    writeFileSync(join(output, `failure-${index}.txt`), `${page.url()}\n${await page.locator("body").innerText()}`);
+  }
+  throw error;
 } finally {
   writeFileSync(join(output, "web-startup.txt"), logs);
   if (electron) await electron.close();
