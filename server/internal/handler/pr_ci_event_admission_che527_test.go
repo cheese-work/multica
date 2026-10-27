@@ -91,6 +91,7 @@ func linkedPRForWakeup(t *testing.T, fx prMergeWebhookFixture, installationID in
 		PrCreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		PrUpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		HeadSha:     headSHA, ClearMergeableState: pgtype.Bool{Bool: true, Valid: true},
+		HeadRepoSame: true,
 	})
 	if err != nil {
 		t.Fatalf("UpsertGitHubPullRequest: %v", err)
