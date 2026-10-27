@@ -48,15 +48,16 @@ type decisionActionExecution struct {
 	Approver verifiedApprover
 	Action   db.DecisionAction
 	Agent    db.Agent
+	Runtime  db.AgentRuntime
 	Secrets  map[string]string
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
 
 // decisionActionExecutors maps an allowlisted action type to its core.
-// agent.copy joins when CreateAgent's core is extracted.
 var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch": executeEnvPatchAction,
+	"agent.copy":      executeAgentCopyAction,
 }
 
 var (
@@ -115,7 +116,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	if err := checkSecretValues(preview, body.Secrets); err != nil {
 		return empty, err
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target)
+	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview))
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -125,7 +126,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target pgtype.UUID) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
@@ -135,6 +136,13 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	queries := handler.Queries.WithTx(transaction)
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return empty, err
+	}
+	var runtime db.AgentRuntime
+	if runtimeID.Valid {
+		runtime, err = queries.LockAgentRuntimeNowait(ctx, db.LockAgentRuntimeNowaitParams{ID: runtimeID, WorkspaceID: caller.workspaceID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return empty, err
+		}
 	}
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
@@ -194,7 +202,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
-		Action: action, Agent: targetAgent, Secrets: body.Secrets,
+		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets,
 	})
 	if err != nil {
 		return empty, err
@@ -253,12 +261,8 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery
 // worker and stamps the row. It is idempotent: a repeat only re-sends events.
 func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, action db.DecisionAction) error {
-	if agentID, ok := decisionActionTarget(action); ok && action.State == "executed" {
-		agent, err := handler.Queries.GetAgent(ctx, agentID)
-		if err == nil {
-			err = handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
-		}
-		if err != nil {
+	if action.State == "executed" {
+		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
 		}
 	}
@@ -266,16 +270,37 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
 }
 
-// decisionActionTarget is the one agent an action changes.
+// decisionActionTarget is the one existing agent an action reads or changes.
 func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	var params struct {
-		AgentID string `json:"agent_id"`
+		AgentID       string `json:"agent_id"`
+		SourceAgentID string `json:"source_agent_id"`
 	}
-	if action.ActionType != "agent.env.patch" || json.Unmarshal(action.Params, &params) != nil {
+	if json.Unmarshal(action.Params, &params) != nil {
 		return pgtype.UUID{}, false
 	}
-	id, err := parseUUIDString(params.AgentID)
+	var raw string
+	switch action.ActionType {
+	case "agent.env.patch":
+		raw = params.AgentID
+	case "agent.copy":
+		raw = params.SourceAgentID
+	}
+	id, err := parseUUIDString(raw)
 	return id, err == nil
+}
+
+// decisionActionRuntime is the runtime an action binds an agent to, or an
+// invalid UUID when the action touches none (lock sequence row 2).
+func decisionActionRuntime(action db.DecisionAction) pgtype.UUID {
+	var params struct {
+		RuntimeID string `json:"runtime_id"`
+	}
+	if action.ActionType != "agent.copy" || json.Unmarshal(action.Params, &params) != nil {
+		return pgtype.UUID{}
+	}
+	id, _ := parseUUIDString(params.RuntimeID)
+	return id
 }
 
 func agentByID(agents []db.Agent, id pgtype.UUID) (db.Agent, bool) {
@@ -319,13 +344,22 @@ func checkPayloadHash(action db.DecisionAction, claimed string) error {
 }
 
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
-	var wanted struct {
-		CustomEnvVersion int64 `json:"custom_env_version"`
+	var drifted bool
+	if action.ActionType == "agent.copy" {
+		var err error
+		if drifted, err = copyPreconditionDrifted(action, agent); err != nil {
+			return err
+		}
+	} else {
+		var wanted struct {
+			CustomEnvVersion int64 `json:"custom_env_version"`
+		}
+		if err := json.Unmarshal(action.Preconditions, &wanted); err != nil {
+			return err
+		}
+		drifted = agent.CustomEnvVersion != wanted.CustomEnvVersion
 	}
-	if err := json.Unmarshal(action.Preconditions, &wanted); err != nil {
-		return err
-	}
-	if agent.CustomEnvVersion != wanted.CustomEnvVersion {
+	if drifted {
 		return errPreconditionDrift
 	}
 	return nil
@@ -426,4 +460,21 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 		return err
 	}
 	return nil
+}
+
+// publishDecisionActionExecuted sends the realtime event of what the action
+// changed. It is idempotent.
+func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, action db.DecisionAction) error {
+	if action.ActionType == "agent.copy" {
+		return handler.publishAgentCopyCreated(ctx, action)
+	}
+	agentID, ok := decisionActionTarget(action)
+	if !ok {
+		return nil
+	}
+	agent, err := handler.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
 }

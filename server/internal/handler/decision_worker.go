@@ -293,6 +293,9 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 		return err
 	}
 	for _, requestID := range requests {
+		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
+			return err
+		}
 		if err := queries.DeleteDecisionOrphanRequest(ctx, db.DeleteDecisionOrphanRequestParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}

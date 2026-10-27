@@ -99,3 +99,8 @@ WHERE state IN ('executed', 'failed') AND post_commit_done_at IS NULL
   AND executed_at <= clock_timestamp() - interval '30 seconds'
 ORDER BY executed_at, id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: LockAgentRuntimeNowait :one
+-- Row 2 of the approve lock sequence (agent.copy only): the same mode as
+-- LockAgentRuntimeForAccessChange, the runtime-access fence of agent create.
+SELECT * FROM agent_runtime WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE NOWAIT;
