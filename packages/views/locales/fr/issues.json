@@ -595,6 +595,7 @@
   },
   "comment": {
     "show_full": "Afficher le commentaire complet",
+    "you": "Vous",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",

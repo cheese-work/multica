@@ -595,6 +595,7 @@
   },
   "comment": {
     "show_full": "Show full comment",
+    "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
     "expand_thread": "Expand thread",
