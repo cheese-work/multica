@@ -15,8 +15,10 @@ interface ChatSessionUsageSummary {
   /** Finished runs that reported no usage. */
   unreportedRuns: number;
   totalTokens: number;
+  /** Token counts by kind, for the whole session. */
+  tokenKinds: ChatUsageTokens;
   totalRunMs: number;
-  models: { model: string; tokens: number; costUsd: number | null }[];
+  models: { model: string; tokens: number; tokenKinds: ChatUsageTokens; costUsd: number | null }[];
   runs: { completed: number; failed: number; cancelled: number; inProgress: number };
   messages: { user: number; assistant: number };
 }
@@ -65,7 +67,7 @@ export function summarizeChatSessionUsage(usage: ChatSessionUsage): ChatSessionU
       costUsd += modelCost;
       pricedModels += 1;
     }
-    return { model, tokens, costUsd: modelCost };
+    return { model, tokens, tokenKinds: row.tokens, costUsd: modelCost };
   });
 
   if (sumTokens(usage.uncosted_tokens) > explainedUncosted) partial = true;
@@ -82,6 +84,7 @@ export function summarizeChatSessionUsage(usage: ChatSessionUsage): ChatSessionU
     hasUsage: models.length > 0,
     unreportedRuns: usage.runs.unreported,
     totalTokens: sumTokens(usage.tokens),
+    tokenKinds: usage.tokens,
     totalRunMs: usage.runs.total_run_ms,
     models,
     runs: {
