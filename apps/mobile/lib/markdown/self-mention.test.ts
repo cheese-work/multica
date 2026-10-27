@@ -148,5 +148,36 @@ describe("emphasizeSelfMentionSegments", () => {
     expect(prose.map((s) => (s as { content: string }).content).join("")).toContain("[**@Me**]");
     expect(JSON.stringify(code)).not.toContain("**");
   });
+
+  it.each([
+    ["indented code nested in a list", `- Example:\n\n      ${link}\n      [@all](mention://all/all)`],
+    ["indented code nested in a quote", `> Example:\n>\n>     ${link}\n>     [@all](mention://all/all)`],
+    ["tilde fence starting in a list item", `- ~~~md\n  ${link}\n  [@all](mention://all/all)\n  ~~~`],
+  ])("keeps %s verbatim", (_name, source) => {
+    expect(emphasizeSelfMentionSegments(splitMarkdown(source), VIEWER)).toEqual([
+      { type: "prose", content: source },
+    ]);
+  });
+
+  it("still bolds a prose mention next to nested code", () => {
+    const source = `${link}\n\n- Example:\n\n      ${link}`;
+    expect(emphasizeSelfMentionSegments(splitMarkdown(source), VIEWER)).toEqual([
+      {
+        type: "prose",
+        content: `[**@Me**](mention://member/${VIEWER})\n\n- Example:\n\n      ${link}`,
+      },
+    ]);
+  });
+
+  it("bolds links in lists, quotes and tables but not escaped or image look-alikes", () => {
+    const out = (source: string) => emphasizeSelfMentions(source, VIEWER);
+    const bold = `[**@Me**](mention://member/${VIEWER})`;
+
+    expect(out(`- ${link}`)).toBe(`- ${bold}`);
+    expect(out(`> ${link}`)).toBe(`> ${bold}`);
+    expect(out(`| a |\n| - |\n| ${link} |`)).toBe(`| a |\n| - |\n| ${bold} |`);
+    expect(out(`\\${link}`)).toBe(`\\${link}`);
+    expect(out(`!${link}`)).toBe(`!${link}`);
+  });
 });
 

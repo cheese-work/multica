@@ -1,4 +1,5 @@
 import type { MarkdownStyle } from "react-native-enriched-markdown";
+import { marked } from "marked";
 import type { MarkdownSegment } from "./split-markdown";
 
 // sRGB of --mention-self-bg/-fg in packages/ui/styles/tokens.css (the native
@@ -15,35 +16,34 @@ export const SELF_MENTION_COLORS = {
 // a bare `*`, `[`, `]` or backtick would break the wrapping, so those stay unbolded.
 const SELF_LABEL = /@(?:\\.|[^\]\[\n\\*`])*/.source;
 
-// Fenced blocks (``` or ~~~, optionally quoted) and inline code spans.
-// Code must stay verbatim: it is displayed and copied as written.
-// (`\x60` is a backtick: the pieces share group numbers, so they stay strings.)
-const CODE = new RegExp(
-  [
-    String.raw`^[ \t>]*(\x60{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t>]*\1[\x60~]*[ \t]*(?=\n|$)|(?![\s\S]))`,
-    String.raw`(\x60+)(?!\x60)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!\x60)\2(?!\x60)`,
-  ].join("|"),
-  "gm",
-);
-
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Only real link tokens are bolded. Code (inline, fenced, indented, nested in
+// lists or quotes) is displayed and copied as written, and regexes can't tell
+// it apart, so ask the markdown lexer which matches are links.
 export function emphasizeSelfMentions(markdown: string, userId: string | undefined) {
   if (!userId) return markdown;
-  const self = new RegExp(
-    String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(userId)}|all/[^)\s]*))\)`,
-    "g",
-  );
-  const bold = (text: string) => text.replace(self, "[**$1**]($2)");
-  let out = "";
-  let last = 0;
-  for (const code of markdown.matchAll(CODE)) {
-    out += bold(markdown.slice(last, code.index)) + code[0];
-    last = code.index + code[0].length;
-  }
-  return out + bold(markdown.slice(last));
+  const self = () =>
+    new RegExp(
+      String.raw`\[(${SELF_LABEL})\]\((mention://(?:member/${escapeRegex(userId)}|all/[^)\s]*))\)`,
+      "g",
+    );
+  // One entry per match in source order: is it a link token, or text/code?
+  const isLink: boolean[] = [];
+  marked.walkTokens(marked.lexer(markdown), (token) => {
+    const raw = (token as { raw?: string }).raw ?? "";
+    if (token.type === "link") {
+      for (const m of raw.matchAll(self())) isLink.push(m[0] === raw);
+    } else if (!("tokens" in token) && !("items" in token) && token.type !== "table") {
+      isLink.push(...Array.from(raw.matchAll(self()), () => false));
+    }
+  });
+  // Lexer and source disagree (unexpected syntax): leave the text alone.
+  if (isLink.length !== [...markdown.matchAll(self())].length) return markdown;
+  let i = 0;
+  return markdown.replace(self(), (all, label, url) => (isLink[i++] ? `[**${label}**](${url})` : all));
 }
 
 // Top-level code blocks are their own segments: leave them untouched.
