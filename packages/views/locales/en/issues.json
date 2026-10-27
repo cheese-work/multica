@@ -594,6 +594,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "show_full": "Show full comment",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
     "expand_thread": "Expand thread",

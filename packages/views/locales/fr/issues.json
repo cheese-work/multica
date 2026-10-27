@@ -594,6 +594,7 @@
     "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
+    "show_full": "Afficher le commentaire complet",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",
