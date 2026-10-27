@@ -67,20 +67,54 @@ func errString(err error) string {
 	return err.Error()
 }
 
-func TestContentKeepsLegacyOrderWithLabels(test *testing.T) {
+func decodedAsk(test *testing.T) Ask {
+	test.Helper()
 	raw, _ := json.Marshal(validAskMap())
 	ask, err := DecodeAsk(raw)
 	if err != nil {
 		test.Fatal(err)
 	}
-	content := ask.Content()
+	return ask
+}
+
+func TestAskContentRenderOrder(test *testing.T) {
+	content := decodedAsk(test).Content()
 	last := -1
-	for _, heading := range []string{"**Agent did**", "**Decision**", "**Options**\n- NOW\n- LATER", "**Recommendation**", "**Default if no reply**", "**Source**"} {
-		at := strings.Index(content, heading)
+	for _, marker := range []string{"**Context**", "**Decision**", "**What is at stake**", "**Options**", "**Recommendation**", "**Default if no reply**", "<details>", "<summary>Details</summary>", "Ran checks.", "</details>", "Investigate in issue"} {
+		at := strings.Index(content, marker)
 		if at <= last {
-			test.Fatalf("heading %q out of order in %q", heading, content)
+			test.Fatalf("%q missing or out of order in %q", marker, content)
 		}
 		last = at
+	}
+	if strings.Count(content, "Investigate in issue") != 1 || strings.Contains(content, "**Agent did**\nRan checks.\n\n**Decision**") {
+		test.Fatalf("investigate link must appear once, after details: %q", content)
+	}
+	for _, link := range []string{"mention://issue/" + testIssueID, "/issue/" + testIssueID + "#comment-" + testCommentID} {
+		if strings.Count(content, link) != 1 || strings.Index(content, link) < strings.Index(content, "</details>") {
+			test.Fatalf("link %q must appear once, after details: %q", link, content)
+		}
+	}
+}
+
+func TestAskContentKeepsOptionFields(test *testing.T) {
+	raw := validAskMap()
+	raw["options"] = []any{
+		map[string]any{"label": "NOW", "what_happens": "Ships today.", "pros": []string{"Users get it today", "No backlog"}, "cons": []string{"Less testing"}, "cost_or_time": "Ready in 1 hour"},
+		map[string]any{"label": "LATER", "what_happens": "Ships next week.", "pros": []string{"Full test pass"}, "cons": []string{"Users wait", "Backlog grows"}, "cost_or_time": "Ready in 5 days"},
+	}
+	encoded, _ := json.Marshal(raw)
+	ask, err := DecodeAsk(encoded)
+	if err != nil {
+		test.Fatal(err)
+	}
+	content := ask.Content()
+	options := content[strings.Index(content, "**Options**"):strings.Index(content, "**Recommendation**")]
+	want := "**Options**\n" +
+		"- **NOW**: Ships today.\n  - Pro: Users get it today\n  - Pro: No backlog\n  - Con: Less testing\n  - Cost or time: Ready in 1 hour\n" +
+		"- **LATER**: Ships next week.\n  - Pro: Full test pass\n  - Con: Users wait\n  - Con: Backlog grows\n  - Cost or time: Ready in 5 days\n\n"
+	if options != want {
+		test.Fatalf("options section = %q, want %q", options, want)
 	}
 }
 

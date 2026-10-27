@@ -45,3 +45,33 @@
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
 }
+
+/* Collapsed disclosure for decision asks (<details><summary>Details</summary>):
+   keep the native marker, make the whole summary a comfortable hit target and
+   show keyboard focus. Not density-scoped: it applies to every RichContent. */
+.rich-text-editor details {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  padding: 0 0.75rem;
+}
+
+.rich-text-editor details > summary {
+  min-height: 2.25rem;
+  padding: 0.375rem 0;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.rich-text-editor details > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.rich-text-editor details[open] > summary {
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--surface-border);
+}

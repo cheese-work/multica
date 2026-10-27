@@ -220,10 +220,17 @@ func (ask Ask) Validate() error {
 }
 
 func (ask Ask) Content() string {
-	labels := make([]string, len(ask.Options))
-	for index, option := range ask.Options {
-		labels[index] = option.Label
+	var options strings.Builder
+	for _, option := range ask.Options {
+		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
+		for _, pro := range option.Pros {
+			fmt.Fprintf(&options, "  - Pro: %s\n", pro)
+		}
+		for _, con := range option.Cons {
+			fmt.Fprintf(&options, "  - Con: %s\n", con)
+		}
+		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
-		ask.AgentDid, ask.Decision, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.AgentDid, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
 }
