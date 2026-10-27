@@ -51,6 +51,7 @@ function usage(over: Partial<ChatSessionUsage> = {}): ChatSessionUsage {
 const sessions = [
   { id: "prev", title: "Dashboard rollout" },
   { id: "src", title: "Billing export bug" },
+  { id: "next", title: "Rollout, part two" },
 ] as ChatSession[];
 
 function renderDialog(props: Partial<React.ComponentProps<typeof ChatSessionStatsDialog>> = {}) {
@@ -180,5 +181,45 @@ describe("ChatSessionStatsDialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Dashboard rollout" }));
     expect(onOpenSession).toHaveBeenCalledWith(sessions[0]);
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("breaks tokens into input, output, cache read and cache write, in total and per model", async () => {
+    getUsage.mockResolvedValue(
+      usage({
+        tokens: { input: 150_000, output: 32_400, cache_read: 12_000, cache_write: 3_000 },
+        by_model: {
+          "claude-opus-4-7": {
+            tokens: { input: 100_000, output: 14_100, cache_read: 8_000, cache_write: 2_000 },
+            cost_usd_ticks: 0.4 * TICKS_PER_USD,
+          },
+        },
+      }),
+    );
+    renderDialog();
+
+    const total = await screen.findByTestId("chat-stats-token-breakdown");
+    expect(total).toHaveTextContent("Input150K");
+    expect(total).toHaveTextContent("Output32.4K");
+    expect(total).toHaveTextContent("Cache read12K");
+    expect(total).toHaveTextContent("Cache write3K");
+
+    const dialog = screen.getByTestId("chat-stats-dialog");
+    const headers = within(dialog).getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toEqual(["Model", "Input", "Output", "Cache read", "Cache write", "Cost"]);
+    const cells = within(within(dialog).getByRole("row", { name: /claude-opus-4-7/ }))
+      .getAllByRole("cell")
+      .map((c) => c.textContent);
+    expect(cells).toEqual(["100K", "14.1K", "8K", "2K", "$0.40"]);
+  });
+
+  it("links the newer DM that continues this one and opens it", async () => {
+    getUsage.mockResolvedValue(usage({ continued_into_session_id: "next" }));
+    const onOpenSession = vi.fn();
+    renderDialog({ onOpenSession });
+
+    const dialog = await screen.findByTestId("chat-stats-dialog");
+    await waitFor(() => expect(dialog).toHaveTextContent("Continued in"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rollout, part two" }));
+    expect(onOpenSession).toHaveBeenCalledWith(sessions[2]);
   });
 });

@@ -15,7 +15,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { chatSessionUsageOptions } from "@multica/core/chat/queries";
 import { summarizeChatSessionUsage } from "@multica/core/chat/usage";
-import type { ChatSession } from "@multica/core/types";
+import type { ChatSession, ChatUsageTokens } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { formatDuration } from "../../dashboard/utils";
 import { formatTokens, formatUsd } from "../../runtimes/utils";
@@ -62,8 +62,16 @@ export function ChatSessionStatsDialog({
   };
   const related = [
     { label: t(($) => $.stats.continued_from), target: titleOf(data?.continued_from_session_id ?? null) },
+    { label: t(($) => $.stats.continued_into), target: titleOf(data?.continued_into_session_id ?? null) },
     { label: t(($) => $.stats.forked_from), target: titleOf(data?.forked_from_session_id ?? null) },
   ].filter((r) => r.target);
+
+  const tokenKinds = (tokens: ChatUsageTokens) => [
+    { key: "input", label: t(($) => $.stats.col_input), value: tokens.input },
+    { key: "output", label: t(($) => $.stats.col_output), value: tokens.output },
+    { key: "cache_read", label: t(($) => $.stats.col_cache_read), value: tokens.cache_read },
+    { key: "cache_write", label: t(($) => $.stats.col_cache_write), value: tokens.cache_write },
+  ];
 
   const retry = (
     <Button variant="outline" size="sm" onClick={() => void usage.refetch()}>
@@ -73,7 +81,7 @@ export function ChatSessionStatsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="chat-stats-dialog" showCloseButton={false} className="sm:max-w-lg">
+      <DialogContent data-testid="chat-stats-dialog" showCloseButton={false} className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t(($) => $.stats.title)}</DialogTitle>
           <p className="text-caption text-muted-foreground">{t(($) => $.stats.scope)}</p>
@@ -141,6 +149,19 @@ export function ChatSessionStatsDialog({
                       : ""}
                   </p>
                 ) : null}
+                {summary.hasUsage ? (
+                  <dl
+                    data-testid="chat-stats-token-breakdown"
+                    className="flex flex-wrap gap-x-4 gap-y-0.5 text-caption text-muted-foreground"
+                  >
+                    {tokenKinds(summary.tokenKinds).map(({ key, label, value }) => (
+                      <div key={key} className="flex gap-1">
+                        <dt>{label}</dt>
+                        <dd className="tabular-nums">{formatTokens(value)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
                 {summary.runs.inProgress > 0 ? (
                   <p className="text-caption text-muted-foreground">
                     {t(($) => $.stats.in_progress, { count: summary.runs.inProgress })}
@@ -191,9 +212,11 @@ export function ChatSessionStatsDialog({
                       <th scope="col" className="py-1 text-left font-normal">
                         {t(($) => $.stats.col_model)}
                       </th>
-                      <th scope="col" className="py-1 text-right font-normal">
-                        {t(($) => $.stats.col_tokens)}
-                      </th>
+                      {tokenKinds(summary.tokenKinds).map(({ key, label }) => (
+                        <th key={key} scope="col" className="py-1 text-right font-normal">
+                          {label}
+                        </th>
+                      ))}
                       <th scope="col" className="py-1 text-right font-normal">
                         {t(($) => $.stats.col_cost)}
                       </th>
@@ -205,7 +228,11 @@ export function ChatSessionStatsDialog({
                         <th scope="row" className="py-1 text-left font-normal break-all">
                           {row.model}
                         </th>
-                        <td className="py-1 text-right tabular-nums">{formatTokens(row.tokens)}</td>
+                        {tokenKinds(row.tokenKinds).map(({ key, value }) => (
+                          <td key={key} className="py-1 text-right tabular-nums">
+                            {formatTokens(value)}
+                          </td>
+                        ))}
                         <td className="py-1 text-right tabular-nums">
                           {row.costUsd === null ? t(($) => $.stats.no_value) : formatUsd(row.costUsd)}
                         </td>
