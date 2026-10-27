@@ -8,7 +8,7 @@
 -- attempt rises. repo_owner and repo_name are stored lowercased.
 --
 -- No raw payload, logs or secrets are stored. The identity UNIQUE index and the
--- lookup indexes are built CONCURRENTLY in 704-706 (repo rule: no index,
+-- lookup indexes are built CONCURRENTLY in 712-714 (repo rule: no index,
 -- including on a new table, is built inside the table migration).
 CREATE TABLE IF NOT EXISTS github_workflow_run (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
