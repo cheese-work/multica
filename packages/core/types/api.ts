@@ -80,6 +80,22 @@ export interface UpdateIssueRequest {
    *  MUL-3375). The assignee/status change still applies. Control field —
    *  strip from optimistic cache patches; never written onto the Issue. */
   suppress_run?: boolean;
+  /** When a status change hands the issue off to a workflow step's handler,
+   *  also stop the active runs of the agent it was taken from (MUL-7420).
+   *  Control field — strip from optimistic cache patches. */
+  stop_previous_assignee_runs?: boolean;
+  /** What the handoff confirmation showed: the issue's assignee and the handler
+   *  the workflow resolved. The server answers 409 `handoff_preview_stale` when
+   *  the write would hand off and either no longer matches. A preview that
+   *  found no handoff is sent with a null handler, which refuses a handler that
+   *  became resolvable since. Control field — strip from optimistic cache
+   *  patches. */
+  handoff_preview?: HandoffPreviewBinding;
+  /** With a project move: enter the destination workflow's column the issue
+   *  lands on, handing it off like a status change (MUL-7420). Without it a
+   *  project move is administrative. Control field — strip from optimistic
+   *  cache patches. */
+  enter_workflow_step?: boolean;
   /** Marks this issue as a duplicate of another issue (MUL-7349). The server
    *  also sets status to cancelled; any later status change away from
    *  cancelled removes the mark. Write-only — read it back through
@@ -95,11 +111,36 @@ export interface IssueDuplicates {
   duplicates: Issue[];
 }
 
+export interface IssueRelations {
+  nodes: { id: string; identifier: string; title: string; status: string }[];
+  edges: { source: string; target: string; type: "parent" | "duplicate" | "wakeup" | "children_done" | "mention" | "shared_pr" | "unknown" }[];
+  omitted_count: number;
+  depth: 1 | 2;
+}
+
 /**
  * Server-owned drag intent. The client may use a provisional position for its
  * optimistic animation, but the canonical position is derived from these
  * workspace-scoped neighbors by `POST /api/issues/:id/move`.
  */
+/** The assignee and handler a handoff confirmation was shown for. */
+export interface HandoffPreviewBinding {
+  previous_assignee_type: string | null;
+  previous_assignee_id: string | null;
+  handler_type: string | null;
+  handler_id: string | null;
+}
+
+/**
+ * What a batch update wrote. `updated_ids` names the issues it wrote; the server
+ * skips an issue its per-issue guards refuse (a handoff the client did not
+ * preview, a status its workflow omits). Absent from a server that predates it.
+ */
+export interface BatchUpdateIssuesResponse {
+  updated: number;
+  updated_ids?: string[];
+}
+
 export interface MoveIssueRequest
   extends Pick<
     UpdateIssueRequest,
@@ -108,6 +149,8 @@ export interface MoveIssueRequest
     | "assignee_id"
     | "parent_issue_id"
     | "project_id"
+    | "stop_previous_assignee_runs"
+    | "handoff_preview"
   > {
   before_id: string | null;
   after_id: string | null;

@@ -217,6 +217,13 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 	if err != nil {
 		return task.Context, err
 	}
+	// The workspace row first, as in dispatch and the pause and resume writers.
+	// The pause is read under its KEY SHARE lock, held to the commit, so a claim
+	// cannot join an input across a pause or a resume (CHE-1727).
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, issue.WorkspaceID)
+	if err != nil {
+		return task.Context, err
+	}
 	changed := len(previous) != len(stored.Joined)
 	joined := make([]joinedWakeup, 0, len(rules))
 	chain := stored.Chain
@@ -238,7 +245,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 		if err != nil {
 			return task.Context, err
 		}
-		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, task, w)
+		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, task, w, pauseState)
 		if errors.Is(err, errMalformedPRWakeupSettings) {
 			changed = changed || had
 			slog.WarnContext(ctx, "PR wakeup join skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(id), "rule", w.SystemRule.String, "error", err)
@@ -288,15 +295,28 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 // returns its entry, or releases what the run held and returns nil when the
 // rule must not reach this run (or, for its own dispatch to decide, the inputs
 // are the agent's own or close a loop).
-func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup) (*joinedWakeup, []string, error) {
+func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup, pauseState db.WorkspaceWakeupsPausedSharedRow) (*joinedWakeup, []string, error) {
+	// A receipt a lock-free producer committed after the resume swept is a
+	// paused-era input; it never joins a run.
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return nil, nil, err
+	}
 	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
 	if err != nil {
 		return nil, nil, err
 	}
 	var receipts []db.IssueWakeupReceipt
-	var held, free []pgtype.UUID
+	var held, free, back []pgtype.UUID
 	for _, r := range pending {
 		if len(w.Condition) > 0 && r.EventType != wakeupConditionEventType && r.EventType != wakeupTimeoutEventType && r.EventType != wakeupManualEventType {
+			continue
+		}
+		if pauseState.Paused && r.EventType != wakeupManualEventType {
+			// Nothing but a person's manual trigger fires while paused. What this
+			// run reserved before the pause goes back to pending for the sweep.
+			if r.TaskID == task.ID {
+				back = append(back, r.ID)
+			}
 			continue
 		}
 		switch r.TaskID {
@@ -308,6 +328,11 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 			continue
 		}
 		receipts = append(receipts, r)
+	}
+	if len(back) > 0 {
+		if err := q.ReleaseWakeupReceipts(ctx, back); err != nil {
+			return nil, nil, err
+		}
 	}
 	release := func() (*joinedWakeup, []string, error) {
 		if len(held) == 0 {

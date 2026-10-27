@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	inboxwriter "github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -29,11 +30,21 @@ import (
 // edited by agents, and it is evaluated when sub-issues change instead of on a
 // polling schedule.
 const (
-	SystemRuleChildDone       = "child_done"
-	SystemRulePRMerged        = "pr_merged"
-	SystemRulePRChecksFailed  = "pr_checks_failed"
+	// SystemRuleWorkflowEdges watches one issue on a workflow step whose edges
+	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
+	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
+	// target, receipts or settings.
+	SystemRuleWorkflowEdges  = "workflow_edges"
+	SystemRuleChildDone      = "child_done"
+	SystemRulePRMerged       = "pr_merged"
+	SystemRulePRChecksFailed = "pr_checks_failed"
+	// SystemRulePRChecksPassed wakes the owner once per head when every check
+	// of a linked PR passed. It is off until a workspace turns on
+	// github_wake_on_ci_success: a green wake costs a run on every push.
+	SystemRulePRChecksPassed  = "pr_checks_passed"
 	WorkspaceSettingPRMerged  = "github_wake_on_pr_merge"
 	WorkspaceSettingPRFailure = "github_wake_on_ci_failure"
+	WorkspaceSettingPRSuccess = "github_wake_on_ci_success"
 	// SystemRulePRAttention wakes the owner when a linked PR can no longer
 	// merge as is: its merge state turned DIRTY or BEHIND, or it went back to
 	// draft after the issue was accepted (CHE-1417).
@@ -97,6 +108,8 @@ func prWakeupSetting(rule string) (string, bool) {
 		return WorkspaceSettingPRMerged, true
 	case SystemRulePRChecksFailed:
 		return WorkspaceSettingPRFailure, true
+	case SystemRulePRChecksPassed:
+		return WorkspaceSettingPRSuccess, true
 	case SystemRulePRAttention:
 		return WorkspaceSettingPRAttention, true
 	default:
@@ -109,8 +122,10 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("unknown pull request system wakeup rule %q", rule)
 	}
+	// Every rule but pr_checks_passed is on until a workspace turns it off.
+	unset := rule != SystemRulePRChecksPassed
 	if len(settings) == 0 {
-		return true, nil
+		return unset, nil
 	}
 	var values prWakeupSettings
 	if err := json.Unmarshal(settings, &values); err != nil {
@@ -120,7 +135,10 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 		return false, nil
 	}
 	enabled := values.ruleSetting(rule)
-	return enabled == nil || *enabled, nil
+	if enabled == nil {
+		return unset, nil
+	}
+	return *enabled, nil
 }
 
 func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issueID pgtype.UUID, in PullRequestWakeupInput) error {
@@ -144,6 +162,12 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 		eventType = "pr.checks_failed"
 		eventKey += ":" + in.HeadSHA
+	case SystemRulePRChecksPassed:
+		if in.Conclusion != "SUCCESS" || in.HeadSHA == "" {
+			return fmt.Errorf("invalid passing pull request checks input")
+		}
+		eventType = "pr.checks_passed"
+		eventKey += ":passed:" + in.HeadSHA
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
 		// one wake; a retarget or a new head is a new pair. Each state has its
@@ -167,6 +191,16 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in dispatch and in the pause and resume
+	// writers. Its KEY SHARE lock lasts to the commit, so a resume (FOR UPDATE)
+	// either waits for this receipt and sweeps it, or runs first and this event
+	// arrives after the resume (CHE-1727).
+	var workspace pgtype.UUID
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
@@ -286,6 +320,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 	}
 	if tag.RowsAffected() == 0 {
+		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
@@ -322,7 +357,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			payload["default_branch"] = in.DefaultBranch
 			payload["layer_delivered"] = in.BaseBranch != "" && in.BaseBranch != in.DefaultBranch
 		}
-	case SystemRulePRChecksFailed:
+	case SystemRulePRChecksFailed, SystemRulePRChecksPassed:
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
 	case SystemRulePRAttention:
@@ -343,16 +378,40 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if err != nil {
 		return err
 	}
-	if _, err = q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
+	receipt, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
 		ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: eventKey, EventType: eventType, Payload: encoded,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, receipt.ID)
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceWithdrawn()
 	return s.dispatchSystem(ctx, w)
+}
+
+// captureRunGatePR writes the shadow ledger row for a pr_merged or
+// pr_checks_failed input (CHE-1918). It shares the input's transaction behind a
+// savepoint: the row exists exactly when the receipt does, and a failure to
+// write it never touches the receipt. The queue it snapshots is the target's
+// before dispatch acts.
+func (s *IssueWakeupService) captureRunGatePR(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue, w db.IssueWakeup, config *builtinWakeup, in PullRequestWakeupInput, eventKey string, receiptID pgtype.UUID) {
+	source, ok := RunGateSourceForRule(in.Rule)
+	if !ok {
+		return
+	}
+	CaptureRunGateEventInTx(ctx, tx, q, func(sq *db.Queries) RunGateEvent {
+		ev := RunGateEvent{
+			Issue: issue, Source: source, EventKey: eventKey, CandidateKey: util.UUIDToString(w.ID), Origin: RunGateOriginSystemWakeup,
+			EventTime: time.Now(), PRHeadSHA: in.HeadSHA, SystemRule: in.Rule, Wakeup: w, ReceiptID: receiptID,
+		}
+		if target, err := builtinTarget(ctx, s, sq, issue, config); err == nil && target.Agent.ID.Valid {
+			ev.AgentID, ev.SquadID = target.Agent.ID, target.SquadID
+		}
+		return ev
+	})
 }
 
 // ChildDoneDefaultInstruction is what the woken assignee is asked to do when
@@ -813,6 +872,9 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
 		return fmt.Sprintf("Checks for linked %s finished with %s on head %s. The issue status when those checks finished was %s. Inspect the current check details and issue state, then decide what follow-up is needed.", pr, conclusion, headSHA, issueStatus)
+	case SystemRulePRChecksPassed:
+		headSHA, _ := facts["head_sha"].(string)
+		return fmt.Sprintf("Checks for linked %s passed on head %s. The issue status when those checks finished was %s. Inspect the current issue state, then continue with the next step.", pr, headSHA, issueStatus)
 	default:
 		return w.Instruction
 	}
@@ -824,6 +886,8 @@ func systemWakeupTriggerSummary(rule string) string {
 		return "Wakeup: linked PR merged"
 	case SystemRulePRChecksFailed:
 		return "Wakeup: linked PR checks failed"
+	case SystemRulePRChecksPassed:
+		return "Wakeup: linked PR checks passed"
 	case SystemRulePRAttention:
 		return "Wakeup: linked PR needs attention"
 	default:
@@ -846,6 +910,9 @@ func systemWakeupIssueActive(ctx context.Context, q *db.Queries, issue db.Issue,
 // outcome. It mirrors dispatch: the same lock order, receipts, runaway
 // protection and timeline entries.
 func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWakeup) error {
+	if held, err := s.settleInactiveProject(ctx, prev); held || err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// Resolve the target and optional credentials before taking locks, then
@@ -872,6 +939,12 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	if target.Agent.ID.Valid {
 		var fenced bool
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", target.Agent.ID, prev.IssueID, target.Agent.RuntimeID).Scan(&fenced); err != nil {
@@ -896,6 +969,23 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	// Every commit below, including those that evaluate nothing, means this
+	// pass got the locks an earlier failed pass did not; an error rolls it back.
+	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup SET last_error=NULL WHERE id=$1 AND last_error IS NOT NULL", w.ID); err != nil {
+		return err
+	}
+	if pauseState.Paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
+	}
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return err
 	}
 	_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
 	discardMalformed := func(err error) error {
@@ -1178,7 +1268,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if current.Type == "member" && !isPRWakeup {
 			facts["outcome"] = "notified"
 			details, _ := json.Marshal(facts)
-			item, err := q.CreateInboxItem(ctx, db.CreateInboxItemParams{
+			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
 				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
 				Type: "children_done", Severity: "info", IssueID: issue.ID, Title: issue.Title,
 				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
@@ -1186,7 +1276,11 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			if err != nil {
 				return err
 			}
-			inbox = append(inbox, item)
+			if inserted {
+				inbox = append(inbox, item)
+			} else {
+				facts["outcome"] = "none"
+			}
 		}
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 			return err
@@ -1355,7 +1449,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)

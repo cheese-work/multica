@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -59,7 +60,9 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task could not open intent: status=%d body=%+v", response.StatusCode, body)
 	}
 	response.Body.Close()
-	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": "[@Human](mention://member/" + testUserID + ") Approve spend?", "escalation_class": "spend"}
+	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Checks completed.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": ask, "escalation_class": "spend"}
 	response = call(http.MethodPost, "/api/decisions", input, testToken, true)
 	if response.StatusCode != http.StatusForbidden {
 		test.Fatalf("forged task provenance admitted: status=%d", response.StatusCode)
@@ -73,7 +76,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task request failed: status=%d body=%+v", response.StatusCode, body)
 	}
 	readJSON(test, response, &created)
-	if !created.PingNotifiedAt.Valid || created.Ask != input["ask"] {
+	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content() || created.SourceCommentID != toPgUUID(test, sourceID) {
 		test.Fatalf("missing receipt or wrong ask: %+v", created)
 	}
 	var requestID string
@@ -104,6 +107,17 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	if _, err := db.New(testPool).ListDecisionPingRetries(context.Background(), 100); err != nil {
 		test.Fatal(err)
+	}
+	response = call(http.MethodPost, "/api/decisions/"+requestID+"/withdraw", map[string]any{"reason": "Superseded."}, token, false)
+	if response.StatusCode != http.StatusOK {
+		var body map[string]any
+		readJSON(test, response, &body)
+		test.Fatalf("task withdrawal route: status=%d body=%+v", response.StatusCode, body)
+	}
+	var withdrawn db.DecisionRequest
+	readJSON(test, response, &withdrawn)
+	if withdrawn.Status != "cancelled" || withdrawn.Ask != created.Ask || withdrawn.WithdrawnByTaskID != toPgUUID(test, taskID) {
+		test.Fatalf("wrong authenticated withdrawal: %+v", withdrawn)
 	}
 }
 

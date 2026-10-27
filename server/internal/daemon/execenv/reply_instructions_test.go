@@ -358,3 +358,18 @@ func TestBuildCommentReplyInstructionsSquadLeaderCarveOut(t *testing.T) {
 		t.Errorf("ordinary reply instructions leaked the leader carve-out\n---\n%s", ordinary)
 	}
 }
+
+// CHE-2070: the brief's comment section and the reply cookbook both tell the
+// agent to close the thread it was asked to handle.
+func TestBriefTeachesResolveThread(t *testing.T) {
+	var b strings.Builder
+	writeCommentFormatting(&b)
+	for name, text := range map[string]string{
+		"comment formatting": b.String(),
+		"reply cookbook":     BuildCommentReplyInstructions("claude", "issue-1", "comment-1", false),
+	} {
+		if !strings.Contains(text, "--resolve-thread") {
+			t.Errorf("%s does not teach --resolve-thread:\n%s", name, text)
+		}
+	}
+}

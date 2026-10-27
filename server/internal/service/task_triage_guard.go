@@ -69,7 +69,8 @@ var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived fr
 // run. Redoing triage is re-triage.
 var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which is redone by re-triaging the issue rather than by rerunning it")
 
-// guardIssueNotInTriage refuses a DERIVED enqueue for an issue in Triage. q is
+// guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
+// whose workflow run budget is spent (guardRunBudget). q is
 // the caller's own query handle so a transaction-scoped enqueue reads the
 // status its own transaction wrote — the deferred-channel path creates the
 // issue and its task together, and an uncommitted Triage issue must still be
@@ -81,7 +82,10 @@ var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which 
 // A missing issue is not in Triage: the enqueue proceeds and fails (or not) on
 // its own terms. A read error refuses, because a run that cannot be shown to be
 // allowed must not start.
-func guardIssueNotInTriage(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
+func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
+	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
+		return err
+	}
 	if origin == OriginNamed || !issueID.Valid {
 		return nil
 	}
@@ -95,7 +99,7 @@ func guardIssueNotInTriage(ctx context.Context, q *db.Queries, issueID pgtype.UU
 	if state.Valid {
 		return ErrIssueInTriage
 	}
-	return nil
+	return guardRunBudget(ctx, q, issueID)
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
@@ -11,8 +11,13 @@ import {
   ResizableHandle,
 } from "@multica/ui/components/ui/resizable";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
-import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
-import { getCurrentSlug } from "@multica/core/platform";
+import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
+import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
+import {
+  getCurrentSlug,
+  getWorkspaceRehydrationGeneration,
+  subscribeToWorkspaceRehydration,
+} from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
@@ -40,6 +45,9 @@ import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
+import { ChatAnnotationContext } from "./components/chat-annotation-context";
+import { useChatAnnotations } from "./components/use-chat-annotations";
+import { useQuoteRequest } from "./components/use-quote-request";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -70,6 +78,7 @@ export function ChatPage() {
   const backOrReplace = useBackOrReplace();
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
+  const workspace = useCurrentWorkspace();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -93,6 +102,13 @@ export function ChatPage() {
   const urlAgent = searchParams.get("agent") || null;
   // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
   const urlNew = searchParams.get("new") === "1";
+  // `?message=` is a one-shot jump from a decision card; it only applies once
+  // the list shows the session named beside it.
+  const urlMessage = searchParams.get("message") || null;
+  const settleJump = (outcome: "landed" | "missing") => {
+    if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
+    replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
+  };
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -136,6 +152,27 @@ export function ChatPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile URL/route changes, not store updates
   }, [isCurrentChatRoute, workspaceSlug, urlSession, urlNew]);
+
+  // The workspace layout publishes the workspace in an effect, and the chat
+  // store rehydrates from that workspace one microtask later. A page that
+  // mounts in the same commit syncs the URL before either has happened (or is
+  // skipped by the guard above), and the rehydration then replaces the
+  // selection the URL names; the store → URL effect would write that back and
+  // strip a deep link. The URL stays authoritative when it names a thread, so
+  // re-apply it after every rehydration. A URL without a thread leaves the
+  // workspace's persisted selection to the store → URL effect as before.
+  const rehydrations = useSyncExternalStore(
+    subscribeToWorkspaceRehydration,
+    getWorkspaceRehydrationGeneration,
+    () => 0,
+  );
+  useEffect(() => {
+    if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
+    if (urlSession && urlSession !== useChatStore.getState().activeSessionId) {
+      c.setActiveSession(urlSession);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-apply the URL after a rehydration, not on every URL change
+  }, [rehydrations]);
 
   // store → URL: the single URL writer. A user selection or new chat arrives
   // with a `push` intent; a session created by sending, archive advancing the
@@ -293,14 +330,36 @@ export function ChatPage() {
   // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
+  const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
+  const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
+  const annotation = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    messages: c.messages,
+    agentName: c.activeAgent?.name,
+    enabled:
+      !c.isSessionArchived &&
+      !c.isAgentArchived &&
+      !c.isAgentAccessRevoked &&
+      c.isAgentRuntimeBound &&
+      !c.noAgent,
+  });
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0 @container">
+    <ChatAnnotationContext.Provider value={annotation.scope}>
+    <div
+      ref={annotation.cardRef}
+      {...annotation.captureProps}
+      className="flex flex-1 flex-col min-h-0 @container"
+    >
+      {annotation.popup}
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
           renameRequest={renameRequest}
+          autoCompactThresholdPct={autoCompactThresholdPct}
+          onCompact={() => void c.handleSend("/compact")}
         />
       )}
       {c.showSkeleton ? (
@@ -308,6 +367,7 @@ export function ChatPage() {
       ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id || c.currentSession?.forked_from_session_id ? (
         <ChatMessageList
           key={c.activeSessionId}
+          onQuoteMessage={quote}
           messages={c.messages}
           continuedFromSessionId={c.currentSession?.continued_from_session_id}
           continuedIntoSessionId={c.currentSession?.continued_into_session_id}
@@ -322,6 +382,8 @@ export function ChatPage() {
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
+          jumpToMessageId={urlSession === c.activeSessionId ? urlMessage : null}
+          onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
             !!c.pendingTaskId ||
@@ -380,6 +442,8 @@ export function ChatPage() {
         onRename={handleRename}
         onFork={canForkSession(c.currentSession) ? handleFork : undefined}
         restoreDraftRequest={c.restoreDraftRequest}
+        quoteRequest={quoteRequest}
+        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}
         onRestoreDraftApplied={c.handleRestoreDraftApplied}
@@ -391,8 +455,10 @@ export function ChatPage() {
           c.isSessionArchived ||
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
-          !c.isAgentRuntimeBound
+          !c.isAgentRuntimeBound ||
+          c.currentSession?.compacting === true
         }
+        compacting={c.currentSession?.compacting === true}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentAccessRevoked={c.isAgentAccessRevoked}
@@ -404,8 +470,10 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
+        annotationScope={annotation.input}
       />
     </div>
+    </ChatAnnotationContext.Provider>
   );
 
   if (c.interactiveLoginRequired) return <InteractiveLoginBanner />;

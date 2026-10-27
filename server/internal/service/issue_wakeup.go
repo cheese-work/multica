@@ -853,10 +853,17 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
+	if w.SystemRule.String == SystemRuleWorkflowEdges {
+		dispatch = s.dispatchWorkflowEdges
+	}
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
+		reason := err.Error()
+		if IsProjectInactive(err) {
+			reason = ErrProjectInactive.Error()
+		}
+		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
 		cancel()
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
@@ -995,6 +1002,9 @@ func (s *IssueWakeupService) systemRuleRunWaiting(ctx context.Context, q *db.Que
 }
 
 func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) error {
+	if held, err := s.settleInactiveProject(ctx, prev); held || err != nil {
+		return err
+	}
 	// A rule gets at most two seconds including credentials and SQL. Lock waits
 	// below are shorter: even 100 contended rules consume only ~5s of the 45s
 	// batch budget, leaving time to dispatch unrelated issues.
@@ -1018,6 +1028,12 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	q := s.Tasks.Queries.WithTx(tx)
+	// The workspace row comes first, as in the pause and resume writers, and the
+	// pause is read under that lock so it cannot change before the enqueue below.
+	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, prev.WorkspaceID)
+	if err != nil {
+		return err
+	}
 	var fenced bool
 	if candidate.ID.Valid {
 		if err := tx.QueryRow(ctx, "SELECT lock_task_owner_rows($1,$2,$3)", candidate.ID, prev.IssueID, candidate.RuntimeID).Scan(&fenced); err != nil {
@@ -1044,6 +1060,18 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	}
 	if w.Revision != prev.Revision {
 		return tx.Commit(ctx)
+	}
+	if pauseState.Paused {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return tx.Commit(ctx)
+		}
+	}
+	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
+		return err
 	}
 	// A default-derived instance runs the configuration its rule resolves to
 	// now; one whose rule moved or stopped does not run in this pass.
@@ -1441,7 +1469,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1504,8 +1532,22 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
 		}
 		contextJSON, _ := json.Marshal(taskContext)
-		leader := pgtype.Bool{Bool: current.Type == "squad", Valid: current.Type == "squad"}
-		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, IsLeaderTask: leader, SquadID: current.SquadID, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		// A custom rule's resolved target carries its own squad identity.
+		squadID, leader := current.SquadID, current.Type == "squad"
+		if custom == nil && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
+			squad, squadErr := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+				ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID,
+			})
+			if squadErr != nil && !errors.Is(squadErr, pgx.ErrNoRows) {
+				return squadErr
+			}
+			// Only the issue's current, active squad leader gets leader authority.
+			// Other wakeup targets remain ordinary agent turns.
+			if squadErr == nil && !squad.ArchivedAt.Valid && squad.LeaderID == agent.ID {
+				squadID, leader = squad.ID, true
+			}
+		}
+		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, IsLeaderTask: pgtype.Bool{Bool: leader, Valid: true}, SquadID: squadID, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
 	}
 	if err != nil {
 		return err
@@ -1843,4 +1885,14 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		return s.checkJoinedFireCap(ctx, task, entry, limit)
 	}
 	return nil
+}
+
+// dispatchWorkflowEdges hands a due workflow_edges watch to the handler's
+// evaluator. It starts no run itself: a move goes through the same status write
+// a person makes, which dispatches the next step's handler.
+func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.WorkflowEdges == nil {
+		return nil
+	}
+	return s.Tasks.WorkflowEdges(ctx, w)
 }

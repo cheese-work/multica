@@ -17,6 +17,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useModalStore } from "@multica/core/modals";
 import { useConfigStore } from "@multica/core/config";
 import { isDesktopShell } from "../platform/local-directory";
@@ -35,6 +36,12 @@ const DOWNLOAD_URL = "https://multica.ai/download";
 export function HelpLauncher() {
   const { t, i18n } = useT("layout");
   const serverVersion = useConfigStore((state) => state.serverVersion);
+  const serverBuild = useConfigStore((state) => state.serverBuild);
+  const displayVersion = serverVersion
+    ? serverBuild
+      ? `${serverVersion}-${serverBuild}`
+      : serverVersion
+    : "";
   // Web-only: offering "download the desktop app" inside the desktop app is
   // nonsense, and this sidebar is shared — apps/desktop renders the same
   // AppSidebar as the web dashboard, so the entry has to be gated here.
@@ -47,13 +54,14 @@ export function HelpLauncher() {
   const desktop = isDesktopShell();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={t(($) => $.help.trigger)}
-        title={t(($) => $.help.trigger)}
-        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
-      >
-        <CircleHelp className="size-4" />
-      </DropdownMenuTrigger>
+      <TooltipHint label={t(($) => $.help.trigger)}>
+        <DropdownMenuTrigger
+          aria-label={t(($) => $.help.trigger)}
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+        >
+          <CircleHelp className="size-4" />
+        </DropdownMenuTrigger>
+      </TooltipHint>
       <DropdownMenuContent
         align="end"
         side="top"
@@ -119,7 +127,7 @@ export function HelpLauncher() {
           <MessageCircle className="h-3.5 w-3.5" />
           {t(($) => $.help.feedback)}
         </DropdownMenuItem>
-        {serverVersion && (
+        {displayVersion && (
           <>
             <DropdownMenuSeparator />
             {/* DropdownMenuLabel renders Base UI's Menu.GroupLabel, which reads
@@ -129,7 +137,7 @@ export function HelpLauncher() {
                 above the sidebar). */}
             <DropdownMenuGroup>
               <DropdownMenuLabel className="font-normal break-words">
-                {t(($) => $.help.server_version, { version: serverVersion })}
+                {t(($) => $.help.server_version, { version: displayVersion })}
               </DropdownMenuLabel>
             </DropdownMenuGroup>
           </>

@@ -1,4 +1,5 @@
 export type NotificationGroupKey =
+  | "unassigned_activity"
   | "assignments"
   | "status_changes"
   | "comments"

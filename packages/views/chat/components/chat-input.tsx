@@ -26,12 +26,16 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
-import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
+import { useShortcut } from "@multica/core/shortcuts";
+import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
 import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
 import { useT } from "../../i18n";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import { ChatAnnotationChip, type ChatInputAnnotations } from "./chat-annotations";
 
 const logger = createLogger("chat.ui");
 const EMPTY_UPLOADS: DraftUpload[] = [];
@@ -58,13 +62,15 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
 }
 
 interface ChatInputProps {
+  /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
+  annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
    * message. Resolves with the outcome so the composer can show one error line.
    */
-  onFork?: (message: string) => Promise<ForkResult>;
+  onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
@@ -100,6 +106,10 @@ interface ChatInputProps {
    * therefore treat this as the single terminal transition and consume the row.
    */
   onRestoreDraftApplied?: () => void;
+  /** Text to quote into the draft, one request per `id`. Appended after what is already typed; never sent. */
+  quoteRequest?: { id: number; content: string } | null;
+  /** Consumes the request, also when the composer could not take it. */
+  onQuoteApplied?: () => void;
   /** True when uploads are available for this composer (an agent is selected).
    *  The transport itself is the coordinated-upload engine (MUL-5181 L2) —
    *  the owner only says whether the affordance exists. When false,
@@ -126,6 +136,9 @@ interface ChatInputProps {
    *  one, both are true and "create an agent" would be the wrong instruction. */
   agentAccessRevoked?: boolean;
   agentRuntimeRequired?: boolean;
+  /** True while the DM is being compacted: `disabled` is set by the owner, and
+   *  this swaps the placeholder to name the reason. The draft is kept. */
+  compacting?: boolean;
   /** Name of the currently selected agent, used in the placeholder. */
   agentName?: string;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
@@ -156,7 +169,23 @@ interface ChatInputProps {
   editorKeyOverride?: string;
 }
 
+/**
+ * The Markdown a DM send carries, and the comments folded into it as sent
+ * (id and note). A slash command is not a message about a reply: it is left
+ * alone and the comments stay.
+ */
+function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[] } {
+  const text = raw.replace(/(\n\s*)+$/, "").trim();
+  if (!saved.length || /^\/\S/.test(text)) return { content: text, sent: [] };
+  if (!hasReplyIntent(text, saved)) return { content: "", sent: [] };
+  return {
+    content: composeAnnotatedReply(text, saved, { plainQuotes: true }),
+    sent: saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note })),
+  };
+}
+
 export function ChatInput({
+  annotationScope,
   onSend,
   onRename,
   onFork,
@@ -164,6 +193,8 @@ export function ChatInput({
   conversationStarterRequest,
   onConversationStarterApplied,
   onRestoreDraftApplied,
+  quoteRequest,
+  onQuoteApplied,
   uploadEnabled: uploadAllowed,
   onStop,
   isRunning,
@@ -173,6 +204,7 @@ export function ChatInput({
   agentArchived,
   agentAccessRevoked,
   agentRuntimeRequired,
+  compacting,
   agentName,
   leftAdornment,
   contextItems,
@@ -246,7 +278,9 @@ export function ChatInput({
   // restored or parked one, or any persisted draft the user typed in another
   // session) still enables the button. A false enable costs nothing: handleSend
   // reads the live editor and bails when it is empty.
-  const hasNothingToSend = isEmpty && !inputDraft.trim();
+  const annotationKey = annotationScope?.draftKey;
+  const annotations = useCommentDraftStore((s) => (annotationKey ? s.getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS));
+  const hasNothingToSend = isEmpty && !inputDraft.trim() && !annotations.some((a) => a.note.trim());
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
   const editorKey = editorKeyOverride ?? CHAT_COMPOSER_EDITOR_KEY;
@@ -397,6 +431,18 @@ export function ChatInput({
     editorRef.current?.focus();
   }, [focusRequest]);
 
+  // The editor emits the change itself, so the draft store follows as it does
+  // for typing.
+  const appliedQuoteIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!quoteRequest || appliedQuoteIdRef.current === quoteRequest.id) return;
+    appliedQuoteIdRef.current = quoteRequest.id;
+    onQuoteApplied?.();
+    if (disabled || noAgent) return;
+    const quoted = quoteRequest.content.split("\n").map((line) => `> ${line}`).join("\n");
+    if (editorRef.current?.insertMarkdownAtEnd(quoted)) editorRef.current.focus();
+  }, [quoteRequest, onQuoteApplied, disabled, noAgent]);
+
   useEffect(() => {
     if (!restoreDraftRequest) {
       appliedRestoreIdRef.current = null;
@@ -467,12 +513,20 @@ export function ChatInput({
     editorRef,
     uploadGate: gate,
     containerRef: composerRef,
+    // Pure: it runs before the single-flight guard, so a refused second submit
+    // must not leave anything behind that a send already in flight could read.
+    normalize: (raw) => prepareDmSend(raw, annotationKey ? useCommentDraftStore.getState().getAnnotations(annotationKey) : EMPTY_REPLY_ANNOTATIONS).content,
     // Chat keeps the caret in the box after a send (the next turn is typed in
     // the same place), except when the commit left the editor alone — see
     // `editorScrubbedRef`.
     afterAccepted: () => (editorScrubbedRef.current ? "refocus" : "none"),
-    onSubmit: async (content: string): Promise<boolean> => {
+    onSubmit: async (content: string, raw: string): Promise<boolean> => {
       editorScrubbedRef.current = false;
+      // Bound to THIS admitted send: its draft key and the comments exactly as sent,
+      // taken in the same tick `normalize` composed them. Nothing shared is read at commit.
+      const annotationKeyAtSend = annotationKey;
+      const prepared = prepareDmSend(raw, annotationKeyAtSend ? useCommentDraftStore.getState().getAnnotations(annotationKeyAtSend) : EMPTY_REPLY_ANNOTATIONS);
+      const sentAnnotations = prepared.content === content ? prepared.sent : [];
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
@@ -549,17 +603,23 @@ export function ChatInput({
         // is on its way, but a draft replaced since the snapshot is NEWER work
         // and must not resurface as collateral.
         if (untouched) clearInputDraft(keyAtSend);
+        // Clear a comment only while its note is still the one that was sent. A note edited,
+        // or a comment added or removed, while the send was pending is newer work (the marker
+        // note box and the list's Edit and Remove all write to the draft store).
+        if (annotationKeyAtSend) {
+          const store = useCommentDraftStore.getState();
+          const current = store.getAnnotations(annotationKeyAtSend);
+          for (const sent of sentAnnotations) {
+            if (current.find((a) => a.id === sent.id)?.note === sent.note) store.removeAnnotation(annotationKeyAtSend, sent.id);
+          }
+        }
         for (const key of options?.extraDraftKeys ?? []) {
           if (key !== keyAtSend) clearInputDraft(key);
         }
       };
       if (fork && onFork) {
-        if (uniqueActiveIds.length > 0) {
-          setForkError(t(($) => $.input.fork_attachments_blocked));
-          return false;
-        }
         setForkError(null);
-        const result = await onFork(fork.message);
+        const result = await onFork(fork.message, uniqueActiveIds);
         if (!result.ok) {
           setForkError(result.error);
           return false;
@@ -621,7 +681,9 @@ export function ChatInput({
     if (
       editorRef.current?.getMarkdown().trim() ||
       (draft.inputDrafts[draftKey] ?? "").trim() ||
-      (draft.inputDraftAttachments[draftKey]?.length ?? 0) > 0
+      (draft.inputDraftAttachments[draftKey]?.length ?? 0) > 0 ||
+      // Pending comments are drafted work too: a starter must not consume them.
+      (annotationKey && useCommentDraftStore.getState().getAnnotations(annotationKey).length > 0)
     ) {
       toast.info(t(($) => $.conversation_starters.draft_in_progress));
       return;
@@ -632,6 +694,7 @@ export function ChatInput({
     void submit();
   }, [
     allowSubmitWhileRunning,
+    annotationKey,
     commitDraft,
     conversationStarterRequest,
     disabled,
@@ -649,6 +712,8 @@ export function ChatInput({
     ? t(($) => $.input.placeholder_access_revoked)
     : noAgent
     ? t(($) => $.input.placeholder_no_agent)
+    : compacting
+    ? t(($) => $.input.placeholder_compacting)
     : disabled
       ? agentArchived
         ? t(($) => $.input.placeholder_archived_agent)
@@ -696,6 +761,19 @@ export function ChatInput({
         noAgent && "cursor-not-allowed",
       )}
     >
+      {annotationScope && annotations.length > 0 && (
+        <div className={CHAT_COLUMN}>
+          <ChatAnnotationChip
+            draftKey={annotationScope.draftKey}
+            annotations={annotations}
+            disabled={!!disabled || !!noAgent}
+            onEditAnnotation={annotationScope.onEditAnnotation}
+            activeId={annotationScope.activeId}
+            onActiveChange={annotationScope.onActiveChange}
+            onEmpty={() => editorRef.current?.focus()}
+          />
+        </div>
+      )}
       <div
         data-slot="chat-input-surface"
         {...(uploadEnabled ? dropZoneProps : {})}
@@ -736,7 +814,7 @@ export function ChatInput({
                     title={t(($) => $.input.change_project_context)}
                     onClear={() => onProjectChange?.(null)}
                     clearLabel={t(($) => $.input.remove_project_context)}
-                    className="h-6 border-surface-border bg-surface-raised font-medium text-foreground"
+                    className="border-surface-border bg-surface-raised font-medium text-foreground"
                   />
                 }
               />
@@ -804,6 +882,7 @@ export function ChatInput({
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
           <SubmitButton
             onClick={submit}
+            testId="chat-send-button"
             disabled={hasNothingToSend || submitting || !!disabled || !!noAgent}
             loading={submitting}
             busy={gate.uploading}
@@ -813,19 +892,31 @@ export function ChatInput({
             // upload blocks submit, so it also falls back to Stop rather than
             // removing chat's only cancellation path; the attachment node
             // remains the visible upload-progress surface in the editor.
+            // While the DM compacts the composer cannot send (queued or not), so
+            // Stop is the only available action whatever the draft holds.
             running={
               !!isRunning &&
-              !isForkInput &&
-              (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)
+              (!!compacting ||
+                (!isForkInput &&
+                  (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)))
             }
             onStop={onStop}
-            tooltip={gate.uploading
+            // While blocked, the placeholder copy is exactly the reason.
+            disabledReason={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning && !isForkInput
-                ? t(($) => $.input.queue_send_tooltip)
-                : sendShortcut
-                  ? `${t(($) => $.input.send_tooltip)} · ${formatShortcut(sendShortcut)}`
-                  : t(($) => $.input.send_tooltip)}
+              : disabled || noAgent
+                ? placeholder
+                : undefined}
+            tooltip={isRunning && !isForkInput
+              ? t(($) => $.input.queue_send_tooltip)
+              : sendShortcut
+                ? (
+                  <>
+                    {t(($) => $.input.send_tooltip)}
+                    <ShortcutKeycaps shortcut={sendShortcut} decorative />
+                  </>
+                )
+                : t(($) => $.input.send_tooltip)}
             ariaLabel={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
               : isRunning && !isForkInput

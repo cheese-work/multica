@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ChatChannelHistoryReader reads a chat session's bound IM-channel history. The
@@ -112,12 +113,17 @@ func (h *Handler) chatMessageHistory(r *http.Request, scope chatHistoryScope) (c
 		if m.Role == "assistant" {
 			role = channel.HistoryRoleAssistant
 		}
+		kind := m.MessageKind
+		if kind == protocol.ChatMessageKindMessage {
+			kind = ""
+		}
 		out = append(out, channel.HistoryMessage{
-			ID:     uuidToString(m.ID),
-			Role:   role,
-			Text:   m.Content,
-			Author: transcriptAuthor(role),
-			TS:     m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			ID:          uuidToString(m.ID),
+			Role:        role,
+			Text:        m.Content,
+			Author:      transcriptAuthor(role),
+			TS:          m.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			MessageKind: kind,
 		})
 	}
 	// Name the platform the transcript came from. HistoryPage.ChannelType is
@@ -204,12 +210,23 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.SlackHistory == nil {
+	threadID := r.URL.Query().Get("id")
+	var page channel.HistoryPage
+	var err error
+	switch {
+	case h.SlackHistory == nil && threadID != "":
 		h.writeNoChannelIntegration(w)
 		return
+	case h.SlackHistory == nil:
+		page, err = h.chatMessageHistory(r, scope)
+	default:
+		page, err = h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
+		if threadID == "" && errors.Is(err, slack.ErrNoSlackSession) {
+			// A web DM has one flat transcript, so "the thread I am in" is
+			// that transcript, exactly what `chat history` serves.
+			page, err = h.chatMessageHistory(r, scope)
+		}
 	}
-	threadID := r.URL.Query().Get("id")
-	page, err := h.SlackHistory.Thread(r.Context(), scope.sessionID, threadID, scope.historyOptions(r))
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 

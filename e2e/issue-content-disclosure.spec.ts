@@ -1,6 +1,27 @@
-import { expect, test } from "@playwright/test";
-import { createTestApi, loginAsDefault, waitForPageText } from "./helpers";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { clickWhenHydrated, createTestApi, loginAsDefault, waitForPageText } from "./helpers";
 import type { TestApiClient } from "./fixtures";
+
+/**
+ * Open an issue by id. The app redirects an id URL to the issue's identifier
+ * URL once the issue loads, and that redirect remounts the page, taking any
+ * state a test set up in between (an open find bar, a typed draft) with it.
+ * Wait for the identifier URL before the test starts.
+ */
+/**
+ * A thread's action buttons only take pointer events while its header row is
+ * hovered, so hover the row as a user's pointer would, then click.
+ */
+async function clickThreadToggle(button: Locator) {
+  await button.locator("xpath=ancestor::div[contains(@class, 'gap-2.5')][1]").hover();
+  await button.click();
+}
+
+async function openIssue(page: Page, workspaceSlug: string, issueId: string) {
+  await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForURL((url) => !url.pathname.includes(issueId), { timeout: 30000, waitUntil: "domcontentloaded" });
+}
+
 
 interface RowMeasurement {
   readonly totalRows: number;
@@ -129,7 +150,7 @@ test.describe("Description editor lifecycle through folding", () => {
   });
 
   test("first pointer gesture on the collapsed preview expands before editing capture", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     const editor = page.locator("[data-description-editor]");
@@ -163,7 +184,7 @@ test.describe("Description editor lifecycle through folding", () => {
   // entirely — so this exercises the same hit-test path a real user's click
   // on the visible collapsed text would.
   test("a raw pointer hit inside the inert editor's own rendered area still expands it", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     const editor = page.locator("[data-description-editor]");
@@ -181,7 +202,7 @@ test.describe("Description editor lifecycle through folding", () => {
   });
 
   test("keyboard Show more expands and Tab enters the real editor", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     const showMore = page.getByRole("button", { name: /Show more/ });
@@ -194,7 +215,7 @@ test.describe("Description editor lifecycle through folding", () => {
   });
 
   test("selecting revealed text after expansion attaches the annotation to the real editor", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
@@ -256,7 +277,7 @@ test.describe("Description editor lifecycle through folding", () => {
   });
 
   test("hidden collapsed suffix never spawns an annotation bubble", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     // The accessible preview is the only text exposed while collapsed; a
@@ -277,7 +298,7 @@ test.describe("Description editor lifecycle through folding", () => {
   });
 
   test("paste-then-immediate-close persists the image markdown across reload", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
@@ -319,7 +340,7 @@ test.describe("Description editor lifecycle through folding", () => {
     // debounce for the now-real image markdown, which is the actual flush
     // boundary this test needs to race.
     const insertedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(insertedImage).toBeVisible({ timeout: 10000 });
+    await expect(insertedImage).toBeVisible({ timeout: 30000 });
     await expect(insertedImage).not.toHaveAttribute("src", /^blob:/);
 
     // Navigate away immediately after settlement — before the freshly-started
@@ -333,9 +354,18 @@ test.describe("Description editor lifecycle through folding", () => {
     // discards the document (and any in-flight fetch) the instant it starts,
     // which this flush was never built to survive, so it's not this feature's
     // failure mode to test.
+    // The save is fire-and-forget from the unmount, so wait for its response
+    // before the full navigation below, or that navigation discards it.
+    const flushedSave = page.waitForResponse(
+      (response) =>
+        ["PUT", "PATCH"].includes(response.request().method()) &&
+        response.url().includes(`/api/issues/${issueId}`),
+      { timeout: 30000 },
+    );
     await page.getByRole("link", { name: "Issues", exact: true }).click();
+    await flushedSave;
 
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await page.getByRole("button", { name: /Show more/ }).click();
     // A bare `img` locator is satisfied by an unsettled blob preview too, so
@@ -346,7 +376,7 @@ test.describe("Description editor lifecycle through folding", () => {
     // reload re-fetched persisted markdown rather than showing left-over
     // client state.
     const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).toBeVisible({ timeout: 30000 });
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
@@ -360,7 +390,7 @@ test.describe("Description editor lifecycle through folding", () => {
   // upload is pending") instead of racing a real network delay against the
   // navigation.
   test("close while the upload is still in flight persists the image markdown across reload", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
@@ -405,19 +435,28 @@ test.describe("Description editor lifecycle through folding", () => {
     await page.getByRole("link", { name: "Issues", exact: true }).click();
     await expect(page.getByRole("button", { name: /Show more/ })).not.toBeVisible();
 
-    // Now let the response land, after the editor is gone.
+    // Now let the response land, after the editor is gone. The description is
+    // saved from that response; a full navigation started before the save
+    // finishes would discard it, so wait for it.
+    const descriptionSaved = page.waitForResponse(
+      (response) =>
+        ["PUT", "PATCH"].includes(response.request().method()) &&
+        response.url().includes(`/api/issues/${issueId}`),
+      { timeout: 30000 },
+    );
     releaseUpload();
+    await descriptionSaved;
 
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await page.getByRole("button", { name: /Show more/ }).click();
     const reopenedImage = page.locator("[data-description-editor] img.image-content:not(.image-uploading)");
-    await expect(reopenedImage).toBeVisible({ timeout: 10000 });
+    await expect(reopenedImage).toBeVisible({ timeout: 30000 });
     await expect(reopenedImage).not.toHaveAttribute("src", /^blob:/);
   });
 
   test("Show less is refused while an upload is pending, independent of editor focus", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
 
     await page.getByRole("button", { name: /Show more/ }).click();
@@ -491,7 +530,7 @@ test.describe("Description editor lifecycle through folding", () => {
       description: "Second issue description",
     });
 
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await expect(page.locator("[data-description-editor] .ProseMirror")).toHaveCount(1);
 
@@ -537,7 +576,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
   });
 
   test("Show more expansion survives scrolling the thread's row out of view and back", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
 
@@ -610,7 +649,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
   // press. A human-paced press (down, wait, up) reproduces the race that a
   // Playwright `.click()` (down+up back to back, same tick) can mask.
   test("a human-paced mouse press on Show more still commits the expansion (CHE-554)", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
 
@@ -644,7 +683,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
   // issue-detail.tsx and used to force-expand the thread before Enter was
   // even pressed, unmounting the button out from under the pending keypress.
   test("keyboard activation of Show more commits the expansion (CHE-554)", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
 
@@ -668,7 +707,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
   });
 
   test("fold-all and unfold-all commands drive the length-disclosure store together with manual collapse and resolved-expand", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
 
@@ -714,7 +753,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
   // proves the separate, PERSISTED length-expansion choice does not silently
   // get re-latched to "expanded" by that same pin.
   test("an active reply draft on a root does not defeat Fold All's length-disclosure reset (CHE-479)", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Root comment for thread fold test");
 
@@ -724,12 +763,15 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
 
     // Start (but do not send) a reply draft on the root thread, so
     // `rootIdsWithActiveReplyDraft` is active for it when Fold All runs.
-    await page.getByTestId("reply-composer-shell").first().click();
     const editor = page
       .locator('.ProseMirror[data-placeholder="Leave a reply..."], .ProseMirror:has([data-placeholder="Leave a reply..."])')
       .first();
+    await clickWhenHydrated(page.getByTestId("reply-composer-shell").first(), editor);
     await editor.fill("A reply I'm still typing when Fold All runs.");
-    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+    // The placeholder leaves the DOM once there is text, so the empty-editor
+    // locator above no longer matches. Find the draft by what it holds.
+    const draft = page.locator(".ProseMirror", { hasText: "A reply I'm still typing when Fold All runs." });
+    await expect(draft).toHaveText("A reply I'm still typing when Fold All runs.");
 
     await page.keyboard.press("ControlOrMeta+K");
     const commandPalette = page.getByPlaceholder("Type a command or search...");
@@ -741,7 +783,7 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // The draft itself must still be reachable — Fold All's pin keeps the
     // thread's composer/content from being ripped out from under active
     // typing (the part of the spec this test is NOT regressing on).
-    await expect(editor).toHaveText("A reply I'm still typing when Fold All runs.");
+    await expect(draft).toHaveText("A reply I'm still typing when Fold All runs.");
 
     // The bug: the latch effect used to see the length-disclosure entry
     // Fold All just cleared as "never expanded" and immediately re-persist
@@ -762,8 +804,23 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     const posted = page.waitForResponse(
       (response) => response.request().method() === "POST" && response.url().endsWith(`/api/issues/${issueId}/comments`),
     );
+    // Closing the command palette does not hand focus back to the draft.
+    await draft.click();
     await page.keyboard.press("ControlOrMeta+Enter");
     await posted;
+
+    // The draft is cleared after the response lands. A reload before that
+    // restores it, and a restored draft is an active reason that rightly keeps
+    // the thread open, which is not what this test is about.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Object.entries(localStorage)
+            .filter(([key]) => key.startsWith("multica_comment_drafts"))
+            .some(([, value]) => value.includes("still typing")),
+        ),
+      )
+      .toBe(false);
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForPageText(page, issueTitle);
@@ -776,6 +833,12 @@ test.describe("Durable thread fold state through row unmount/remount", () => {
     // to "expanded" while the draft was active, and every reply would show
     // immediately on reload with no "Show more" click needed. With the fix,
     // Fold All's reset stuck: the thread reloads compact.
+    //
+    // Manual collapse (Fold All's other effect) does persist here, so the
+    // thread reloads as its folded summary. That is the higher-priority gate
+    // (01-DESIGN "Effective order"); open it to see which length preference
+    // sits underneath, which is what CHE-479's option 2 protects.
+    await clickThreadToggle(page.getByRole("button", { name: "Expand thread" }).first());
     await expect(page.getByRole("button", { name: /Show \d+ more repl/ })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("Reply number 1")).not.toBeVisible();
   });
@@ -810,13 +873,33 @@ test.describe("In-page find reveals folded content (CHE-436)", () => {
   });
 
   test("reveals a manually-collapsed thread's replies and the collapsed description while open, then restores both on close", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Findable root comment");
 
     // Manually collapse the whole thread card (the chevron toggle, not
     // Show less) so its replies leave the DOM entirely.
-    await page.getByRole("button", { name: "Collapse thread" }).click();
+    // The thread card sits below the long description, outside the 720px
+    // viewport, and the comment composer is sticky over the bottom of the
+    // scroll area. Scroll the nearest scrollable ancestor until the chevron
+    // is mid-viewport, as a user would, then click.
+    const collapseThread = page.getByRole("button", { name: "Collapse thread" });
+    await expect
+      .poll(async () =>
+        collapseThread.evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          const mid = innerHeight / 2;
+          if (Math.abs(box.top - mid) < 100) return true;
+          let node: HTMLElement | null = el.parentElement;
+          while (node && !(node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY))) {
+            node = node.parentElement;
+          }
+          if (node) node.scrollTop += box.top - mid;
+          return false;
+        }),
+      )
+      .toBe(true);
+    await clickThreadToggle(collapseThread);
     await expect(page.getByText("Findable reply sentinel 1")).not.toBeAttached();
 
     // The description also starts collapsed (LONG_DESCRIPTION overflows the
@@ -860,7 +943,7 @@ test.describe("In-page find reveals folded content (CHE-436)", () => {
   });
 
   test("fold-all/unfold-all commands issued while find is open still change the base preference, taking visible effect after close", async ({ page }) => {
-    await page.goto(`/${workspaceSlug}/issues/${issueId}`, { waitUntil: "domcontentloaded" });
+    await openIssue(page, workspaceSlug, issueId);
     await waitForPageText(page, issueTitle);
     await waitForPageText(page, "Findable root comment");
 

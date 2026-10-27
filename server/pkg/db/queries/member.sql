@@ -8,6 +8,14 @@ SELECT user_id FROM member
 WHERE workspace_id = $1 AND role IN ('owner', 'admin')
 ORDER BY created_at ASC;
 
+-- name: GetWorkspaceOwnerUserID :one
+-- The longest-standing owner, so a workspace with several owners resolves to
+-- the same person every time.
+SELECT user_id FROM member
+WHERE workspace_id = $1 AND role = 'owner'
+ORDER BY created_at ASC, id ASC
+LIMIT 1;
+
 -- name: GetMember :one
 SELECT * FROM member
 WHERE id = $1;
@@ -15,6 +23,15 @@ WHERE id = $1;
 -- name: GetMemberByUserAndWorkspace :one
 SELECT * FROM member
 WHERE user_id = $1 AND workspace_id = $2;
+
+-- name: GetRealtimeMemberships :many
+SELECT m.user_id, m.workspace_id
+FROM member m
+JOIN (
+    SELECT unnest(sqlc.arg(user_ids)::uuid[]) AS user_id,
+           unnest(sqlc.arg(workspace_ids)::uuid[]) AS workspace_id
+) AS requested
+    ON m.user_id = requested.user_id AND m.workspace_id = requested.workspace_id;
 
 -- name: CreateMember :one
 INSERT INTO member (workspace_id, user_id, role)

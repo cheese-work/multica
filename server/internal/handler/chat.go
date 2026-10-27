@@ -29,9 +29,7 @@ import (
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
 
-// ---------------------------------------------------------------------------
 // Chat Sessions
-// ---------------------------------------------------------------------------
 
 type CreateChatSessionRequest struct {
 	AgentID   string  `json:"agent_id"`
@@ -219,6 +217,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
@@ -254,6 +253,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 				WorkspaceID:            uuidToString(s.WorkspaceID),
 				AgentID:                uuidToString(s.AgentID),
@@ -272,6 +272,10 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
+		return
+	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -364,6 +368,10 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
 		return
 	}
+	if err := h.hydrateChatSessionCompacting(r.Context(), responses); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
+		return
+	}
 	writeJSON(w, http.StatusOK, responses[0])
 }
 
@@ -396,6 +404,10 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exactly one of title or project_id is required")
 		return
 	}
+	if hasTitle {
+		h.renameChatSession(w, r, userID, *req.Title)
+		return
+	}
 
 	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
 	if !ok {
@@ -406,71 +418,53 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		updated db.ChatSession
 		err     error
 	)
-	var projectIDChanged bool
-	if hasTitle {
-		title := strings.TrimSpace(*req.Title)
-		if title == "" {
-			writeError(w, http.StatusBadRequest, "title is required")
+	projectID := pgtype.UUID{Valid: false}
+	if string(req.ProjectID) != "null" {
+		var rawProjectID string
+		if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		if len([]rune(title)) > chatSessionTitleMaxLen {
-			writeError(w, http.StatusBadRequest, "title is too long")
+		rawProjectID = strings.TrimSpace(rawProjectID)
+		if rawProjectID == "" {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		updated, err = h.Queries.UpdateChatSessionTitle(r.Context(), db.UpdateChatSessionTitleParams{
-			ID:    session.ID,
-			Title: title,
-		})
-	} else {
-		projectID := pgtype.UUID{Valid: false}
-		if string(req.ProjectID) != "null" {
-			var rawProjectID string
-			if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			rawProjectID = strings.TrimSpace(rawProjectID)
-			if rawProjectID == "" {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
-			if !ok {
-				return
-			}
-		}
-
-		tx, txErr := h.TxStarter.Begin(r.Context())
-		if txErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
+		if !ok {
 			return
 		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
+	}
 
-		if projectID.Valid {
-			if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
-				ID:          projectID,
-				WorkspaceID: session.WorkspaceID,
-			}); lockErr != nil {
-				if errors.Is(lockErr, pgx.ErrNoRows) {
-					writeError(w, http.StatusNotFound, "project not found")
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "failed to lock project")
-				return
-			}
-		}
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
 
-		updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
-			ID:          session.ID,
+	if projectID.Valid {
+		if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
+			ID:          projectID,
 			WorkspaceID: session.WorkspaceID,
-			ProjectID:   projectID,
-		})
-		if err == nil {
-			err = tx.Commit(r.Context())
+		}); lockErr != nil {
+			if errors.Is(lockErr, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to lock project")
+			return
 		}
-		projectIDChanged = true
+	}
+
+	updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
+		ID:          session.ID,
+		WorkspaceID: session.WorkspaceID,
+		ProjectID:   projectID,
+	})
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat session")
@@ -483,10 +477,8 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		Title:         updated.Title,
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	}
-	if projectIDChanged {
-		projectID := uuidToPtr(updated.ProjectID)
-		payload.ProjectID = &projectID
-	}
+	projectIDValue := uuidToPtr(updated.ProjectID)
+	payload.ProjectID = &projectIDValue
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
 	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
@@ -609,6 +601,17 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	if req.Archived && !decisionLaneArchiveAllowed(w, r, qtx, session) {
 		return
 	}
+	// An archived DM is read-only and gets no more notifications, so the ones
+	// it already raised close with it.
+	var closedRecords []db.InboxItem
+	if req.Archived {
+		var err error
+		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+			return
+		}
+	}
 	updated, err := qtx.SetChatSessionArchived(r.Context(), db.SetChatSessionArchivedParams{
 		ID:       session.ID,
 		Archived: req.Archived,
@@ -700,6 +703,7 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// refresh, and wakes the runtime so a queued successor is claimed now
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -821,6 +825,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The DM is going away, so the notifications it raised close with it.
+	closedRecords, err := qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to close chat notifications")
+		return
+	}
+
 	if err := qtx.DeleteChatSession(r.Context(), db.DeleteChatSessionParams{
 		ID:          session.ID,
 		WorkspaceID: session.WorkspaceID,
@@ -850,6 +861,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// cancelled and returned before the delete, so they still carry its id, but
 	// the row they would be resolved through is gone by now.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionDeleted, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionDeletedPayload{
@@ -859,9 +871,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Chat Messages
-// ---------------------------------------------------------------------------
 
 type SendChatMessageRequest struct {
 	Content       string   `json:"content"`
@@ -980,6 +990,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatCompacting):
+			// Both keys: `code` for API consumers, `reason_code` for the web
+			// client's existing send-error mapping.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "chat is compacting", "code": "chat_compacting", "reason_code": "chat_compacting"})
 		default:
 			slog.Warn("send chat message failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to send chat message")
@@ -1280,9 +1294,26 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	}
 	groupedAtt := h.groupChatMessageAttachments(ctx, workspaceID, messageIDs)
 
+	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
+	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
+
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
+			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
+				resp[i].DecisionRequests = cards
+			} else {
+				resp[i].DecisionRequest = &cards[0]
+			}
+		}
+		if cards := quotes[uuidToString(m.ID)]; len(cards) > 0 {
+			resp[i].DecisionQuotes = cards
+		}
+		if card, ok := refs[uuidToString(m.DecisionAnswerID)]; ok && m.MessageKind == protocol.ChatMessageKindDecisionReference {
+			card.Inherited = len(m.LineageMessageIds) > 0
+			resp[i].DecisionRef = &card
+		}
 	}
 	return resp
 }
@@ -1395,6 +1426,23 @@ type PrioritizeQueuedChatTaskResponse struct {
 	ActiveTaskID string `json:"active_task_id,omitempty"`
 }
 
+func (h *Handler) markChatSessionRead(ctx context.Context, session db.ChatSession) ([]db.InboxItem, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.MarkChatSessionRead(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	closed, err := qtx.MarkDMRepliesRead(ctx, db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
+	if err != nil {
+		return nil, err
+	}
+	return closed, tx.Commit(ctx)
+}
+
 // MarkChatSessionRead clears the session's unread_since (→ has_unread=false)
 // and broadcasts chat:session_read so other devices of the same user drop
 // their badges.
@@ -1411,10 +1459,14 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Queries.MarkChatSessionRead(r.Context(), session.ID); err != nil {
+	// Reading the DM reads its notification records: one transaction, so the
+	// DM badge and the inbox never disagree.
+	closedRecords, err := h.markChatSessionRead(r.Context(), session)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark session read")
 		return
 	}
+	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{
@@ -1424,9 +1476,7 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Deferred-cancellation draft restores (#5219)
-// ---------------------------------------------------------------------------
 
 // ChatDraftRestoreResponse is one recoverable composer draft: a deferred
 // cancellation settled as empty-transcript after the cancel HTTP response
@@ -1829,9 +1879,7 @@ func (h *Handler) ClearQueuedChatTasks(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------------------------------------------------------------------------
 // Task cancellation (user-facing, with ownership check)
-// ---------------------------------------------------------------------------
 
 // CancelTaskByUser cancels a task the caller is allowed to act on within the
 // current workspace.
@@ -1979,9 +2027,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ---------------------------------------------------------------------------
 // Response types & helpers
-// ---------------------------------------------------------------------------
 
 type ChatSessionResponse struct {
 	ID                     string  `json:"id"`
@@ -1989,6 +2035,7 @@ type ChatSessionResponse struct {
 	ContinuedFromSessionID *string `json:"continued_from_session_id,omitempty"`
 	ForkedFromSessionID    *string `json:"forked_from_session_id,omitempty"`
 	ForkLastMessageID      *string `json:"fork_last_message_id,omitempty"`
+	ForkSourceMessageID    *string `json:"fork_source_message_id,omitempty"`
 	ForkMessageCount       *int32  `json:"fork_message_count,omitempty"`
 	WorkspaceID            string  `json:"workspace_id"`
 	AgentID                string  `json:"agent_id"`
@@ -2009,14 +2056,56 @@ type ChatSessionResponse struct {
 	// older Chat that remains readable and writable in Multica.
 	ChannelSource         *ChatSessionChannelSourceResponse `json:"channel_source,omitempty"`
 	IsCurrentChannelRoute *bool                             `json:"is_current_channel_route,omitempty"`
-	CreatedAt             string                            `json:"created_at"`
-	UpdatedAt             string                            `json:"updated_at"`
+	// Compacting is true while a compaction task (manual or automatic) is
+	// active for this DM: sends are refused with 409 chat_compacting.
+	Compacting bool `json:"compacting"`
+	// ContextTokens / ContextWindow: the latest completed run's last prompt size
+	// and the model's context window, for the context meter. Absent when that
+	// run reported neither (CHE-1808).
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
+	ContextWindow *int64 `json:"context_window,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
 	ChannelType    string `json:"channel_type"`
 	InstallationID string `json:"installation_id"`
 	RouteRevision  int64  `json:"route_revision"`
+}
+
+func (h *Handler) hydrateChatSessionCompacting(ctx context.Context, sessions []ChatSessionResponse) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	ids := make([]pgtype.UUID, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, parseUUID(session.ID))
+	}
+	compacting, err := h.Queries.ListCompactingChatSessionIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]bool, len(compacting))
+	for _, id := range compacting {
+		byID[uuidToString(id)] = true
+	}
+	latest, err := h.Queries.ListLatestRunContextForChatSessions(ctx, ids)
+	if err != nil {
+		return err
+	}
+	runContext := make(map[string]db.ListLatestRunContextForChatSessionsRow, len(latest))
+	for _, row := range latest {
+		runContext[uuidToString(row.ChatSessionID)] = row
+	}
+	for i := range sessions {
+		sessions[i].Compacting = byID[sessions[i].ID]
+		if row, ok := runContext[sessions[i].ID]; ok && row.ContextTokens.Valid && row.ContextWindow.Valid {
+			sessions[i].ContextTokens = &row.ContextTokens.Int64
+			sessions[i].ContextWindow = &row.ContextWindow.Int64
+		}
+	}
+	return nil
 }
 
 func (h *Handler) hydrateChatSessionChannelMetadata(ctx context.Context, sessions []ChatSessionResponse) error {
@@ -2102,6 +2191,14 @@ type ChatMessageResponse struct {
 	// agent can `multica attachment download <id>` rather than guessing
 	// from a markdown URL that may expire.
 	Attachments []AttachmentResponse `json:"attachments,omitempty"`
+	// DecisionQuotes lists the decision records made from this user bubble.
+	// Always an array; only the session owner can read a DM, so no extra gate.
+	DecisionQuotes []DecisionCard `json:"decision_quotes"`
+	// DecisionRef is the card a decision_reference message announces; nil for
+	// other kinds and for rows written before the link was stored.
+	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
+	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
+	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
@@ -2111,6 +2208,7 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
 		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
 		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
 		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
 		WorkspaceID:            uuidToString(s.WorkspaceID),
 		AgentID:                uuidToString(s.AgentID),
@@ -2126,17 +2224,18 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 
 func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) ChatMessageResponse {
 	return ChatMessageResponse{
-		ID:            uuidToString(m.ID),
-		ChatSessionID: uuidToString(m.ChatSessionID),
-		Role:          m.Role,
-		Content:       m.Content,
-		TaskID:        uuidToPtr(m.TaskID),
-		CreatedAt:     timestampToString(m.CreatedAt),
-		FailureReason: textToPtr(m.FailureReason),
-		ElapsedMs:     int8ToPtr(m.ElapsedMs),
-		MessageKind:   normalizeMessageKind(m.MessageKind),
-		QuickActions:  decodeChatQuickActions(m.QuickActions),
-		Attachments:   attachments,
+		ID:             uuidToString(m.ID),
+		ChatSessionID:  uuidToString(m.ChatSessionID),
+		Role:           m.Role,
+		Content:        m.Content,
+		TaskID:         uuidToPtr(m.TaskID),
+		CreatedAt:      timestampToString(m.CreatedAt),
+		FailureReason:  textToPtr(m.FailureReason),
+		ElapsedMs:      int8ToPtr(m.ElapsedMs),
+		MessageKind:    normalizeMessageKind(m.MessageKind),
+		QuickActions:   decodeChatQuickActions(m.QuickActions),
+		Attachments:    attachments,
+		DecisionQuotes: []DecisionCard{},
 	}
 }
 
@@ -2181,12 +2280,18 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactNotice:
+		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:
 		return protocol.ChatMessageKindNoResponse
 	case protocol.ChatMessageKindOnboardingKickoff:
 		return protocol.ChatMessageKindOnboardingKickoff
 	case protocol.ChatMessageKindOnboardingOpening:
 		return protocol.ChatMessageKindOnboardingOpening
+	case protocol.ChatMessageKindDecisionReference:
+		return protocol.ChatMessageKindDecisionReference
+	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
+		return kind
 	default:
 		return protocol.ChatMessageKindMessage
 	}

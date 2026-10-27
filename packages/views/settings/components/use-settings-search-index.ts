@@ -89,6 +89,11 @@ export function useSettingsSearchIndex(
         title: t(($) => $.preferences.issue_fields_title),
         description: t(($) => $.issue.description),
       },
+      {
+        tab: "notifications",
+        anchor: "unassigned_activity",
+        title: t(($) => $.notifications.focused_delivery),
+      },
       ...NOTIFICATION_GROUPS.map((group) => ({
         tab: "notifications",
         anchor: group,
@@ -99,7 +104,6 @@ export function useSettingsSearchIndex(
         tab: "notifications",
         anchor: "system",
         title: t(($) => $.notifications.system.label),
-        description: t(($) => $.notifications.system.description),
       },
       {
         tab: "notifications",
@@ -152,6 +156,17 @@ export function useSettingsSearchIndex(
       { tab: "workspace", anchor: "delete", title: t(($) => $.workspace.delete_title) },
       { tab: "members", anchor: "invitations", title: t(($) => $.members.pending_label) },
       { tab: "members", anchor: "links", title: t(($) => $.members.share_links_label) },
+      {
+        tab: "jev-governance",
+        title: t(($) => $.page.tabs.jev_governance),
+        description: t(($) => $.jev_governance.search_description),
+      },
+      {
+        tab: "wakeups",
+        anchor: "pause",
+        title: t(($) => $.wakeups.pause_label),
+        description: t(($) => $.wakeups.pause_description),
+      },
       {
         tab: "wakeups",
         anchor: "child-done",

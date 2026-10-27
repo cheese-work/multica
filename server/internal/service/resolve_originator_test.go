@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/attribution"
@@ -46,6 +49,51 @@ func (s *stubOverlayBuilder) BuildTaskOverlay(_ context.Context, originatorUserI
 		return runtimeapps.MCPOverlayResult{}, nil
 	}
 	return runtimeapps.MCPOverlayResult{MCPOverlay: s.resp, ConnectedApps: s.apps}, nil
+}
+
+type observedCommentTriggerTxStarter struct {
+	pool   *pgxpool.Pool
+	active atomic.Int32
+}
+
+func (s *observedCommentTriggerTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.active.Add(1)
+	return &observedCommentTriggerTx{Tx: tx, active: &s.active}, nil
+}
+
+type observedCommentTriggerTx struct {
+	pgx.Tx
+	active *atomic.Int32
+	done   sync.Once
+}
+
+func (tx *observedCommentTriggerTx) Commit(ctx context.Context) error {
+	err := tx.Tx.Commit(ctx)
+	tx.done.Do(func() { tx.active.Add(-1) })
+	return err
+}
+
+func (tx *observedCommentTriggerTx) Rollback(ctx context.Context) error {
+	err := tx.Tx.Rollback(ctx)
+	tx.done.Do(func() { tx.active.Add(-1) })
+	return err
+}
+
+type transactionCheckingOverlayBuilder struct {
+	active *atomic.Int32
+	calls  int
+}
+
+func (b *transactionCheckingOverlayBuilder) BuildTaskOverlay(_ context.Context, _ pgtype.UUID, _ db.Agent) (runtimeapps.MCPOverlayResult, error) {
+	b.calls++
+	if count := b.active.Load(); count != 0 {
+		return runtimeapps.MCPOverlayResult{}, fmt.Errorf("BuildTaskOverlay ran with %d active transaction(s)", count)
+	}
+	return runtimeapps.MCPOverlayResult{MCPOverlay: json.RawMessage(`{"mcpServers":{"composio":{"type":"http","url":"https://mcp.example/session"}}}`)}, nil
 }
 
 func composioMCPAppsTestFlags(enabled bool) *featureflag.Service {
@@ -501,6 +549,51 @@ func TestEnqueueTaskForIssueStoresRuntimeMCPOverlayInQueuedRow(t *testing.T) {
 	}
 	if len(apps) != 1 || apps[0].ToolkitSlug != "notion" {
 		t.Fatalf("stored connected apps = %+v; want notion", apps)
+	}
+}
+
+func TestEnqueueCommentTriggeredTaskBuildsOverlayOutsideTransaction(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, userID, agentID, issueID := seedAttributionFixture(t, pool)
+	var commentID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+		VALUES ($1, $2, 'member', $3, 'please take a look')
+		RETURNING id`, workspaceID, issueID, userID).Scan(&commentID); err != nil {
+		t.Fatalf("seed comment: %v", err)
+	}
+	txStarter := &observedCommentTriggerTxStarter{pool: pool}
+	builder := &transactionCheckingOverlayBuilder{active: &txStarter.active}
+	svc := &TaskService{
+		Queries:      q,
+		TxStarter:    txStarter,
+		Bus:          events.New(),
+		Composio:     builder,
+		FeatureFlags: composioMCPAppsTestFlags(true),
+	}
+	task, err := svc.EnqueueCommentTriggeredTask(ctx,
+		db.Issue{
+			ID:           util.MustParseUUID(issueID),
+			AssigneeID:   util.MustParseUUID(agentID),
+			Priority:     "medium",
+			CreatorType:  "member",
+			CreatorID:    util.MustParseUUID(userID),
+			WorkspaceID:  util.MustParseUUID(workspaceID),
+			AssigneeType: pgtype.Text{String: "agent", Valid: true},
+		},
+		util.MustParseUUID(agentID), util.MustParseUUID(commentID), false, false,
+		pgtype.UUID{}, "", pgtype.UUID{}, OriginNamed,
+	)
+	if err != nil {
+		t.Fatalf("EnqueueCommentTriggeredTask: %v", err)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("BuildTaskOverlay calls = %d, want 1", builder.calls)
+	}
+	if len(task.RuntimeMcpOverlay) == 0 {
+		t.Fatal("comment-triggered task has no runtime MCP overlay")
 	}
 }
 
