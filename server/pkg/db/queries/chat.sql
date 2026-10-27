@@ -29,6 +29,35 @@ SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updat
 WHERE id = $1
 RETURNING *;
 
+-- name: MoveUnstartedChatTasksToSession :many
+-- A continuation answers the turns still waiting in the archived DM. A task no
+-- daemon has claimed (queued, or deferred behind a retry) moves with its input
+-- batch to the new DM; ClaimAgentTask does not read chat_session.status, so
+-- leaving it behind would answer it in the archived DM. The running task that
+-- called continue is not matched.
+UPDATE agent_task_queue
+SET chat_session_id = sqlc.arg(to_session_id)
+WHERE chat_session_id = sqlc.arg(from_session_id) AND status IN ('queued', 'deferred')
+RETURNING id;
+
+-- name: MoveChatMessagesOfTasksToSession :exec
+-- Moves the input messages of the tasks above, in their original order, to just
+-- after the continuation summary so the new DM reads summary, then questions.
+WITH moved AS (
+    SELECT source.id, row_number() OVER (ORDER BY source.created_at, source.id) AS position
+    FROM chat_message AS source
+    WHERE source.chat_session_id = sqlc.arg(from_session_id) AND source.task_id = ANY(sqlc.arg(task_ids)::uuid[])
+),
+attached AS (
+    UPDATE attachment AS file SET chat_session_id = sqlc.arg(to_session_id)
+    WHERE file.chat_message_id IN (SELECT id FROM moved)
+)
+UPDATE chat_message AS message
+SET chat_session_id = sqlc.arg(to_session_id),
+    created_at = sqlc.arg(summary_created_at)::timestamptz + moved.position * interval '1 microsecond'
+FROM moved
+WHERE message.id = moved.id;
+
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
 -- copied history counts as read. fork_last_message_id is the child's own copy
