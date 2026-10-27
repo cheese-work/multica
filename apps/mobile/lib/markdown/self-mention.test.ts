@@ -178,6 +178,43 @@ describe("emphasizeSelfMentions with source that looks like scratch tags", () =>
   });
 });
 
+describe("emphasizeSelfMentions with a long look-alike prefix", () => {
+  it("handles a 32 KB run of tag-like text without throwing", () => {
+    const prefix = `#sm${"x".repeat(32_768)}\n\n`;
+    expect(emphasizeSelfMentions(`${prefix}[@all](mention://all/all)`, VIEWER)).toBe(
+      `${prefix}[**@all**](mention://all/all)`,
+    );
+  });
+
+  it("finds a free marker among many look-alikes without growing it", () => {
+    const lookAlikes = Array.from({ length: 2_000 }, (_, i) => `#sm${i.toString(36)}`).join(" ");
+    const lexer = vi.spyOn(marked, "lexer");
+    try {
+      expect(emphasizeSelfMentions(`${lookAlikes}\n\n[@all](mention://all/all)`, VIEWER)).toBe(
+        `${lookAlikes}\n\n[**@all**](mention://all/all)`,
+      );
+      expect(lexer.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(String(lexer.mock.calls[0][0]).length).toBeLessThan(lookAlikes.length + 200);
+    } finally {
+      lexer.mockRestore();
+    }
+  });
+});
+
+describe("emphasizeSelfMentions when the lexer fails", () => {
+  it("returns the source unchanged instead of throwing", () => {
+    const lexer = vi.spyOn(marked, "lexer").mockImplementation(() => {
+      throw new Error("boom");
+    });
+    try {
+      const source = "[@all](mention://all/all)";
+      expect(emphasizeSelfMentions(source, VIEWER)).toBe(source);
+    } finally {
+      lexer.mockRestore();
+    }
+  });
+});
+
 describe("emphasizeSelfMentions render cost", () => {
   it("lexes a long segment a constant number of times", () => {
     const count = 800;
