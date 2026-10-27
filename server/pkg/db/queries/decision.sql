@@ -381,6 +381,7 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
+       request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix
 FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id

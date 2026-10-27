@@ -891,6 +891,7 @@ const listDecisionCards = `-- name: ListDecisionCards :many
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
+       request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix
 FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
@@ -908,19 +909,21 @@ type ListDecisionCardsParams struct {
 }
 
 type ListDecisionCardsRow struct {
-	AnswerID            pgtype.UUID        `json:"answer_id"`
-	ChatMessageIds      []pgtype.UUID      `json:"chat_message_ids"`
-	SourceChatSessionID pgtype.UUID        `json:"source_chat_session_id"`
-	IssueCommentID      pgtype.UUID        `json:"issue_comment_id"`
-	EffectiveAt         pgtype.Timestamptz `json:"effective_at"`
-	WokenAt             pgtype.Timestamptz `json:"woken_at"`
-	DisclaimedAt        pgtype.Timestamptz `json:"disclaimed_at"`
-	IssueID             pgtype.UUID        `json:"issue_id"`
-	EscalationClass     string             `json:"escalation_class"`
-	HumanUserID         pgtype.UUID        `json:"human_user_id"`
-	AskingAgentID       pgtype.UUID        `json:"asking_agent_id"`
-	IssueNumber         int32              `json:"issue_number"`
-	IssuePrefix         string             `json:"issue_prefix"`
+	AnswerID             pgtype.UUID        `json:"answer_id"`
+	ChatMessageIds       []pgtype.UUID      `json:"chat_message_ids"`
+	SourceChatSessionID  pgtype.UUID        `json:"source_chat_session_id"`
+	IssueCommentID       pgtype.UUID        `json:"issue_comment_id"`
+	EffectiveAt          pgtype.Timestamptz `json:"effective_at"`
+	WokenAt              pgtype.Timestamptz `json:"woken_at"`
+	DisclaimedAt         pgtype.Timestamptz `json:"disclaimed_at"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	EscalationClass      string             `json:"escalation_class"`
+	HumanUserID          pgtype.UUID        `json:"human_user_id"`
+	AskingAgentID        pgtype.UUID        `json:"asking_agent_id"`
+	RequestChatSessionID pgtype.UUID        `json:"request_chat_session_id"`
+	RequestPingMessageID pgtype.UUID        `json:"request_ping_message_id"`
+	IssueNumber          int32              `json:"issue_number"`
+	IssuePrefix          string             `json:"issue_prefix"`
 }
 
 // One row per answer that a DM bubble was quoted into, or that a comment/
@@ -947,6 +950,8 @@ func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsPa
 			&i.EscalationClass,
 			&i.HumanUserID,
 			&i.AskingAgentID,
+			&i.RequestChatSessionID,
+			&i.RequestPingMessageID,
 			&i.IssueNumber,
 			&i.IssuePrefix,
 		); err != nil {
