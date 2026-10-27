@@ -3083,9 +3083,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 	// resolveMentionedAgentCommentTriggers and never enqueues a run of its own.
 	if hasAgentOrSquadMention(mentions) {
 		if actorType == "agent" && wakePolicyEnabled {
-			return h.resolveAgentCommentMentions(ctx, issue, mentions, actorType, actorID, opts)
+			return h.resolveAgentCommentMentions(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 		}
-		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, actorType, actorID, opts)
+		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -3158,7 +3158,7 @@ func (h *Handler) agentCommentWakePolicyEnabled(ctx context.Context, issue db.Is
 	return *enabled
 }
 
-func (h *Handler) resolveAgentCommentMentions(ctx context.Context, issue db.Issue, mentions []util.Mention, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) resolveAgentCommentMentions(ctx context.Context, issue db.Issue, mentions []util.Mention, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
 	agentMentions := make([]util.Mention, 0, len(mentions))
 	targets := make([]commentMentionTarget, 0)
 	seenSquads := make(map[string]struct{})
@@ -3177,7 +3177,7 @@ func (h *Handler) resolveAgentCommentMentions(ctx context.Context, issue db.Issu
 			})
 		}
 	}
-	triggers, agentTargets := h.resolveMentionedAgentCommentTriggers(ctx, issue, agentMentions, actorType, actorID, opts)
+	triggers, agentTargets := h.resolveMentionedAgentCommentTriggers(ctx, issue, agentMentions, parentComment, actorType, actorID, opts)
 	return triggers, append(agentTargets, targets...)
 }
 
@@ -3649,7 +3649,7 @@ type blockedRuntimeNotice struct {
 	verdict service.AgentVerdict
 }
 
-func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issue db.Issue, mentions []util.Mention, authorType, authorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issue db.Issue, mentions []util.Mention, parentComment *db.Comment, authorType, authorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
 	wsID := uuidToString(issue.WorkspaceID)
 	triggers := make([]commentAgentTrigger, 0, len(mentions))
 	// seen dedups EXECUTION by resolved agent id: two mentions resolving to the
@@ -3817,7 +3817,30 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
-		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending})
+		trigger := commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending}
+		if authorType == "agent" {
+			if guestTriggers, handled := h.routeGuestSquadLeaderFallback(ctx, issue, parentComment, authorID, opts); handled {
+				for _, guestTrigger := range guestTriggers {
+					if guestTrigger.Agent.ID == agentUUID && guestTrigger.Squad != nil {
+						trigger.Source = commentTriggerSourceMentionSquadLeader
+						trigger.Squad = guestTrigger.Squad
+						trigger.NonLeaderAgentReply = guestTrigger.NonLeaderAgentReply
+						break
+					}
+				}
+			}
+			if trigger.Squad == nil && issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
+				squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+					ID:          issue.AssigneeID,
+					WorkspaceID: issue.WorkspaceID,
+				})
+				if err == nil && !squad.ArchivedAt.Valid && squad.LeaderID == agentUUID {
+					trigger.Source = commentTriggerSourceMentionSquadLeader
+					trigger.Squad = &squad
+				}
+			}
+		}
+		add(trigger)
 		addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID)})
 	}
 	return triggers, targets

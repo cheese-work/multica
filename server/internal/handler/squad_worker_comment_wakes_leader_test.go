@@ -62,6 +62,52 @@ func TestGuestSquadWorkerRouteOnMemberAssignedIssue_GH8301(t *testing.T) {
 	}
 }
 
+func TestCreateComment_ExplicitGuestLeaderMentionKeepsLeaderRole(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	setAgentCommentWakePolicyForTest(t, true)
+	fx := newSquadCommentTriggerFixture(t)
+	issueID := uuidToString(fx.Issue.ID)
+
+	assignedLeaderID := dbfx.Agent(t, "explicit guest mention assigned leader", testRuntimeID)
+	assignedSquadID := dbfx.Squad(t, "explicit guest mention assigned squad", assignedLeaderID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'squad', assignee_id = $2 WHERE id = $1`, issueID, assignedSquadID)
+
+	leaderTaskID := dbfx.Task(t, fx.LeaderID, testutil.Cols{
+		"runtime_id": testRuntimeID, "issue_id": issueID, "status": "completed",
+		"is_leader_task": true, "squad_id": fx.SquadID,
+		"originator_user_id": testUserID, "accountable_user_id": testUserID,
+	})
+	delegationID := dbfx.Comment(t, issueID, "delegate to guest worker", testutil.Cols{
+		"author_type": "agent", "author_id": fx.LeaderID, "source_task_id": leaderTaskID,
+	})
+	workerTaskID := dbfx.Task(t, fx.OtherID, testutil.Cols{
+		"runtime_id": testRuntimeID, "issue_id": issueID, "status": "running",
+		"trigger_comment_id": delegationID, "squad_id": fx.SquadID,
+		"delegated_from_task_id": leaderTaskID,
+		"originator_user_id":     testUserID,
+		"accountable_user_id":    testUserID,
+	})
+
+	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content":   "[@guest leader](mention://agent/" + fx.LeaderID + ") please continue",
+		"parent_id": delegationID,
+	})
+	r.Header.Set("X-Agent-ID", fx.OtherID)
+	r.Header.Set("X-Task-ID", workerTaskID)
+	r = withURLParam(r, "id", issueID)
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
+
+	if got := dbfx.Count(t, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+		  AND is_leader_task = TRUE AND squad_id = $3
+	`, issueID, fx.LeaderID, fx.SquadID); got != 1 {
+		t.Fatalf("guest squad leader received %d leader-role task(s), want 1", got)
+	}
+}
+
 func TestCreateComment_GuestSquadWorkerRouting_GH8301(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

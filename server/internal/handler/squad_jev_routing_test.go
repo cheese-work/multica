@@ -2184,6 +2184,7 @@ func TestCreateComment_SquadMentionTriggersJevRouting_RealFlow(t *testing.T) {
 
 func TestCreateComment_AgentMentionDoesNotRouteThroughJev(t *testing.T) {
 	ctx := context.Background()
+	setAgentCommentWakePolicyForTest(t, true)
 	wsUUID := util.MustParseUUID(testWorkspaceID)
 	userUUID := util.MustParseUUID(testUserID)
 	rtUUID, _ := util.ParseUUID(testRuntimeID)
@@ -2294,18 +2295,23 @@ func TestCreateComment_AgentMentionDoesNotRouteThroughJev(t *testing.T) {
 
 	// Verify the explicit agent mention enqueued the named leader, not worker.
 	var enqueuedAgentID string
+	var enqueuedSquadID string
 	var isLeaderTask bool
 	err = testPool.QueryRow(ctx, `
-		SELECT agent_id, is_leader_task FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
-	`, issueID).Scan(&enqueuedAgentID, &isLeaderTask)
+		SELECT agent_id, COALESCE(squad_id::text, ''), is_leader_task
+		FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, issueID).Scan(&enqueuedAgentID, &enqueuedSquadID, &isLeaderTask)
 	if err != nil {
 		t.Fatalf("task not found in queue: %v", err)
 	}
 	if enqueuedAgentID != util.UUIDToString(leaderAgentID) {
 		t.Errorf("enqueued task agent_id = %s, want leader %s", enqueuedAgentID, util.UUIDToString(leaderAgentID))
 	}
-	if isLeaderTask {
-		t.Errorf("is_leader_task = true, want a direct-agent task")
+	if !isLeaderTask {
+		t.Errorf("is_leader_task = false, want a squad-leader task")
+	}
+	if enqueuedSquadID != util.UUIDToString(squadID) {
+		t.Errorf("squad_id = %s, want %s", enqueuedSquadID, util.UUIDToString(squadID))
 	}
 }
 

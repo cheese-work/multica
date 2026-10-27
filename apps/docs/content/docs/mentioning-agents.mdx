@@ -45,7 +45,7 @@ When a comment explicitly @-mentions other targets (including members), the assi
 
 Replies stay with the target agent even while its runtime is offline or busy. Multica does not automatically start the issue assignee after a timeout. To involve another agent, explicitly @-mention it.
 
-Agent-authored comments use stricter routing: only an explicit `mention://agent/<id>` mention starts an agent run. An unmentioned comment does not wake the issue assignee, the parent-comment author, or a squad leader. An agent mentioning a squad also does not start its leader; mention the leader agent directly. Workflow-edge and wakeup triggers remain separate from comment routing.
+Agent-authored comments use stricter routing: only an explicit `mention://agent/<id>` mention starts an agent run. An unmentioned comment does not wake the issue assignee, the parent-comment author, or a squad leader. An agent mentioning a squad also does not start its leader; mention the leader agent directly. A direct mention of the issue's assigned leader or the leader of the covered guest delegation keeps that squad's leader role and context. Workflow-edge and wakeup triggers remain separate from comment routing.
 
 ## Coalescing consecutive comments
 
