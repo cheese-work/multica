@@ -26,7 +26,16 @@ export function warningCounts(jobs) {
   for (const job of jobs) {
     const logs = {}
     const annotations = {}
+    let commandHeader = false
     for (const line of stripVTControlCharacters(job.log).split("\n")) {
+      if (/##\[group\]Run /.test(line)) {
+        commandHeader = true
+        continue
+      }
+      if (commandHeader) {
+        if (/##\[endgroup\]/.test(line)) commandHeader = false
+        continue
+      }
       if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
       const message = normalize(line)
       if (/##\[(command|group)\]|^Run |^\s*(?:echo |printf )/.test(message)) continue

@@ -50,6 +50,11 @@ test("test names and echoed commands are not diagnostics", () => {
   assert.deepEqual(warningCounts([{ name: "test", log: "ok 1 - rejects a Warning: fixture\n# Subtest: a warning fixture\n2026-10-27T05:00:00Z ##[command]echo Warning: fixture", annotations: [] }]), {})
 })
 
+test("runner command headers are metadata but action output groups are diagnostics", () => {
+  const log = "2026-10-27T05:00:00Z ##[group]Run node scripts/check-image-budget.mjs\n2026-10-27T05:00:00Z env:\n2026-10-27T05:00:00Z   PR_BODY: Expected: DeprecationWarning: example\n2026-10-27T05:00:00Z ##[endgroup]\n2026-10-27T05:00:00Z ##[group]Running tool\n2026-10-27T05:00:00Z Warning: real diagnostic\n2026-10-27T05:00:00Z ##[endgroup]"
+  assert.deepEqual(warningCounts([{ name: "build", log, annotations: [] }]), { "build: Warning: real diagnostic": 1 })
+})
+
 test("Docker, CSS, eslint and React diagnostics are included", () => {
   const log = "WARNING! Your credentials are stored unencrypted\n#29 93.38 Found 2 warnings while optimizing generated CSS:\n8:12 warning Missing dependency\n# Warning: React act update\n⚠ Invalid next.config options detected:"
   assert.equal(Object.keys(warningCounts([{ name: "build", log, annotations: [] }])).length, 5)

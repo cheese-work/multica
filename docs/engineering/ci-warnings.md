@@ -11,7 +11,8 @@ The report artifact contains both run URLs, SHAs, warning counts, regressions
 and the candidate's annotation list. Existing warnings may decrease; a new
 signature or an increased count fails. There is no suppression list or
 candidate-editable allowance file. PID, ANSI, timestamp and BuildKit progress
-noise are normalized. Test names and command echoes are not diagnostics.
+noise are normalized. Test names and runner command-header metadata are not
+diagnostics. Grouped output from the tools themselves is still counted.
 Raw log downloads explicitly allow terminal escapes in `gh`; Node strips VT
 control sequences before warning detection.
 Timestamped Go application `WARN` events emitted by negative-path fixtures
@@ -46,7 +47,14 @@ The repository uses major tags, not SHA pins. Releases checked for this change:
 | actions/setup-go | v7.0.0 | v7 | node24 |
 | docker/build-push-action | v7.4.0 | v7 | node24 |
 | docker/metadata-action | v6.2.0 | v6 | node24 |
-| pnpm/action-setup | v6.1.0 | v6 | node24 |
+| pnpm/action-setup | v6.1.0 | replaced by pinned npm install | node24 |
+
+The v6 pnpm action bootstraps pnpm 11 before switching to the repository's
+pinned pnpm 10, producing a layout-migration warning. `scripts/setup-pnpm.sh`
+instead installs exactly `package.json`'s pnpm version in `RUNNER_TEMP` and
+exports only that package's bin directory. Invalid pins and failed installs
+fail before publishing a PATH entry. No newer bootstrap or layout migration
+is needed.
 | dorny/paths-filter | v4.0.3 | v4 | node24 |
 | golangci/golangci-lint-action | v9.3.0 | v9 | node24 |
 | goreleaser/goreleaser-action | v7.3.0 | v7 | node24 |

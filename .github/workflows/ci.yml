@@ -206,7 +206,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -266,7 +266,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -322,7 +322,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        run: bash scripts/setup-pnpm.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -837,6 +837,9 @@ jobs:
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
 
+      - name: Test pinned pnpm setup
+        run: node --test scripts/setup-pnpm.test.mjs
+
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
 
@@ -926,7 +929,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
+      - run: bash scripts/setup-pnpm.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 22

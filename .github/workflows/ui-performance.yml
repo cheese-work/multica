@@ -42,7 +42,7 @@ jobs:
           # worktree, and a shallow clone cannot produce them.
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
+      - run: bash scripts/setup-pnpm.sh
 
       - uses: actions/setup-node@v7
         with:

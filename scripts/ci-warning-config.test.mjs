@@ -40,3 +40,13 @@ test("pull-request path filtering does not supply inputs ignored by the action",
   assert.doesNotMatch(source, /base:.*github\.base_ref/)
   assert.match(source, /ref:.*github\.event_name == 'push' && github\.sha \|\| ''/)
 })
+
+test("pnpm setup installs the pinned package without a newer bootstrap self-update", () => {
+  assert.match(workflow("ci.yml"), /run: node --test scripts\/setup-pnpm\.test\.mjs/)
+  for (const name of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
+    if (!name.endsWith(".yml")) continue
+    const source = workflow(name)
+    assert.doesNotMatch(source, /uses: pnpm\/action-setup@/, name)
+    if (source.includes("cache: pnpm")) assert.match(source, /run: bash scripts\/setup-pnpm\.sh/, name)
+  }
+})
