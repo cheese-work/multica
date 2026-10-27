@@ -148,7 +148,8 @@ try {
           const block = description.locator(".code-block-wrapper").nth(item.kind === "mermaid" ? 0 : 1);
           const trigger = block.getByRole("button", { name: item.kind === "mermaid" ? "Open diagram viewer" : "Fullscreen", exact: true });
           await trigger.scrollIntoViewIfNeeded();
-          await trigger.click();
+          await trigger.focus();
+          await trigger.press("Enter");
           const dialog = page.getByRole("dialog");
           await waitForMedia(dialog, item.kind);
           if (width === 390) await dialog.locator("summary[aria-label='More']").click();
