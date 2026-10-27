@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,7 +155,7 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	return result, nil
 }
 
-// decisionCancelNoteRequests returns the requests the DM note covers. A close ends every request of
+// decisionCancelNoteRequests returns the requests the DM note covers. A close groups the open requests of
 // the session at once, so the first request cancelled by that close writes one note for all of them
 // and later ones write none. Other reasons stay one note per request.
 func decisionCancelNoteRequests(ctx context.Context, queries *db.Queries, reason string, current db.DecisionRequest, closedAt pgtype.Timestamptz) ([]db.DecisionRequest, error) {
@@ -166,5 +167,11 @@ func decisionCancelNoteRequests(ctx context.Context, queries *db.Queries, reason
 	if err != nil || posted {
 		return nil, err
 	}
-	return queries.ListDecisionCancelSiblings(ctx, db.ListDecisionCancelSiblingsParams{WorkspaceID: current.WorkspaceID, IssueID: current.IssueID, ChatSessionID: current.ChatSessionID})
+	requests, err := queries.ListDecisionCancelSiblings(ctx, db.ListDecisionCancelSiblingsParams{WorkspaceID: current.WorkspaceID, IssueID: current.IssueID, ChatSessionID: current.ChatSessionID})
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(requests, func(request db.DecisionRequest) bool {
+		return request.Status != "open"
+	}), nil
 }

@@ -70,6 +70,7 @@ const (
 	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonRunBudgetExhausted    = dispatch.ReasonRunBudgetExhausted
 	ReasonInternalError         = dispatch.ReasonInternalError
 	ReasonProviderHold          = dispatch.ReasonProviderHold
 )
@@ -141,6 +142,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "a run is already active for this target"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
+	case ReasonRunBudgetExhausted:
+		return "the issue used its workflow's run budget; move it on to give it a new one"
 	case ReasonProviderHold:
 		return "the target's model provider is on a workspace policy hold"
 	default:
