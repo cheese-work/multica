@@ -301,6 +301,7 @@
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
+    "withdrawn_in": "已在 {{issue}} 撤回",
     "from_original_dm": "来自原始私信",
     "inherited": "继承",
     "message_unavailable": "该消息已不可用"
