@@ -54,9 +54,11 @@ and `dispatched`. This handler initializes signed work as `denied` or
 worker and admission slices. Eligible work starts as `deferred` with
 `awaiting_admission`; no projection is claimed by intake alone.
 
-The worker considers the stored delivery's event and action, including
-withdrawals. Delivery deduplication does not replace revision admission or a
-committed dispatch receipt. R1/R2/R3 reconciliation remains separate (CHE-2209).
+The worker must consider the stored delivery's event and action, including
+withdrawals. Withdrawal handling belongs to plan section 5.2, T25, not this
+worker slice. A withdrawal delivery has no separate revision row today.
+Delivery deduplication does not replace revision admission or a committed
+dispatch receipt. R1/R2/R3 reconciliation remains separate (CHE-2209).
 
 Keep the deployed `github_review_members` mapping unset until gate G. Numeric
 ID `129714106` is not mapped by this change. No actionable dispatch, App
