@@ -11,6 +11,7 @@ import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -4083,6 +4084,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             centered column reads 32px left vs 43px right (MUL-4404). Mirroring
             the gutter restores symmetry; overlay-scrollbar platforms reserve
             nothing and render unchanged. */}
+        <RichContentScrollRootProvider scrollRoot={scrollContainerEl}>
         <div
           ref={attachScrollContainer}
           data-tab-scroll-root={isPeek ? undefined : scrollContainerKey}
@@ -4733,6 +4735,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>
         </div>
         </div>
+
+        </RichContentScrollRootProvider>
 
         {/* Thread quick-jump rail — rides the scroll container's right edge,
             next to the scrollbar, where the pointer already is while

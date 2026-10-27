@@ -40,6 +40,8 @@ import {
   type RefObject,
 } from "react";
 import { Check, Copy, Frame, Maximize2, Minus, Plus } from "lucide-react";
+import { parse, stringify } from "yaml";
+import type { MermaidConfig } from "mermaid";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useT } from "../i18n";
@@ -56,9 +58,34 @@ type MermaidAPI = typeof import("mermaid").default;
 let mermaidPromise: Promise<MermaidAPI> | null = null;
 
 export function getMermaid(): Promise<MermaidAPI> {
-  mermaidPromise ??= import("mermaid").then(({ default: mermaid }) => mermaid);
+  mermaidPromise ??= import("mermaid").then(({ default: mermaid }) => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "base",
+      htmlLabels: false,
+      suppressErrorRendering: true,
+    });
+    return mermaid;
+  });
 
   return mermaidPromise;
+}
+
+function themedChart(chart: string, host: HTMLElement | null): string {
+  const source = chart.trimStart().replace(/\r\n?/g, "\n");
+  const frontmatter = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/.exec(source);
+  const parsed = frontmatter ? parse(frontmatter[1] ?? "") : null;
+  const metadata = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  const config: MermaidConfig = metadata.config ?? {};
+  return `---\n${stringify({
+    ...metadata,
+    config: {
+      theme: "base",
+      ...config,
+      themeVariables: { ...getMermaidThemeVariables(host), ...config.themeVariables },
+    },
+  })}---\n${frontmatter ? source.slice(frontmatter[0].length) : source}`;
 }
 
 function toLegacyColor(color: string, fallback: string, ownerDocument: Document): string {
@@ -359,7 +386,6 @@ const FALLBACK_LAYOUT: Size = { width: 800, height: MERMAID_SKELETON_HEIGHT_PX }
 interface RenderedDiagram {
   svg: string;
   inlineDocument: string;
-  viewerDocument: string;
   /**
    * Natural size. Always concrete — neither the inline zoom nor the viewer can
    * lay out against an unknown size.
@@ -409,6 +435,12 @@ export function MermaidDiagram({
   const [ownViewerOpen, setOwnViewerOpen] = useState(false);
   const viewerOpen = frame ? frame.viewerOpen : ownViewerOpen;
   const setViewerOpen = frame ? frame.onViewerOpenChange : setOwnViewerOpen;
+  const viewerDocument = useMemo(
+    () => viewerOpen && rendered
+      ? buildViewerMermaidDocument(rendered.svg, containerRef.current, rendered.layout)
+      : null,
+    [viewerOpen, rendered],
+  );
   const onErrorChange = frame?.onErrorChange;
   const [copied, setCopied] = useState(false);
 
@@ -425,24 +457,8 @@ export function MermaidDiagram({
         // a flash of the loading skeleton on every theme toggle.
         setSkeletonLayout(readCachedLayout(chart));
         const mermaid = await getMermaid();
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: "base",
-          // Render labels as SVG <text> instead of Mermaid's default HTML-in-
-          // <foreignObject>. Browsers do not rasterize foreignObject when an
-          // SVG is drawn through an <img> — verified in Chromium, the label
-          // paints zero pixels AND taints the canvas, so PNG export produces
-          // nothing at all. SVG text keeps the export self-contained.
-          htmlLabels: false,
-          themeVariables: getMermaidThemeVariables(containerRef.current),
-          // On invalid syntax, make render() throw instead of drawing Mermaid's
-          // built-in error graphic into the DOM. The catch below then shows our
-          // own compact error state — no orphaned error SVG, and no extra parse
-          // pass over valid charts.
-          suppressErrorRendering: true,
-        });
-        const { svg: renderedSvg } = await mermaid.render(diagramId, chart);
+        if (cancelled) return;
+        const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(chart, containerRef.current));
         if (cancelled) return;
 
         const measured = getMermaidLayout(renderedSvg);
@@ -453,13 +469,6 @@ export function MermaidDiagram({
         setRendered({
           svg: renderedSvg,
           inlineDocument: buildSandboxedMermaidDocument(renderedSvg, containerRef.current),
-          // Same size the viewer lays out against, so the drawn SVG and the
-          // transform never disagree about how big the diagram is.
-          viewerDocument: buildViewerMermaidDocument(
-            renderedSvg,
-            containerRef.current,
-            layout,
-          ),
           layout,
           exportBackground: exportStyle.background,
           exportFontFamily: exportStyle.fontFamily,
@@ -624,7 +633,7 @@ export function MermaidDiagram({
             onOpenChange={setViewerOpen}
             chart={chart}
             svg={rendered.svg}
-            viewerDocument={rendered.viewerDocument}
+            viewerDocument={viewerDocument}
             layout={rendered.layout}
             exportBackground={rendered.exportBackground}
             exportFontFamily={rendered.exportFontFamily}
