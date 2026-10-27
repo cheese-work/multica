@@ -1,6 +1,6 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
@@ -9,6 +9,12 @@ import { DecisionRequestCard } from "./decision-request-card";
 vi.mock("../../navigation", async (importActual) => ({
   ...(await importActual<typeof import("../../navigation")>()),
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
+}));
+
+const answerDecisionRequest = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/api", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/api")>()),
+  api: { answerDecisionRequest },
 }));
 
 const card = {
@@ -35,5 +41,49 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByText(/original ask/)).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
+  });
+});
+
+describe("DecisionRequestCard answering", () => {
+  const withOptions = { ...card, options: [{ label: "Option A", what_happens: "A happens" }, { label: "Option B", what_happens: "B happens" }] };
+  const renderCard = (value = withOptions) =>
+    renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
+  beforeEach(() => {
+    answerDecisionRequest.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("sends the selected option on Send, and only once chosen", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeDisabled();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    expect(screen.getByRole("radio", { name: /Option B/ })).toBeChecked();
+    await user.click(send);
+    expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
+  });
+
+  it("sends on Enter and keeps Shift+Enter as a newline", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    const field = screen.getByRole("textbox", { name: "Or write an answer" });
+    await user.type(field, "Ship C{Shift>}{Enter}{/Shift}later");
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    expect(field).toHaveValue("Ship C\nlater");
+    await user.keyboard("{Enter}");
+    expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "Ship C\nlater" });
+  });
+
+  it("has no answer form once the card is answered", () => {
+    renderCard({ ...withOptions, state: "answered" });
+    expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+  });
+
+  it("shows an error when the send fails", async () => {
+    answerDecisionRequest.mockRejectedValue(new Error("boom"));
+    renderCard({ ...card });
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "hi{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not send");
   });
 });
