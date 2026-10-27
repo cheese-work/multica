@@ -45,3 +45,13 @@ export function formatDayLabel(
   }
   return format(iso, { dateStyle: "medium" }, locale, timeZone);
 }
+
+/**
+ * Wall time of an in-place compaction, "HH:MM" in Asia/Bangkok whatever the
+ * reader's zone (CHE-2169). `null` when the timestamp does not parse, so the
+ * caller can drop the time instead of printing the raw string.
+ */
+export const formatCompactionTime = (iso: string): string | null =>
+  Number.isNaN(new Date(iso).getTime())
+    ? null
+    : format(iso, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, "en-GB", "Asia/Bangkok");
