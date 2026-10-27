@@ -244,3 +244,12 @@ func (ask Ask) Content() string {
 	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
 		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.AgentDid, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
 }
+
+// askSourceTail is the per-run provenance link that ends Content().
+var askSourceTail = regexp.MustCompile(`\n\nInvestigate in issue: [^\n]*$`)
+
+// WithoutSourceTail drops the provenance link, so two renders of the same
+// decision from different source comments compare equal.
+func WithoutSourceTail(content string) string {
+	return askSourceTail.ReplaceAllString(content, "")
+}

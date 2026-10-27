@@ -138,3 +138,19 @@ func TestLintAsk(test *testing.T) {
 		test.Fatalf("hints = %q, want a sentence-count hint", hints)
 	}
 }
+
+func TestWithoutSourceTailIgnoresTheSourceComment(test *testing.T) {
+	first := decodedAsk(test)
+	second := first
+	second.SourceCommentID = "33333333-3333-4333-8333-333333333333"
+	if first.Content() == second.Content() {
+		test.Fatal("fixture must differ in the source comment")
+	}
+	if WithoutSourceTail(first.Content()) != WithoutSourceTail(second.Content()) {
+		test.Fatalf("source comment must not change the identity:\n%q\n%q", WithoutSourceTail(first.Content()), WithoutSourceTail(second.Content()))
+	}
+	second.Decision = "A different decision?"
+	if WithoutSourceTail(first.Content()) == WithoutSourceTail(second.Content()) {
+		test.Fatal("a different decision must keep a different identity")
+	}
+}
