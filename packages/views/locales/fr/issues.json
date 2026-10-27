@@ -6,6 +6,7 @@
     "loading": "Chargement des relations…",
     "load_failed": "Impossible de charger les relations.",
     "render_failed": "Impossible d’afficher le graphe.",
+    "filter_label": "Afficher les types de liens",
     "retry": "Réessayer",
     "empty": "Aucune tâche liée.",
     "omitted": "{{count}} autres tâches masquées (limite de 40 nœuds).",
@@ -594,6 +595,7 @@
     "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
+    "you": "Vous",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",

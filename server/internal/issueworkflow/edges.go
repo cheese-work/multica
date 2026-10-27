@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ const (
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
+	GuardWebhook          = "webhook"
 )
 
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
@@ -48,7 +50,11 @@ type Guard struct {
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardWebhook: 1,
 }
+
+// webhookNameRe is the endpoint name a webhook guard may reference.
+var webhookNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
 
 // ParseGuard parses "kind" or "kind(arg, ...)".
 func ParseGuard(s string) (Guard, error) {
@@ -74,6 +80,9 @@ func ParseGuard(s string) (Guard, error) {
 	if kind == GuardAgentVerdict && args[0] != "PASS" && args[0] != "CHANGES" {
 		return Guard{}, fmt.Errorf("agent_verdict takes PASS or CHANGES, not %q", args[0])
 	}
+	if kind == GuardWebhook && !webhookNameRe.MatchString(args[0]) {
+		return Guard{}, fmt.Errorf("webhook takes an endpoint name of 1-32 chars from a-z, 0-9, _ and -, not %q", args[0])
+	}
 	for _, a := range args {
 		if a == "" {
 			return Guard{}, fmt.Errorf("guard %q has an empty argument", s)
@@ -84,7 +93,7 @@ func ParseGuard(s string) (Guard, error) {
 
 // needsTimeout reports whether a guard waits on an outside fact.
 func (g Guard) needsTimeout() bool {
-	return strings.HasPrefix(g.Kind, "pr.")
+	return strings.HasPrefix(g.Kind, "pr.") || g.Kind == GuardWebhook
 }
 
 // readsFacts reports whether stored facts decide the guard; the agent guards
@@ -183,6 +192,9 @@ type Facts struct {
 	PRs           []PRFact
 	ChildrenDone  bool
 	IssueStatuses map[string]string
+	// Webhooks holds the names of this step's webhook endpoints that received
+	// a success call at or after the issue entered the step.
+	Webhooks map[string]bool
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the
@@ -215,6 +227,8 @@ func (f Facts) holds(g Guard) bool {
 		return f.ChildrenDone
 	case GuardIssueStatus:
 		return f.IssueStatuses[g.Args[0]] == g.Args[1]
+	case GuardWebhook:
+		return f.Webhooks[g.Args[0]]
 	}
 	return false
 }

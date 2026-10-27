@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   fork-changelog:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 6
     continue-on-error: true
     permissions:
@@ -34,9 +34,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Fetch bounded first-parent history and fork entries
         timeout-minutes: 4
@@ -54,7 +55,7 @@ jobs:
 
       - name: Upload fork entries when available
         if: ${{ hashFiles('apps/web/.fork-changelog/entries.json') != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fork-changelog-${{ github.sha }}
           path: apps/web/.fork-changelog/entries.json
@@ -100,7 +101,7 @@ jobs:
 
       - name: Download optional fork entries
         id: fork-entries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: fork-changelog-${{ github.sha }}
@@ -129,12 +130,13 @@ jobs:
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use an isolated BuildKit container.
       - name: Set up attestation-capable Buildx builder
-        uses: docker/setup-buildx-action@v3
+        id: buildx
+        uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -226,7 +228,7 @@ jobs:
           EOF
 
       - name: Upload D1 build evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-build-evidence-${{ github.sha }}
           path: |
@@ -238,3 +240,12 @@ jobs:
             web-inspect.txt
           if-no-files-found: error
           retention-days: 30
+
+      - name: Remove this run's builder with a bounded shutdown budget
+        if: ${{ always() && steps.buildx.outputs.name != '' }}
+        timeout-minutes: 4
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: |
+          docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
+          docker buildx rm --timeout 180s "$BUILDER_NAME"
