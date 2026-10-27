@@ -99,7 +99,7 @@ test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive 
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m);
+    assert.match(jobs[job], /^    runs-on: ubuntu-24\.04$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
@@ -247,7 +247,7 @@ for (const gate of ["frontend", "backend"]) {
 // assertion together with the matrix entry when a macOS runner exists.
 test("the backend gate owns the Linux-only installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /- ubuntu-latest/);
+  assert.match(jobs.installer, /- ubuntu-24\.04/);
   assert.doesNotMatch(jobs.installer, /- macos-/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });

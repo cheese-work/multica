@@ -18,7 +18,7 @@ permissions:
 # neither a dead deploy runner nor its held lock may suppress this alarm.
 jobs:
   queue-alarm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
