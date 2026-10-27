@@ -6,6 +6,7 @@
     "loading": "正在加载关系...",
     "load_failed": "无法加载关系。",
     "render_failed": "无法显示关系图。",
+    "filter_label": "显示的关系类型",
     "retry": "重试",
     "empty": "没有关联任务。",
     "omitted": "另有 {{count}} 个任务未显示（最多 40 个节点）。",
@@ -580,6 +581,7 @@
     "wakeup_link_run": "查看运行"
   },
   "comment": {
+    "you": "你",
     "add_reaction": "添加表情回应",
     "collapse_thread": "收起讨论",
     "expand_thread": "展开讨论",
@@ -1798,7 +1800,8 @@
     },
     "via_dm": "来自私信",
     "recorded_by": "由 {{name}} 记录",
-    "open_dm": "打开私信",
+    "asked_in_dm": "私信中的提问",
+    "answered_in_dm": "私信中的回答",
     "private_dm": "来自私人私信",
     "disclaim_action": "撤回",
     "disclaiming": "正在撤回…",

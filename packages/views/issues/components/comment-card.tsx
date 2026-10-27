@@ -70,7 +70,11 @@ const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
 
 const highlightedCommentBackgroundClass =
-  "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+  "comment-target bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+const highlightedCommentOutlineClass =
+  "relative after:pointer-events-none after:absolute after:inset-0 after:z-20 after:border-2 after:border-brand";
+const ownCommentBackgroundClass =
+  "comment-own bg-[color-mix(in_oklab,var(--brand)_8%,var(--card))] dark:bg-[color-mix(in_oklab,var(--brand)_15%,var(--card))]";
 const stickyHeaderFadeClass =
   "after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-1 after:bg-[inherit] after:[mask-image:linear-gradient(to_bottom,#000,transparent)] after:[-webkit-mask-image:linear-gradient(to_bottom,#000,transparent)]";
 
@@ -78,16 +82,18 @@ function StickyHeaderShell({
   className,
   sticky = true,
   highlighted,
+  own,
   children,
 }: {
   className?: string;
   sticky?: boolean;
   highlighted?: boolean;
+  own?: boolean;
   children: ReactNode;
 }) {
   if (!sticky) {
     return (
-      <div className={cn(highlighted && highlightedCommentBackgroundClass, className)}>
+      <div className={cn(highlighted ? highlightedCommentBackgroundClass : own && ownCommentBackgroundClass, className)}>
         {children}
       </div>
     );
@@ -101,7 +107,7 @@ function StickyHeaderShell({
       className={cn(
         "sticky top-0 z-10 mb-1 transition-colors duration-700",
         !highlighted && stickyHeaderFadeClass,
-        highlighted ? highlightedCommentBackgroundClass : "bg-card",
+        highlighted ? highlightedCommentBackgroundClass : own ? ownCommentBackgroundClass : "bg-card",
         className,
       )}
     >
@@ -754,7 +760,7 @@ function CommentRow({
   if (isDeletedComment(entry)) return null;
 
   return (
-    <div data-comment-block className="pb-3">
+    <div data-comment-block className={cn("pb-3", isHighlighted ? highlightedCommentBackgroundClass : isOwn && ownCommentBackgroundClass)}>
       {/* Header pins to the timeline's scroll parent within this reply's own
           row box, so a LONG reply keeps its
           author + actions visible while you scroll its body, then releases once
@@ -762,6 +768,7 @@ function CommentRow({
           highlight state while it occludes the body scrolling underneath. */}
       <StickyHeaderShell
         highlighted={isHighlighted}
+        own={isOwn}
         className="flex items-center gap-2.5 px-4 max-md:px-3 pt-3 pb-1"
       >
         <ActorAvatar
@@ -777,6 +784,11 @@ function CommentRow({
         <span className="cursor-pointer text-body font-medium">
           {shown.name || getActorName(shown.actorType, shown.actorId)}
         </span>
+        {isOwn && (
+          <span className="shrink-0 rounded-md border bg-card px-1.5 text-caption">
+            {t(($) => $.comment.you)}
+          </span>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -1253,11 +1265,21 @@ function CommentCardImpl({
             That is what keeps exactly one header pinned at a time: without this
             wrapper the header's containing block is the whole thread and it
             stays stuck behind every reply. */}
-        <div data-comment-block data-testid="comment-card" className={cn("transition-colors duration-700", isHighlighted && highlightedCommentBackgroundClass)}>
+        <div
+          data-comment-block
+          data-testid="comment-card"
+          className={cn(
+            "transition-colors duration-700",
+            isHighlighted
+              ? [highlightedCommentBackgroundClass, highlightedCommentOutlineClass]
+              : isOwn && !deleted && ownCommentBackgroundClass,
+          )}
+        >
           {/* Keep the author aligned with replies; thread controls sit on the right. */}
           <StickyHeaderShell
             sticky={stickyHeader}
             highlighted={isHighlighted}
+            own={isOwn && !deleted}
             className={cn("px-4 max-md:px-3", !open ? "py-3" : stickyHeader ? "pt-3 pb-1" : "pt-3 pb-2")}
           >
             <div className="flex items-center gap-2.5">
@@ -1281,6 +1303,11 @@ function CommentCardImpl({
                   <span className="shrink-0 cursor-pointer text-body font-medium">
                     {shown.name || getActorName(shown.actorType, shown.actorId)}
                   </span>
+                  {isOwn && (
+                    <span className="shrink-0 rounded-md border bg-card px-1.5 text-caption">
+                      {t(($) => $.comment.you)}
+                    </span>
+                  )}
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -1599,7 +1626,7 @@ function CommentCardImpl({
                     id={`comment-${resolutionReply.id}`}
                     className={cn(
                       "border-t border-border/50 transition-colors duration-700",
-                      highlightedCommentId === resolutionReply.id && highlightedCommentBackgroundClass,
+                      highlightedCommentId === resolutionReply.id && [highlightedCommentBackgroundClass, highlightedCommentOutlineClass],
                     )}
                   >
                     <CommentRow
@@ -1702,7 +1729,7 @@ function CommentCardImpl({
                     data-run-slot-id={slot.runs[0]?.task.id}
                     className={cn(
                       "border-t border-border/50 transition-colors duration-700",
-                      highlightedCommentId === slot.comment.id && highlightedCommentBackgroundClass,
+                      highlightedCommentId === slot.comment.id && [highlightedCommentBackgroundClass, highlightedCommentOutlineClass],
                     )}
                   >
                     <CommentRow

@@ -71,6 +71,7 @@
     "continuation_summary": "Résumé de la conversation",
     "earlier_dm": "Conversation antérieure",
     "quote_message": "Citer",
+    "speaker_you": "Vous",
     "load_older_messages": "Charger les messages précédents",
     "show_details": "Afficher les détails",
     "replied_in": "Réponse en {{elapsed}}",
@@ -306,6 +307,8 @@
     "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
+    "withdrawn_in": "Retirée dans {{issue}}",
+    "recorded_on": "Enregistré dans {{issue}}",
     "from_original_dm": "du DM d'origine",
     "inherited": "Hérité",
     "message_unavailable": "Ce message n'est plus disponible"

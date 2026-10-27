@@ -30,7 +30,9 @@
  *     ↓ render per-segment          prose / code / image components
  *
  * Mention chip note: mobile renders `mention://` links via enriched's
- * default link styling (brand-colored, underlined), matching web's
+ * default link styling (brand-colored, underlined), except the viewer's own
+ * member mention, which gets the pastel-yellow fill via `linkVariants`
+ * (`./self-mention.ts`). Other mentions match web's
  * fallback behavior when no `renderMention` is provided
  * (`packages/ui/markdown/Markdown.tsx:173-178`). The avatar pill
  * variant only ever existed on web in specific contexts that supplied
@@ -42,10 +44,13 @@ import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import type { Attachment } from "@multica/core/types";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useColorScheme } from "@/lib/use-color-scheme";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
+import { SELF_MENTION_COLORS, selfMentionLinkVariants } from "./self-mention";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 
@@ -112,21 +117,26 @@ export function Markdown({
   compact = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const viewerId = useAuthStore((s) => s.user?.id);
+  const { isDarkColorScheme } = useColorScheme();
   const baseStyle = useMarkdownStyle();
-  const markdownStyle = useMemo(
-    () =>
-      compact
-        ? {
-            ...baseStyle,
-            paragraph: {
-              ...baseStyle.paragraph,
-              marginBottom: 0,
-              lineHeight: 20,
-            },
-          }
-        : baseStyle,
-    [baseStyle, compact],
-  );
+  const markdownStyle = useMemo(() => {
+    const linkVariants = selfMentionLinkVariants(
+      viewerId,
+      SELF_MENTION_COLORS[isDarkColorScheme ? "dark" : "light"],
+    );
+    const style = linkVariants ? { ...baseStyle, linkVariants } : baseStyle;
+    return compact
+      ? {
+          ...style,
+          paragraph: {
+            ...style.paragraph,
+            marginBottom: 0,
+            lineHeight: 20,
+          },
+        }
+      : style;
+  }, [baseStyle, compact, viewerId, isDarkColorScheme]);
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);

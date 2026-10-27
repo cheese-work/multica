@@ -17,14 +17,14 @@ import (
 
 // Table first, then one concurrent index per file (repo rule).
 var githubWorkflowMigrations = []string{
-	"703_github_workflow_run",
-	"704_github_workflow_run_identity_index",
-	"705_github_workflow_run_head_sha_index",
-	"706_github_workflow_run_updated_at_index",
-	"707_github_workflow_job",
-	"708_github_workflow_job_identity_index",
-	"709_github_workflow_job_run_attempt_index",
-	"710_github_workflow_job_updated_at_index",
+	"711_github_workflow_run",
+	"712_github_workflow_run_identity_index",
+	"713_github_workflow_run_head_sha_index",
+	"714_github_workflow_run_updated_at_index",
+	"715_github_workflow_job",
+	"716_github_workflow_job_identity_index",
+	"717_github_workflow_job_run_attempt_index",
+	"718_github_workflow_job_updated_at_index",
 }
 
 func TestGitHubWorkflowSchema(test *testing.T) {

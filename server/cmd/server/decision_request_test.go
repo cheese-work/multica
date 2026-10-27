@@ -24,6 +24,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	issueID := fixture.Issue(test, "Decision HTTP roundtrip", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := fixture.Task(test, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "running"})
 	sessionID := fixture.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Decisions"})
+	fixture.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + issueID + ")"})
 	fixture.Cleanup(test, `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
@@ -61,7 +62,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	response.Body.Close()
 	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
-	ask := decisiontx.Ask{AgentDid: "Checks completed.", Decision: "Approve spend?", Options: []string{"Approve", "Decline"}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Checks completed.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
 	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": ask, "escalation_class": "spend"}
 	response = call(http.MethodPost, "/api/decisions", input, testToken, true)
 	if response.StatusCode != http.StatusForbidden {
