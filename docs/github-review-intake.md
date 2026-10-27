@@ -46,9 +46,12 @@ signed recovery source. Intake retention is separate from workspace teardown.
 
 ## Notify-only boundary
 
-This slice creates no issue comment, agent mention or run, including for a
-mapped member. The former synchronous CHE-2019 review wakeup is not called by
-the webhook endpoint. Its internal helpers remain dormant.
+The webhook endpoint creates no issue comment, agent mention or run. The
+worker projects only a provenance-admitted revision whose mapped member
+passes `can_route` for that issue. Its system comment contains the canonical
+GitHub permalink, author login and numeric ID, event type, object ID and
+intake ID. Review bodies, inline text, filenames and supplied URLs are not
+copied into issue history. The former synchronous CHE-2019 path stays dormant.
 
 The schema permits `denied`, `deferred`, `quarantined`, `unsigned`, `projected`
 and `dispatched`. This handler initializes signed work as `denied` or
@@ -98,21 +101,53 @@ When one delivery spans workspaces, its aggregate state prioritizes `deferred`,
 workspace's normalized revision retains its own state and reason. Duplicate
 GUIDs retain separate delivery dispositions but share revision work.
 
-The dormant dispatch primitive writes the system comment, queued task,
+Projection and the dormant dispatch primitive write their effects,
 `github_webhook_dispatch` receipt and final revision/delivery state in one
-transaction. Receipts are keyed by workspace, object kind, object ID, body
-hash and target issue, not delivery GUID. A receipt is inserted only when its
-matching task and trigger comment exist. Notifications publish only after
-commit. A failed or interrupted transaction cannot commit a receipt alone;
-a retry reads the committed receipt before creating another dispatch.
+transaction. Receipts use the normalized revision UUID and target issue, not
+the delivery GUID or body hash alone. The worker matches the full signed
+event/action, sender, author, state and timestamps before locking a revision.
+A same-body self-edit is a separate revision; duplicate deliveries share one
+committed receipt.
+
+The receipt records `projected` with a comment and no task, `denied` with no
+comment or task, or `dispatched` with both. Each linked issue gets its own
+authorization result. The worker evaluates `can_route` during projection
+admission and again through transaction-bound queries immediately before
+creating effects. It reloads the current issue/project and verifies the
+installation, PR link and target agent. Revoked grants give `denied`; lookup
+errors give `deferred`, not authorization. A denied issue does not prevent
+projection on another granted issue. Transient failures remain retryable.
+
+Notify-only comments carry the server-owned `github_notify_only` marker.
+Database comment-event triggers skip marked inserts, updates and deletes,
+so a `comment.created` subscription cannot turn a notification into a run.
+Ordinary comments retain their wakeup behavior. The server does not expose
+the marker as an input to ordinary comment APIs.
+
+Notifications publish only after commit. A failed or interrupted transaction
+cannot commit a receipt alone; a retry reads the committed receipt before
+creating another effect. Production keeps the actionable gate closed.
 Workspace teardown removes that workspace's dispatch receipts with its
 normalized revisions and preserves the shared signed delivery source.
 
 Worker tests simulate an admission/API outage, restart after intake commit,
 commit failure, concurrent duplicate deliveries and the closed gate. Tests
 exercise the dormant transaction with a test-only open gate and injected
-admission. They do not qualify gate G or replace the real GitHub provenance,
-project authorization, projection, runner or deployment acceptance tests.
+admission. Projection tests exercise the signed HTTP intake through real
+provenance admission, per-project authorization and the worker transaction.
+They cover T10, T19 and T21, same-body self-edits, duplicate receipts,
+lookup failures at both route checks and a normal-comment wakeup control.
+These checks do not qualify gate G or deployment acceptance.
+
+Migrations `748` through `752` add normalized revision IDs, route-result
+receipts and the no-wakeup marker. An existing dispatch receipt must match
+exactly one normalized revision. Migration `748` fails closed on an ambiguous
+or missing match; an operator must reconcile that receipt before retrying.
+Rollback preserves issue comments and signed intake, but removes notify-only
+and denied receipts before restoring the older body-key index. Rollback after
+actionable dispatch may need operator reconciliation if multiple dispatched
+revisions share the former body-only key. No deployment or rollback is run
+in production by this change.
 
 ## Recovery window
 

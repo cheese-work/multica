@@ -30,10 +30,15 @@ const (
 type routeDecision struct {
 	Verdict routeVerdict
 	Reason  string
+	UserID  pgtype.UUID
 }
 
-func routeDeny(reason string) routeDecision  { return routeDecision{routeDenied, reason} }
-func routeDefer(reason string) routeDecision { return routeDecision{routeDeferred, reason} }
+func routeDeny(reason string) routeDecision {
+	return routeDecision{Verdict: routeDenied, Reason: reason}
+}
+func routeDefer(reason string) routeDecision {
+	return routeDecision{Verdict: routeDeferred, Reason: reason}
+}
 
 // projectInactive mirrors lock_active_project: these statuses are "archived"
 // for admission purposes.
@@ -97,7 +102,7 @@ func (h *Handler) canRoute(ctx context.Context, githubUserID int64, issue db.Iss
 	if !allowed {
 		return routeDeny("user may not invoke agent")
 	}
-	return routeDecision{Verdict: routeAllowed}
+	return routeDecision{Verdict: routeAllowed, UserID: userID}
 }
 
 // routeTargetIssues walks the binding chain from authoritative records only:

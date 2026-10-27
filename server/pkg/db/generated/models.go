@@ -659,6 +659,7 @@ type Comment struct {
 	DecisionAnswerID    pgtype.UUID        `json:"decision_answer_id"`
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
+	GithubNotifyOnly    bool               `json:"github_notify_only"`
 }
 
 type CommentReaction struct {
@@ -974,6 +975,9 @@ type GithubWebhookDispatch struct {
 	CommentID   pgtype.UUID        `json:"comment_id"`
 	TaskID      pgtype.UUID        `json:"task_id"`
 	CommittedAt pgtype.Timestamptz `json:"committed_at"`
+	RevisionID  pgtype.UUID        `json:"revision_id"`
+	State       string             `json:"state"`
+	Reason      string             `json:"reason"`
 }
 
 type GithubWebhookIntake struct {
@@ -1014,6 +1018,7 @@ type GithubWebhookRevision struct {
 	Reason             string             `json:"reason"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ID                 pgtype.UUID        `json:"id"`
 }
 
 type GovernanceAttempt struct {

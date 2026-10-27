@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 
@@ -13,7 +12,18 @@ import (
 
 func intakeWorkerForTest(t *testing.T, fixture githubReviewFixture) githubIntakeWorker {
 	t.Helper()
+	issue, err := fixture.handler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := uuidToString(issue.ProjectID)
+	if !issue.ProjectID.Valid {
+		project = dbfx.Project(t, "Intake worker route")
+		dbfx.Exec(t, `UPDATE issue SET project_id=$1 WHERE id=$2`, project, fixture.issueID)
+	}
+	dbfx.Exec(t, `INSERT INTO github_route_grant(project_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, project, testUserID)
 	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM github_route_grant WHERE project_id=$1 AND user_id=$2`, project, testUserID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM github_webhook_dispatch WHERE workspace_id=$1`, testWorkspaceID)
 	})
 	return githubIntakeWorker{
@@ -82,6 +92,7 @@ func TestGitHubIntakeWorkerT8Resume(t *testing.T) {
 func TestGitHubIntakeWorkerUncommittedReceiptInvisible(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
 	worker := intakeWorkerForTest(t, fixture)
+	delivery := postIntakeForWorker(t, fixture, "-uncommitted")
 	ctx := context.Background()
 	transaction, err := fixture.handler.TxStarter.Begin(ctx)
 	if err != nil {
@@ -89,7 +100,10 @@ func TestGitHubIntakeWorkerUncommittedReceiptInvisible(t *testing.T) {
 	}
 	defer transaction.Rollback(ctx)
 	queries := fixture.handler.Queries.WithTx(transaction)
-	revision := db.GithubWebhookRevision{WorkspaceID: parseUUID(testWorkspaceID), ObjectKind: "review", ObjectID: 77, BodyHash: strings.Repeat("a", 64)}
+	var revision db.GithubWebhookRevision
+	dbfx.QueryRow(t, `SELECT workspace_id,id,pull_request_id,installation_id,object_kind,object_id,body_hash,author_id
+FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&revision.WorkspaceID, &revision.ID,
+		&revision.PullRequestID, &revision.InstallationID, &revision.ObjectKind, &revision.ObjectID, &revision.BodyHash, &revision.AuthorID)
 	decision, err := worker.admit(ctx, queries, revision, githubIntakePayload{})
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +127,15 @@ func TestGitHubIntakeWorkerGateClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertIntakeWorkerState(t, delivery, "projected")
-	assertGitHubIntakeNoEffects(t, fixture)
-	assertIntakeWorkerDispatch(t, fixture, 0)
+	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 1 {
+		t.Fatalf("closed gate comments = %d, want 1", count)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+		t.Fatalf("closed gate started %d runs", count)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_dispatch WHERE issue_id=$1 AND state='projected' AND task_id IS NULL`, fixture.issueID); count != 1 {
+		t.Fatalf("closed gate receipts = %d, want 1", count)
+	}
 }
 
 func TestGitHubIntakeWorkerT5Retry(t *testing.T) {
@@ -167,7 +188,7 @@ func TestGitHubIntakeWorkerProductionAdmissionStaysClosed(t *testing.T) {
 	assertIntakeWorkerState(t, delivery, "deferred")
 	var reason string
 	dbfx.QueryRow(t, `SELECT reason FROM github_webhook_intake WHERE delivery_guid=$1`, delivery).Scan(&reason)
-	if reason != "awaiting_admission" {
+	if reason != "provenance_lookup_failed" {
 		t.Fatalf("production admission reason = %s", reason)
 	}
 	assertGitHubIntakeNoEffects(t, fixture)

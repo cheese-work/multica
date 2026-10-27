@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,6 +24,7 @@ type githubIntakeTarget struct {
 	AgentID pgtype.UUID
 	UserID  pgtype.UUID
 	Content string
+	Route   routeDecision
 }
 
 type githubIntakeDecision struct {
@@ -41,6 +43,8 @@ type githubIntakePublication struct {
 	comment db.CreateCommentRow
 	issue   db.Issue
 	task    db.AgentTaskQueue
+	state   string
+	reason  string
 }
 
 func (handler *Handler) RunGitHubIntakeWorker(ctx context.Context) {
@@ -67,8 +71,44 @@ func (handler *Handler) RunGitHubIntakeWorker(ctx context.Context) {
 
 func (handler *Handler) admitGitHubIntake(ctx context.Context, queries *db.Queries, revision db.GithubWebhookRevision, payload githubIntakePayload) (githubIntakeDecision, error) {
 	object, _, number, _ := payload.revision(revision.Event)
-	_, state, reason, err := classifyGitHubIntake(ctx, queries, revision.WorkspaceID, payload, object, number)
-	return githubIntakeDecision{State: state, Reason: reason}, err
+	pullID, state, reason, err := classifyGitHubIntake(ctx, queries, revision.WorkspaceID, payload, object, number)
+	if err != nil || state != "deferred" || reason != "awaiting_admission" {
+		return githubIntakeDecision{State: state, Reason: reason}, err
+	}
+	admission := handler.PRRefresh.CheckReviewRevision(ctx, revision.InstallationID, ghsnapshot.ReviewRevision{
+		Event: revision.Event, Action: revision.Action, ObjectID: revision.ObjectID, NodeID: object.NodeID,
+		BodyHash: revision.BodyHash, AuthorID: revision.AuthorID, SenderID: revision.SenderID,
+		AuthorType: revision.AuthorType, SenderType: payload.Sender.Type, ReviewState: revision.ReviewState,
+	}, revision.AuthorID)
+	if admission.State != "admitted" {
+		return githubIntakeDecision{State: admission.State, Reason: admission.Reason}, nil
+	}
+	pull, err := queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: pullID, WorkspaceID: revision.WorkspaceID})
+	if err != nil {
+		return githubIntakeDecision{}, err
+	}
+	agent, err := githubIntakeAuthor(ctx, queries, pull)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return githubIntakeDecision{State: "denied", Reason: "no_unique_pr_author"}, nil
+	}
+	if err != nil {
+		return githubIntakeDecision{}, err
+	}
+	issues, err := queries.ListGitHubPullRequestIssues(ctx, db.ListGitHubPullRequestIssuesParams{WorkspaceID: revision.WorkspaceID, PullRequestID: pull.ID})
+	if err != nil {
+		return githubIntakeDecision{}, err
+	}
+	transactionHandler := *handler
+	transactionHandler.Queries = queries
+	decision := githubIntakeDecision{State: "dispatched", Reason: admission.Reason}
+	for _, issue := range issues {
+		route := transactionHandler.canRoute(ctx, revision.AuthorID, issue, agent)
+		decision.Targets = append(decision.Targets, githubIntakeTarget{IssueID: issue.ID, AgentID: agent.ID, UserID: route.UserID, Route: route})
+	}
+	if len(decision.Targets) == 0 {
+		decision.State, decision.Reason = "denied", "no_linked_issue"
+	}
+	return decision, nil
 }
 
 func (worker githubIntakeWorker) runOnce(ctx context.Context) (bool, error) {
@@ -120,7 +160,9 @@ func (worker githubIntakeWorker) runOnce(ctx context.Context) (bool, error) {
 			"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
 			"issue_status": issue.Status, "issue_revision": publication.comment.IssueRevision,
 		})
-		worker.handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
+		if publication.task.ID.Valid {
+			worker.handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
+		}
 	}
 	return true, nil
 }
@@ -138,6 +180,9 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	revisions, err := queries.ListGitHubWebhookRevisionsForWork(ctx, db.ListGitHubWebhookRevisionsForWorkParams{
 		InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
 		ObjectKind: kind, ObjectID: object.ID, BodyHash: hex.EncodeToString(digest[:]),
+		Event: intake.Event, Action: payload.Action, SenderID: payload.Sender.ID, AuthorID: object.User.ID, ReviewState: object.State,
+		ObjectCreatedAt: githubIntakeTimestamp(object.CreatedAt), ObjectUpdatedAt: githubIntakeTimestamp(object.UpdatedAt),
+		ObjectSubmittedAt: githubIntakeTimestamp(object.SubmittedAt),
 	})
 	if err != nil {
 		return "", "", nil, err
@@ -159,26 +204,22 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 				return "", "", nil, errors.New("github: invalid admission decision")
 			}
 			if decision.State == "dispatched" {
-				if !worker.dispatchEnabled {
-					decision.State, decision.Reason = "projected", "gate_g_closed"
-				} else {
-					if len(decision.Targets) == 0 {
-						return "", "", nil, errors.New("github: dispatch has no target")
+				decision.State, decision.Reason = "denied", "no_linked_issue"
+				for _, target := range decision.Targets {
+					publication, err := worker.dispatch(ctx, queries, revision, target)
+					if err != nil {
+						return "", "", nil, err
 					}
-					for _, target := range decision.Targets {
-						publication, err := worker.dispatch(ctx, queries, revision, target)
-						if err != nil {
-							return "", "", nil, err
-						}
-						if publication != nil {
-							publications = append(publications, *publication)
-						}
+					if priority[publication.state] >= priority[decision.State] {
+						decision.State, decision.Reason = publication.state, publication.reason
+					}
+					if publication.comment.ID.Valid {
+						publications = append(publications, *publication)
 					}
 				}
 			}
 			if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
-				WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-				BodyHash: revision.BodyHash, State: decision.State, Reason: decision.Reason,
+				WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: decision.State, Reason: decision.Reason,
 			}); err != nil {
 				return "", "", nil, err
 			}
@@ -191,53 +232,96 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 }
 
 func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queries, revision db.GithubWebhookRevision, target githubIntakeTarget) (*githubIntakePublication, error) {
-	issue, err := queries.GetIssue(ctx, target.IssueID)
-	if err != nil {
-		return nil, err
-	}
-	if issue.WorkspaceID != revision.WorkspaceID {
-		return nil, errors.New("github: cross-workspace dispatch refused")
-	}
-	if _, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: target.AgentID, WorkspaceID: revision.WorkspaceID}); err != nil {
-		return nil, err
-	}
-	if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: target.UserID, WorkspaceID: revision.WorkspaceID}); err != nil {
-		return nil, err
-	}
-	seen, err := queries.HasGitHubWebhookDispatch(ctx, db.HasGitHubWebhookDispatchParams{
-		WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-		BodyHash: revision.BodyHash, IssueID: issue.ID,
+	receipt, err := queries.GetGitHubWebhookDispatch(ctx, db.GetGitHubWebhookDispatchParams{
+		WorkspaceID: revision.WorkspaceID, RevisionID: revision.ID, IssueID: target.IssueID,
 	})
-	if err != nil || seen {
+	if err == nil {
+		return &githubIntakePublication{state: receipt.State, reason: receipt.Reason}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	key := fmt.Sprintf("github.intake:%s:%s:%d:%s:%s", uuidToString(revision.WorkspaceID), revision.ObjectKind,
-		revision.ObjectID, revision.BodyHash, uuidToString(issue.ID))
+	issue, err := queries.GetGitHubRouteIssue(ctx, db.GetGitHubRouteIssueParams{
+		ID: target.IssueID, WorkspaceID: revision.WorkspaceID, PullRequestID: revision.PullRequestID, InstallationID: revision.InstallationID,
+	})
+	route := target.Route
+	if errors.Is(err, pgx.ErrNoRows) {
+		route = routeDeny("target_binding_revoked")
+	} else if err != nil {
+		return nil, err
+	} else if route.Verdict == "" || route.Verdict == routeAllowed {
+		agent, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: target.AgentID, WorkspaceID: revision.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			route = routeDeny("target_agent_not_found")
+		} else if err != nil {
+			return nil, err
+		} else {
+			transactionHandler := *worker.handler
+			transactionHandler.Queries = queries
+			route = transactionHandler.canRoute(ctx, revision.AuthorID, issue, agent)
+			if route.Verdict == routeAllowed && target.UserID.Valid && route.UserID != target.UserID {
+				route = routeDeny("github_mapping_changed")
+			}
+		}
+	}
+	publication := &githubIntakePublication{state: string(route.Verdict), reason: route.Reason, issue: issue}
+	if route.Verdict == routeDeferred {
+		return publication, nil
+	}
+	if route.Verdict != routeAllowed {
+		if err := recordGitHubRouteResult(ctx, queries, revision, target.IssueID, publication); err != nil {
+			return nil, err
+		}
+		return publication, nil
+	}
+	key := fmt.Sprintf("github.intake:%s:%s", uuidToString(revision.ID), uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
-	params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, issue, target.AgentID, commentID, target.UserID, service.OriginDerived)
-	if err != nil {
+	if !worker.dispatchEnabled {
+		content, err := githubNotifyContent(ctx, queries, revision)
+		if err != nil {
+			return nil, err
+		}
+		created, err := queries.CreateGitHubNotifyComment(ctx, db.CreateGitHubNotifyCommentParams{CommentID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Content: content})
+		if err != nil {
+			return nil, err
+		}
+		publication.comment = db.CreateCommentRow(created)
+		publication.state, publication.reason = "projected", "gate_g_closed"
+	} else {
+		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
+		if err != nil {
+			return nil, err
+		}
+		publication.comment, err = queries.CreateComment(ctx, db.CreateCommentParams{
+			ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system",
+			AuthorID: pgtype.UUID{Valid: true}, Content: target.Content, Type: "comment",
+		})
+		if err != nil {
+			return nil, err
+		}
+		publication.task, err = worker.handler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
+		if err != nil {
+			return nil, err
+		}
+		publication.state, publication.reason = "dispatched", "admitted"
+	}
+	if err := recordGitHubRouteResult(ctx, queries, revision, issue.ID, publication); err != nil {
 		return nil, err
 	}
-	created, err := queries.CreateComment(ctx, db.CreateCommentParams{
-		ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system",
-		AuthorID: pgtype.UUID{Valid: true}, Content: target.Content, Type: "comment",
-	})
-	if err != nil {
-		return nil, err
-	}
-	task, err := worker.handler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
-	if err != nil {
-		return nil, err
-	}
+	return publication, nil
+}
+
+func recordGitHubRouteResult(ctx context.Context, queries *db.Queries, revision db.GithubWebhookRevision, issueID pgtype.UUID, publication *githubIntakePublication) error {
 	inserted, err := queries.RecordGitHubWebhookDispatch(ctx, db.RecordGitHubWebhookDispatchParams{
 		WorkspaceID: revision.WorkspaceID, ObjectKind: revision.ObjectKind, ObjectID: revision.ObjectID,
-		BodyHash: revision.BodyHash, IssueID: issue.ID, CommentID: commentID, TaskID: task.ID,
+		BodyHash: revision.BodyHash, IssueID: issueID, CommentID: publication.comment.ID, TaskID: publication.task.ID,
+		RevisionID: revision.ID, State: publication.state, Reason: publication.reason,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if inserted != 1 {
-		return nil, errors.New("github: dispatch receipt requires its comment and run")
+		return errors.New("github: route receipt requires its committed effects")
 	}
-	return &githubIntakePublication{comment: created, issue: issue, task: task}, nil
+	return nil
 }

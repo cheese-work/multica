@@ -29,12 +29,16 @@ LIMIT 1 FOR UPDATE SKIP LOCKED;
 SELECT * FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
   AND object_kind = $3 AND object_id = $4 AND body_hash = $5
+  AND event = $6 AND action = $7 AND sender_id = $8 AND author_id = $9 AND review_state = $10
+  AND object_created_at IS NOT DISTINCT FROM sqlc.narg(object_created_at)::timestamptz
+  AND object_updated_at IS NOT DISTINCT FROM sqlc.narg(object_updated_at)::timestamptz
+  AND object_submitted_at IS NOT DISTINCT FROM sqlc.narg(object_submitted_at)::timestamptz
 ORDER BY workspace_id
 FOR UPDATE;
 
 -- name: SetGitHubWebhookRevisionState :exec
-UPDATE github_webhook_revision SET state = $5, reason = $6, updated_at = now()
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4;
+UPDATE github_webhook_revision SET state = $3, reason = $4, updated_at = now()
+WHERE workspace_id = $1 AND id = $2;
 
 -- name: ScheduleGitHubWebhookIntakeRetry :exec
 UPDATE github_webhook_intake
@@ -51,17 +55,50 @@ ORDER BY received_at LIMIT $1;
 
 -- name: HasGitHubWebhookDispatch :one
 SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
-WHERE workspace_id = $1 AND object_kind = $2 AND object_id = $3 AND body_hash = $4 AND issue_id = $5);
+WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3);
+
+-- name: GetGitHubWebhookDispatch :one
+SELECT * FROM github_webhook_dispatch WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3;
 
 -- name: RecordGitHubWebhookDispatch :execrows
-INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id)
-SELECT $1, $2, $3, $4, $5, $6, $7
-WHERE EXISTS (
+INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id, revision_id, state, reason)
+SELECT sqlc.arg(workspace_id), sqlc.arg(object_kind), sqlc.arg(object_id), sqlc.arg(body_hash), sqlc.arg(issue_id),
+    sqlc.narg(comment_id), sqlc.narg(task_id), sqlc.arg(revision_id), sqlc.arg(state), sqlc.arg(reason)
+WHERE EXISTS (SELECT 1 FROM github_webhook_revision WHERE id=sqlc.arg(revision_id) AND workspace_id=sqlc.arg(workspace_id))
+AND ((sqlc.arg(state) = 'denied' AND sqlc.narg(comment_id)::uuid IS NULL AND sqlc.narg(task_id)::uuid IS NULL)
+OR (sqlc.arg(state) = 'projected' AND sqlc.narg(task_id)::uuid IS NULL AND EXISTS (
+    SELECT 1 FROM comment WHERE id=sqlc.narg(comment_id) AND workspace_id=sqlc.arg(workspace_id) AND issue_id=sqlc.arg(issue_id)
+        AND author_type='system' AND github_notify_only
+)) OR (sqlc.arg(state) = 'dispatched' AND EXISTS (
     SELECT 1 FROM agent_task_queue task JOIN comment ON comment.id = task.trigger_comment_id
     JOIN issue ON issue.id = task.issue_id
-    WHERE task.id = $7 AND issue.workspace_id = $1 AND task.issue_id = $5
-      AND comment.id = $6 AND comment.workspace_id = $1 AND comment.issue_id = $5
-);
+    WHERE task.id = sqlc.narg(task_id) AND issue.workspace_id = sqlc.arg(workspace_id) AND task.issue_id = sqlc.arg(issue_id)
+      AND comment.id = sqlc.narg(comment_id) AND comment.workspace_id = sqlc.arg(workspace_id) AND comment.issue_id = sqlc.arg(issue_id)
+)))
+ON CONFLICT (workspace_id, revision_id, issue_id) DO NOTHING;
+
+-- name: CreateGitHubNotifyComment :one
+WITH touched_issue AS (
+    UPDATE issue SET updated_at = now(), revision = revision + 1,
+        last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+    WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
+    RETURNING issue.id, issue.workspace_id, issue.revision
+), inserted_comment AS (
+    INSERT INTO comment (id,issue_id,workspace_id,author_type,author_id,content,type,github_notify_only)
+    SELECT sqlc.arg(comment_id),touched_issue.id,touched_issue.workspace_id,'system','00000000-0000-0000-0000-000000000000',sqlc.arg(content),'comment',true
+    FROM touched_issue RETURNING *
+)
+SELECT inserted_comment.*,touched_issue.revision AS issue_revision
+FROM inserted_comment JOIN touched_issue ON touched_issue.id=inserted_comment.issue_id;
+
+-- name: GetGitHubRouteIssue :one
+SELECT issue.* FROM issue
+JOIN issue_pull_request link ON link.issue_id=issue.id
+JOIN github_pull_request pull ON pull.id=link.pull_request_id AND pull.workspace_id=issue.workspace_id
+JOIN github_installation installation ON installation.workspace_id=issue.workspace_id AND installation.installation_id=pull.installation_id
+WHERE issue.id=sqlc.arg(id) AND issue.workspace_id=sqlc.arg(workspace_id)
+    AND pull.id=sqlc.arg(pull_request_id) AND pull.installation_id=sqlc.arg(installation_id)
+FOR UPDATE OF issue;
 -- name: DenyPendingGitHubWebhookRevisions :exec
 UPDATE github_webhook_revision SET state = 'denied', reason = $6, updated_at = now()
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
