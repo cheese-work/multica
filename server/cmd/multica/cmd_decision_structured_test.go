@@ -132,3 +132,12 @@ func TestAskFileHelpNamesBlockingRules(test *testing.T) {
 		}
 	}
 }
+
+func TestDecisionRequestAskFileHelpListsHumanSteps(test *testing.T) {
+	usage := decisionRequestCmd.Flags().Lookup("ask-file").Usage
+	for _, field := range []string{"human_steps[{action, command, values[{name, value, source}], verify_done}]", "probes[]", "after_done"} {
+		if !strings.Contains(usage, field) {
+			test.Fatalf("--ask-file help is missing %q: %s", field, usage)
+		}
+	}
+}

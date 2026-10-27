@@ -36,12 +36,12 @@ func init() {
 		command.Flags().String("issue", "", "Issue UUID or identifier")
 		_ = command.MarkFlagRequired("issue")
 	}
-	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
-	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
+	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue; must be eligible (it discussed this issue)")
+	decisionRequestCmd.Flags().Bool("new-dm", false, "Create a DM for this issue only, when no listed lane discussed it")
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id. Refused: more than one question in decision (send one request per question); an inline numbered list (1. a 2. b on one line; use a Markdown list); a bare ID (full UUID outside a Markdown link destination, link it as [what it is](link)); an agent_did that is not a plain sentence. The list and ID rules cover context_eli10, decision, stakes_if_wrong, recommendation, default_if_no_reply, options[].label, options[].what_happens, options[].pros[], options[].cons[], options[].cost_or_time")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id. Refused: more than one question in decision (send one request per question); an inline numbered list (1. a 2. b on one line; use a Markdown list); a bare ID (full UUID outside a Markdown link destination, link it as [what it is](link)); an agent_did that is not a plain sentence. The list and ID rules cover context_eli10, decision, stakes_if_wrong, recommendation, default_if_no_reply, options[].label, options[].what_happens, options[].pros[], options[].cons[], options[].cost_or_time. To ask a human to act also: human_steps[{action, command, values[{name, value, source}], verify_done}], probes[], after_done")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)

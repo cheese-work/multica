@@ -24,6 +24,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	issueID := fixture.Issue(test, "Decision HTTP roundtrip", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := fixture.Task(test, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "running"})
 	sessionID := fixture.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Decisions"})
+	fixture.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + issueID + ")"})
 	fixture.Cleanup(test, `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
