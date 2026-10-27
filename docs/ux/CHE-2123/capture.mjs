@@ -27,6 +27,12 @@ const user = { id: "user-1", name: "Capture fixture", email: "capture@example.in
 const workspace = { id: "ws-1", slug: "capture", name: "Capture fixture", description: null, context: null, settings: {}, repos: [], issue_prefix: "CAP", avatar_url: null, created_at: "", updated_at: "" };
 const requests = [];
 let denied = false;
+async function waitForMedia(surface, kind) {
+  if (kind === "mermaid") await surface.frameLocator("iframe").locator("svg").waitFor({ state: "visible", timeout: 120000 });
+  else if (kind === "html") await surface.frameLocator("iframe").getByRole("heading", { name: "One item. Its own page.", exact: true }).waitFor();
+  else if (kind === "image") await surface.locator("img").first().evaluate((image) => image.decode());
+  else await surface.getByText("Diagram", { exact: true }).waitFor();
+}
 const server = createServer((request, response) => {
   const url = new URL(request.url, apiOrigin);
   requests.push(url.pathname);
@@ -97,6 +103,7 @@ try {
         await trigger.click();
         const dialog = page.getByRole("dialog");
         await dialog.waitFor();
+        await waitForMedia(dialog, item.kind);
         await page.screenshot({ path: join(output, `source-${item.kind}-${width}-${sourcePhase}.png`) });
         const more = dialog.locator("summary[aria-label='More']");
         if (sourcePhase === "after" && width === 390) {
@@ -132,7 +139,7 @@ try {
       await page.screenshot({ path: join(output, "web-diagnostic.png") });
       throw error;
     });
-    if (item.kind === "mermaid") await page.locator("iframe").waitFor();
+    await waitForMedia(page, item.kind);
     await page.screenshot({ path: join(output, `web-${item.kind}-1440-after.png`) });
     await page.getByRole("button", { name: "Copy link", exact: true }).click();
     await page.getByRole("button", { name: "Link copied", exact: true }).waitFor();
@@ -140,6 +147,7 @@ try {
     if (copied !== `${webOrigin}${item.path}`) throw new Error(`Wrong web copy link: ${copied}`);
     await page.reload();
     await page.getByTestId("media-toolbar").waitFor();
+    await waitForMedia(page, item.kind);
     await page.setViewportSize({ width: 390, height: 844 });
     const more = page.locator("summary[aria-label='More']");
     await more.waitFor();
@@ -189,6 +197,7 @@ try {
         await target.screenshot({ path: join(output, "desktop-target-diagnostic.png") });
         throw error;
       });
+      await waitForMedia(target, item.kind);
       await target.screenshot({ path: join(output, `desktop-${item.kind}-960-after.png`) });
       const more = target.locator("summary[aria-label='More']");
       if (await more.isVisible()) await more.click();
