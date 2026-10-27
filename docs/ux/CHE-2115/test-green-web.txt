@@ -1,0 +1,15 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2112-772c1e045599/workdir/multica/packages/views
+
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content 116ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content 30ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in compact content without changing case 19ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in document content without changing case 14ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > does not highlight member mentions without a current user 19ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > updates the self variant when the viewer changes or logs out 12ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  14:22:42
+   Duration  14.21s (transform 6.60s, setup 165ms, import 11.83s, tests 215ms, environment 1.71s)
+

@@ -1,0 +1,73 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2112-772c1e045599/workdir/multica/packages/views
+
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content 145ms
+   → expected false to be true // Object.is equality
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content 32ms
+   → expected false to be true // Object.is equality
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in compact content without changing case 27ms
+   → expect(element).toHaveClass("mention mention-self")
+
+Expected the element to have class:
+  mention mention-self
+Received:
+  mention
+ × rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in document content without changing case 19ms
+   → expect(element).toHaveClass("mention mention-self")
+
+Expected the element to have class:
+  mention mention-self
+Received:
+  mention
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > does not highlight member mentions without a current user 19ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > updates the self variant when the viewer changes or logs out 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ rich-content/self-mention.test.tsx:68:71
+     66|       expect(selfRule.style.getPropertyValue("background-color")).toBe…
+     67|       expect(selfRule.style.getPropertyValue("color")).toBe("var(--bac…
+     68|       expect(screen.getByText("@all").matches(selfRule.selectorText)).…
+       |                                                                       ^
+     69|       for (const label of ["@Other", "@Agent"]) {
+     70|         expect(screen.getByText(label).matches(selfRule.selectorText))…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in compact content without changing case
+ FAIL  rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights the viewer's member mention and @all in document content without changing case
+Error: expect(element).toHaveClass("mention mention-self")
+
+Expected the element to have class:
+  mention mention-self
+Received:
+  mention
+ ❯ rich-content/self-mention.test.tsx:83:40
+     81|       expect(screen.getByText("@ChEeSe")).toHaveClass("mention", "ment…
+     82|       expect(screen.getByText("@ChEeSe")).toHaveTextContent(/^@ChEeSe$…
+     83|       expect(screen.getByText("@all")).toHaveClass("mention", "mention…
+       |                                        ^
+     84|       for (const label of ["@Other", "@Agent"]) {
+     85|         expect(screen.getByText(label)).toHaveAttribute("class", "ment…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 2 passed (6)
+   Start at  14:10:17
+   Duration  36.07s (transform 25.42s, setup 941ms, import 29.87s, tests 268ms, environment 3.73s)
+
+undefined
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2112-772c1e045599/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run rich-content/self-mention.test.tsx --maxWorkers=2 --reporter=verbose

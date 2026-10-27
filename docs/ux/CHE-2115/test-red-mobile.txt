@@ -1,0 +1,57 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2112-772c1e045599/workdir/multica/apps/mobile
+
+ × lib/markdown/self-mention.test.ts > selfMentionLinkVariants > styles the viewer's member mention as a solid brand chip with background text 11ms
+   → expected undefined to deeply equal { color: 'hsl(0 0% 100%)', …(2) }
+ × lib/markdown/self-mention.test.ts > selfMentionLinkVariants > styles @all like the viewer's own mention 1ms
+   → expected undefined to be defined
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > leaves mention://member/8f14e45f-ceea-4d0e-a1a2-9b1c0d3e4f5a as a plain link 1ms
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > leaves mention://agent/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff as a plain link 0ms
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > leaves mention://issue/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff as a plain link 0ms
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > leaves mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff-x as a plain link 0ms
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > leaves https://example.com/mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff as a plain link 0ms
+ ✓ lib/markdown/self-mention.test.ts > selfMentionLinkVariants > styles nothing without a viewer, not even @all 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/markdown/self-mention.test.ts > selfMentionLinkVariants > styles the viewer's member mention as a solid brand chip with background text
+AssertionError: expected undefined to deeply equal { color: 'hsl(0 0% 100%)', …(2) }
+
+- Expected:
+{
+  "backgroundColor": "hsl(225 71% 58%)",
+  "color": "hsl(0 0% 100%)",
+  "underline": false,
+}
+
++ Received:
+undefined
+
+ ❯ lib/markdown/self-mention.test.ts:17:52
+     15| describe("selfMentionLinkVariants", () => {
+     16|   it("styles the viewer's member mention as a solid brand chip with ba…
+     17|     expect(styleFor(`mention://member/${VIEWER}`)).toEqual({
+       |                                                    ^
+     18|       color: COLORS.background,
+     19|       backgroundColor: COLORS.brand,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  lib/markdown/self-mention.test.ts > selfMentionLinkVariants > styles @all like the viewer's own mention
+AssertionError: expected undefined to be defined
+ ❯ lib/markdown/self-mention.test.ts:26:43
+     24|   it("styles @all like the viewer's own mention", () => {
+     25|     expect(styleFor("mention://all/all")).toEqual(styleFor(`mention://…
+     26|     expect(styleFor("mention://all/all")).toBeDefined();
+       |                                           ^
+     27|   });
+     28|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 6 passed (8)
+   Start at  14:13:20
+   Duration  435ms (transform 59ms, setup 0ms, import 93ms, tests 17ms, environment 0ms)
+

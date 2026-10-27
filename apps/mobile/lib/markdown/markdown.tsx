@@ -35,7 +35,8 @@
  * (`packages/ui/markdown/Markdown.tsx:173-178`). The avatar pill
  * variant only ever existed on web in specific contexts that supplied
  * a custom renderer — mobile doesn't lose anything that exists by
- * default elsewhere.
+ * default elsewhere. Exception: mentions of the viewer (and `@all`) get a
+ * solid brand chip via `linkVariants` (`self-mention.ts`).
  */
 import { useCallback, useMemo } from "react";
 import { Linking, View } from "react-native";

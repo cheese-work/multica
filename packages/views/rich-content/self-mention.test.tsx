@@ -65,7 +65,8 @@ describe("RichContent self-member mentions", () => {
       expect(screen.getByText("@ChEeSe").matches(selfRule.selectorText)).toBe(true);
       expect(selfRule.style.getPropertyValue("background-color")).toBe("var(--brand)");
       expect(selfRule.style.getPropertyValue("color")).toBe("var(--background)");
-      for (const label of ["@Other", "@Agent", "@all"]) {
+      expect(screen.getByText("@all").matches(selfRule.selectorText)).toBe(true);
+      for (const label of ["@Other", "@Agent"]) {
         expect(screen.getByText(label).matches(selfRule.selectorText)).toBe(false);
         expect(screen.getByText(label)).toHaveAttribute("class", "mention");
       }
@@ -73,13 +74,14 @@ describe("RichContent self-member mentions", () => {
   );
 
   it.each(["compact", "document"] as const)(
-    "highlights only the viewer's member mention in %s content without changing case",
+    "highlights the viewer's member mention and @all in %s content without changing case",
     (density) => {
       render(<RichContent content={CONTENT} density={density} />);
 
       expect(screen.getByText("@ChEeSe")).toHaveClass("mention", "mention-self");
       expect(screen.getByText("@ChEeSe")).toHaveTextContent(/^@ChEeSe$/);
-      for (const label of ["@Other", "@Agent", "@all"]) {
+      expect(screen.getByText("@all")).toHaveClass("mention", "mention-self");
+      for (const label of ["@Other", "@Agent"]) {
         expect(screen.getByText(label)).toHaveAttribute("class", "mention");
       }
     },
@@ -91,6 +93,7 @@ describe("RichContent self-member mentions", () => {
 
     expect(container.querySelectorAll(".mention")).toHaveLength(4);
     expect(container.querySelector(".mention-self")).toBeNull();
+    expect(screen.getByText("@all")).toHaveAttribute("class", "mention");
   });
 
   it("updates the self variant when the viewer changes or logs out", () => {

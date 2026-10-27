@@ -1,0 +1,17 @@
+issue: CHE-2115
+design: "no new design: reuses the solid current-user chip recorded in CHE-2167 (brand fill, background text)."
+scope: "Web/desktop RichContent: @all gets the self chip for a signed-in viewer. Mobile: viewer's member mention and @all get the same chip via enriched-markdown linkVariants."
+capture: "X99 Chromium; real RichContent HTML + production tokens, synthetic data. Native mobile capture NOT-RUN (no simulator/device build)."
+pages:
+  - id: rich-content-comment
+    url: "issue comment / DM; document density"
+    keep: [member-mention]
+    change:
+      - member-mention: "@all renders with the self chip; other members and agents unchanged."
+    remove: []
+  - id: mobile-markdown
+    url: "mobile issue/comment/chat markdown"
+    keep: [link]
+    change:
+      - link: "mention://member/<viewer> and mention://all/* use brand fill, background text, no underline."
+    remove: []

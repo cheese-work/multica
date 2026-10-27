@@ -20,9 +20,11 @@
  * code incident.
  */
 import { useMemo } from "react";
+import { useAuthStore } from "@/data/auth-store";
 import { MOBILE_RADIUS } from "@/lib/radius";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { selfMentionLinkVariants } from "./self-mention";
 
 /**
  * Typography scale — Apple HIG-calibrated, one tier below shadcn web.
@@ -96,6 +98,7 @@ const MD_GAP = {
 export function useMarkdownStyle() {
   const { isDarkColorScheme } = useColorScheme();
   const t = isDarkColorScheme ? THEME.dark : THEME.light;
+  const userId = useAuthStore((s) => s.user?.id);
 
   return useMemo(
     () => ({
@@ -179,6 +182,7 @@ export function useMarkdownStyle() {
         color: t.brand,
         underline: true,
       },
+      linkVariants: selfMentionLinkVariants(userId, t),
       // Keep inline code backgrounds transparent: native attributed-string chips
       // span the line box and cannot be vertically padded by this renderer. Monospace
       // and a neutral tint identify code without making it look like a link.
@@ -312,6 +316,6 @@ export function useMarkdownStyle() {
         color: t.foreground,
       },
     }),
-    [t],
+    [t, userId],
   );
 }
