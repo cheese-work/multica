@@ -16,7 +16,7 @@ for (const name of ["ci.yml", "pr-changelog-check.yml"]) {
     assert.ok(lines.length > 0);
     for (const line of lines) {
       assert.doesNotMatch(line, /cheese-x99|self-hosted/, line.trim());
-      assert.match(line, /runs-on: (ubuntu-latest|\$\{\{ matrix\.os \}\})\s*(#.*)?$/, line.trim());
+      assert.match(line, /runs-on: (ubuntu-24\.04|\$\{\{ matrix\.os \}\})\s*(#.*)?$/, line.trim());
     }
   });
 }

@@ -12,7 +12,7 @@ import (
 )
 
 var chatSessionsCmd = &cobra.Command{
-	Use: "sessions", Short: "List DM lane metadata for a named person in this issue task's decision window",
+	Use: "sessions", Short: "List DM lanes for a named person in this issue task's decision window, lanes naming the issue first (eligible=no: never discussed it)",
 	Args: cobra.NoArgs, RunE: runChatSessions,
 }
 
@@ -50,13 +50,17 @@ func runChatSessions(command *cobra.Command, _ []string) error {
 	}
 	rows := make([][]string, 0, len(lanes))
 	for _, lane := range lanes {
+		eligible := "no"
+		if lane.Eligible {
+			eligible = "yes"
+		}
 		if len(lane.IssueMentions) == 0 {
-			rows = append(rows, []string{lane.ID, lane.Title, lane.UpdatedAt, "", "", "", ""})
+			rows = append(rows, []string{lane.ID, eligible, lane.Title, lane.UpdatedAt, "", "", "", ""})
 		}
 		for _, mention := range lane.IssueMentions {
-			rows = append(rows, []string{lane.ID, lane.Title, lane.UpdatedAt, mention.IssueKey, mention.IssueTitle, mention.RelativeTime, mention.Snippet})
+			rows = append(rows, []string{lane.ID, eligible, lane.Title, lane.UpdatedAt, mention.IssueKey, mention.IssueTitle, mention.RelativeTime, mention.Snippet})
 		}
 	}
-	cli.PrintTable(os.Stdout, []string{"ID", "TITLE", "UPDATED_AT", "ISSUE", "ISSUE_TITLE", "MENTIONED", "SNIPPET"}, rows)
+	cli.PrintTable(os.Stdout, []string{"ID", "ELIGIBLE", "TITLE", "UPDATED_AT", "ISSUE", "ISSUE_TITLE", "MENTIONED", "SNIPPET"}, rows)
 	return nil
 }
