@@ -141,6 +141,35 @@ func (q *Queries) ArchiveContinuedChatSession(ctx context.Context, arg ArchiveCo
 	return i, err
 }
 
+const bindChatMessageDecisionAnswer = `-- name: BindChatMessageDecisionAnswer :one
+UPDATE chat_message message
+SET decision_answer_id = $1
+FROM chat_session session
+WHERE session.workspace_id = $2
+  AND session.id = $3 AND message.chat_session_id = session.id
+  AND message.id = $4 AND message.decision_answer_id IS NULL
+RETURNING message.id
+`
+
+type BindChatMessageDecisionAnswerParams struct {
+	AnswerID    pgtype.UUID `json:"answer_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SessionID   pgtype.UUID `json:"session_id"`
+	MessageID   pgtype.UUID `json:"message_id"`
+}
+
+func (q *Queries) BindChatMessageDecisionAnswer(ctx context.Context, arg BindChatMessageDecisionAnswerParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, bindChatMessageDecisionAnswer,
+		arg.AnswerID,
+		arg.WorkspaceID,
+		arg.SessionID,
+		arg.MessageID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const chatSessionHasPublicUserMessage = `-- name: ChatSessionHasPublicUserMessage :one
 SELECT EXISTS (
     SELECT 1 FROM chat_message
