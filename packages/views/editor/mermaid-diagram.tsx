@@ -81,6 +81,7 @@ function themedChart(chart: string, host: HTMLElement | null): string {
   return `---\n${stringify({
     ...metadata,
     config: {
+      theme: "base",
       ...config,
       themeVariables: { ...getMermaidThemeVariables(host), ...config.themeVariables },
     },

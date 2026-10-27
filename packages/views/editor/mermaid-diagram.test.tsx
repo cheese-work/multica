@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { parse } from "yaml";
 
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
@@ -176,6 +177,26 @@ describe("MermaidDiagram lifecycle", () => {
     expect(source).toContain("Preserved title");
     expect(source).toContain("linear");
     expect(source).toContain("rgb(12, 34, 56)");
+  });
+
+  it.each([
+    { name: "without frontmatter", chart: CHART, theme: "base" },
+    {
+      name: "with unthemed frontmatter",
+      chart: `---\nconfig:\n  flowchart:\n    curve: linear\n---\n${CHART}`,
+      theme: "base",
+    },
+    {
+      name: "with an explicit author theme",
+      chart: `---\nconfig:\n  theme: neutral\n---\n${CHART}`,
+      theme: "neutral",
+    },
+  ])("sets the render theme $name", async ({ chart, theme }) => {
+    render(<MermaidDiagram chart={chart} />);
+    await findFrame();
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
+    expect(frontmatter).not.toBeNull();
+    expect(parse(frontmatter![1]!).config.theme).toBe(theme);
   });
 });
 
