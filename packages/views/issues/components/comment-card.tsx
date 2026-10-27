@@ -31,6 +31,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useTimeAgo } from "../../i18n";
+import { RichTableDeferContext } from "../../rich-content";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -709,8 +710,10 @@ function bodyPrefix(content: string) {
  * Comment body that defers the full rich-content mount for oversized text.
  * `forceOpen` (deep-link target, find) opens it and stays open once opened, so
  * the body does not collapse again when the target highlight fades.
+ * An oversized body mounts its tables only near the viewport (CHE-2272)
+ * unless find owns the thread (`findOpen`): find walks mounted text.
  */
-function CommentBody({ entry, forceOpen }: { entry: TimelineEntry; forceOpen: boolean }) {
+function CommentBody({ entry, forceOpen, findOpen }: { entry: TimelineEntry; forceOpen: boolean; findOpen: boolean }) {
   const { t } = useT("issues");
   const [expanded, setExpanded] = useState(false);
   if (forceOpen && !expanded) setExpanded(true);
@@ -718,14 +721,14 @@ function CommentBody({ entry, forceOpen }: { entry: TimelineEntry; forceOpen: bo
   const deferred = content.length > LONG_BODY_CHARS && !expanded && !forceOpen;
   const prefix = useMemo(() => (deferred ? bodyPrefix(content) : ""), [deferred, content]);
   return (
-    <>
+    <RichTableDeferContext.Provider value={content.length > LONG_BODY_CHARS && !findOpen}>
       <ReadonlyContent content={deferred ? prefix : content} attachments={entry.attachments} />
       {deferred && (
         <Button type="button" size="sm" variant="ghost" className="mt-1 text-muted-foreground" onClick={() => setExpanded(true)}>
           {t(($) => $.comment.show_full)}
         </Button>
       )}
-    </>
+    </RichTableDeferContext.Provider>
   );
 }
 
@@ -1031,7 +1034,7 @@ function CommentRow({
             ) : entry.decision_comment_kind === "disclaim" ? (
               <DecisionWithdrawalLine entry={entry} />
             ) : (
-              <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} />
+              <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
             )}
           </div>
           <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-12 pr-4 max-md:pl-3 max-md:pr-3" />
@@ -1588,7 +1591,7 @@ function CommentCardImpl({
                   ) : entry.decision_comment_kind === "disclaim" ? (
                     <DecisionWithdrawalLine entry={entry} />
                   ) : (
-                    <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} />
+                    <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
                   )}
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-8 max-md:pl-0" />
