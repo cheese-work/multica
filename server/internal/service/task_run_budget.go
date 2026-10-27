@@ -52,8 +52,15 @@ type ReviewGate struct {
 	Required bool
 }
 
-// Apply sets the gate on the task row the enqueue is about to insert.
+// Apply sets the gate on the task row the enqueue is about to insert. A review
+// run is stamped with the head the gate admits, never a head resolved again
+// later: the admission and the task must name the one head the run reviews,
+// even when the PR moves between the guard and the insert or between
+// preparing a mention and inserting it.
 func (g ReviewGate) Apply(p *db.CreateAgentTaskParams) {
+	if g.Head != "" {
+		p.HeadSha = pgtype.Text{String: g.Head, Valid: true}
+	}
 	p.GateHead = pgtype.Text{String: g.Head, Valid: g.Head != ""}
 	p.GateRequired = pgtype.Bool{Bool: g.Required, Valid: g.Required}
 }

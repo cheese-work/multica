@@ -1753,7 +1753,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	return db.CreateAgentTaskParams{
+	params := db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -1777,10 +1777,10 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		TriggerEvidenceRefID: attrEvidenceRef,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
-		HeadSha:      headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
-		GateHead:     pgtype.Text{String: gate.Head, Valid: gate.Head != ""},
-		GateRequired: pgtype.Bool{Bool: gate.Required, Valid: gate.Required},
-	}, attr, nil
+		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+	}
+	gate.Apply(&params)
+	return params, attr, nil
 }
 
 // QuickCreateContext is the JSON payload stored on a quick-create task's
