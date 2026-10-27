@@ -94,7 +94,7 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 		writeDecisionActionError(writer, err)
 		return
 	}
-	handler.finishApprovalAfterCommit(ctx, caller, action)
+	handler.finishApprovalAfterCommit(ctx, action)
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
 }
 
@@ -241,27 +241,29 @@ func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Que
 	return finish, "executed.", nil
 }
 
-// finishApprovalAfterCommit does the work that must follow the commit:
-// broadcast the change, wake the delivery worker and stamp the row. A failure
-// here never undoes the approval; the stamp stays empty so a sweeper retries.
-func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) {
-	ctx = context.WithoutCancel(ctx)
-	if action.State == "executed" {
-		if agentID, ok := decisionActionTarget(action); ok {
-			agent, err := handler.Queries.GetAgent(ctx, agentID)
-			if err == nil {
-				err = handler.publishAgentEnvUpdated(ctx, agent, caller.userID)
-			}
-			if err != nil {
-				slog.Warn("decision action: post-commit broadcast failed", "action_id", uuidToString(action.ID), "error", err)
-				return
-			}
+// finishApprovalAfterCommit runs the post-commit work for a request that just
+// committed. A failure never undoes the approval; the stamp stays empty and
+// the worker retries (sweepDecisionActionPostCommit).
+func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db.DecisionAction) {
+	if err := handler.completeDecisionActionPostCommit(context.WithoutCancel(ctx), action); err != nil {
+		slog.Warn("decision action: post-commit work failed", "action_id", uuidToString(action.ID), "error", err)
+	}
+}
+
+// completeDecisionActionPostCommit broadcasts the change, wakes the delivery
+// worker and stamps the row. It is idempotent: a repeat only re-sends events.
+func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, action db.DecisionAction) error {
+	if agentID, ok := decisionActionTarget(action); ok && action.State == "executed" {
+		agent, err := handler.Queries.GetAgent(ctx, agentID)
+		if err == nil {
+			err = handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	handler.DecisionWorker.Notify()
-	if err := handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: caller.workspaceID}); err != nil {
-		slog.Warn("decision action: post-commit stamp failed", "action_id", uuidToString(action.ID), "error", err)
-	}
+	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
 }
 
 // decisionActionTarget is the one agent an action changes.

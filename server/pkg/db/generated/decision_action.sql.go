@@ -239,6 +239,60 @@ func (q *Queries) GetDecisionActionByRequest(ctx context.Context, arg GetDecisio
 	return i, err
 }
 
+const listDecisionActionsAwaitingPostCommit = `-- name: ListDecisionActionsAwaitingPostCommit :many
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action
+WHERE state IN ('executed', 'failed') AND post_commit_done_at IS NULL
+  AND executed_at <= clock_timestamp() - interval '30 seconds'
+ORDER BY executed_at, id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+// The 30 s grace keeps the sweeper off an approval whose own request is still
+// doing its post-commit work.
+func (q *Queries) ListDecisionActionsAwaitingPostCommit(ctx context.Context, batchSize int32) ([]DecisionAction, error) {
+	rows, err := q.db.Query(ctx, listDecisionActionsAwaitingPostCommit, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionAction{}
+	for rows.Next() {
+		var i DecisionAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DecisionRequestID,
+			&i.ActionType,
+			&i.ActionVersion,
+			&i.Params,
+			&i.Preconditions,
+			&i.SecretSlots,
+			&i.PayloadSha256,
+			&i.ExpiresAt,
+			&i.State,
+			&i.RequestedByAgentID,
+			&i.RequestedByTaskID,
+			&i.ApprovedByUserID,
+			&i.ApprovedAt,
+			&i.ExecutedAt,
+			&i.WebauthnCredentialID,
+			&i.Result,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.PostCommitDoneAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionActionMemberNowait = `-- name: LockDecisionActionMemberNowait :one
 SELECT id FROM member
 WHERE workspace_id = $1 AND user_id = $2
