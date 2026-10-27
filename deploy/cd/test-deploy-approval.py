@@ -16,6 +16,8 @@ STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
 PROTECTED = "c00-production"  # reviewer + wait timer; legacy runs and reruns keep hitting it
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
+C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
+C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
 
 
 def needs(job):
@@ -55,6 +57,20 @@ class DeployApprovalTests(unittest.TestCase):
         # which still use the old workflow, with no approval at all.
         self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME})
 
+    def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
+        # Both jobs that touch C00 run on the target-host runner. A fall-back
+        # to a hosted runner plus ssh/scp would fail one of these assertions.
+        for name in ["prepare-release-candidate", "deploy"]:
+            with self.subTest(job=name):
+                self.assertEqual(self.jobs[name]["runs-on"], C00_RUNNER)
+                text = yaml.safe_dump(self.jobs[name])
+                self.assertNotRegex(text, r"(?i)\b(ssh|scp|ssh-keyscan)\b")
+                self.assertNotIn("C00_SSH", text)
+        self.assertNotIn("C00_SSH", yaml.safe_dump(self.workflow))
+        step_names = [s.get("name") for s in self.jobs["deploy"]["steps"]]
+        self.assertIn(C00_LOCAL_DEPLOY_STEP, step_names)
+        self.assertNotIn("Deploy to C00 over SSH", step_names)
+
     def test_every_c00_job_runs_only_after_the_approval(self):
         for name in ["prepare-release-candidate", "admission", "deploy"]:
             with self.subTest(job=name):
@@ -72,10 +88,7 @@ class DeployApprovalTests(unittest.TestCase):
         # personal access token has to be stored, rotated or revoked.
         deploy = self.jobs["deploy"]
         self.assertNotIn("secrets.GHCR_PULL_TOKEN", yaml.safe_dump(self.workflow))
-        step = next(
-            s for s in deploy["steps"]
-            if s.get("name") in ("Deploy to C00 on local runner", "Deploy to C00 over SSH")
-        )
+        step = next(s for s in deploy["steps"] if s.get("name") == C00_LOCAL_DEPLOY_STEP)
         self.assertEqual(step["env"]["GHCR_PULL_TOKEN"], "${{ github.token }}")
         # A job-level block replaces the workflow-level one: keep what the job
         # already had and add only packages: read.
