@@ -824,6 +824,9 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
+	if w.SystemRule.String == SystemRuleWorkflowEdges {
+		dispatch = s.dispatchWorkflowEdges
+	}
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
@@ -1747,4 +1750,14 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		return s.checkJoinedFireCap(ctx, task, entry, limit)
 	}
 	return nil
+}
+
+// dispatchWorkflowEdges hands a due workflow_edges watch to the handler's
+// evaluator. It starts no run itself: a move goes through the same status write
+// a person makes, which dispatches the next step's handler.
+func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.WorkflowEdges == nil {
+		return nil
+	}
+	return s.Tasks.WorkflowEdges(ctx, w)
 }

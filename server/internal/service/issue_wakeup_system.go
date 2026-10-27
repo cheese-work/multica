@@ -30,6 +30,11 @@ import (
 // edited by agents, and it is evaluated when sub-issues change instead of on a
 // polling schedule.
 const (
+	// SystemRuleWorkflowEdges watches one issue on a workflow step whose edges
+	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
+	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
+	// target, receipts or settings.
+	SystemRuleWorkflowEdges  = "workflow_edges"
 	SystemRuleChildDone      = "child_done"
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"

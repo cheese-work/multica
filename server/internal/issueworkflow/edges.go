@@ -87,6 +87,12 @@ func (g Guard) needsTimeout() bool {
 	return strings.HasPrefix(g.Kind, "pr.")
 }
 
+// readsFacts reports whether stored facts decide the guard; the agent guards
+// are decided by the agent's own status write.
+func (g Guard) readsFacts() bool {
+	return g.Kind != GuardAgentDone && g.Kind != GuardAgentVerdict
+}
+
 // EdgesOf returns a step's exits: its own edges, or else the ones its legacy
 // fields stand for. Stored workflows are not rewritten, so in-flight issues
 // and old clients keep working.
@@ -166,6 +172,8 @@ type PRFact struct {
 	State        string
 	ChecksRollup string
 	HeadFresh    bool
+	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
+	HeadSHA string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -216,6 +224,111 @@ func (p PRFact) open() bool { return p.State == "open" || p.State == "draft" }
 func (f Facts) anyPR(pred func(PRFact) bool) bool {
 	for _, p := range f.PRs {
 		if pred(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// EdgePollInterval is how often a watched step re-reads its facts: PR and
+// children facts change in other tables, so the watch polls between deadlines.
+const EdgePollInterval = time.Minute
+
+// Why the engine moves an issue.
+const (
+	ReasonEdge           = "edge"
+	ReasonTimeout        = "timeout"
+	ReasonClosedUnmerged = "closed_unmerged"
+)
+
+// Decision is what the engine does for an issue sitting on a step. Guard is
+// the guard of the edge that decided it.
+type Decision struct {
+	To, Reason, Guard string
+}
+
+// FactEdges returns the edges the engine watches: those whose guard reads
+// stored facts. Agent guards are decided by the agent's own status write.
+func FactEdges(edges []Edge) []Edge {
+	var out []Edge
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.readsFacts() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// HasFactEdges reports whether any edge reads stored facts.
+func HasFactEdges(edges []Edge) bool {
+	return len(FactEdges(edges)) > 0
+}
+
+// Decide checks a step's edges against the stored facts for an issue that
+// entered the step at entered. It moves the issue to the first edge, in list
+// order, whose guard holds; else to blocked when a closed PR would otherwise
+// strand an issue whose edges never mention it; else to the on_timeout of the
+// edge with the earliest deadline that has passed (ties by list order).
+//
+// When nothing moves, nextCheck is when to look again: the earliest future
+// deadline, at most EdgePollInterval away. It is zero when no edge reads facts.
+func Decide(edges []Edge, f Facts, entered, now time.Time, hasBlocked bool) (d Decision, move bool, nextCheck time.Time) {
+	watched := FactEdges(edges)
+	if len(watched) == 0 {
+		return Decision{}, false, time.Time{}
+	}
+	if e, ok := FirstMatch(watched, f); ok {
+		return Decision{To: e.To, Reason: ReasonEdge, Guard: e.Guard}, true, time.Time{}
+	}
+	// A PR closed without merging would strand an issue whose edges only wait
+	// for a merge or green checks, so it parks the issue unless an edge of
+	// the step already names that case.
+	if hasBlocked && hasPREdge(watched) && !hasGuard(watched, GuardPRClosedUnmerged) && f.holds(Guard{Kind: GuardPRClosedUnmerged}) {
+		return Decision{To: issuestatus.Blocked, Reason: ReasonClosedUnmerged, Guard: GuardPRClosedUnmerged}, true, time.Time{}
+	}
+	var first *Edge
+	var firstAt time.Time
+	nextCheck = now.Add(EdgePollInterval)
+	for i, e := range watched {
+		timeout, err := time.ParseDuration(e.Timeout)
+		if err != nil || timeout <= 0 {
+			continue
+		}
+		deadline := entered.Add(timeout)
+		if deadline.After(now) {
+			if deadline.Before(nextCheck) {
+				nextCheck = deadline
+			}
+			continue
+		}
+		if first == nil || deadline.Before(firstAt) {
+			first, firstAt = &watched[i], deadline
+		}
+	}
+	if first != nil {
+		to := first.OnTimeout
+		if to == "" && hasBlocked {
+			to = issuestatus.Blocked
+		}
+		if to != "" {
+			return Decision{To: to, Reason: ReasonTimeout, Guard: first.Guard}, true, time.Time{}
+		}
+	}
+	return Decision{}, false, nextCheck
+}
+
+func hasPREdge(edges []Edge) bool {
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.needsTimeout() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGuard(edges []Edge, kind string) bool {
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == kind {
 			return true
 		}
 	}
