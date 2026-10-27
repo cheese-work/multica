@@ -149,8 +149,8 @@ jobs:
         with:
           # Pushes compare before/head SHAs. PRs use the pull-request file API;
           # paths-filter ignores base/ref for pull_request events.
-          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || (github.event_name == 'push' && github.event.before || github.base_ref) }}
-          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || (github.event_name == 'push' && github.event.before || '') }}
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha || '') }}
           filters: .github/ci-paths.json
 
       - name: Decide

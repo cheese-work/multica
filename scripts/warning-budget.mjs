@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process"
 import { appendFileSync, writeFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
+import { stripVTControlCharacters } from "node:util"
 
 function normalize(message) {
-  return message.replace(/\u001b\[[0-9;]*m/g, "")
+  return stripVTControlCharacters(message)
     .replace(/^\d{4}-\d\d-\d\dT\S+\s+/, "")
     .replace(/^\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d\s+/, "")
     .replace(/_\d{10,}_\d+/g, "_<id>")
@@ -25,7 +26,7 @@ export function warningCounts(jobs) {
   for (const job of jobs) {
     const logs = {}
     const annotations = {}
-    for (const line of job.log.split("\n")) {
+    for (const line of stripVTControlCharacters(job.log).split("\n")) {
       if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
       const message = normalize(line)
       if (/##\[(command|group)\]|^Run |^\s*(?:echo |printf )/.test(message)) continue
@@ -53,7 +54,7 @@ export function warningRegressions(baseline, current) {
 }
 
 function api(endpoint, json = true) {
-  const response = execFileSync("gh", ["api", endpoint], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
+  const response = execFileSync("gh", ["api", endpoint, ...(json ? [] : ["--allow-escape-sequences"])], { encoding: "utf8", maxBuffer: 128 * 1024 * 1024 })
   return json ? JSON.parse(response) : response
 }
 

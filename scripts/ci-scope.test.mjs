@@ -154,8 +154,8 @@ function productionNeeds(gate, outputs, headRef = "") {
 test("merge groups filter the complete candidate against the queue base", () => {
   assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
   assert.match(jobs.changes, /if: github\.event_name == 'pull_request' \|\| github\.event_name == 'push' \|\| github\.event_name == 'merge_group'/);
-  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| github\.base_ref\) \}\}/);
-  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| github\.sha \}\}/);
+  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| ''\) \}\}/);
+  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| \(github\.event_name == 'push' && github\.sha \|\| ''\) \}\}/);
 });
 
 test("a merge-group migration failure cannot pass the backend gate", () => {

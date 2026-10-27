@@ -37,6 +37,10 @@ test("PID and ANSI noise do not turn an existing warning into a new one", () => 
   assert.deepEqual(warningRegressions(baseline, current), [])
 })
 
+test("ANSI sequences are stripped before warning detection", () => {
+  assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
+})
+
 test("warning annotations mirrored in logs count once", () => {
   const warnings = warningCounts([{ name: "build", log: "2026-10-27T05:00:00Z ##[warning]new warning", annotations: [{ annotation_level: "warning", message: "new warning" }] }])
   assert.deepEqual(warnings, { "build: new warning": 1 })
@@ -76,15 +80,19 @@ else if (endpoint.includes('/jobs?')) {
   result = {jobs:[{id:baseline?11:12,name:'frontend-build',status:scenario==='incomplete'?'in_progress':'completed',conclusion:'success',check_run_url:'https://api.github.com/check-runs/'+(baseline?21:22)}]}
 } else if (endpoint.includes('/annotations?')) result = []
 else if (endpoint.endsWith('/logs')) {
-  process.stdout.write(endpoint.includes('/jobs/12/') && scenario==='new-warning' ? 'Warning: fixture diagnostic' : '')
+  if (scenario === 'ansi-warning' && !process.argv.includes('--allow-escape-sequences')) {
+    process.stderr.write('the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway')
+    process.exit(1)
+  }
+  process.stdout.write(endpoint.includes('/jobs/12/') && ['new-warning', 'ansi-warning'].includes(scenario) ? (scenario === 'ansi-warning' ? '\\u001b[2KWar\\u001b[33mning: fixture diagnostic\\u001b[0m' : 'Warning: fixture diagnostic') : '')
   process.exit(0)
 } else throw new Error('Unexpected API request '+endpoint)
 process.stdout.write(JSON.stringify(result))
 `, { mode: 0o700 })
-    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1]]) {
+    for (const [scenario, expected] of [["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1]]) {
       const result = spawnSync(process.execPath, [command], { cwd: directory, encoding: "utf8", env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", BUDGET_FIXTURE: scenario, GITHUB_STEP_SUMMARY: "" } })
       assert.equal(result.status, expected, `${scenario}: ${result.stderr}`)
-      if (scenario === "new-warning") {
+      if (["new-warning", "ansi-warning"].includes(scenario)) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
         assert.deepEqual(report.regressions, [{ warning: "frontend-build: Warning: fixture diagnostic", baseline: 0, current: 1 }])
       }

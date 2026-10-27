@@ -34,3 +34,9 @@ test("the warning gate waits for build, test and lint jobs and has read-only per
   assert.doesNotMatch(source, /: write|secrets\.(?!GITHUB_TOKEN)/)
   assert.match(source, /node scripts\/warning-budget.mjs/)
 })
+
+test("pull-request path filtering does not supply inputs ignored by the action", () => {
+  const source = workflow("ci.yml")
+  assert.doesNotMatch(source, /base:.*github\.base_ref/)
+  assert.match(source, /ref:.*github\.event_name == 'push' && github\.sha \|\| ''/)
+})

@@ -12,6 +12,8 @@ and the candidate's annotation list. Existing warnings may decrease; a new
 signature or an increased count fails. There is no suppression list or
 candidate-editable allowance file. PID, ANSI, timestamp and BuildKit progress
 noise are normalized. Test names and command echoes are not diagnostics.
+Raw log downloads explicitly allow terminal escapes in `gh`; Node strips VT
+control sequences before warning detection.
 Timestamped Go application `WARN` events emitted by negative-path fixtures
 are runtime events, not compiler/test-harness diagnostics. They are not counted;
 all GitHub warning/notice annotations are still counted regardless of source.
