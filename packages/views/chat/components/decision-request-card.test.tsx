@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
+import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { DecisionRequestCard } from "./decision-request-card";
 
 vi.mock("../../navigation", async (importActual) => ({
@@ -45,8 +46,8 @@ describe("DecisionRequestCard accessibility", () => {
 });
 
 describe("DecisionRequestCard answering", () => {
-  const withOptions = { ...card, options: [{ label: "Option A", what_happens: "A happens" }, { label: "Option B", what_happens: "B happens" }] };
-  const renderCard = (value = withOptions) =>
+  const withOptions: RequestCard = { ...card, options: [{ label: "Option A", what_happens: "A happens" }, { label: "Option B", what_happens: "B happens" }] };
+  const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);

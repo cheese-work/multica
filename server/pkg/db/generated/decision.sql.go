@@ -784,8 +784,7 @@ func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecis
 const listChatDecisionContext = `-- name: ListChatDecisionContext :many
 SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.options,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
-       COALESCE(issue.title, '')::text AS issue_title,
-       count(*) OVER ()::bigint AS total
+       COALESCE(issue.title, '')::text AS issue_title
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -794,14 +793,12 @@ WHERE request.workspace_id = $1 AND request.chat_session_id = $2
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < $3
 ORDER BY ping.created_at DESC, request.id DESC
-LIMIT $4
 `
 
 type ListChatDecisionContextParams struct {
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
 	Before        pgtype.Timestamptz `json:"before"`
-	RowLimit      int32              `json:"row_limit"`
 }
 
 type ListChatDecisionContextRow struct {
@@ -813,23 +810,16 @@ type ListChatDecisionContextRow struct {
 	Options        []byte      `json:"options"`
 	IssueKey       string      `json:"issue_key"`
 	IssueTitle     string      `json:"issue_title"`
-	Total          int64       `json:"total"`
 }
 
 // The asks a bare reply in a DM may be answering: open, asked, in this
 // workspace and DM, with the ping before the first reply being claimed. The ping
 // is an assistant row no task produced, so it is in neither the resumed provider
-// session nor the user-only prompt input. total counts every eligible ask in the
-// same snapshot before the display limit, so a limit never turns several asks
-// into one. Answered or cancelled asks, newer pings and decision notes are not
-// eligible and never counted.
+// session nor the user-only prompt input. Every eligible ask is returned, so the
+// run can explain any open card. Answered or cancelled asks, newer pings and
+// decision notes are not eligible.
 func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
-	rows, err := q.db.Query(ctx, listChatDecisionContext,
-		arg.WorkspaceID,
-		arg.ChatSessionID,
-		arg.Before,
-		arg.RowLimit,
-	)
+	rows, err := q.db.Query(ctx, listChatDecisionContext, arg.WorkspaceID, arg.ChatSessionID, arg.Before)
 	if err != nil {
 		return nil, err
 	}
@@ -846,7 +836,6 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 			&i.Options,
 			&i.IssueKey,
 			&i.IssueTitle,
-			&i.Total,
 		); err != nil {
 			return nil, err
 		}

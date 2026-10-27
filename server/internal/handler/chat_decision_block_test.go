@@ -85,7 +85,10 @@ func TestChatClaimSkipsDecisionAnsweredBeforeLastAgentTurn(test *testing.T) {
 	}
 }
 
-func TestChatClaimFencesAndCapsDecisionAsks(test *testing.T) {
+// Every open card reaches the run, however many there are (CHE-2232): a card
+// left out of the carrier is one the run cannot explain, and each ask is
+// already cut to a fixed size, so the carrier still grows only by the cards.
+func TestChatClaimFencesAndListsEveryOpenAsk(test *testing.T) {
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
 	for index := 0; index < 11; index++ {
@@ -99,17 +102,17 @@ func TestChatClaimFencesAndCapsDecisionAsks(test *testing.T) {
 	if strings.Count(carrier, "</decision_requests>") != 1 {
 		test.Fatalf("closing tag not escaped:\n%.600s", carrier)
 	}
-	if strings.Count(carrier, "[request ") != decisionBlockMaxAsks || strings.Contains(carrier, "Ask number A") || strings.Contains(carrier, "Ask number B") {
-		test.Fatalf("not the newest requests:\n%.1200s", carrier)
+	if strings.Count(carrier, "[request ") != 12 || !strings.Contains(carrier, "Ask number A") || !strings.Contains(carrier, "Ask number B") {
+		test.Fatalf("not every open request is listed:\n%.1200s", carrier)
 	}
-	if len(carrier) > decisionBlockMaxAsks*(4<<10)+4<<10 {
+	if len(carrier) > 12*(4<<10)+4<<10 {
 		test.Fatalf("carrier is %d bytes", len(carrier))
 	}
 }
 
-// Twelve open asks, ten shown: the count follows eligibility, not the rows on
-// display, so the run is told several are open and not to guess (CHE-1868).
-func TestChatClaimCountsAllOpenAsksBeforeTheDisplayLimit(test *testing.T) {
+// Twelve open asks, all shown: the run is told several are open and not to
+// guess (CHE-1868), and nothing is reported as omitted.
+func TestChatClaimShowsAllOpenAsksAndNeverBindsAMessage(test *testing.T) {
 	ctx := context.Background()
 	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
 	for index := 0; index < 12; index++ {
@@ -118,16 +121,18 @@ func TestChatClaimCountsAllOpenAsksBeforeTheDisplayLimit(test *testing.T) {
 	sendDirectChat(test, ctx, agentID, sessionID, "yes")
 
 	carrier := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
-	if strings.Count(carrier, "[request ") != decisionBlockMaxAsks {
-		test.Fatalf("want %d rows shown:\n%s", decisionBlockMaxAsks, carrier)
+	if strings.Count(carrier, "[request ") != 12 {
+		test.Fatalf("want 12 rows shown:\n%s", carrier)
 	}
-	for _, want := range []string{"12 open", "showing 10", "2 omitted", "Do not guess"} {
+	for _, want := range []string{"12 open", "Do not guess", "`answer: <text>`", "even a message that names one card is discussion"} {
 		if !strings.Contains(carrier, want) {
 			test.Fatalf("carrier lacks %q:\n%s", want, carrier)
 		}
 	}
-	if strings.Contains(carrier, "answers it") {
-		test.Fatalf("truncation turned several asks into a single-request binding:\n%s", carrier)
+	for _, banned := range []string{"omitted", "answers it", "names exactly one card", "states the answer"} {
+		if strings.Contains(carrier, banned) {
+			test.Fatalf("carrier contains %q:\n%s", banned, carrier)
+		}
 	}
 }
 

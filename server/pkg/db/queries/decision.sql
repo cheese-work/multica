@@ -394,14 +394,12 @@ ORDER BY answer.created_at, answer.id;
 -- The asks a bare reply in a DM may be answering: open, asked, in this
 -- workspace and DM, with the ping before the first reply being claimed. The ping
 -- is an assistant row no task produced, so it is in neither the resumed provider
--- session nor the user-only prompt input. total counts every eligible ask in the
--- same snapshot before the display limit, so a limit never turns several asks
--- into one. Answered or cancelled asks, newer pings and decision notes are not
--- eligible and never counted.
+-- session nor the user-only prompt input. Every eligible ask is returned, so the
+-- run can explain any open card. Answered or cancelled asks, newer pings and
+-- decision notes are not eligible.
 SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.options,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
-       COALESCE(issue.title, '')::text AS issue_title,
-       count(*) OVER ()::bigint AS total
+       COALESCE(issue.title, '')::text AS issue_title
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -409,8 +407,7 @@ LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < sqlc.arg('before')
-ORDER BY ping.created_at DESC, request.id DESC
-LIMIT sqlc.arg('row_limit');
+ORDER BY ping.created_at DESC, request.id DESC;
 
 -- name: ListChatDecisionReferences :many
 -- Server-authored decision notes (cancellations, recorded answers) posted after
