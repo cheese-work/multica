@@ -1,0 +1,377 @@
+{
+  "phase": "after",
+  "results": [
+    {
+      "theme": "light",
+      "width": 1440,
+      "screenshot": "mentions-light-1440-after.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.988087 0 0)",
+          "background": "oklch(0.560795 0.194499 256.413)",
+          "foregroundRgba": [
+            251,
+            251,
+            251,
+            255
+          ],
+          "backgroundRgba": [
+            0,
+            112,
+            227,
+            255
+          ],
+          "contrast": 4.584206502731767,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.988087 0 0)",
+          "background": "oklch(0.560795 0.194499 256.413)",
+          "foregroundRgba": [
+            251,
+            251,
+            251,
+            255
+          ],
+          "backgroundRgba": [
+            0,
+            112,
+            227,
+            255
+          ],
+          "contrast": 4.584206502731767,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "light",
+      "width": 390,
+      "screenshot": "mentions-light-390-after.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.988087 0 0)",
+          "background": "oklch(0.560795 0.194499 256.413)",
+          "foregroundRgba": [
+            251,
+            251,
+            251,
+            255
+          ],
+          "backgroundRgba": [
+            0,
+            112,
+            227,
+            255
+          ],
+          "contrast": 4.584206502731767,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.988087 0 0)",
+          "background": "oklch(0.560795 0.194499 256.413)",
+          "foregroundRgba": [
+            251,
+            251,
+            251,
+            255
+          ],
+          "backgroundRgba": [
+            0,
+            112,
+            227,
+            255
+          ],
+          "contrast": 4.584206502731767,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.21 0.006 285.885)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "screenshot": "mentions-dark-1440-after.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.18 0.005 285.823)",
+          "background": "oklch(0.65 0.16 255)",
+          "foregroundRgba": [
+            17,
+            17,
+            20,
+            255
+          ],
+          "backgroundRgba": [
+            67,
+            144,
+            238,
+            255
+          ],
+          "contrast": 5.800631980276291,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.18 0.005 285.823)",
+          "background": "oklch(0.65 0.16 255)",
+          "foregroundRgba": [
+            17,
+            17,
+            20,
+            255
+          ],
+          "backgroundRgba": [
+            67,
+            144,
+            238,
+            255
+          ],
+          "contrast": 5.800631980276291,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 390,
+      "screenshot": "mentions-dark-390-after.png",
+      "surfaces": [
+        {
+          "surface": "comment",
+          "foreground": "oklch(0.18 0.005 285.823)",
+          "background": "oklch(0.65 0.16 255)",
+          "foregroundRgba": [
+            17,
+            17,
+            20,
+            255
+          ],
+          "backgroundRgba": [
+            67,
+            144,
+            238,
+            255
+          ],
+          "contrast": 5.800631980276291,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        },
+        {
+          "surface": "dm",
+          "foreground": "oklch(0.18 0.005 285.823)",
+          "background": "oklch(0.65 0.16 255)",
+          "foregroundRgba": [
+            17,
+            17,
+            20,
+            255
+          ],
+          "backgroundRgba": [
+            67,
+            144,
+            238,
+            255
+          ],
+          "contrast": 5.800631980276291,
+          "selfCount": 1,
+          "otherMentions": [
+            {
+              "text": "@alex",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@agent",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            },
+            {
+              "text": "@all",
+              "color": "oklch(0.92 0.004 286.32)",
+              "background": "rgba(0, 0, 0, 0)",
+              "weight": "600"
+            }
+          ],
+          "weight": "700",
+          "radius": "6px",
+          "padding": "4px"
+        }
+      ],
+      "overflow": false,
+      "errors": []
+    }
+  ]
+}

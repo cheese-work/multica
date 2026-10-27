@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: cd-qualification-build-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   fork-changelog:
@@ -121,6 +121,7 @@ jobs:
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
           python3 deploy/cd/test-candidate-preflight.py
+          python3 deploy/cd/test-deploy-approval.py
           bash deploy/cd/test-workflow-path-filters.sh
           bash deploy/cd/test-isolated-qualification.sh
           bash deploy/cd/test-tuple-snapshot.sh

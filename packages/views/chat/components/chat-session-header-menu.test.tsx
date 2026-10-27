@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
+import enCommon from "../../locales/en/common.json";
 
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ agentDetail: (id: string) => `/agents/${id}` }),
@@ -50,11 +51,11 @@ function openMenu(props: Partial<React.ComponentProps<typeof ChatSessionHeader>>
     onTogglePin: vi.fn(),
   };
   render(
-    <I18nProvider locale="en" resources={{ en: { chat: enChat } }}>
+    <I18nProvider locale="en" resources={{ en: { chat: enChat, common: enCommon } }}>
       <ChatSessionHeader session={active} agent={agent} {...handlers} {...props} />
     </I18nProvider>,
   );
-  fireEvent.click(screen.getByRole("button", { name: enChat.header.more_actions }));
+  fireEvent.click(screen.getByRole("button", { name: enCommon.more_actions }));
   return handlers;
 }
 

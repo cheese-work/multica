@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -70,6 +72,36 @@ func (h *Handler) beginWakeupWrite(ctx context.Context) (pgx.Tx, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if scope, ok := ctx.Value(projectWriteScopeKey{}).(projectWriteScope); ok {
+		queries := h.Queries.WithTx(tx)
+		if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, scope.workspaceID); err != nil {
+			_ = tx.Rollback(ctx)
+			return nil, err
+		}
+		if err := queries.LockIssueStatusCatalogShared(ctx, scope.workspaceID); err != nil {
+			_ = tx.Rollback(ctx)
+			return nil, err
+		}
+		sort.Slice(scope.projectIDs, func(first, second int) bool {
+			return uuidToString(scope.projectIDs[first]) < uuidToString(scope.projectIDs[second])
+		})
+		for _, projectID := range scope.projectIDs {
+			if err := service.RequireActiveProject(ctx, queries, scope.workspaceID, projectID); err != nil {
+				_ = tx.Rollback(ctx)
+				return nil, err
+			}
+		}
+		for _, observed := range scope.issues {
+			current, err := queries.LockWakeupIssue(ctx, observed.ID)
+			if err == nil && current.ProjectID != observed.ProjectID {
+				err = errWorkflowChanged
+			}
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return nil, err
+			}
+		}
 	}
 	if actor, ok := ctx.Value(wakeupActorKey{}).(wakeupActor); ok {
 		_, err = tx.Exec(ctx, `SELECT set_config('multica.actor_type',$1,true),set_config('multica.actor_id',$2,true),set_config('multica.source_task_id',$3,true)`, actor.kind, actor.id, actor.task)

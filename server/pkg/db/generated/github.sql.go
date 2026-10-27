@@ -347,6 +347,26 @@ func (q *Queries) GetPendingGitHubInstallation(ctx context.Context, installation
 	return i, err
 }
 
+const hasGitHubReviewWakeup = `-- name: HasGitHubReviewWakeup :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = $1
+      AND context->>'github_review_key' = $2::text
+)
+`
+
+type HasGitHubReviewWakeupParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	ReviewKey string      `json:"review_key"`
+}
+
+func (q *Queries) HasGitHubReviewWakeup(ctx context.Context, arg HasGitHubReviewWakeupParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubReviewWakeup, arg.IssueID, arg.ReviewKey)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const linkIssueToPullRequest = `-- name: LinkIssueToPullRequest :execrows
 
 INSERT INTO issue_pull_request (
@@ -507,6 +527,49 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubReviewAuthorCandidates = `-- name: ListGitHubReviewAuthorCandidates :many
+SELECT DISTINCT task.agent_id
+FROM agent_task_queue task
+JOIN agent author ON author.id = task.agent_id
+JOIN github_pull_request pr ON pr.id = $1
+WHERE pr.workspace_id = $2
+  AND author.workspace_id = pr.workspace_id
+  AND (
+    ($3::text <> '' AND right(replace(task.id::text, '-', ''), 12) = $3::text)
+    OR (task.branch_name = pr.branch AND task.created_at <= pr.pr_created_at AND EXISTS (
+        SELECT 1 FROM issue_pull_request link
+        WHERE link.pull_request_id = pr.id AND link.issue_id = task.issue_id
+    ))
+  )
+LIMIT 2
+`
+
+type ListGitHubReviewAuthorCandidatesParams struct {
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	TaskKey       string      `json:"task_key"`
+}
+
+func (q *Queries) ListGitHubReviewAuthorCandidates(ctx context.Context, arg ListGitHubReviewAuthorCandidatesParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listGitHubReviewAuthorCandidates, arg.PullRequestID, arg.WorkspaceID, arg.TaskKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var agent_id pgtype.UUID
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -690,6 +753,23 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const markGitHubReviewWakeup = `-- name: MarkGitHubReviewWakeup :exec
+UPDATE agent_task_queue
+SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_review_key', $1::text)
+WHERE id = $2 AND issue_id = $3
+`
+
+type MarkGitHubReviewWakeupParams struct {
+	ReviewKey string      `json:"review_key"`
+	TaskID    pgtype.UUID `json:"task_id"`
+	IssueID   pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) MarkGitHubReviewWakeup(ctx context.Context, arg MarkGitHubReviewWakeupParams) error {
+	_, err := q.db.Exec(ctx, markGitHubReviewWakeup, arg.ReviewKey, arg.TaskID, arg.IssueID)
+	return err
 }
 
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :execrows

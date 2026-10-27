@@ -495,6 +495,7 @@ type AgentTaskResponse struct {
 	CanSupplement         bool                   `json:"can_supplement,omitempty"`
 	TriggerThreadID       string                 `json:"trigger_thread_id,omitempty"`       // root comment ID for the triggering thread
 	TriggerCommentContent string                 `json:"trigger_comment_content,omitempty"` // content of the triggering comment
+	TriggerThreadContext  string                 `json:"trigger_thread_context,omitempty"`  // CHE-2070: bounded transcript of the triggering thread (root + last replies), excluding the trigger
 	TriggerSummary        *string                `json:"trigger_summary,omitempty"`         // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
 	TriggerAuthorType     string                 `json:"trigger_author_type,omitempty"`     // "agent" or "member" — author kind of the triggering comment
 	TriggerAuthorName     string                 `json:"trigger_author_name,omitempty"`     // display name of the triggering comment author
@@ -529,6 +530,7 @@ type AgentTaskResponse struct {
 	ChatType                 string               `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
 	ChatInThread             bool                 `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
 	ChatMessage              string               `json:"chat_message,omitempty"`                // user message for chat tasks
+	ChatDecisionContext      string               `json:"chat_decision_context,omitempty"`       // open decision request(s) this DM reply may answer
 	ChatMessageAttachments   []ChatAttachmentMeta `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
 	ChatIntro                bool                 `json:"chat_intro,omitempty"`                  // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
 	AutopilotRunID           string               `json:"autopilot_run_id,omitempty"`            // non-empty for autopilot-spawned tasks
@@ -1127,10 +1129,10 @@ func (h *Handler) loadAgentRuntimeAvailability(ctx context.Context, agents []db.
 			continue
 		}
 		// ListAgentRuntimes exposes every row to workspace owner/admin and only
-		// owner/public rows to regular members. Keep the coarse bridge for the
+		// owner/shared/public rows to regular members. Keep the coarse bridge for the
 		// rows that the viewer's runtime list cannot carry.
 		if runtime.Visibility == "public" ||
-			(runtime.OwnerID.Valid && uuidToString(runtime.OwnerID) == viewerID) {
+			service.RuntimeAllowsUser(runtime, parseUUID(viewerID)) {
 			continue
 		}
 		result[uuidToString(runtime.ID)] = deriveAgentRuntimeAvailability(runtime, now)
@@ -1512,10 +1514,22 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before creating agents")
 		return
 	}
 
+	if runtime.Provider == "qoder_cloud" {
+		raw, _ := json.Marshal(req.RuntimeConfig)
+		if err := validateQoderAgentConfig(raw); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		overrides := qoderOverrides{skills: len(req.SkillIDs), customEnv: len(req.CustomEnv), customArgs: len(req.CustomArgs), mcpConfig: req.McpConfig, model: req.Model, thinkingLevel: req.ThinkingLevel, serviceTier: req.ServiceTier}
+		if err := overrides.validate(); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+	}
 	// thinking_level validation: fixed-enum providers reject unknown literals;
 	// dynamic-catalog providers (Codex/OpenCode) reject malformed tokens here.
 	// Pi has a fixed token universe and a daemon-discovered per-model subset.
@@ -1647,7 +1661,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before creating agents")
 		return
 	}
 
@@ -2114,20 +2128,75 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+			writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
 			return
 		}
 		// Task delivery authorizes private runtimes against the agent owner,
 		// not the member making this update. Admin management permission must
 		// not save a binding that the existing delivery gate will reject.
-		if runtime.Visibility == "private" && runtime.OwnerID != existing.OwnerID {
-			writeError(w, http.StatusForbidden, "this runtime is private; its owner must match the agent owner")
+		if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
+			writeError(w, http.StatusForbidden, "this runtime is private; its owner must grant the agent owner access")
 			return
 		}
 		params.RuntimeID = runtime.ID
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
+	}
+	// Validate the settings the agent will have after this update, not only the
+	// fields in the request: a Qoder agent must never be left with settings the
+	// bridge refuses at run time.
+	runtimeChange := req.RuntimeConfig != nil || req.RuntimeID != nil
+	if runtimeChange || req.CustomArgs != nil || req.McpConfig != nil || req.Model != nil || req.ThinkingLevel != nil || req.ServiceTier != nil {
+		provider := targetProvider
+		if provider == "" {
+			var ok bool
+			provider, ok = h.resolveAgentProvider(r, existing.WorkspaceID, targetRuntimeID)
+			if !ok {
+				writeError(w, 400, "cannot resolve agent runtime")
+				return
+			}
+		}
+		if provider == "qoder_cloud" {
+			if runtimeChange {
+				raw := existing.RuntimeConfig
+				if req.RuntimeConfig != nil {
+					raw, _ = json.Marshal(req.RuntimeConfig)
+				}
+				if err := validateQoderAgentConfig(raw); err != nil {
+					writeError(w, 400, err.Error())
+					return
+				}
+			}
+			overrides := storedQoderOverrides(existing)
+			if req.RuntimeID != nil {
+				skills, err := h.Queries.ListAgentSkills(r.Context(), existing.ID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+					return
+				}
+				overrides.skills = len(skills)
+			}
+			if req.CustomArgs != nil {
+				overrides.customArgs = len(*req.CustomArgs)
+			}
+			if req.McpConfig != nil {
+				overrides.mcpConfig = *req.McpConfig
+			}
+			if req.Model != nil {
+				overrides.model = *req.Model
+			}
+			if req.ThinkingLevel != nil {
+				overrides.thinkingLevel = *req.ThinkingLevel
+			}
+			if req.ServiceTier != nil {
+				overrides.serviceTier = *req.ServiceTier
+			}
+			if err := overrides.validate(); err != nil {
+				writeError(w, 400, err.Error())
+				return
+			}
+		}
 	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
@@ -2397,7 +2466,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+			writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
+			return
+		}
+		if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
+			writeError(w, http.StatusForbidden, "the agent owner does not have access to this runtime")
 			return
 		}
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}

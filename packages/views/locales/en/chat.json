@@ -72,6 +72,9 @@
     "copied_count_other": "{{count}} messages copied",
     "fork_hint": "Send a message to start this branch.",
     "continuation_summary": "Conversation summary",
+    "earlier_dm": "Earlier DM",
+    "quote_message": "Quote",
+    "load_older_messages": "Load older messages",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
     "failed_after": "Failed after {{elapsed}}",
@@ -348,5 +351,15 @@
     "confirm": "Unarchive and send",
     "cancel": "Cancel",
     "open_newer": "Open the newer DM"
+  },
+  "decision": {
+    "request_title": "Decision request",
+    "request_label": "Decision request: {{state}}",
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
+    "source_comment": "Source comment",
+    "quoted_in": "Quoted in {{issue}}",
+    "from_original_dm": "from the original DM",
+    "inherited": "Inherited",
+    "message_unavailable": "Message no longer available"
   }
 }

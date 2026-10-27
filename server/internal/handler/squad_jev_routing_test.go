@@ -2182,8 +2182,9 @@ func TestCreateComment_SquadMentionTriggersJevRouting_RealFlow(t *testing.T) {
 	}
 }
 
-func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
+func TestCreateComment_AgentMentionDoesNotRouteThroughJev(t *testing.T) {
 	ctx := context.Background()
+	setAgentCommentWakePolicyForTest(t, true)
 	wsUUID := util.MustParseUUID(testWorkspaceID)
 	userUUID := util.MustParseUUID(testUserID)
 	rtUUID, _ := util.ParseUUID(testRuntimeID)
@@ -2275,7 +2276,7 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 
 	// Worker agent posts comment
 	w := httptest.NewRecorder()
-	content := "Task finished; returning report to squad leader."
+	content := "[@Leader](mention://agent/" + util.UUIDToString(leaderAgentID) + ") Task finished; returning report."
 	reqBody := map[string]any{"content": content}
 	r := newRequest("POST", "/api/issues/"+util.UUIDToString(issueID)+"/comments", reqBody)
 	r.Header.Set("X-Agent-ID", util.UUIDToString(memberAgentID))
@@ -2292,12 +2293,14 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 		t.Errorf("Jev was called %d times for agent comment, want 0", jevCallCount)
 	}
 
-	// Verify task in queue is enqueued for squad LEADER, not worker
+	// Verify the explicit agent mention enqueued the named leader, not worker.
 	var enqueuedAgentID string
+	var enqueuedSquadID string
 	var isLeaderTask bool
 	err = testPool.QueryRow(ctx, `
-		SELECT agent_id, is_leader_task FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
-	`, issueID).Scan(&enqueuedAgentID, &isLeaderTask)
+		SELECT agent_id, COALESCE(squad_id::text, ''), is_leader_task
+		FROM agent_task_queue WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1
+	`, issueID).Scan(&enqueuedAgentID, &enqueuedSquadID, &isLeaderTask)
 	if err != nil {
 		t.Fatalf("task not found in queue: %v", err)
 	}
@@ -2305,7 +2308,10 @@ func TestCreateComment_AgentReplyDoesNotRouteThroughJev(t *testing.T) {
 		t.Errorf("enqueued task agent_id = %s, want leader %s", enqueuedAgentID, util.UUIDToString(leaderAgentID))
 	}
 	if !isLeaderTask {
-		t.Errorf("is_leader_task = false, want true")
+		t.Errorf("is_leader_task = false, want a squad-leader task")
+	}
+	if enqueuedSquadID != util.UUIDToString(squadID) {
+		t.Errorf("squad_id = %s, want %s", enqueuedSquadID, util.UUIDToString(squadID))
 	}
 }
 
