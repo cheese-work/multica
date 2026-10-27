@@ -4,11 +4,12 @@ import type { IssueRelations } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enIssues from "../../locales/en/issues.json";
 import enEditor from "../../locales/en/editor.json";
+import { useRelationsFilterStore } from "@multica/core/issues/stores/relations-filter-store";
 import { buildRelationsChart, IssueRelationsGraph } from "./issue-relations-graph";
 
 const mermaid = vi.hoisted(() => ({
   initialize: vi.fn(),
-  render: vi.fn(async (diagramId: string) => ({ svg: `<svg viewBox="0 0 200 100"><g class="node" id="${diagramId}-flowchart-n0-0"><text>CHE&amp;#45;1&amp;#58; Root &amp;#40;todo&amp;#41;</text></g><g class="node" id="${diagramId}-flowchart-n1-1"><text>CHE&amp;#45;2&amp;#58; Child &amp;#40;done&amp;#41;</text></g></svg>` })),
+  render: vi.fn(async (diagramId: string, _chart?: string) => ({ svg: `<svg viewBox="0 0 200 100"><g class="node" id="${diagramId}-flowchart-n0-0"><text>CHE&amp;#45;1&amp;#58; Root &amp;#40;todo&amp;#41;</text></g><g class="node" id="${diagramId}-flowchart-n1-1"><text>CHE&amp;#45;2&amp;#58; Child &amp;#40;done&amp;#41;</text></g></svg>` })),
 }));
 vi.mock("../../editor/mermaid-diagram", () => ({
   getMermaid: async () => mermaid,
@@ -22,13 +23,12 @@ const graph: IssueRelations = {
   nodes: [{ id: "root", identifier: "CHE-1", title: "Root", status: "todo" }, { id: "child", identifier: "CHE-2", title: "Child", status: "done" }],
   edges: [{ source: "root", target: "child", type: "parent" }],
 };
-const labels = { parent: "parent", duplicate: "duplicate", wakeup: "wakeup", children_done: "children done", mention: "mention", shared_pr: "shared PR", unknown: "related" };
 
 describe("issue relations graph", () => {
   it("escapes untrusted labels and uses controlled node IDs without click directives", () => {
     const hostile = structuredClone(graph);
     hostile.nodes[1]!.title = '"]\nclick n0 href "javascript:alert(1)"\n%%{init: {"securityLevel":"loose"}}%% <img onerror=alert(1)>';
-    const chart = buildRelationsChart(hostile, "root", labels);
+    const chart = buildRelationsChart(hostile, "root");
     expect(chart).not.toContain("\nclick");
     expect(chart).not.toContain("%%{");
     expect(chart).not.toContain("<img");
@@ -41,7 +41,7 @@ describe("issue relations graph", () => {
       { source: "root", target: "child", type: "wakeup" },
       { source: "child", target: "root", type: "mention" },
       { source: "root", target: "missing", type: "parent" },
-    ] }, "root", labels);
+    ] }, "root");
     expect(chart).toContain("stroke-dasharray:8 4");
     expect(chart).toContain("stroke-dasharray:2 4");
     expect(chart).not.toContain("undefined");
@@ -65,5 +65,28 @@ describe("issue relations graph", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /retry|try again/i }));
     expect(await screen.findByRole("link", { name: "CHE-2: Child (done)" })).toBeInTheDocument();
+  });
+
+  it("builds a chart without edge text, with two-line titles and no mention edges when filtered", () => {
+    const long = { ...graph, nodes: [graph.nodes[0]!, { ...graph.nodes[1]!, title: "A very long issue title that keeps going well past two short lines of text" }] };
+    const chart = buildRelationsChart(long, "root");
+    expect(chart).not.toContain("|");
+    expect(chart).toContain("CHE-2<br/>");
+    expect(chart).toContain("…");
+    expect(chart.split("<br/>").length).toBeLessThanOrEqual(5);
+  });
+
+  it("hides mention edges and mention-only nodes from the chip filter, and the choice persists", async () => {
+    const mentioned: IssueRelations = { ...graph, nodes: [...graph.nodes, { id: "ref", identifier: "CHE-3", title: "Ref", status: "done" }], edges: [...graph.edges, { source: "root", target: "ref", type: "mention" }] };
+    useRelationsFilterStore.setState({ hidden: [] });
+    mermaid.render.mockClear();
+    render(<I18nProvider locale="en" resources={{ en: { issues: enIssues, editor: enEditor } }}><IssueRelationsGraph graph={mentioned} currentIssueId="root" onNavigate={vi.fn()} /></I18nProvider>);
+    await screen.findByRole("link", { name: "CHE-2: Child (done)" });
+    expect(mermaid.render.mock.lastCall?.[1]).toContain("CHE-3");
+    fireEvent.click(screen.getByRole("button", { name: /mentions/i }));
+    await waitFor(() => expect(mermaid.render.mock.lastCall?.[1]).not.toContain("CHE-3"));
+    expect(useRelationsFilterStore.getState().hidden).toEqual(["mention"]);
+    expect(screen.getByRole("button", { name: /mentions/i })).toHaveAttribute("aria-pressed", "false");
+    expect(JSON.parse(localStorage.getItem("multica_relations_filter")!).state.hidden).toEqual(["mention"]);
   });
 });
