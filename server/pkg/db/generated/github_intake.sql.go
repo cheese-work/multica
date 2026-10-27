@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const denyPendingGitHubWebhookRevisions = `-- name: DenyPendingGitHubWebhookRevisions :exec
+UPDATE github_webhook_revision SET state = 'denied', reason = $6, updated_at = now()
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+    AND object_kind = $4 AND object_id = $5
+    AND state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+`
+
+type DenyPendingGitHubWebhookRevisionsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepositoryID   int64       `json:"repository_id"`
+	ObjectKind     string      `json:"object_kind"`
+	ObjectID       int64       `json:"object_id"`
+	Reason         string      `json:"reason"`
+}
+
+func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg DenyPendingGitHubWebhookRevisionsParams) error {
+	_, err := q.db.Exec(ctx, denyPendingGitHubWebhookRevisions,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.Reason,
+	)
+	return err
+}
+
 const getGitHubWebhookIntake = `-- name: GetGitHubWebhookIntake :one
 SELECT delivery_guid, event, signature, payload, state, reason, received_at, updated_at, attempts, next_attempt_at FROM github_webhook_intake WHERE delivery_guid = $1
 `
@@ -92,7 +120,7 @@ INSERT INTO github_webhook_revision (
     sender_id, author_id, author_login, author_type, head_sha, review_state,
     object_created_at, object_updated_at, object_submitted_at, state, reason
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
-ON CONFLICT (workspace_id, object_kind, object_id, body_hash) DO NOTHING
+ON CONFLICT DO NOTHING
 `
 
 type InsertGitHubWebhookRevisionParams struct {
