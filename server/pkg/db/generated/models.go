@@ -585,6 +585,20 @@ type ChatSession struct {
 	TitleManuallySet       bool               `json:"title_manually_set"`
 }
 
+type ChatWakeup struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	Instruction     string             `json:"instruction"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	Status          string             `json:"status"`
+	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
+	FiredTaskID     pgtype.UUID        `json:"fired_task_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
+}
+
 type ClientUsageDaily struct {
 	UserID          pgtype.UUID        `json:"user_id"`
 	ClientType      string             `json:"client_type"`
@@ -655,6 +669,12 @@ type CommentReaction struct {
 	ActorID     pgtype.UUID        `json:"actor_id"`
 	Emoji       string             `json:"emoji"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type CommentTriggerRateLimit struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	TriggeredAt pgtype.Timestamptz `json:"triggered_at"`
 }
 
 type ContactSalesInquiry struct {
