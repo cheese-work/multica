@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type ghReviewPayload struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 	Repository struct {
+		ID    int64  `json:"id"`
 		Name  string `json:"name"`
 		Owner struct {
 			Login string `json:"login"`
@@ -32,6 +34,9 @@ type ghReviewPayload struct {
 	} `json:"repository"`
 	PullRequest struct {
 		Number int32 `json:"number"`
+		Head   struct {
+			Repo *ghPRHeadRepository `json:"repo"`
+		} `json:"head"`
 	} `json:"pull_request"`
 	Review struct {
 		ID    int64  `json:"id"`
@@ -56,6 +61,11 @@ func (h *Handler) handlePullRequestReviewEvent(ctx context.Context, body []byte)
 	switch payload.Review.State {
 	case "approved", "commented", "changes_requested":
 	default:
+		return nil
+	}
+	if !payload.PullRequest.Head.Repo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
+		slog.Info("github: denied pull request review", "reason", "fork_or_unverified_head_repository",
+			"installation_id", payload.Installation.ID, "repo_owner", payload.Repository.Owner.Login, "repo_name", payload.Repository.Name, "pr_number", payload.PullRequest.Number)
 		return nil
 	}
 	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
