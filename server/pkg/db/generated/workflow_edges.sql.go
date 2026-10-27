@@ -11,35 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const claimIssueReviewHead = `-- name: ClaimIssueReviewHead :one
-INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-VALUES ($1::uuid, $2::uuid, $3::text, $4::uuid)
-ON CONFLICT DO NOTHING
-RETURNING head_sha
-`
-
-type ClaimIssueReviewHeadParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	HeadSha     string      `json:"head_sha"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-}
-
-// Records the first run for the issue's reviewer on a PR head. Returns a row
-// only to the caller that inserted it, so of any number of concurrent enqueues
-// for one head exactly one is the first.
-func (q *Queries) ClaimIssueReviewHead(ctx context.Context, arg ClaimIssueReviewHeadParams) (string, error) {
-	row := q.db.QueryRow(ctx, claimIssueReviewHead,
-		arg.WorkspaceID,
-		arg.IssueID,
-		arg.HeadSha,
-		arg.AgentID,
-	)
-	var head_sha string
-	err := row.Scan(&head_sha)
-	return head_sha, err
-}
-
 const countIssueRunsSince = `-- name: CountIssueRunsSince :one
 SELECT COUNT(*)::bigint FROM agent_task_queue
 WHERE issue_id = $1::uuid AND created_at > $2::timestamptz
@@ -66,6 +37,31 @@ DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkflowEdges, id)
 	return err
+}
+
+const hasIssueRunForHead = `-- name: HasIssueRunForHead :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = $1::uuid
+      AND agent_id = $2::uuid
+      AND context->>'head_sha' = $3::text
+)
+`
+
+type HasIssueRunForHeadParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Whether the agent already has a run on the issue for this PR head. The task
+// row stamps the reviewed head at enqueue, so a run exists exactly when an
+// enqueue for that head succeeded: a failed or deduplicated enqueue leaves none.
+func (q *Queries) HasIssueRunForHead(ctx context.Context, arg HasIssueRunForHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueRunForHead, arg.IssueID, arg.AgentID, arg.HeadSha)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one

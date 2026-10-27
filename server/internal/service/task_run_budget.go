@@ -114,12 +114,6 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > max {
 		max = int(issue.MaxRunsOverride.Int32)
 	}
-	// The claim runs before the cap check so that a run inside the budget also
-	// marks its head as reviewed: a second run on that head stays budgeted.
-	first, err := claimFirstReviewOfHead(ctx, q, issue, target)
-	if err != nil {
-		return fmt.Errorf("run budget: review admission: %w", err)
-	}
 	if runs < int64(max) {
 		return nil
 	}
@@ -127,6 +121,10 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	// a derived run for a finished issue is dropped and its status kept.
 	if isFinishedStatus(ctx, q, issue) {
 		return ErrRunBudgetExhausted
+	}
+	first, err := isFirstReviewOfHead(ctx, q, issue, target)
+	if err != nil {
+		return fmt.Errorf("run budget: review gate: %w", err)
 	}
 	if first {
 		return nil
@@ -156,19 +154,19 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 	return IsFinishedStatus(ctx, q, issue.WorkspaceID, issue.Status)
 }
 
-// claimFirstReviewOfHead reports whether the run is the first one for the
-// issue's reviewer on the PR head under review: the review gate, which the
-// budget does not refuse. Only the issue's assignee while the issue is in
-// in_review counts as the reviewer, so a leader's or a mention's run never
-// spends the allowance, and only the one head the run is pinned to
-// (GetIssueReviewHeadSha) is claimed. The claim is one insert on the
-// (issue, head) key, so it is atomic on a pool-scoped handle as well as in a
-// transaction, and concurrent enqueues for one head cannot both win.
-// ponytail: a pool-scoped enqueue that fails after the claim (a dedup against a
-// pending run on the same head, an archived agent) leaves the head spent; a
-// person raises the cap with `multica issue budget raise`. Upgrade to a
-// task-scoped claim if such failures prove common.
-func claimFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (bool, error) {
+// isFirstReviewOfHead reports whether the run is the first one for the issue's
+// reviewer on the PR head under review: the review gate, which the budget does
+// not refuse. Only the issue's assignee while the issue is in in_review counts
+// as the reviewer, so a leader's or a mention's run never uses the gate, and
+// only the one head the run is pinned to (GetIssueReviewHeadSha) counts.
+// The guard only reads. The head is spent by the run itself, because the task
+// row stamps the head: an enqueue that fails, deduplicates or rolls back leaves
+// no row, so the head stays unreviewed, and the row commits with the enqueue on
+// every path.
+// ponytail: two enqueues for one head racing inside one transaction window can
+// both read "first"; the pending-task unique index makes the second a
+// duplicate. A completed run in that window lets one extra run through.
+func isFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (bool, error) {
 	if issue.Status != issuestatus.InReview || issue.AssigneeType.String != "agent" ||
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return false, nil
@@ -180,11 +178,8 @@ func claimFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue, 
 	if err != nil {
 		return false, err
 	}
-	_, err = q.ClaimIssueReviewHead(ctx, db.ClaimIssueReviewHeadParams{
-		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HeadSha: head, AgentID: target.AgentID,
+	reviewed, err := q.HasIssueRunForHead(ctx, db.HasIssueRunForHeadParams{
+		IssueID: issue.ID, AgentID: target.AgentID, HeadSha: head,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
+	return !reviewed, err
 }

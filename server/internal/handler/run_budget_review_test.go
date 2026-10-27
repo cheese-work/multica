@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // The review allowance belongs to the issue's reviewer and to one PR head
@@ -89,22 +92,115 @@ func TestRunBudgetPooledCallersAdmitOneRunPerHead(t *testing.T) {
 	}
 }
 
-// One reviewer's first run claims the one head it is pinned to, not every
-// linked PR's head.
-func TestRunBudgetReviewClaimsOnlyThePinnedHead(t *testing.T) {
+// One reviewer's first run is stamped with the one head it is pinned to, and
+// that run spends the head.
+func TestRunBudgetReviewSpendsOnlyThePinnedHead(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	ctx := context.Background()
 	c := newEdgeCase(t, 2226022, mergeEdgeSteps)
 	issue := spendBudget(t, c, 2, "in_review")
 	linkPR(t, c.issueID, 2226, "head-one")
 	linkPR(t, c.issueID, 2227, "head-two")
+	pinned, err := testHandler.Queries.GetIssueReviewHeadSha(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(context.Background(), issue); err != nil {
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
 		t.Fatalf("first review run refused: %v", err)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM issue_review_admission WHERE issue_id=$1`, c.issueID); n != 1 {
-		t.Fatalf("admissions after one run = %d, want 1", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'head_sha'=$2`, c.issueID, pinned); n != 1 {
+		t.Fatalf("runs stamped with the pinned head %q = %d, want 1", pinned, n)
+	}
+	finishRuns(t, c)
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("second run on the pinned head = %v, want ErrRunBudgetExhausted", err)
+	}
+}
+
+// A first review that fails to enqueue (archived agent) spends nothing: after
+// the agent returns, the first review is still admitted.
+func TestRunBudgetFailedEnqueueDoesNotSpendReviewGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newEdgeCase(t, 2226091, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_review")
+	linkPR(t, c.issueID, 2226091, "review-failed")
+	dbfx.Exec(t, `UPDATE agent SET archived_at=now() WHERE id=$1`, issue.AssigneeID)
+	t.Cleanup(func() { testPool.Exec(ctx, `UPDATE agent SET archived_at=NULL WHERE id=$1`, issue.AssigneeID) })
+
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("archived enqueue = %v, want archived refusal", err)
+	}
+	dbfx.Exec(t, `UPDATE agent SET archived_at=NULL WHERE id=$1`, issue.AssigneeID)
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
+		t.Fatalf("first review after a failed enqueue refused: %v", err)
+	}
+	settle()
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("status = %s, want in_review kept", got)
+	}
+}
+
+type emptyOverlay struct{}
+
+func (emptyOverlay) BuildTaskOverlay(context.Context, pgtype.UUID, db.Agent) (runtimeapps.MCPOverlayResult, error) {
+	return runtimeapps.MCPOverlayResult{}, nil
+}
+
+// The Composio overlay is prepared before the enqueue transaction; preparing
+// it must not use up the first review the transaction then needs.
+func TestRunBudgetComposioCommentAdmitsFirstReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newEdgeCase(t, 2226092, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_review")
+	linkPR(t, c.issueID, 2226092, "review-composio")
+	commentID := dbfx.Comment(t, c.issueID, "independent review requested")
+	tasks := testHandler.TaskService
+	prior := tasks.Composio
+	tasks.Composio = emptyOverlay{}
+	t.Cleanup(func() { tasks.Composio = prior })
+	withComposioMCPAppsFlag(t, testHandler, true)
+
+	if _, err := tasks.EnqueueCommentTriggeredTask(ctx, issue, issue.AssigneeID, parseUUID(commentID), true, false, pgtype.UUID{}, "", pgtype.UUID{}, service.OriginDerived); err != nil {
+		t.Fatalf("first review comment with Composio refused: %v", err)
+	}
+	settle()
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("status = %s, want in_review kept", got)
+	}
+}
+
+// A prepared mention is prepared outside the transaction that inserts it.
+func TestRunBudgetPreparedMentionAdmitsFirstReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newEdgeCase(t, 2226093, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_review")
+	linkPR(t, c.issueID, 2226093, "review-prepared")
+	params, err := testHandler.TaskService.PrepareTaskForMention(ctx, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := testHandler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, testHandler.Queries.WithTx(tx), issue, params, service.OriginDerived); err != nil {
+		t.Fatalf("insert after preparation refused: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -39,14 +39,16 @@ SELECT created_at FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1;
 
--- name: ClaimIssueReviewHead :one
--- Records the first run for the issue's reviewer on a PR head. Returns a row
--- only to the caller that inserted it, so of any number of concurrent enqueues
--- for one head exactly one is the first.
-INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-VALUES (sqlc.arg('workspace_id')::uuid, sqlc.arg('issue_id')::uuid, sqlc.arg('head_sha')::text, sqlc.arg('agent_id')::uuid)
-ON CONFLICT DO NOTHING
-RETURNING head_sha;
+-- name: HasIssueRunForHead :one
+-- Whether the agent already has a run on the issue for this PR head. The task
+-- row stamps the reviewed head at enqueue, so a run exists exactly when an
+-- enqueue for that head succeeded: a failed or deduplicated enqueue leaves none.
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = sqlc.arg('issue_id')::uuid
+      AND agent_id = sqlc.arg('agent_id')::uuid
+      AND context->>'head_sha' = sqlc.arg('head_sha')::text
+);
 
 -- name: RaiseIssueMaxRuns :one
 -- Sets the issue's own run cap, only upward from the cap now in force.

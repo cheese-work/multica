@@ -134,7 +134,6 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
 	"issue_pull_request_exclusion":       workspaceDelete,
-	"issue_review_admission":             workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,

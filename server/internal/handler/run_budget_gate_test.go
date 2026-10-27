@@ -71,9 +71,6 @@ func linkPR(t *testing.T, issueID string, prNumber int32, head string) {
 	if _, err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{IssueID: parseUUID(issueID), PullRequestID: pr.ID}); err != nil {
 		t.Fatalf("LinkIssueToPullRequest: %v", err)
 	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue_review_admission WHERE issue_id=$1`, issueID)
-	})
 }
 
 // settle lets a delayed budget hook finish, so a test asserting "nothing
