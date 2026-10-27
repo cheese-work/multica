@@ -17,9 +17,9 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 
 | Rating | Rows |
 | --- | --- |
-| complete | 59 |
+| complete | 60 |
 | experimental | 6 |
-| partial | 37 |
+| partial | 36 |
 | removed | 2 |
 
 | Upstream fit | Rows |
@@ -82,7 +82,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 | H01 | Multi-organization GitHub installations with verified account authority | partial | yes | TUS | reconcile with upstream first (caeb146ba) |
 | H02 | Explicit PR close intent, quoted-code stripping and open-child completion gate | partial | yes | TDS | reconcile with upstream first (0da0b46bb / MUL-7672) |
 | H03 | Merged PRs advance custom done-category review states | partial | yes | TUS | reconcile with upstream first (fc4a61570 / MUL-7726) |
-| H04 | Actor/task-aware automatic PR linking and CLI unlink repair | partial | yes | TUCS | reconcile with upstream first (0da0b46bb / MUL-7672); `issue pull-requests unlink` not in the builtin skill yet (gap list). |
+| H04 | Actor/task-aware automatic PR linking and CLI unlink repair | partial | yes | TUCS | reconcile with upstream first (0da0b46bb / MUL-7672) |
 | H05 | Snapshot refresh for already-decided PRs and latest-run-per-name/app check filtering | partial | yes | TUMS | reconcile with upstream first (e720fe221 / MUL-8135; ecce58986 / MUL-5265) |
 | H06 | PR close-target validation and non-leaking sparse checkout | partial | fork ops only | UI | no test file in its PRs; Workflow file has no test; CI-only. |
 | H07 | Durable merge-announcement writer, subsequently removed | removed | n/a | TUCDMIS | - |
@@ -119,7 +119,7 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 | D07 | Oversized leader issue sessions start fresh | complete | yes | TS | - |
 | D08 | Ignore repeat delivery of an already executing task | complete | yes | TS | - |
 | D09 | Claimed-model readback alongside claim provenance | partial | yes | TUS | reconcile with upstream first (482ec69c1 / MUL-7969) |
-| D10 | Agent-skill runtime target setting from the CLI | partial | yes | TC | `agent skills runtime-set` not in the builtin skill yet (gap list). |
+| D10 | Agent-skill runtime target setting from the CLI | complete | yes | TC | - |
 | D11 | Price model-specific Hermes/Codex usage | partial | yes | TUS | No upstream price-table mapping confirmed (ledger). |
 | D12 | Bounded WeCom inbox acceptance wait | complete | fork ops only | TS | - |
 | O01 | X99 build/CI ownership, runner migration and shared-Postgres/turbo contention limits | complete | fork ops only | TUDMIS | - |
