@@ -821,9 +821,13 @@ package (`multica-backend`, `multica-web`) to list `cheese-work/multica` under
 Package settings, Manage Actions access, with role Read. The token is scoped
 to the job, so D1's `cd-qualification.yml` stays credential-free.
 `deploy.sh` logs in to `ghcr.io` with that token immediately before the pull step
-and logs out unconditionally on exit — success, rollback, or an early
+and cleans up on exit — success, rollback, or an early
 argument/file-check failure — via a single EXIT trap; unset, both steps are
 skipped (local `--dry-run` runs, or a host with its own credential store).
+The login uses a private temporary Docker configuration and a credential
+helper that reads the job token from the environment. The helper never
+stores the token on disk. Exit cleanup removes only that configuration and
+helper and restores the caller's Docker configuration and executable path.
 `cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
 by exporting it inside a script piped over the session's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
@@ -831,3 +835,6 @@ command-line argument or a file written to C00, so it is not visible to
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
 scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
 GHCR is still pending the runner above).
+`deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
+on-disk credentials, cleanup after successful and failed login, and restoration
+of the caller's environment without contacting a registry.
