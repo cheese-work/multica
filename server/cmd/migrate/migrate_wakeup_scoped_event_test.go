@@ -114,3 +114,40 @@ func TestWakeupScopedEventMigrationsAreRetrySafeAndReversible(t *testing.T) {
 		t.Fatalf("capture_issue_wakeup definitions after up-down-up = %d, want one", got)
 	}
 }
+
+// 636 replaces the six-argument capture_issue_wakeup with a seven-argument one,
+// and main's 663 and 666 recreate the six-argument signature after it. Two
+// overloads make every six-argument trigger call fail with "not unique". On the
+// fully migrated database exactly one definition must remain, the seven-argument
+// one, and it must keep 666's handoff_write tag.
+func TestCaptureIssueWakeupHasOneDefinitionAfterAllMigrations(t *testing.T) {
+	pool := openTestPool(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	rows, err := pool.Query(ctx, `SELECT p.pronargs, pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname='capture_issue_wakeup'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var args []int
+	var def string
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n, &def); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, n)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(args) == 0 {
+		t.Skip("capture_issue_wakeup is not migrated in this database")
+	}
+	if len(args) != 1 || args[0] != 7 {
+		t.Fatalf("capture_issue_wakeup argument counts = %v, want exactly one definition with 7", args)
+	}
+	if !strings.Contains(def, "multica.handoff_write") || !strings.Contains(def, "wakeup_scoped_event_wanted") {
+		t.Fatalf("the single definition must carry both the handoff tag and the scoped capture:\n%s", def)
+	}
+}
