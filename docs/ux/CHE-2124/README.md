@@ -4,6 +4,12 @@ Implementation: `8ad850eb95a98ac2a7c78fa27cee356e3b66ac30`.
 Baseline: `84afc806a3e4bf8ae474f788defafa3afaf68a43` from a detached checkout.
 Design: `design/plan-revision-viewer/rev-2/A.html` at `aa8306b19818658407f6eefcc495859b026b5a8a`.
 
+The final candidate also replaces the Readonly badge's bare `rounded` with `rounded-sm`.
+The radius checker caught the bare utility in CI and in the local reproduction before the fix.
+The named small token resolves to 4 px with the current 8 px base.
+Captures below remain from the implementation commit, before that token-only correction.
+The complete frontend suite and captures were not repeated after that correction.
+
 The PR stays draft. Independent UX and code verdicts are pending.
 Cheese merges the code PR. No deployment is included.
 
@@ -28,6 +34,7 @@ All recorded times are on 27 October 2026, ICT.
 | Viewer wiring | `raw/red-view.log`: 5 failed; current document and controls absent | `raw/green-view.log`: 299 passed at 14:05 ICT, including 8 viewer regressions, existing previews and locale parity |
 | Bounded line count | `raw/red-line-limit.log`: 1 failed; oversized identical input did not throw | Same core command: 6 passed |
 | Overflow menu | `raw/red-menu.log`: live phone flow failed because a menu label lacked its group context | `raw/green-web.log`: live flow passed after the context fix |
+| Radius quality gate | `raw/red-radius.log`: one bare `rounded` utility at the Readonly badge | `raw/green-radius.log`: 2,115 source files clean; `raw/green-radius-tests.log`: 4 passed |
 
 The red outputs are behavioral assertion failures, not collection or compile failures.
 Initial core red ran before helper implementation; initial viewer red ran against the minimal viewer stub.

@@ -99,7 +99,7 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
         {titleAccessory}
         {slug && attachment.issue_id && <AppLink className="shrink-0 text-caption text-muted-foreground hover:underline max-[999px]:hidden" href={paths.workspace(slug).issueDetail(attachment.issue_id)}>{issue.data?.identifier ?? t(($) => $.plan_revision.issue)}</AppLink>}
         <span className="shrink-0 text-caption text-muted-foreground max-[1199px]:hidden">{t(($) => $.plan_revision.revision, { number: planRevisionNumber(attachment.filename) })}</span>
-        <span className="shrink-0 rounded border px-1.5 text-caption text-muted-foreground max-[1199px]:hidden">{t(($) => $.plan_revision.readonly)}</span>
+        <span className="shrink-0 rounded-sm border px-1.5 text-caption text-muted-foreground max-[1199px]:hidden">{t(($) => $.plan_revision.readonly)}</span>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 text-caption">
         {t(($) => $.plan_revision.diff)}
