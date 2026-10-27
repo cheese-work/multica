@@ -10,6 +10,38 @@ import (
 
 type failedPiProcessTracker struct{ signalled, closed bool }
 
+type observingPiProcessTracker struct {
+	failedPiProcessTracker
+	onSnapshot func()
+}
+
+func (tracker *observingPiProcessTracker) snapshot(bool) error {
+	tracker.onSnapshot()
+	return nil
+}
+
+func TestPiCleanupObservationKeepsToolInFlight(t *testing.T) {
+	expired := false
+	guard := newPiTurnErrorGuard(time.Hour, func() { expired = true })
+	defer guard.finish()
+	tracker := &observingPiProcessTracker{onSnapshot: func() {
+		guard.mu.Lock()
+		generation := guard.generation
+		guard.mu.Unlock()
+		guard.expire(generation)
+	}}
+	cleanup := &piRunCleanup{tracker: tracker}
+	guard.record("temporary provider error")
+	cleanup.observe("tool_execution_start", guard)
+	cleanup.observe("tool_execution_end", guard)
+	if expired {
+		t.Fatal("recovery grace expired while tool ownership was still being observed")
+	}
+	if guard.inFlightTools != 0 || cleanup.tools.Load() != 0 {
+		t.Fatal("tool completion was not recorded after ownership observation")
+	}
+}
+
 func (*failedPiProcessTracker) unobservedTools() bool { return false }
 
 func (*failedPiProcessTracker) snapshot(bool) error {

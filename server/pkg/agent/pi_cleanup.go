@@ -76,7 +76,10 @@ func (c *piRunCleanup) snapshot() {
 	}
 }
 
-func (c *piRunCleanup) observe(event string) {
+func (c *piRunCleanup) observe(event string, turnErrors *piTurnErrorGuard) {
+	if event == "tool_execution_start" {
+		turnErrors.observeEvent(event)
+	}
 	switch event {
 	case "tool_execution_start":
 		c.tools.Add(1)
@@ -88,6 +91,9 @@ func (c *piRunCleanup) observe(event string) {
 		c.snapshot()
 	case "agent_end":
 		c.tools.Store(0)
+	}
+	if event != "tool_execution_start" {
+		turnErrors.observeEvent(event)
 	}
 }
 

@@ -592,8 +592,7 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 			if err := json.Unmarshal([]byte(line), &evt); err != nil {
 				continue
 			}
-			turnErrors.observeEvent(evt.Type)
-			cleanup.observe(evt.Type)
+			cleanup.observe(evt.Type, turnErrors)
 
 			switch evt.Type {
 			case "agent_start":
