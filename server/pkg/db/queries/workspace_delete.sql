@@ -704,7 +704,10 @@ WHERE autopilot_rule_version.workspace_id = $1;
 DELETE FROM autopilot WHERE autopilot.workspace_id = $1;
 
 -- name: DeleteWorkspacePullRequests :exec
-WITH deleted_github_webhook_revisions AS (
+WITH deleted_github_webhook_dispatches AS (
+    DELETE FROM github_webhook_dispatch
+    WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_webhook_revisions AS (
     DELETE FROM github_webhook_revision
     WHERE github_webhook_revision.workspace_id = $1
 ), deleted_github_prs AS (

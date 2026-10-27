@@ -54,14 +54,59 @@ and `dispatched`. This handler initializes signed work as `denied` or
 worker and admission slices. Eligible work starts as `deferred` with
 `awaiting_admission`; no projection is claimed by intake alone.
 
-The worker must consider the stored delivery's event and action, including
+The worker considers the stored delivery's event and action, including
 withdrawals. Delivery deduplication does not replace revision admission or a
-committed dispatch receipt. The worker, its transaction, and R1/R2/R3
-reconciliation are separate changes (CHE-2208 and CHE-2209).
+committed dispatch receipt. R1/R2/R3 reconciliation remains separate (CHE-2209).
 
 Keep the deployed `github_review_members` mapping unset until gate G. Numeric
 ID `129714106` is not mapped by this change. No actionable dispatch, App
 subscription update, webhook replay or deployment is enabled here.
+
+## Worker and retry state
+
+The server starts a context-bound worker that drains up to 25 due deliveries
+every 5 seconds. PostgreSQL row locks with `SKIP LOCKED` let multiple servers
+claim different deliveries. Normalized revision rows are locked in workspace
+order, so different GUIDs for the same revision serialize on the same work.
+The original signed payload supplies the content; the worker does not fetch
+replacement content from GitHub.
+
+The production admission function currently rechecks the intake guards and
+leaves eligible items `deferred` with `awaiting_admission`. Full provenance
+admission (CHE-2214) and authorized notify-only comment projection (CHE-2212)
+are separate slices. They must complete before production claims `projected`.
+The worker accepts the six intake states from admission and stops at
+`projected` when its internal dispatch gate is closed. No production caller
+opens that gate, and no setting or environment variable enables it.
+
+`attempts`, `next_attempt_at`, `received_at`, state and reason expose retry
+progress without retaining error messages or third-party text. A deferred pass
+backs off from 5 seconds to a maximum of 300 seconds, with no retry-count limit.
+`ListDeferredGitHubWebhookIntakes` includes `age_seconds` for the subsequent
+stale-item monitor. An admission or processing error rolls back its savepoint
+before scheduling `processing_error`. A database commit failure rolls back
+the entire pass and leaves the signed intake available for another worker.
+
+When one delivery spans workspaces, its aggregate state prioritizes `deferred`,
+`quarantined`, `unsigned`, `projected`, `dispatched`, then `denied`. Each
+workspace's normalized revision retains its own state and reason. Duplicate
+GUIDs retain separate delivery dispositions but share revision work.
+
+The dormant dispatch primitive writes the system comment, queued task,
+`github_webhook_dispatch` receipt and final revision/delivery state in one
+transaction. Receipts are keyed by workspace, object kind, object ID, body
+hash and target issue, not delivery GUID. A receipt is inserted only when its
+matching task and trigger comment exist. Notifications publish only after
+commit. A failed or interrupted transaction cannot commit a receipt alone;
+a retry reads the committed receipt before creating another dispatch.
+Workspace teardown removes that workspace's dispatch receipts with its
+normalized revisions and preserves the shared signed delivery source.
+
+Worker tests simulate an admission/API outage, restart after intake commit,
+commit failure, concurrent duplicate deliveries and the closed gate. Tests
+exercise the dormant transaction with a test-only open gate and injected
+admission. They do not qualify gate G or replace the real GitHub provenance,
+project authorization, projection, runner or deployment acceptance tests.
 
 ## Recovery window
 
