@@ -881,7 +881,9 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
         {t(($) => $.message_list.continuation_summary)}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        </AnnotatableAnswer>
       </CollapsibleContent>
     </Collapsible>
   );

@@ -3334,6 +3334,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						resp.TriggerThreadID = uuidToString(root)
 					}
 				}
+				if root, err := util.ParseUUID(resp.TriggerThreadID); err == nil {
+					resp.TriggerThreadContext = h.buildTriggerThreadContext(r.Context(), comment, root)
+				}
 				resp.TriggerAuthorType = comment.AuthorType
 				// Preserve the direct trigger actor independently from the human
 				// whose authority this run uses. They can differ on delegated runs

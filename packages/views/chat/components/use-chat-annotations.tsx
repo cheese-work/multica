@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import type { ChatMessage } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -26,14 +26,22 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
   const draftKey: CommentDraftKey = `chat:${sessionId ?? ""}`;
   const annotations = useCommentDraftStore((state) => state.getAnnotations(draftKey));
   const firstSource = annotations[0]?.sourceCommentId;
+  const [earlier, setEarlier] = useState<Record<string, string>>({});
+  const registerSource = useCallback(
+    (id: string, name: string) => setEarlier((prev) => (prev[id] === name ? prev : { ...prev, [id]: name })),
+    [],
+  );
   const sources = useMemo(
-    () => messages.filter((message) => message.role === "assistant").flatMap((message) => {
-      const requests = message.decision_requests ?? (message.decision_request ? [message.decision_request] : []);
-      if (requests.length) return requests.filter((card) => card.state === "open").map((card) => ({ id: `${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`, name: agentName ?? "" }));
-      return [{ id: message.id, name: agentName ?? "" }];
-    }).filter((source) => !firstSource || (firstSource.startsWith(DECISION_REQUEST_SOURCE_PREFIX)
+    () => [
+      ...messages.filter((message) => message.role === "assistant").flatMap((message) => {
+        const requests = message.decision_requests ?? (message.decision_request ? [message.decision_request] : []);
+        if (requests.length) return requests.filter((card) => card.state === "open").map((card) => ({ id: `${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`, name: agentName ?? "" }));
+        return [{ id: message.id, name: agentName ?? "" }];
+      }),
+      ...Object.entries(earlier).map(([id, name]) => ({ id, name })),
+    ].filter((source) => !firstSource || (firstSource.startsWith(DECISION_REQUEST_SOURCE_PREFIX)
       ? source.id === firstSource : !source.id.startsWith(DECISION_REQUEST_SOURCE_PREFIX))),
-    [messages, agentName, firstSource],
+    [messages, agentName, earlier, firstSource],
   );
   const labels: AnnotationLabels = {
     selectionFailed: t(($) => $.annotations.selection_failed),
@@ -48,7 +56,10 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
     remove: (number) => t(($) => $.annotations.remove, { number }),
   };
   const annotation = useCommentAnnotations({ draftKey, sources, enabled: active, surface: "chat", labels });
-  const scope = useMemo<ChatAnnotationScope>(() => ({ enabled: active, agentName }), [active, agentName]);
+  const scope = useMemo<ChatAnnotationScope>(
+    () => ({ enabled: active, agentName, registerSource }),
+    [active, agentName, registerSource],
+  );
   const input: ChatInputAnnotations | undefined = active
     ? {
         draftKey,

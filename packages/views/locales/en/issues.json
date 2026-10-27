@@ -1,4 +1,23 @@
 {
+  "relations": {
+    "title": "Relations graph",
+    "direction": "Arrows point from parent to child, from a watched issue to the issue it wakes, and from a mention to its target. The current issue has a thick border.",
+    "depth": "Depth",
+    "loading": "Loading relations…",
+    "load_failed": "Could not load relations.",
+    "render_failed": "Could not render the graph.",
+    "filter_label": "Show edge types",
+    "retry": "Try again",
+    "empty": "No related issues.",
+    "omitted": "{{count}} more not shown (40-node limit).",
+    "parent": "parent → child",
+    "duplicate": "duplicate of",
+    "wakeup": "wakes",
+    "children_done": "children done → wake",
+    "mention": "mentions",
+    "shared_pr": "shared PR",
+    "unknown": "related"
+  },
   "inline_run": {
     "label": "{{name}} run",
     "stop": "Stop",
@@ -404,6 +423,7 @@
     "section_parent_issue": "Parent issue",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Metadata",
+    "status_summary_label": "Status summary",
     "section_details": "Details",
     "section_quick_actions": "Quick Actions",
     "quick_actions_more": "Show {{count}} more",
@@ -575,6 +595,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
     "expand_thread": "Expand thread",

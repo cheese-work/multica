@@ -71,6 +71,7 @@
     "continuation_summary": "Conversation summary",
     "earlier_dm": "Earlier DM",
     "quote_message": "Quote",
+    "speaker_you": "You",
     "load_older_messages": "Load older messages",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",

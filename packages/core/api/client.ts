@@ -15,6 +15,7 @@ import type {
   UpdateIssueRequest,
   BatchUpdateIssuesResponse,
   IssueDuplicates,
+  IssueRelations,
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
@@ -1672,6 +1673,15 @@ export class ApiClient {
       { duplicate_of: null, duplicates: [] },
       { endpoint: "GET /api/issues/:id/duplicates" },
     );
+  }
+
+  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal): Promise<IssueRelations> {
+    const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
+    const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
+    const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
+    if (!graph) throw new Error("Invalid issue relations response");
+    return graph;
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {

@@ -1,4 +1,23 @@
 {
+  "relations": {
+    "title": "任务关系图",
+    "direction": "箭头从父任务指向子任务，从被监测的任务指向待唤醒的任务，从提及来源指向目标。当前任务以粗边框标出。",
+    "depth": "深度",
+    "loading": "正在加载关系...",
+    "load_failed": "无法加载关系。",
+    "render_failed": "无法显示关系图。",
+    "filter_label": "显示的关系类型",
+    "retry": "重试",
+    "empty": "没有关联任务。",
+    "omitted": "另有 {{count}} 个任务未显示（最多 40 个节点）。",
+    "parent": "父任务 → 子任务",
+    "duplicate": "重复目标",
+    "wakeup": "唤醒",
+    "children_done": "子任务完成 → 唤醒",
+    "mention": "提及",
+    "shared_pr": "共享 PR",
+    "unknown": "关联"
+  },
   "inline_run": {
     "label": "{{name}} 的运行",
     "stop": "停止",
@@ -399,6 +418,7 @@
     "section_parent_issue": "父任务",
     "section_pull_requests": "Pull Request",
     "section_metadata": "元数据",
+    "status_summary_label": "状态摘要",
     "section_details": "详情",
     "section_quick_actions": "快捷操作",
     "quick_actions_more": "显示其余 {{count}} 条",
@@ -561,6 +581,7 @@
     "wakeup_link_run": "查看运行"
   },
   "comment": {
+    "you": "你",
     "add_reaction": "添加表情回应",
     "collapse_thread": "收起讨论",
     "expand_thread": "展开讨论",

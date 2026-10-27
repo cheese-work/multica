@@ -340,7 +340,7 @@ WHERE cs.workspace_id = $1
 ORDER BY COALESCE(lm.created_at, d.updated_at, cs.updated_at) DESC;
 
 -- name: UpdateChatSessionTitle :one
-UPDATE chat_session SET title = $2, updated_at = now()
+UPDATE chat_session SET title = $2, title_manually_set = true, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -354,6 +354,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -371,6 +372,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.explicitly_created_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -384,6 +386,7 @@ RETURNING *;
 UPDATE chat_session AS session
 SET title = @title
 WHERE session.id = @id
+  AND NOT session.title_manually_set
   AND session.title = ''
   AND EXISTS (
     SELECT 1 FROM chat_message AS message
@@ -419,7 +422,7 @@ RETURNING *;
 -- (zero rows updated), which the caller treats as "someone renamed it — leave
 -- it alone", NOT as an error.
 UPDATE chat_session SET title = @new_title, updated_at = now()
-WHERE id = @id AND title = @expected_title
+WHERE id = @id AND title = @expected_title AND NOT title_manually_set
 RETURNING *;
 
 -- name: SetChatSessionPinned :one

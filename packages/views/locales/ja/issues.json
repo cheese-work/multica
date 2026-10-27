@@ -1,4 +1,23 @@
 {
+  "relations": {
+    "title": "関連グラフ",
+    "direction": "矢印は親から子、監視対象タスクから再開するタスク、メンション元から参照先へ向かいます。現在のタスクは太い枠線で表示されます。",
+    "depth": "深さ",
+    "loading": "関連を読み込み中…",
+    "load_failed": "関連を読み込めませんでした。",
+    "render_failed": "グラフを表示できませんでした。",
+    "filter_label": "表示する関係の種類",
+    "retry": "再試行",
+    "empty": "関連するタスクはありません。",
+    "omitted": "ほか {{count}} 件は非表示です（上限40ノード）。",
+    "parent": "親 → 子",
+    "duplicate": "重複元",
+    "wakeup": "再開",
+    "children_done": "子の完了 → 再開",
+    "mention": "参照",
+    "shared_pr": "共通のPR",
+    "unknown": "関連"
+  },
   "inline_run": {
     "label": "{{name}} の実行",
     "stop": "停止",
@@ -399,6 +418,7 @@
     "section_parent_issue": "親タスク",
     "section_pull_requests": "Pull requests",
     "section_metadata": "メタデータ",
+    "status_summary_label": "ステータスの概要",
     "section_details": "詳細",
     "section_quick_actions": "クイックアクション",
     "quick_actions_more": "残り {{count}} 件を表示",
@@ -561,6 +581,7 @@
     "wakeup_link_run": "実行を表示"
   },
   "comment": {
+    "you": "あなた",
     "add_reaction": "リアクションを追加",
     "collapse_thread": "スレッドを折りたたむ",
     "expand_thread": "スレッドを展開",
