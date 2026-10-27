@@ -98,12 +98,23 @@ func TestAskContentRenderOrder(test *testing.T) {
 }
 
 func TestAskContentKeepsOptionFields(test *testing.T) {
-	content := decodedAsk(test).Content()
+	raw := validAskMap()
+	raw["options"] = []any{
+		map[string]any{"label": "NOW", "what_happens": "Ships today.", "pros": []string{"Users get it today", "No backlog"}, "cons": []string{"Less testing"}, "cost_or_time": "Ready in 1 hour"},
+		map[string]any{"label": "LATER", "what_happens": "Ships next week.", "pros": []string{"Full test pass"}, "cons": []string{"Users wait", "Backlog grows"}, "cost_or_time": "Ready in 5 days"},
+	}
+	encoded, _ := json.Marshal(raw)
+	ask, err := DecodeAsk(encoded)
+	if err != nil {
+		test.Fatal(err)
+	}
+	content := ask.Content()
 	options := content[strings.Index(content, "**Options**"):strings.Index(content, "**Recommendation**")]
-	for _, want := range []string{"NOW", "NOW happens.", "Pro", "Con", "No extra time", "LATER", "LATER happens."} {
-		if !strings.Contains(options, want) {
-			test.Fatalf("options section lacks %q: %q", want, options)
-		}
+	want := "**Options**\n" +
+		"- **NOW**: Ships today.\n  - Pro: Users get it today\n  - Pro: No backlog\n  - Con: Less testing\n  - Cost or time: Ready in 1 hour\n" +
+		"- **LATER**: Ships next week.\n  - Pro: Full test pass\n  - Con: Users wait\n  - Con: Backlog grows\n  - Cost or time: Ready in 5 days\n\n"
+	if options != want {
+		test.Fatalf("options section = %q, want %q", options, want)
 	}
 }
 
