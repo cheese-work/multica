@@ -39,26 +39,23 @@ func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
-const hasIssueRunForHead = `-- name: HasIssueRunForHead :one
+const hasIssueReviewAdmission = `-- name: HasIssueReviewAdmission :one
 SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue
-    WHERE issue_id = $1::uuid
-      AND agent_id = $2::uuid
-      AND context->>'head_sha' = $3::text
+    SELECT 1 FROM issue_review_admission
+    WHERE issue_id = $1::uuid AND head_sha = $2::text
 )
 `
 
-type HasIssueRunForHeadParams struct {
+type HasIssueReviewAdmissionParams struct {
 	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
 	HeadSha string      `json:"head_sha"`
 }
 
-// Whether the agent already has a run on the issue for this PR head. The task
-// row stamps the reviewed head at enqueue, so a run exists exactly when an
-// enqueue for that head succeeded: a failed or deduplicated enqueue leaves none.
-func (q *Queries) HasIssueRunForHead(ctx context.Context, arg HasIssueRunForHeadParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasIssueRunForHead, arg.IssueID, arg.AgentID, arg.HeadSha)
+// Whether the issue's first review of this PR head was already admitted. The
+// row is written with the task row (CreateAgentTask), so it exists exactly when
+// a run was admitted as the reviewer for that head.
+func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueReviewAdmissionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueReviewAdmission, arg.IssueID, arg.HeadSha)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

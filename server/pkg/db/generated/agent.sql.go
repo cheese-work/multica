@@ -2618,6 +2618,16 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 }
 
 const createAgentTask = `-- name: CreateAgentTask :one
+WITH review_claim AS (
+    INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
+    SELECT i.workspace_id, i.id, $25::text, $1
+    FROM issue i
+    WHERE i.id = $3
+      AND COALESCE($25::text, '') <> ''
+      AND lock_task_owner_rows($1, $3, $2)
+    ON CONFLICT (issue_id, head_sha) DO NOTHING
+    RETURNING issue_id
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -2652,6 +2662,7 @@ SELECT
     (SELECT i.status FROM issue i WHERE i.id = $3),
     COALESCE($23::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
+  AND (NOT COALESCE($24::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model
 `
 
@@ -2679,6 +2690,8 @@ type CreateAgentTaskParams struct {
 	TriggerEvidenceKind  pgtype.Text   `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID pgtype.UUID   `json:"trigger_evidence_ref_id"`
 	ID                   pgtype.UUID   `json:"id"`
+	GateRequired         pgtype.Bool   `json:"gate_required"`
+	GateHead             pgtype.Text   `json:"gate_head"`
 }
 
 // Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -2699,6 +2712,12 @@ type CreateAgentTaskParams struct {
 // COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 // that passes no id still inserts — it just gets a random v4, exactly as before.
 // The same pattern is used by every INSERT listed in pkg/dbid's write table.
+// gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
+// admitted as the issue's reviewer records the head in issue_review_admission in
+// this same statement, so the claim and the task row commit or roll back
+// together. When the budget is spent (gate_required) only the statement that
+// inserted the claim writes a task; a concurrent loser writes none and the
+// caller sees no row.
 func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, createAgentTask,
 		arg.AgentID,
@@ -2724,6 +2743,8 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.ID,
+		arg.GateRequired,
+		arg.GateHead,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(

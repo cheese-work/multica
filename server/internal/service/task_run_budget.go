@@ -35,10 +35,38 @@ const statusMerged = "merged"
 // RunTarget is the run an enqueue asks for: the agent that would receive it
 // and what asked (comment, mention, retry...). The guard needs both to tell the
 // reviewer's first run on a head from other bookkeeping, and to say what it
-// refused.
+// refused. ReviewRun marks a path that can start the review (a comment,
+// handoff or mention); retries and system wakeups never do.
 type RunTarget struct {
-	AgentID pgtype.UUID
-	Trigger string
+	AgentID   pgtype.UUID
+	Trigger   string
+	ReviewRun bool
+}
+
+// ReviewGate is what the guard hands the enqueue: the PR head the run reviews
+// (empty when the run is not the issue's reviewer) and whether the budget is
+// spent, so the head's admission is the only way in. The enqueue writes the
+// admission with the task row (CreateAgentTask), never the guard.
+type ReviewGate struct {
+	Head     string
+	Required bool
+}
+
+// Apply sets the gate on the task row the enqueue is about to insert.
+func (g ReviewGate) Apply(p *db.CreateAgentTaskParams) {
+	p.GateHead = pgtype.Text{String: g.Head, Valid: g.Head != ""}
+	p.GateRequired = pgtype.Bool{Bool: g.Required, Valid: g.Required}
+}
+
+// createAgentTask inserts the task row. A review run over a spent budget that
+// lost the head's admission to a concurrent enqueue writes no row and counts as
+// a duplicate: the winner is the review.
+func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskParams) (db.AgentTaskQueue, error) {
+	task, err := q.CreateAgentTask(ctx, p)
+	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
+		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+	}
+	return task, err
 }
 
 // RunBudgetExhausted describes the refusal that fired the hook: how many runs
@@ -84,50 +112,51 @@ func RunBudgetStart(ctx context.Context, q *db.Queries, issueID pgtype.UUID, def
 // guardRunBudget refuses a derived enqueue for an issue whose workflow budget
 // is spent. An issue with no workflow, or a workflow with no stored budget
 // start (the built-in Default nobody saved), is not budgeted.
-func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
+func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) (ReviewGate, error) {
 	issue, err := q.GetIssue(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return ReviewGate{}, nil
 		}
-		return fmt.Errorf("run budget: load issue: %w", err)
+		return ReviewGate{}, fmt.Errorf("run budget: load issue: %w", err)
 	}
 	if !issue.ProjectID.Valid && !issue.WorkflowID.Valid {
-		return nil
+		return ReviewGate{}, nil
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if errors.Is(err, issueworkflow.ErrOverrideMissing) || (err == nil && (def == nil || def.RunBudgetSince.IsZero())) {
-		return nil
+		return ReviewGate{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("run budget: load workflow: %w", err)
+		return ReviewGate{}, fmt.Errorf("run budget: load workflow: %w", err)
 	}
 	since, err := RunBudgetStart(ctx, q, issue.ID, def)
 	if err != nil {
-		return fmt.Errorf("run budget: window start: %w", err)
+		return ReviewGate{}, fmt.Errorf("run budget: window start: %w", err)
 	}
 	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: since, Valid: true}})
 	if err != nil {
-		return fmt.Errorf("run budget: count runs: %w", err)
+		return ReviewGate{}, fmt.Errorf("run budget: count runs: %w", err)
 	}
 	max := def.EffectiveMaxRuns()
 	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > max {
 		max = int(issue.MaxRunsOverride.Int32)
 	}
-	if runs < int64(max) {
-		return nil
-	}
+	spent := runs >= int64(max)
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
-	if isFinishedStatus(ctx, q, issue) {
-		return ErrRunBudgetExhausted
+	if spent && isFinishedStatus(ctx, q, issue) {
+		return ReviewGate{}, ErrRunBudgetExhausted
 	}
-	first, err := isFirstReviewOfHead(ctx, q, issue, target)
+	head, admitted, err := reviewHeadOf(ctx, q, issue, target)
 	if err != nil {
-		return fmt.Errorf("run budget: review gate: %w", err)
+		return ReviewGate{}, fmt.Errorf("run budget: review gate: %w", err)
 	}
-	if first {
-		return nil
+	if !spent {
+		return ReviewGate{Head: head}, nil
+	}
+	if head != "" && !admitted {
+		return ReviewGate{Head: head, Required: true}, nil
 	}
 	if hook := onRunBudgetExhausted.Load(); hook != nil {
 		// The guard runs inside the enqueue transaction; the hook writes the
@@ -137,7 +166,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 			Status: issue.Status, Target: target,
 		})
 	}
-	return ErrRunBudgetExhausted
+	return ReviewGate{}, ErrRunBudgetExhausted
 }
 
 // IsFinishedStatus reports whether a status ends the issue's work: merged, or
@@ -154,32 +183,25 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 	return IsFinishedStatus(ctx, q, issue.WorkspaceID, issue.Status)
 }
 
-// isFirstReviewOfHead reports whether the run is the first one for the issue's
-// reviewer on the PR head under review: the review gate, which the budget does
-// not refuse. Only the issue's assignee while the issue is in in_review counts
-// as the reviewer, so a leader's or a mention's run never uses the gate, and
-// only the one head the run is pinned to (GetIssueReviewHeadSha) counts.
-// The guard only reads. The head is spent by the run itself, because the task
-// row stamps the head: an enqueue that fails, deduplicates or rolls back leaves
-// no row, so the head stays unreviewed, and the row commits with the enqueue on
-// every path.
-// ponytail: two enqueues for one head racing inside one transaction window can
-// both read "first"; the pending-task unique index makes the second a
-// duplicate. A completed run in that window lets one extra run through.
-func isFirstReviewOfHead(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (bool, error) {
-	if issue.Status != issuestatus.InReview || issue.AssigneeType.String != "agent" ||
+// reviewHeadOf names the PR head the run reviews and whether that head's first
+// review was already admitted. Only the issue's assignee while the issue is in
+// in_review is the reviewer, so a leader's, a mention's or an earlier
+// in_progress run never counts, and only the one head the run is pinned to
+// (GetIssueReviewHeadSha) does. The guard only reads: the enqueue writes the
+// admission together with the task row, so a failed, deduplicated or rolled
+// back enqueue leaves the head unreviewed.
+func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (head string, admitted bool, err error) {
+	if !target.ReviewRun || issue.Status != issuestatus.InReview || issue.AssigneeType.String != "agent" ||
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
-		return false, nil
+		return "", false, nil
 	}
-	head, err := q.GetIssueReviewHeadSha(ctx, issue.ID)
+	head, err = q.GetIssueReviewHeadSha(ctx, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
-		return false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
-	reviewed, err := q.HasIssueRunForHead(ctx, db.HasIssueRunForHeadParams{
-		IssueID: issue.ID, AgentID: target.AgentID, HeadSha: head,
-	})
-	return !reviewed, err
+	admitted, err = q.HasIssueReviewAdmission(ctx, db.HasIssueReviewAdmissionParams{IssueID: issue.ID, HeadSha: head})
+	return head, admitted, err
 }

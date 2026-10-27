@@ -472,6 +472,9 @@ deleted_issue_pr_automation AS (
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
+deleted_issue_review_admissions AS (
+    DELETE FROM issue_review_admission WHERE workspace_id = $1
+),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)

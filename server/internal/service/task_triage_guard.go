@@ -85,21 +85,28 @@ var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which 
 // its own terms. A read error refuses, because a run that cannot be shown to be
 // allowed must not start.
 func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) error {
+	_, err := guardIssueRunGate(ctx, q, issueID, origin, target)
+	return err
+}
+
+// guardIssueRunGate is guardIssueRunAllowed for an enqueue that inserts the
+// task row itself: it also returns the review gate to apply to that insert.
+func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) (ReviewGate, error) {
 	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
-		return err
+		return ReviewGate{}, err
 	}
 	if origin == OriginNamed || !issueID.Valid {
-		return nil
+		return ReviewGate{}, nil
 	}
 	state, err := q.GetIssueTriageState(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return ReviewGate{}, nil
 		}
-		return fmt.Errorf("triage guard: load issue triage state: %w", err)
+		return ReviewGate{}, fmt.Errorf("triage guard: load issue triage state: %w", err)
 	}
 	if state.Valid {
-		return ErrIssueInTriage
+		return ReviewGate{}, ErrIssueInTriage
 	}
 	return guardRunBudget(ctx, q, issueID, target)
 }

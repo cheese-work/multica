@@ -1394,6 +1394,14 @@ type IssueReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueReviewAdmission struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	HeadSha     string             `json:"head_sha"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	AdmittedAt  pgtype.Timestamptz `json:"admitted_at"`
+}
+
 type IssueSourceContext struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

@@ -39,15 +39,13 @@ SELECT created_at FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1;
 
--- name: HasIssueRunForHead :one
--- Whether the agent already has a run on the issue for this PR head. The task
--- row stamps the reviewed head at enqueue, so a run exists exactly when an
--- enqueue for that head succeeded: a failed or deduplicated enqueue leaves none.
+-- name: HasIssueReviewAdmission :one
+-- Whether the issue's first review of this PR head was already admitted. The
+-- row is written with the task row (CreateAgentTask), so it exists exactly when
+-- a run was admitted as the reviewer for that head.
 SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue
-    WHERE issue_id = sqlc.arg('issue_id')::uuid
-      AND agent_id = sqlc.arg('agent_id')::uuid
-      AND context->>'head_sha' = sqlc.arg('head_sha')::text
+    SELECT 1 FROM issue_review_admission
+    WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text
 );
 
 -- name: RaiseIssueMaxRuns :one
