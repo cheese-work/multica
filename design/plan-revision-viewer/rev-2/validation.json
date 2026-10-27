@@ -1,0 +1,84 @@
+{
+  "stage": "design-only",
+  "productAcceptance": "NOT-RUN",
+  "assertions": [
+    "Diff keyboard toggle, focus retention, +5/-2, 3 hunks, collapsed context and previous/next navigation",
+    "1440px toolbar fits in one 48px row, including file identity and all comparison controls",
+    "All picker labels contain ICT time and uploader; arrow/Enter selection and Escape restore trigger focus",
+    "loading: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "first: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "offline: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "error: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "ambiguous: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "same: Diff reads off, no stale counts or diff, one reason; recovery/disambiguation where applicable",
+    "Empty current file shows its actual 339 removals when compared",
+    "Split at 1440px aligns 342 paired rows, including unequal wrapping, with no page overflow",
+    "Split at 390px aligns 342 paired rows, including unequal wrapping, with no page overflow",
+    "390px unified diff has unclipped three-digit gutters and keyboard-accessible locally scrolling toolbar",
+    "Long filename is ellipsized, fully inspectable and does not overflow the page",
+    "A.html alone reproduces the off document, font and byte-identical PNG without sibling files",
+    "A.html alone reproduces the unify document, font and byte-identical PNG without sibling files",
+    "A.html alone reproduces the split document, font and byte-identical PNG without sibling files",
+    "No external network requests in all design states, including isolated-file rendering",
+    "README Mermaid parses and renders with nonzero bounds; no SVG artifact published",
+    "No browser JavaScript errors"
+  ],
+  "captures": [
+    "A-web-diff-off-1440.png",
+    "A-web-unify-1440.png",
+    "A-web-split-1440.png",
+    "A-web-base-picker-1440.png",
+    "A-desktop-diff-off-1440.png",
+    "A-desktop-unify-1440.png",
+    "A-desktop-split-1440.png",
+    "A-desktop-base-picker-1440.png",
+    "A-diff-off-390.png",
+    "A-unify-390.png",
+    "A-split-390.png",
+    "A-base-picker-390.png",
+    "A-change-navigation-390.png",
+    "A-split-current-390.png",
+    "A-loading-1440.png",
+    "A-first-1440.png",
+    "A-empty-1440.png",
+    "A-error-1440.png",
+    "A-offline-1440.png",
+    "A-ambiguous-1440.png",
+    "A-same-1440.png",
+    "A-expanded-context-1440.png"
+  ],
+  "errors": [],
+  "browser": "150.0.7871.181",
+  "toolbar": {
+    "height": 48,
+    "centers": [
+      60,
+      60,
+      60,
+      60,
+      60,
+      60,
+      60,
+      60,
+      60,
+      60
+    ],
+    "width": 1440,
+    "viewport": 1440
+  },
+  "splitAlignment1440": {
+    "rows": 342,
+    "maxTopDrift": 0,
+    "maxHeightDrift": 0
+  },
+  "splitAlignment390": {
+    "rows": 342,
+    "maxTopDrift": 0,
+    "maxHeightDrift": 0
+  },
+  "mermaid": {
+    "width": 619.890625,
+    "height": 1555.109375,
+    "nodes": 11
+  }
+}

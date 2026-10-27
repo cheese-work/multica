@@ -61,7 +61,7 @@ func TestDecisionLifecycleCancellation(test *testing.T) {
 				test.Fatalf("cancel comments=%d, want 1", count)
 			}
 			wantNotes := 1
-			if condition == "archived_lane" {
+			if reason == "issue_closed" && condition != "open_request" {
 				wantNotes = 0
 			}
 			if count := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID) - messages; count != wantNotes {

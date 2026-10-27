@@ -1,0 +1,17 @@
+issue: CHE-2167
+design: "waiver in CHE-2167 issue body: Cheese supplied solid fill and background-coloured text directly; no separate design round is needed."
+scope: "Shared web/desktop RichContent only. Current-user member mentions only; other members, agents and @all keep their styles."
+capture: "X99 Chromium 145.0.7632.6; real RichContent and production tokens with synthetic data, not authenticated product routes."
+pages:
+  - id: rich-content-issue-comment
+    url: "issue comment; document density"
+    keep: [member-mention]
+    change:
+      - member-mention: "Only the current-user chip uses opaque --brand fill and --background text in light and dark themes."
+    remove: []
+  - id: rich-content-direct-message
+    url: "DM/chat message; compact density"
+    keep: [member-mention]
+    change:
+      - member-mention: "The same current-user-only solid chip, through the shared renderer."
+    remove: []
