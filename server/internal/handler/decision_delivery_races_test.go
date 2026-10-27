@@ -225,8 +225,10 @@ func TestDecisionDeliveryWorkspaceTeardownConcurrent(test *testing.T) {
 					deleteHandler.DeleteWorkspace(deleteResponse, deleteRequest)
 					deleteDone <- nil
 				}()
-				deleteTx := awaitDecisionDeliveryEvent(test, deleteStarted, "workspace teardown transaction start")
-				if !waitForDecisionWaiterBlockedBy(test, deleteTx.pid, deliveryTx.pid, 4*time.Second) {
+				// DeleteWorkspace opens a Qoder-cleanup transaction through the same
+				// TxStarter before its teardown transaction, so the started event
+				// can name that one; match any backend queued behind delivery.
+				if !waitForDecisionWaiterBlockedBy(test, 0, deliveryTx.pid, 4*time.Second) {
 					unblockDelivery()
 					unblockDelete()
 					_ = awaitDecisionDeliveryRaceDone(test, deleteDone, "workspace teardown")
