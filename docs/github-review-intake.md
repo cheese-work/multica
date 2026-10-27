@@ -129,7 +129,7 @@ Tests cover T3, T4, T13, T14, T15, T22, T23, T24 and T25 in
 replacement of pending self-edits and withdrawal projection remain worker duties
 (CHE-2208/CHE-2209), not side effects of this admission check.
 
-Migrations 725/726 replace body-only uniqueness with revision identity using
-concurrent indexes. Rolling back 726 can fail safely if newer revisions share a
+Migrations 728/729 replace body-only uniqueness with revision identity using
+concurrent indexes. Rolling back 729 can fail safely if newer revisions share a
 body hash; no rollback deletes signed receipts or revisions to force the old
 constraint. Resolve that data-preservation decision before retrying rollback.

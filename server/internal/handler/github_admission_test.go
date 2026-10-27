@@ -8,15 +8,17 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func TestGitHubAdmissionSignedMetadata(t *testing.T) {
-	fixture := newGitHubIntakeFixture(t)
+func TestGitHubAdmissionSignedMetadata(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
 	fixture.payload["review"].(map[string]any)["body"] = nil
 	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:02:00Z"
 	delivery := fixture.issueID + "-T22-metadata"
 	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
-		t.Fatalf("intake = %d", response.Code)
+		test.Fatalf("intake = %d", response.Code)
 	}
 	var event, action, kind, hash, head, state string
 	var objectID, senderID, authorID int64
@@ -26,29 +28,29 @@ head_sha, sender_id, author_id, review_state, object_created_at, object_updated_
 FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(
 		&event, &action, &kind, &objectID, &hash, &head, &senderID, &authorID, &state, &createdAt, &updatedAt, &submittedAt,
 	); err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	digest := sha256.Sum256(nil)
 	if event != "pull_request_review" || action != "submitted" || kind != "review" || objectID != 77 || hash != hex.EncodeToString(digest[:]) || head != "review-head" || senderID != 42 || authorID != 42 || state != "changes_requested" {
-		t.Fatalf("signed metadata changed: %s/%s/%s/%d/%s/%s/%d/%d/%s", event, action, kind, objectID, hash, head, senderID, authorID, state)
+		test.Fatalf("signed metadata changed: %s/%s/%s/%d/%s/%s/%d/%d/%s", event, action, kind, objectID, hash, head, senderID, authorID, state)
 	}
 	if updatedAt.Sub(createdAt) != 2*time.Minute || submittedAt.Sub(createdAt) != time.Minute {
-		t.Fatal("signed review timestamps were not retained independently")
+		test.Fatal("signed review timestamps were not retained independently")
 	}
-	assertGitHubIntakeNoEffects(t, fixture)
+	assertGitHubIntakeNoEffects(test, fixture)
 }
 
-func TestGitHubAdmissionNormalizationTable(t *testing.T) {
-	fixture := newGitHubIntakeFixture(t)
+func TestGitHubAdmissionNormalizationTable(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
 	fixture.payload["comment"] = fixture.payload["review"]
 	fixture.payload["issue"] = map[string]any{"number": 2019, "pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widget/pulls/2019"}}
 	body, err := json.Marshal(fixture.payload)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	var payload githubIntakePayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	for _, event := range []string{"pull_request_review", "pull_request_review_comment", "issue_comment"} {
 		for _, action := range []string{"submitted", "created", "edited", "dismissed", "deleted", "other"} {
@@ -56,67 +58,67 @@ func TestGitHubAdmissionNormalizationTable(t *testing.T) {
 			_, _, _, reason := payload.revision(event)
 			valid := action == "edited" || (event == "pull_request_review" && (action == "submitted" || action == "dismissed")) || (event != "pull_request_review" && (action == "created" || action == "deleted"))
 			if (reason == "") != valid {
-				t.Errorf("%s/%s normalization = %q, valid=%t", event, action, reason, valid)
+				test.Errorf("%s/%s normalization = %q, valid=%t", event, action, reason, valid)
 			}
 		}
 	}
 }
 
-func TestGitHubAdmissionRejectsUnknownEvent(t *testing.T) {
-	fixture := newGitHubIntakeFixture(t)
+func TestGitHubAdmissionRejectsUnknownEvent(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
 	body, err := json.Marshal(fixture.payload)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	var payload githubIntakePayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	_, _, _, reason := payload.revision("unknown")
 	if reason != "unsupported_event" {
-		t.Fatalf("unknown event admitted: reason = %q, want unsupported_event", reason)
+		test.Fatalf("unknown event admitted: reason = %q, want unsupported_event", reason)
 	}
 }
 
-func TestGitHubAdmissionT3ForeignEditQuarantined(t *testing.T) {
-	fixture := newGitHubIntakeFixture(t)
+func TestGitHubAdmissionT3ForeignEditQuarantined(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
 	fixture.payload["action"] = "edited"
 	fixture.payload["sender"] = map[string]any{"id": 99, "login": "other-writer", "type": "User"}
 	delivery := fixture.issueID + "-T3"
 	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
-		t.Fatalf("intake = %d %s", response.Code, response.Body.String())
+		test.Fatalf("intake = %d %s", response.Code, response.Body.String())
 	}
 	var state, reason string
 	if err := testPool.QueryRow(context.Background(), `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason); err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	if state != "quarantined" || reason != "foreign_editor" {
-		t.Fatalf("foreign edit = %s/%s, want quarantined/foreign_editor", state, reason)
+		test.Fatalf("foreign edit = %s/%s, want quarantined/foreign_editor", state, reason)
 	}
-	assertGitHubIntakeNoEffects(t, fixture)
+	assertGitHubIntakeNoEffects(test, fixture)
 }
 
-func TestGitHubAdmissionT23SameBodySelfEditIsNewRevision(t *testing.T) {
-	fixture := newGitHubIntakeFixture(t)
+func TestGitHubAdmissionT23SameBodySelfEditIsNewRevision(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
 	for _, suffix := range []string{"initial", "edit", "redelivery"} {
 		if suffix != "initial" {
 			fixture.payload["action"] = "edited"
 			fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
 		}
 		if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-T23-"+suffix); response.Code != http.StatusAccepted {
-			t.Fatalf("%s = %d", suffix, response.Code)
+			test.Fatalf("%s = %d", suffix, response.Code)
 		}
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 2 {
-		t.Fatalf("initial plus same-body self-edit = %d revisions, want 2", count)
+	if count := dbfx.Count(test, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 2 {
+		test.Fatalf("initial plus same-body self-edit = %d revisions, want 2", count)
 	}
-	assertGitHubIntakeNoEffects(t, fixture)
+	assertGitHubIntakeNoEffects(test, fixture)
 }
 
-func TestGitHubAdmissionT25WithdrawalDeniesPending(t *testing.T) {
+func TestGitHubAdmissionT25WithdrawalDeniesPending(test *testing.T) {
 	for _, event := range []string{"pull_request_review", "pull_request_review_comment", "issue_comment"} {
-		t.Run(event, func(t *testing.T) {
-			fixture := newGitHubIntakeFixture(t)
+		test.Run(event, func(test *testing.T) {
+			fixture := newGitHubIntakeFixture(test)
 			action := "dismissed"
 			if event != "pull_request_review" {
 				fixture.payload["action"] = "created"
@@ -128,21 +130,69 @@ func TestGitHubAdmissionT25WithdrawalDeniesPending(t *testing.T) {
 			}
 			initial := fixture.issueID + "-T25-initial"
 			if response := fixture.post(event, fixture.secret, initial); response.Code != http.StatusAccepted {
-				t.Fatalf("initial = %d", response.Code)
+				test.Fatalf("initial = %d", response.Code)
 			}
 			fixture.payload["action"] = action
 			fixture.payload["sender"] = map[string]any{"id": 99, "login": "maintainer", "type": "User"}
 			if response := fixture.post(event, fixture.secret, fixture.issueID+"-T25-withdrawal"); response.Code != http.StatusAccepted {
-				t.Fatalf("withdrawal = %d", response.Code)
+				test.Fatalf("withdrawal = %d", response.Code)
 			}
 			var state, reason string
 			if err := testPool.QueryRow(context.Background(), `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, initial).Scan(&state, &reason); err != nil {
-				t.Fatal(err)
+				test.Fatal(err)
 			}
 			if state != "denied" || reason != action {
-				t.Fatalf("pending revision = %s/%s, want denied/%s", state, reason, action)
+				test.Fatalf("pending revision = %s/%s, want denied/%s", state, reason, action)
 			}
-			assertGitHubIntakeNoEffects(t, fixture)
+			assertGitHubIntakeNoEffects(test, fixture)
 		})
+	}
+}
+
+func TestGitHubAdmissionWithdrawalScopeAndDispatchHistory(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	delivery := fixture.issueID + "-withdrawal-scope"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("initial = %d", response.Code)
+	}
+	transaction, err := testPool.Begin(context.Background())
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer transaction.Rollback(context.Background())
+	for _, alternate := range []struct {
+		field, value string
+	}{
+		{"workspace_id", "'00000000-0000-0000-0000-000000000001'::uuid"},
+		{"installation_id", "2019002"}, {"repository_id", "9002"},
+		{"object_kind", "'issue_comment'"}, {"object_id", "78"},
+		{"state", "'dispatched'"},
+	} {
+		statement := `CREATE TEMP TABLE withdrawal_copy ON COMMIT DROP AS SELECT * FROM github_webhook_revision WHERE source_delivery_guid=$1`
+		if _, err := transaction.Exec(context.Background(), statement, delivery); err != nil {
+			test.Fatal(err)
+		}
+		if _, err := transaction.Exec(context.Background(), `UPDATE withdrawal_copy SET `+alternate.field+`=`+alternate.value+`, body_hash=repeat('a',64)`); err != nil {
+			test.Fatal(err)
+		}
+		if _, err := transaction.Exec(context.Background(), `INSERT INTO github_webhook_revision SELECT * FROM withdrawal_copy`); err != nil {
+			test.Fatal(err)
+		}
+		if _, err := transaction.Exec(context.Background(), `DROP TABLE withdrawal_copy`); err != nil {
+			test.Fatal(err)
+		}
+	}
+	if err := fixture.handler.Queries.WithTx(transaction).DenyPendingGitHubWebhookRevisions(context.Background(), db.DenyPendingGitHubWebhookRevisionsParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: 2019001, RepositoryID: 9001,
+		ObjectKind: "review", ObjectID: 77, Reason: "dismissed",
+	}); err != nil {
+		test.Fatal(err)
+	}
+	var denied, unchanged, dispatched int
+	if err := transaction.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE state='denied'), count(*) FILTER (WHERE state='deferred'), count(*) FILTER (WHERE state='dispatched') FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&denied, &unchanged, &dispatched); err != nil {
+		test.Fatal(err)
+	}
+	if denied != 1 || unchanged != 5 || dispatched != 1 {
+		test.Fatalf("withdrawal scope: denied=%d unchanged=%d dispatched=%d, want 1/5/1", denied, unchanged, dispatched)
 	}
 }

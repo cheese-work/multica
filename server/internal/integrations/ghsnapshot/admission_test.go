@@ -21,7 +21,7 @@ func signedReviewRevision(event, action, body string) ReviewRevision {
 	}
 }
 
-func TestReviewAdmissionMatrix(t *testing.T) {
+func TestReviewAdmissionMatrix(test *testing.T) {
 	for _, scenario := range []struct {
 		name, event, action, body, editor, editedAt, state, wantState, wantReason string
 		senderID, trustedID                                                       int64
@@ -44,7 +44,7 @@ func TestReviewAdmissionMatrix(t *testing.T) {
 		{"self_edit_without_editor", "issue_comment", "edited", "signed text", "null", "null", "", "quarantined", "unknown_edit_provenance", 42, 42},
 		{"unmapped", "issue_comment", "created", "signed text", "null", "null", "", "denied", "untrusted_author", 42, 0},
 	} {
-		t.Run(scenario.name, func(t *testing.T) {
+		test.Run(scenario.name, func(test *testing.T) {
 			revision := signedReviewRevision(scenario.event, scenario.action, "signed text")
 			if scenario.name == "T22_empty_review" {
 				revision = signedReviewRevision(scenario.event, scenario.action, "")
@@ -56,33 +56,33 @@ func TestReviewAdmissionMatrix(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				calls++
 				if request.Method != http.MethodPost || request.URL.Path != "/graphql" || request.Header.Get("Authorization") != "Bearer test-token" {
-					t.Errorf("unexpected GraphQL request: %s %s", request.Method, request.URL.Path)
+					test.Errorf("unexpected GraphQL request: %s %s", request.Method, request.URL.Path)
 				}
 				var query struct {
 					Query     string            `json:"query"`
 					Variables map[string]string `json:"variables"`
 				}
 				if err := json.NewDecoder(request.Body).Decode(&query); err != nil || query.Variables["id"] != revision.NodeID || !strings.Contains(query.Query, "lastEditedAt") || !strings.Contains(query.Query, "editor") || !strings.Contains(query.Query, "fullDatabaseId") {
-					t.Errorf("query did not request signed node provenance: %+v, %v", query, err)
+					test.Errorf("query did not request signed node provenance: %+v, %v", query, err)
 				}
 				body, _ := json.Marshal(scenario.body)
 				fmt.Fprintf(writer, `{"data":{"node":{"id":"signed-node-id","databaseId":"%d","__typename":%q,"body":%s,"editor":%s,"lastEditedAt":%s,"state":%q}}}`, revision.ObjectID, kind, body, scenario.editor, scenario.editedAt, scenario.state)
 			}))
 			defer server.Close()
-			client := newTestClient(t, server.URL)
+			client := newTestClient(test, server.URL)
 			client.tokens[1] = cachedToken{token: "test-token", expiry: client.now().Add(2 * tokenRenewSkew)}
 			decision := client.CheckReviewRevision(context.Background(), 1, revision, scenario.trustedID)
 			if decision.State != scenario.wantState || decision.Reason != scenario.wantReason {
-				t.Fatalf("admission = %+v, want %s/%s", decision, scenario.wantState, scenario.wantReason)
+				test.Fatalf("admission = %+v, want %s/%s", decision, scenario.wantState, scenario.wantReason)
 			}
 			if decision.State == "admitted" && calls != 1 {
-				t.Fatalf("admission must recheck GraphQL exactly once: calls=%d", calls)
+				test.Fatalf("admission must recheck GraphQL exactly once: calls=%d", calls)
 			}
 		})
 	}
 }
 
-func TestReviewAdmissionFailsClosed(t *testing.T) {
+func TestReviewAdmissionFailsClosed(test *testing.T) {
 	for _, response := range []string{
 		`{"errors":[{"message":"sensitive text"}],"data":{"node":null}}`,
 		`{"data":{"node":null}}`, `{"data":{"node":{"id":"signed-node-id"}}}`, `not json`,
@@ -91,52 +91,52 @@ func TestReviewAdmissionFailsClosed(t *testing.T) {
 		`{"data":{"node":{"id":"signed-node-id","databaseId":77,"__typename":"PullRequestReviewComment","body":"signed text","editor":null,"lastEditedAt":null}}}`,
 		`{"data":{"node":{"id":"signed-node-id","databaseId":77,"__typename":"IssueComment","body":"signed text","editor":null}}}`,
 	} {
-		t.Run(response, func(t *testing.T) {
+		test.Run(response, func(test *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { fmt.Fprint(writer, response) }))
 			defer server.Close()
-			client := newTestClient(t, server.URL)
+			client := newTestClient(test, server.URL)
 			client.tokens[1] = cachedToken{token: "test-token", expiry: client.now().Add(2 * tokenRenewSkew)}
 			decision := client.CheckReviewRevision(context.Background(), 1, signedReviewRevision("issue_comment", "created", "signed text"), 42)
 			if decision.State != "deferred" || decision.Reason != "provenance_lookup_failed" {
-				t.Fatalf("malformed or wrong node admitted: %+v", decision)
+				test.Fatalf("malformed or wrong node admitted: %+v", decision)
 			}
 		})
 	}
 }
 
-func TestReviewAdmissionWithdrawalAndUnknownPairs(t *testing.T) {
+func TestReviewAdmissionWithdrawalAndUnknownPairs(test *testing.T) {
 	for _, pair := range [][2]string{
 		{"pull_request_review", "dismissed"}, {"pull_request_review_comment", "deleted"}, {"issue_comment", "deleted"},
 		{"pull_request_review", "created"}, {"pull_request_review_comment", "submitted"}, {"issue_comment", "submitted"}, {"other", "created"},
 	} {
 		decision := (*Client)(nil).CheckReviewRevision(context.Background(), 1, signedReviewRevision(pair[0], pair[1], "signed text"), 42)
 		if decision.State != "denied" {
-			t.Errorf("%s/%s = %+v, want denied without lookup", pair[0], pair[1], decision)
+			test.Errorf("%s/%s = %+v, want denied without lookup", pair[0], pair[1], decision)
 		}
 	}
 }
 
-func TestReviewAdmissionTransportFailures(t *testing.T) {
+func TestReviewAdmissionTransportFailures(test *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
+		test.Run(fmt.Sprint(status), func(test *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				writer.WriteHeader(status)
 				fmt.Fprint(writer, "untrusted remote error body")
 			}))
 			defer server.Close()
-			client := newTestClient(t, server.URL)
+			client := newTestClient(test, server.URL)
 			client.tokens[1] = cachedToken{token: "test-token", expiry: client.now().Add(2 * tokenRenewSkew)}
 			decision := client.CheckReviewRevision(context.Background(), 1, signedReviewRevision("issue_comment", "created", "signed text"), 42)
 			if decision != (ReviewAdmission{"deferred", "provenance_lookup_failed"}) {
-				t.Fatalf("API error = %+v, want deferred without remote text", decision)
+				test.Fatalf("API error = %+v, want deferred without remote text", decision)
 			}
 		})
 	}
-	client := newTestClient(t, "http://127.0.0.1:1")
+	client := newTestClient(test, "http://127.0.0.1:1")
 	client.tokens[1] = cachedToken{token: "test-token", expiry: client.now().Add(2 * tokenRenewSkew)}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if decision := client.CheckReviewRevision(ctx, 1, signedReviewRevision("issue_comment", "created", "signed text"), 42); decision.State != "deferred" {
-		t.Fatalf("cancelled lookup = %+v", decision)
+		test.Fatalf("cancelled lookup = %+v", decision)
 	}
 }
