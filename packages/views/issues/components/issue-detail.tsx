@@ -55,6 +55,7 @@ import {
 import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
+import { StatusSummary, statusSummaryOf } from "./status-summary";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -138,6 +139,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { IssueRelationsButton } from "./issue-relations-button";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
@@ -3657,6 +3659,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
+      <IssueRelationsButton key={issue.id} issueId={issue.id} />
       <WakeupsSection
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
@@ -4279,6 +4282,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               }}
             />
           )}
+
+          <StatusSummary summary={statusSummaryOf(issue.metadata)} />
 
           <div
             id={`find-description-${id}`}

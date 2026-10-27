@@ -127,6 +127,7 @@ type Task struct {
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
 	TriggerThreadID               string                 `json:"trigger_thread_id,omitempty"`                // root comment ID for the triggering thread; falls back to trigger_comment_id on old servers
 	TriggerCommentContent         string                 `json:"trigger_comment_content,omitempty"`          // content of the triggering comment
+	TriggerThreadContext          string                 `json:"trigger_thread_context,omitempty"`           // CHE-2070: bounded plain-text transcript (root + last replies) of the triggering thread, excluding the trigger itself; empty on old servers
 	TriggerAuthorType             string                 `json:"trigger_author_type,omitempty"`              // "agent" or "member" — author kind for the triggering comment
 	TriggerAuthorName             string                 `json:"trigger_author_name,omitempty"`              // display name of the triggering comment author
 	NewCommentCount               int                    `json:"new_comment_count,omitempty"`                // issue-wide comments since this agent's last run (excludes its own and the injected trigger); 0/omitted for old daemons or cold start

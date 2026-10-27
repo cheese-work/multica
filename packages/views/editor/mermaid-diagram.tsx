@@ -57,7 +57,7 @@ type MermaidAPI = typeof import("mermaid").default;
 
 let mermaidPromise: Promise<MermaidAPI> | null = null;
 
-function getMermaid(): Promise<MermaidAPI> {
+export function getMermaid(): Promise<MermaidAPI> {
   mermaidPromise ??= import("mermaid").then(({ default: mermaid }) => {
     mermaid.initialize({
       startOnLoad: false,
@@ -123,7 +123,7 @@ function resolveCssColor(
 
 const FALLBACK_BACKGROUND = "rgb(255, 255, 255)";
 
-function getMermaidThemeVariables(host: HTMLElement | null) {
+export function getMermaidThemeVariables(host: HTMLElement | null) {
   if (!host) {
     return {
       primaryColor: "rgb(245, 245, 245)",
@@ -184,7 +184,7 @@ function getExportStyle(host: HTMLElement | null): {
   };
 }
 
-function getMermaidLayout(svg: string): Size | null {
+export function getMermaidLayout(svg: string): Size | null {
   const viewBoxMatch = svg.match(
     /viewBox=["']\s*([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s*["']/i,
   );

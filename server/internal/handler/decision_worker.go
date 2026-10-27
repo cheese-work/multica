@@ -237,6 +237,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
+	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, recipient := range recipients {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
+		}))
+	}
 	return failures
 }
 
