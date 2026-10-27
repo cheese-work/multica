@@ -1008,6 +1008,7 @@ function PreviewPanel({
               <PanelRight className="size-4" />
             </ChromeButton>
           )}
+          </ViewerActions>
           {onClose && (
             <>
               <ChromeDivider />
@@ -1016,7 +1017,6 @@ function PreviewPanel({
               </ChromeButton>
             </>
           )}
-          </ViewerActions>
         </div>
       </header>
       <div data-testid="media-stage" className="flex min-h-0 flex-1">

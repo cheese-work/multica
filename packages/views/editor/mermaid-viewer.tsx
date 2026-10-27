@@ -256,13 +256,13 @@ function MermaidViewerContent({
               </DropdownMenuContent>
             </DropdownMenu>
             <MediaLinkAction kind="mermaid" content={chart} />
+          </ViewerActions>
             {onClose && <ToolbarButton
               onClick={onClose}
               label={t(($) => $.mermaid.close_viewer)}
             >
               <X className="size-4" />
             </ToolbarButton>}
-          </ViewerActions>
         </header>
 
         {showSource ? (

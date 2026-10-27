@@ -20,7 +20,7 @@ const table = "| Media | Web | Desktop |\n| --- | --- | --- |\n| Diagram | New t
 const html = '<!doctype html><html><head><style>body{font:16px system-ui;margin:0;padding:56px;background:#f7f8fa;color:#172033}main{max-width:760px;margin:auto;background:white;border:1px solid #dde2e9;border-radius:16px;padding:36px}h1{font-size:28px;margin:0 0 12px}.row{display:flex;align-items:center;gap:16px;margin:24px 0}.bar{height:24px;background:#5d78e7;border-radius:5px}span{width:120px}small{color:#586477}</style></head><body><main><small>VIEWER MEDIA</small><h1>One item. Its own page.</h1><p>No issue thread or application chrome.</p><div class="row"><span>Web tab</span><div class="bar" style="width:320px"></div></div><div class="row"><span>App window</span><div class="bar" style="width:260px;background:#3c9f81"></div></div><p>Reload and share the same permission-checked link.</p></main></body></html>';
 const imageUrl = `${apiOrigin}/fixture/image.png`;
 const content = `# Capture fixture\n\nSurrounding issue text must not appear on a media page.\n\n\`\`\`mermaid\n${chart}\n\`\`\`\n\n${table}\n\n![Media fixture](${imageUrl})\n\n\`\`\`html\n${html}\n\`\`\``;
-const issue = { id: "issue-1", workspace_id: "ws-1", number: 1, identifier: "CAP-1", title: "Viewer media fixture", description: "The persisted media source is in the comment below.", status: "in_progress", priority: "medium", assignee_type: null, assignee_id: null, creator_type: "member", creator_id: "user-1", parent_issue_id: null, project_id: null, position: 0, start_date: null, due_date: null, metadata: {}, properties: {}, created_at: "2026-10-27T00:00:00Z", updated_at: "2026-10-27T00:00:00Z" };
+const issue = { id: "issue-1", workspace_id: "ws-1", number: 1, identifier: "CAP-1", title: "Viewer media fixture", description: `Saved issue-description media.\n\n\`\`\`mermaid\n${chart}\n\`\`\`\n\n\`\`\`html\n${html}\n\`\`\``, status: "in_progress", priority: "medium", assignee_type: null, assignee_id: null, creator_type: "member", creator_id: "user-1", parent_issue_id: null, project_id: null, position: 0, start_date: null, due_date: null, metadata: {}, properties: {}, created_at: "2026-10-27T00:00:00Z", updated_at: "2026-10-27T00:00:00Z" };
 const comment = { id: "comment-1", issue_id: issue.id, type: "comment", author_type: "member", author_id: "user-1", content, parent_id: null, attachments: [], reactions: [], revision: 1, created_at: issue.created_at, updated_at: issue.updated_at };
 const timeline = { ...comment, type: "comment", actor_type: "member", actor_id: "user-1", actor_name: "Capture fixture" };
 const user = { id: "user-1", name: "Capture fixture", email: "capture@example.invalid", onboarded_at: "2026-10-27T00:00:00Z", language: "en" };
@@ -113,6 +113,10 @@ try {
         await page.screenshot({ path: join(output, `source-${item.kind}-${width}-${sourcePhase}.png`), animations: "disabled" });
         const more = dialog.locator("summary[aria-label='More']");
         if (sourcePhase === "after" && width === 390) {
+          const close = dialog.getByRole("button", { name: "Close", exact: true });
+          if (await close.evaluate((button) => !!button.closest("details"))) throw new Error("Source Close is hidden inside More");
+          await close.focus();
+          if (!(await close.evaluate((button) => document.activeElement === button))) throw new Error("Source Close is not focusable");
           await more.focus();
           await page.keyboard.press("Enter");
           await page.keyboard.press("Tab");
@@ -132,6 +136,33 @@ try {
         }
         await page.keyboard.press("Escape");
         await dialog.waitFor({ state: "hidden" });
+      }
+      if (sourcePhase === "after") {
+        for (const item of items.filter((item) => item.kind === "mermaid" || item.kind === "html")) {
+          console.log("DESCRIPTION", width, item.kind);
+          await page.goto(`${webOrigin}/capture/issues/CAP-1`, { timeout: 1200000, waitUntil: "domcontentloaded" });
+          const description = page.locator("[data-comment-content^='description:']").first();
+          const block = description.locator(".code-block-wrapper").nth(item.kind === "mermaid" ? 0 : 1);
+          await block.scrollIntoViewIfNeeded();
+          const trigger = block.getByRole("button", { name: item.kind === "mermaid" ? "Open diagram viewer" : "Fullscreen", exact: true });
+          await trigger.click();
+          const dialog = page.getByRole("dialog");
+          await waitForMedia(dialog, item.kind);
+          if (width === 390) await dialog.locator("summary[aria-label='More']").click();
+          const action = dialog.getByRole("button", { name: "Open in new tab", exact: true });
+          await action.waitFor();
+          await page.screenshot({ path: join(output, `description-${item.kind}-${width}-after.png`), animations: "disabled" });
+          const [target] = await Promise.all([
+            page.waitForEvent("popup", { timeout: 1200000 }),
+            action.click(),
+          ]);
+          await target.getByTestId("media-toolbar").waitFor({ timeout: 120000 });
+          await waitForMedia(target, item.kind);
+          if (target.url() !== `${webOrigin}${item.path}`) throw new Error(`Wrong saved description link: ${target.url()}`);
+          await target.close();
+          await dialog.getByRole("button", { name: "Close", exact: true }).click();
+          await dialog.waitFor({ state: "hidden" });
+        }
       }
     }
     console.log(`SOURCE PASS: ${sourcePhase}; ${sourceItems.length} kinds; widths ${widths.join(",")}; Escape dismissal`);
@@ -218,7 +249,7 @@ try {
     }
     console.log("DESKTOP PASS: native IPC windows; four kinds; reload; public copy links");
   }
-  writeFileSync(join(output, "receipt.json"), JSON.stringify({ revision, sourcePhase: sourcePhase ?? "NOT-RUN", sourceKind: process.env.CAPTURE_SOURCE_KIND ?? "all", sourceWidth: process.env.CAPTURE_SOURCE_WIDTH ?? "both", mediaPages: process.env.CAPTURE_MEDIA !== "0", items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
+  writeFileSync(join(output, "receipt.json"), JSON.stringify({ revision, sourcePhase: sourcePhase ?? "NOT-RUN", sourceKind: process.env.CAPTURE_SOURCE_KIND ?? "all", sourceWidth: process.env.CAPTURE_SOURCE_WIDTH ?? "both", savedDescription: sourcePhase === "after" ? "PASS" : "NOT-RUN", mediaPages: process.env.CAPTURE_MEDIA !== "0", items, web: browser ? "PASS" : "NOT-RUN", desktop: electron ? "PASS" : "NOT-RUN", fixtures: true, daemonAndUpdaterDisabled: true, requests }, null, 2));
 } catch (error) {
   writeFileSync(join(output, "failure-requests.json"), JSON.stringify(requests, null, 2));
   for (const [index, page] of (browser?.contexts()[0]?.pages() ?? []).entries()) {

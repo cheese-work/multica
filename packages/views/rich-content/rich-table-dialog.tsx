@@ -208,6 +208,7 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown, standa
             {t(($) => $.table.copy_csv)}
           </Button>
           <MediaLinkAction kind="table" content={getMarkdown()} />
+          </ViewerActions>
           {!standalone && <DialogClose
             render={
               <IconButton
@@ -220,7 +221,6 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown, standa
           >
             <X />
           </DialogClose>}
-          </ViewerActions>
         </div>
         <DataTable
           table={table}

@@ -4346,6 +4346,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   ref={descEditorRef}
                   key={id}
                   value={issue.description ?? ""}
+                  persistedMediaMarkdown={issue.description ?? ""}
                   placeholder={t(($) => $.detail.desc_placeholder)}
                   onUpdate={(md, baseMarkdown) => {
                     // Bind any pending uploads still referenced in the markdown

@@ -12,6 +12,7 @@ import { mediaContentId } from "./media-id";
 
 const SourceContext = createContext<MediaSource | null>(null);
 const StandaloneContext = createContext(false);
+const PersistedEditorMediaContext = createContext<string | undefined>(undefined);
 
 export function MediaSourceProvider({ source, children }: { source: MediaSource | null; children: ReactNode }) {
   const type = source?.type;
@@ -21,8 +22,10 @@ export function MediaSourceProvider({ source, children }: { source: MediaSource 
 }
 
 export const StandaloneMediaProvider = StandaloneContext.Provider;
+export const PersistedEditorMediaProvider = PersistedEditorMediaContext.Provider;
 export function useStandaloneMedia() { return use(StandaloneContext); }
 export function useMediaSource() { return use(SourceContext); }
+export function usePersistedEditorMedia() { return use(PersistedEditorMediaContext); }
 
 export function MediaLinkAction({ kind, content, attachmentId, source: explicitSource, copyLink }: {
   kind: MediaKind;

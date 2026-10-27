@@ -122,6 +122,7 @@ export function HtmlPreviewSurface({
                 </Button>
               )}
               {mediaContent != null && <MediaLinkAction kind="html" content={mediaContent} />}
+              </ViewerActions>
               <Button
                 ref={closeRef}
                 type="button"
@@ -132,7 +133,6 @@ export function HtmlPreviewSurface({
               >
                 <X />
               </Button>
-              </ViewerActions>
             </div>
           </>
         )}
