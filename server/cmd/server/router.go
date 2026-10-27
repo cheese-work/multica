@@ -2677,6 +2677,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 

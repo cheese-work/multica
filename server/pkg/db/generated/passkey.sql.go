@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advancePasskey = `-- name: AdvancePasskey :exec
+UPDATE user_passkey SET sign_count = $2, last_used_at = now() WHERE id = $1
+`
+
+type AdvancePasskeyParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SignCount int64       `json:"sign_count"`
+}
+
+func (q *Queries) AdvancePasskey(ctx context.Context, arg AdvancePasskeyParams) error {
+	_, err := q.db.Exec(ctx, advancePasskey, arg.ID, arg.SignCount)
+	return err
+}
+
+const consumePasskeyChallenge = `-- name: ConsumePasskeyChallenge :exec
+UPDATE passkey_assertion_challenge SET consumed_at = now() WHERE id = $1
+`
+
+func (q *Queries) ConsumePasskeyChallenge(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, consumePasskeyChallenge, id)
+	return err
+}
+
 const getPasskeyChallenge = `-- name: GetPasskeyChallenge :one
 SELECT id, nonce, user_id, purpose, subject_id, session_data, expires_at, consumed_at, superseded_at, created_at FROM passkey_assertion_challenge WHERE id = $1
 `
@@ -73,6 +96,46 @@ func (q *Queries) InsertPasskeyChallenge(ctx context.Context, arg InsertPasskeyC
 	return i, err
 }
 
+const listUsablePasskeys = `-- name: ListUsablePasskeys :many
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL
+ORDER BY id
+`
+
+func (q *Queries) ListUsablePasskeys(ctx context.Context, userID pgtype.UUID) ([]UserPasskey, error) {
+	rows, err := q.db.Query(ctx, listUsablePasskeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserPasskey{}
+	for rows.Next() {
+		var i UserPasskey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.PublicKey,
+			&i.AttestationType,
+			&i.Aaguid,
+			&i.SignCount,
+			&i.Transports,
+			&i.Flags,
+			&i.SuspectAt,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockOpenPasskeyChallenge = `-- name: LockOpenPasskeyChallenge :one
 
 SELECT id, nonce, user_id, purpose, subject_id, session_data, expires_at, consumed_at, superseded_at, created_at FROM passkey_assertion_challenge
@@ -98,6 +161,80 @@ func (q *Queries) LockOpenPasskeyChallenge(ctx context.Context, userID pgtype.UU
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const lockPasskeyByCredentialNowait = `-- name: LockPasskeyByCredentialNowait :one
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey WHERE credential_id = $1 FOR UPDATE NOWAIT
+`
+
+func (q *Queries) LockPasskeyByCredentialNowait(ctx context.Context, credentialID []byte) (UserPasskey, error) {
+	row := q.db.QueryRow(ctx, lockPasskeyByCredentialNowait, credentialID)
+	var i UserPasskey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CredentialID,
+		&i.PublicKey,
+		&i.AttestationType,
+		&i.Aaguid,
+		&i.SignCount,
+		&i.Transports,
+		&i.Flags,
+		&i.SuspectAt,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const lockPasskeyChallengeNowait = `-- name: LockPasskeyChallengeNowait :one
+SELECT challenge.id, challenge.nonce, challenge.user_id, challenge.purpose, challenge.subject_id, challenge.session_data, challenge.expires_at, challenge.consumed_at, challenge.superseded_at, challenge.created_at, (challenge.expires_at <= now())::bool AS expired
+FROM passkey_assertion_challenge challenge
+WHERE challenge.id = $1
+FOR UPDATE NOWAIT
+`
+
+type LockPasskeyChallengeNowaitRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Nonce        []byte             `json:"nonce"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Purpose      string             `json:"purpose"`
+	SubjectID    pgtype.UUID        `json:"subject_id"`
+	SessionData  []byte             `json:"session_data"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt   pgtype.Timestamptz `json:"consumed_at"`
+	SupersededAt pgtype.Timestamptz `json:"superseded_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	Expired      bool               `json:"expired"`
+}
+
+func (q *Queries) LockPasskeyChallengeNowait(ctx context.Context, id pgtype.UUID) (LockPasskeyChallengeNowaitRow, error) {
+	row := q.db.QueryRow(ctx, lockPasskeyChallengeNowait, id)
+	var i LockPasskeyChallengeNowaitRow
+	err := row.Scan(
+		&i.ID,
+		&i.Nonce,
+		&i.UserID,
+		&i.Purpose,
+		&i.SubjectID,
+		&i.SessionData,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.SupersededAt,
+		&i.CreatedAt,
+		&i.Expired,
+	)
+	return i, err
+}
+
+const markPasskeySuspect = `-- name: MarkPasskeySuspect :exec
+UPDATE user_passkey SET suspect_at = now() WHERE id = $1 AND suspect_at IS NULL
+`
+
+func (q *Queries) MarkPasskeySuspect(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markPasskeySuspect, id)
+	return err
 }
 
 const supersedePasskeyChallenge = `-- name: SupersedePasskeyChallenge :exec

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -161,9 +162,12 @@ func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActio
 
 func writeDecisionActionError(writer http.ResponseWriter, err error) {
 	var refusal decisionIntentRefusal
+	var proofRefusal passkey.Refusal
 	switch {
 	case errors.As(err, &refusal):
 		writeError(writer, refusal.status, refusal.message)
+	case errors.As(err, &proofRefusal):
+		writeError(writer, proofRefusal.Status, proofRefusal.Message)
 	case actionTxBusy(err):
 		writer.Header().Set("Retry-After", "1")
 		writeError(writer, errBusyRetry.status, errBusyRetry.message)

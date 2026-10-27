@@ -121,6 +121,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
 	}
+	handler.markSuspectAfterRefusal(ctx, err)
 	return action, err
 }
 
