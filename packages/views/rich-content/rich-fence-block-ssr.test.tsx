@@ -38,7 +38,6 @@ vi.mock("mermaid", () => ({
 }));
 
 import { RichFenceBlock } from "./rich-code-block";
-import { resetMountedBlocks } from "./mounted-block-registry";
 
 const CHART = "flowchart LR\n  A --> B";
 const CACHED_HEIGHT = 412;
@@ -58,7 +57,6 @@ function cacheKey(chart: string): string {
 }
 
 beforeEach(() => {
-  resetMountedBlocks();
   window.sessionStorage.clear();
   // A warm cache: this exact chart already rendered earlier in the session.
   window.sessionStorage.setItem(
