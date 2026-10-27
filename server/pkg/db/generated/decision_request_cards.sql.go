@@ -59,7 +59,8 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
-    COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at
+    COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
+    record.issue_comment_id AS record_comment_id
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -67,6 +68,8 @@ JOIN chat_message message ON message.chat_session_id = request.chat_session_id
     AND (message.id = request.ping_message_id OR request.id = ANY(message.decision_request_ids))
 LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
+LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
+    AND record.disclaimed_at IS NULL
 WHERE request.workspace_id = $1
     AND message.id = ANY($2::uuid[])
 ORDER BY message.id, request.created_at, request.id
@@ -91,6 +94,7 @@ type ListDecisionRequestCardsRow struct {
 	CancelReason    pgtype.Text        `json:"cancel_reason"`
 	Options         []byte             `json:"options"`
 	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
+	RecordCommentID pgtype.UUID        `json:"record_comment_id"`
 }
 
 func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecisionRequestCardsParams) ([]ListDecisionRequestCardsRow, error) {
@@ -116,6 +120,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.CancelReason,
 			&i.Options,
 			&i.WithdrawnAt,
+			&i.RecordCommentID,
 		); err != nil {
 			return nil, err
 		}

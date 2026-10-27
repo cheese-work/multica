@@ -124,6 +124,15 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
             {t(($) => $.decision.source_comment)}
           </AppLink>
         )}
+        {card.state === "answered" && card.record_comment_id && (
+          <AppLink
+            href={`${issueHref}#comment-${card.record_comment_id}`}
+            className="inline-flex min-h-9 items-center hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+            data-testid="decision-request-record"
+          >
+            {t(($) => $.decision.recorded_on, { issue: card.issue_identifier || card.issue_id })}
+          </AppLink>
+        )}
       </div>
       <div className="min-w-0 space-y-3 break-words px-3 py-3">
         {card.state === "withdrawn" && card.reason && (

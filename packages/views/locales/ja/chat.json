@@ -305,6 +305,7 @@
     "answer_error": "送信できませんでした。もう一度お試しください。",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
+    "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",
     "inherited": "継承",
     "message_unavailable": "このメッセージは利用できなくなりました"

@@ -311,6 +311,7 @@
     "answer_error": "Could not send. Try again.",
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
+    "recorded_on": "Recorded on {{issue}}",
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"

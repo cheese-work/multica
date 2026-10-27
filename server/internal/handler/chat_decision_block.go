@@ -82,7 +82,7 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 			fmt.Fprintf(&block, "\n[request %s · %s %s · issue %s]\nask comment (use as --parent): %s\nask message: %s\n%s\n%sOnly if the human said `answer: ...` for this card: `multica issue comment add %s --decision-record --message <id> --parent %s`\n",
 				uuidToString(ask.ID), ask.IssueKey, cutUTF8(escapeDecisionBlock(ask.IssueTitle), decisionBlockTitleSize),
 				issueID, askCommentID, uuidToString(ask.PingMessageID),
-				cutUTF8(escapeDecisionBlock(ask.Ask), askBytes), cardOptionLines(ask.Options), issueID, askCommentID)
+				fitAsk(escapeDecisionBlock(ask.Ask), askBytes), cardOptionLines(ask.Options), issueID, askCommentID)
 		}
 	}
 	if len(notes) > 0 {
@@ -121,4 +121,35 @@ func cardOptionLines(raw []byte) string {
 		fmt.Fprintf(&lines, "- %s: %s\n", cutUTF8(escapeDecisionBlock(option.Label), decisionBlockTitleSize), cutUTF8(escapeDecisionBlock(option.WhatHappens), decisionBlockTitleSize))
 	}
 	return lines.String()
+}
+
+// fitAsk cuts an ask to limit bytes. The ask is sections separated by a blank
+// line and a bold heading; the first is the agent's background, the rest are
+// what the human decides with (decision, stakes, options, recommendation, ...).
+// The background takes the cut. Only when the rest alone is over the limit is
+// each of those sections cut to an equal share, so none is lost whole.
+func fitAsk(ask string, limit int) string {
+	if len(ask) <= limit {
+		return ask
+	}
+	const sep = "\n\n**"
+	sections := strings.Split(ask, sep)
+	if len(sections) < 2 {
+		return cutUTF8(ask, limit)
+	}
+	rest := sections[1:]
+	restSize := 0
+	for _, section := range rest {
+		restSize += len(sep) + len(section)
+	}
+	budget := limit - restSize
+	if restSize > limit {
+		share := max(limit/len(rest)-len(sep), 0)
+		for index, section := range rest {
+			rest[index] = cutUTF8(section, share)
+		}
+		budget = 0
+	}
+	background := cutUTF8(sections[0], max(budget, decisionBlockAskFloor/4))
+	return background + sep + strings.Join(rest, sep)
 }

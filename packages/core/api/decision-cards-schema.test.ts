@@ -36,6 +36,12 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [{ id: 7 }] }).decision_requests).toBeUndefined();
   });
 
+  it("keeps the record comment of an answered request and drops a malformed one", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: "record" } }).decision_request?.record_comment_id).toBe("record");
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: 7 } }).decision_request?.record_comment_id).toBeUndefined();
+  });
+
   it("keeps request state, source and original ask from additive metadata", () => {
     const request = {
       id: "request", issue_id: "issue", source_comment_id: "source",
@@ -113,13 +119,15 @@ describe("issue quote card fields", () => {
     disclaimed_at: null,
     decision_source_session_id: "s1",
     decision_source_message_id: "m1",
+    decision_request_session_id: "s0",
+    decision_request_message_id: "m0",
   };
 
   it("keeps the fields on a timeline entry", () => {
     const [entry] = TimelineEntriesSchema.parse([
       { type: "comment", id: "c", actor_type: "agent", actor_id: "a", created_at: "now", ...fields },
     ]);
-    expect(entry).toMatchObject({ decision_state: "effective", decision_source_message_id: "m1", decision_class: "deploy" });
+    expect(entry).toMatchObject({ decision_state: "effective", decision_source_message_id: "m1", decision_request_session_id: "s0", decision_request_message_id: "m0", decision_class: "deploy" });
   });
 
   it("keeps the fields on a comment and tolerates an unknown state", () => {

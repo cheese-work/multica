@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -276,5 +277,42 @@ func TestChatClaimCarriesDecisionNoteAcrossCompactionTask(test *testing.T) {
 	message := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
 	if !strings.Contains(message, "Before compaction.") {
 		test.Fatalf("note before the compaction task was lost:\n%s", message)
+	}
+}
+
+// With many open cards each ask is cut to a share of one budget. The cut falls
+// on the background (`Agent did`), never on the decision, stakes or
+// recommendation the human needs to choose with (CHE-2232).
+func TestChatClaimKeepsDecisionStakesAndRecommendationWhenAsksAreCut(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(test, ctx, "Decision DM")
+	for index := 0; index < 12; index++ {
+		ask := decisiontx.Ask{
+			ContextELI10: "Context", AgentDid: strings.Repeat("d", 3300),
+			Decision:      fmt.Sprintf("Decision-%02d which way", index),
+			StakesIfWrong: fmt.Sprintf("Stakes-%02d rollback costs a day", index),
+			Options: []decisiontx.AskOption{
+				{Label: "Alpha", WhatHappens: "a", CostOrTime: "1h"}, {Label: "Beta", WhatHappens: "b", CostOrTime: "2h"},
+			},
+			Recommendation: fmt.Sprintf("Recommendation-%02d pick Alpha", index), DefaultIfNoReply: "Wait",
+			SourceIssueID: "issue", SourceCommentID: "comment",
+		}
+		seedDMDecision(test, agentID, sessionID, ask.Content(), "open", fmt.Sprintf("%d hours", 13-index))
+	}
+	sendDirectChat(test, ctx, agentID, sessionID, "which one?")
+
+	carrier := claimForkTask(test, runtimeID, daemonID).ChatDecisionContext
+	for index := 0; index < 12; index++ {
+		for _, want := range []string{
+			fmt.Sprintf("Decision-%02d which way", index), fmt.Sprintf("Stakes-%02d rollback costs a day", index),
+			fmt.Sprintf("Recommendation-%02d pick Alpha", index),
+		} {
+			if !strings.Contains(carrier, want) {
+				test.Fatalf("carrier lacks %q", want)
+			}
+		}
+	}
+	if len(carrier) > 64<<10 {
+		test.Fatalf("carrier is %d bytes", len(carrier))
 	}
 }
