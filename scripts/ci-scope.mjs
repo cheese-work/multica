@@ -14,7 +14,7 @@ const X99_SCOPES = ["scripts", "quality_only"];
 
 export function decideScopes(event, filtered, headRef = "") {
   const full = event === "schedule" || event === "workflow_dispatch";
-  if (!full && event !== "push" && event !== "pull_request") {
+  if (!full && event !== "push" && event !== "pull_request" && event !== "merge_group") {
     throw new Error(`Unsupported CI event: ${event}`);
   }
   const outputs = { full: String(full) };

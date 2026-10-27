@@ -27,7 +27,8 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
-import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
+import { useShortcut } from "@multica/core/shortcuts";
+import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
 import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
@@ -120,6 +121,10 @@ interface ChatInputProps {
    * therefore treat this as the single terminal transition and consume the row.
    */
   onRestoreDraftApplied?: () => void;
+  /** Text to quote into the draft, one request per `id`. Appended after what is already typed; never sent. */
+  quoteRequest?: { id: number; content: string } | null;
+  /** Consumes the request, also when the composer could not take it. */
+  onQuoteApplied?: () => void;
   /** True when uploads are available for this composer (an agent is selected).
    *  The transport itself is the coordinated-upload engine (MUL-5181 L2) —
    *  the owner only says whether the affordance exists. When false,
@@ -209,6 +214,8 @@ export function ChatInput({
   conversationStarterRequest,
   onConversationStarterApplied,
   onRestoreDraftApplied,
+  quoteRequest,
+  onQuoteApplied,
   uploadEnabled: uploadAllowed,
   onStop,
   isRunning,
@@ -449,6 +456,18 @@ export function ChatInput({
     if (!focusRequest) return;
     editorRef.current?.focus();
   }, [focusRequest]);
+
+  // The editor emits the change itself, so the draft store follows as it does
+  // for typing.
+  const appliedQuoteIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!quoteRequest || appliedQuoteIdRef.current === quoteRequest.id) return;
+    appliedQuoteIdRef.current = quoteRequest.id;
+    onQuoteApplied?.();
+    if (disabled || noAgent) return;
+    const quoted = quoteRequest.content.split("\n").map((line) => `> ${line}`).join("\n");
+    if (editorRef.current?.insertMarkdownAtEnd(quoted)) editorRef.current.focus();
+  }, [quoteRequest, onQuoteApplied, disabled, noAgent]);
 
   useEffect(() => {
     if (!restoreDraftRequest) {
@@ -834,7 +853,7 @@ export function ChatInput({
                     title={t(($) => $.input.change_project_context)}
                     onClear={() => onProjectChange?.(null)}
                     clearLabel={t(($) => $.input.remove_project_context)}
-                    className="h-6 border-surface-border bg-surface-raised font-medium text-foreground"
+                    className="border-surface-border bg-surface-raised font-medium text-foreground"
                   />
                 }
               />
@@ -926,13 +945,22 @@ export function ChatInput({
                   (!allowSubmitWhileRunning || hasNothingToSend || gate.uploading)))
             }
             onStop={onStop}
-            tooltip={gate.uploading
+            // While blocked, the placeholder copy is exactly the reason.
+            disabledReason={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning && !isForkInput
-                ? t(($) => $.input.queue_send_tooltip)
-                : sendShortcut
-                  ? `${t(($) => $.input.send_tooltip)} · ${formatShortcut(sendShortcut)}`
-                  : t(($) => $.input.send_tooltip)}
+              : disabled || noAgent
+                ? placeholder
+                : undefined}
+            tooltip={isRunning && !isForkInput
+              ? t(($) => $.input.queue_send_tooltip)
+              : sendShortcut
+                ? (
+                  <>
+                    {t(($) => $.input.send_tooltip)}
+                    <ShortcutKeycaps shortcut={sendShortcut} decorative />
+                  </>
+                )
+                : t(($) => $.input.send_tooltip)}
             ariaLabel={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
               : isRunning && !isForkInput

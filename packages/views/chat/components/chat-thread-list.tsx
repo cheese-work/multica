@@ -32,6 +32,7 @@ import {
 import { useChatStore } from "@multica/core/chat";
 import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
   RowActionsMenu,
   handleRowActivationKey,
@@ -119,13 +120,20 @@ export function ChatThreadList({
   // archived chats fill the "Archived" view. Both sorted pinned-first (then by
   // activity) so the list stays ordered even after an optimistic pin/archive or
   // a WS patch mutates the flat cache in place.
+  // A continued DM lives on in its successor's transcript, so only the newest
+  // DM of a chain gets a row. A successor missing from the cache leaves its
+  // source listed rather than lost.
+  const rows = useMemo(() => {
+    const ids = new Set(sessions.map((s) => s.id));
+    return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
+  }, [sessions]);
   const historySessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status !== "archived")),
-    [sessions],
+    () => sortChatSessions(rows.filter((s) => s.status !== "archived")),
+    [rows],
   );
   const archivedSessions = useMemo(
-    () => sortArchivedChatSessions(sessions.filter((s) => s.status === "archived")),
-    [sessions],
+    () => sortArchivedChatSessions(rows.filter((s) => s.status === "archived")),
+    [rows],
   );
 
   // Which view is showing. Falls back to history when the archived list drains
@@ -558,29 +566,33 @@ function RowAction({
   testId?: string;
 }) {
   return (
-    <button
-      type="button"
-      data-testid={testId}
-      aria-label={label}
-      title={label}
-      onPointerDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        onClick();
-      }}
-      className={cn(
-        "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
-        danger
-          ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
-          : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
-      )}
-    >
-      {icon}
-    </button>
+    <DeferredTooltip
+      content={label}
+      trigger={
+        <button
+          type="button"
+          data-testid={testId}
+          aria-label={label}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onClick();
+          }}
+          className={cn(
+            "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
+            danger
+              ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+              : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
+          )}
+        >
+          {icon}
+        </button>
+      }
+    />
   );
 }
 

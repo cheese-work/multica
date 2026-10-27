@@ -186,6 +186,10 @@ func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string, s
 // canonical `## Comment Formatting` section the same brief carries, so
 // repeating it inline at every comment-triggered step 7 would be
 // duplication, not signal.
+// resolveThreadRule closes the thread a run was started from. Without it an
+// answered thread stays open and every later reader re-reads it (CHE-2070).
+const resolveThreadRule = "When this reply settles the thread and nothing more is expected there, add `--resolve-thread` to the post command (requires `--parent`). Leave it off when the thread still waits on someone: a question to the asker, a pending review, or follow-up work.\n\n"
+
 func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID string, squadLeader bool) string {
 	// The squad leader's `no_action` exit (recorded via `squad activity`) is
 	// the one path where posting no comment is correct — the imperative must
@@ -228,7 +232,8 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 				"Git Bash:\n\n"+
 				"    multica issue comment add %[1]s --parent %[2]s --content-file ./reply.md --output table && rm ./reply.md\n\n"+
 				"Do NOT drop the exit-code check or the `&&`: a bare cleanup after a failed post reports success and deletes the body.\n\n"+
-				"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n",
+				"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n\n"+
+				resolveThreadRule,
 			issueID, triggerCommentID,
 		)
 	}
@@ -238,7 +243,8 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 			"Write the body file first (rules: ## Comment Formatting above — MUL-2904 / #4182):\n\n"+
 			"    multica issue comment add %s --parent %s --content-file ./reply.md --output table && rm ./reply.md\n\n"+
 			"Keep the `&&`: as two separate statements a failed post is masked by the cleanup's success, and the body file is deleted.\n\n"+
-			"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n",
+			"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n\n"+
+			resolveThreadRule,
 		issueID, triggerCommentID,
 	)
 }

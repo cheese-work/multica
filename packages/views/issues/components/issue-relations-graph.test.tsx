@@ -1,0 +1,69 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { IssueRelations } from "@multica/core/types";
+import { I18nProvider } from "@multica/core/i18n/react";
+import enIssues from "../../locales/en/issues.json";
+import enEditor from "../../locales/en/editor.json";
+import { buildRelationsChart, IssueRelationsGraph } from "./issue-relations-graph";
+
+const mermaid = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  render: vi.fn(async (diagramId: string) => ({ svg: `<svg viewBox="0 0 200 100"><g class="node" id="${diagramId}-flowchart-n0-0"><text>CHE&amp;#45;1&amp;#58; Root &amp;#40;todo&amp;#41;</text></g><g class="node" id="${diagramId}-flowchart-n1-1"><text>CHE&amp;#45;2&amp;#58; Child &amp;#40;done&amp;#41;</text></g></svg>` })),
+}));
+vi.mock("../../editor/mermaid-diagram", () => ({
+  getMermaid: async () => mermaid,
+  getMermaidLayout: () => ({ width: 200, height: 100 }),
+  getMermaidThemeVariables: () => ({}),
+}));
+vi.mock("../../editor/hooks/use-theme-version", () => ({ useThemeVersion: () => 0 }));
+
+const graph: IssueRelations = {
+  depth: 1, omitted_count: 0,
+  nodes: [{ id: "root", identifier: "CHE-1", title: "Root", status: "todo" }, { id: "child", identifier: "CHE-2", title: "Child", status: "done" }],
+  edges: [{ source: "root", target: "child", type: "parent" }],
+};
+const labels = { parent: "parent", duplicate: "duplicate", wakeup: "wakeup", children_done: "children done", mention: "mention", shared_pr: "shared PR", unknown: "related" };
+
+describe("issue relations graph", () => {
+  it("escapes untrusted labels and uses controlled node IDs without click directives", () => {
+    const hostile = structuredClone(graph);
+    hostile.nodes[1]!.title = '"]\nclick n0 href "javascript:alert(1)"\n%%{init: {"securityLevel":"loose"}}%% <img onerror=alert(1)>';
+    const chart = buildRelationsChart(hostile, "root", labels);
+    expect(chart).not.toContain("\nclick");
+    expect(chart).not.toContain("%%{");
+    expect(chart).not.toContain("<img");
+    expect(chart).toContain("#34;");
+    expect(chart).toContain("class n0 current");
+  });
+
+  it("distinguishes edge types, ignores dangling edges and keeps cycles", () => {
+    const chart = buildRelationsChart({ ...graph, edges: [
+      { source: "root", target: "child", type: "wakeup" },
+      { source: "child", target: "root", type: "mention" },
+      { source: "root", target: "missing", type: "parent" },
+    ] }, "root", labels);
+    expect(chart).toContain("stroke-dasharray:8 4");
+    expect(chart).toContain("stroke-dasharray:2 4");
+    expect(chart).not.toContain("undefined");
+  });
+
+  it("navigates from mouse and keyboard nodes with Mermaid security strict", async () => {
+    const navigate = vi.fn();
+    render(<I18nProvider locale="en" resources={{ en: { issues: enIssues, editor: enEditor } }}><IssueRelationsGraph graph={graph} currentIssueId="root" onNavigate={navigate} /></I18nProvider>);
+    const child = await screen.findByRole("link", { name: "CHE-2: Child (done)" });
+    expect(child).toHaveTextContent("CHE-2: Child (done)");
+    fireEvent.click(child);
+    expect(navigate).toHaveBeenLastCalledWith("child");
+    fireEvent.keyDown(child, { key: "Enter" });
+    expect(navigate).toHaveBeenCalledTimes(2);
+    expect(mermaid.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict", htmlLabels: false }));
+  });
+
+  it("shows a render error and retries without changing security", async () => {
+    mermaid.render.mockRejectedValueOnce(new Error("render failed"));
+    render(<I18nProvider locale="en" resources={{ en: { issues: enIssues, editor: enEditor } }}><IssueRelationsGraph graph={graph} currentIssueId="root" onNavigate={vi.fn()} /></I18nProvider>);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /retry|try again/i }));
+    expect(await screen.findByRole("link", { name: "CHE-2: Child (done)" })).toBeInTheDocument();
+  });
+});

@@ -130,7 +130,7 @@ describe("editor TableView", () => {
     expect(copyText).toHaveBeenCalledWith(expect.stringContaining("`code`"));
   });
 
-  it("filters and exports mentions as they display", async () => {
+  it("filters and exports mentions without a registered auth store", async () => {
     await renderEditor(
       [
         "| Owner | Issue |",
@@ -142,6 +142,8 @@ describe("editor TableView", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Expand table" }));
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("@Alice")).toHaveAttribute("class", "mention");
+    expect(within(dialog).getByText("@Bob")).toHaveAttribute("class", "mention");
     await userEvent.click(within(dialog).getByRole("button", { name: "Copy as CSV" }));
     expect(copyText).toHaveBeenCalledWith("Owner,Issue\n@Alice,DEV-1\n@Bob,none");
 

@@ -792,6 +792,7 @@
     "toast_profile_failed": "Failed to update profile"
   },
   "notifications": {
+    "focused_delivery": "Only decisions and issues assigned to me",
     "title": "Inbox Notifications",
     "description": "Muted events remain visible on the issue.",
     "toast_failed": "Failed to update notification settings",
@@ -823,8 +824,7 @@
     },
     "system": {
       "title": "System Notifications",
-      "description": "Show system notifications when Multica is in the background.",
-      "label": "Show system notifications"
+      "label": "Show system notifications when Multica is in the background"
     },
     "browser": {
       "label": "Browser notifications",

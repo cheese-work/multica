@@ -41,6 +41,9 @@ type HistoryMessage struct {
 	// TS is the platform timestamp string, sortable lexicographically within a
 	// platform (Slack "1700000000.000100"). It doubles as the paging cursor.
 	TS string `json:"ts"`
+	// MessageKind is the stored chat_message kind of a transcript row that is not
+	// an ordinary message (for example "decision_request"). Omitted otherwise.
+	MessageKind string `json:"message_kind,omitempty"`
 
 	// The following are set only on a CHANNEL-OVERVIEW row that heads a thread,
 	// so the agent can `multica chat thread <thread_id>` to read its contents.

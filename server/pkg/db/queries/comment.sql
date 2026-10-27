@@ -1,3 +1,11 @@
+-- name: IsCommentTriggerRateLimited :one
+SELECT EXISTS (
+    SELECT 1 FROM comment_trigger_rate_limit
+    WHERE issue_id = $1
+      AND agent_id = $2
+      AND triggered_at > now() - interval '10 minutes'
+);
+
 -- name: ListCommentsForIssue :many
 -- The NEWEST $3 comments for an issue, returned in chronological order.
 --
