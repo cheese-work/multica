@@ -115,13 +115,20 @@ export function ChatThreadList({
   // archived chats fill the "Archived" view. Both sorted pinned-first (then by
   // activity) so the list stays ordered even after an optimistic pin/archive or
   // a WS patch mutates the flat cache in place.
+  // A continued DM lives on in its successor's transcript, so only the newest
+  // DM of a chain gets a row. A successor missing from the cache leaves its
+  // source listed rather than lost.
+  const rows = useMemo(() => {
+    const ids = new Set(sessions.map((s) => s.id));
+    return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
+  }, [sessions]);
   const historySessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status !== "archived")),
-    [sessions],
+    () => sortChatSessions(rows.filter((s) => s.status !== "archived")),
+    [rows],
   );
   const archivedSessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status === "archived")),
-    [sessions],
+    () => sortChatSessions(rows.filter((s) => s.status === "archived")),
+    [rows],
   );
 
   // Which view is showing. Falls back to history when the archived list drains

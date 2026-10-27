@@ -588,6 +588,37 @@ describe("ChatInput rename command", () => {
   });
 });
 
+describe("ChatInput quote request", () => {
+  beforeEach(() => insertMarkdownSpy.mockClear());
+
+  it("inserts the quoted text verbatim as a blockquote, once, without sending", async () => {
+    const onSend = vi.fn();
+    const onQuoteApplied = vi.fn();
+    const request = { id: 1, content: "Line one\nLine two with `code`" };
+    const { rerender } = renderInput({ onSend });
+
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledTimes(1);
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Line one\n> Line two with `code`");
+    expect(editorState.focused).toBe(1);
+    expect(onQuoteApplied).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("appends to a draft in progress instead of replacing it", () => {
+    const { rerender } = renderInput();
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "my own words" } });
+
+    rerender(element({ quoteRequest: { id: 1, content: "Earlier reply" } }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Earlier reply");
+    expect((screen.getByTestId("editor") as HTMLTextAreaElement).value).toBe("my own words");
+    expect(editorState.adopted).toEqual([]);
+  });
+});
+
 describe("ChatInput conversation starter send", () => {
   it("sends the chosen prompt immediately from an empty draft", async () => {
     const onSend = vi.fn().mockResolvedValue(false);

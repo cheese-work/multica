@@ -66,6 +66,9 @@
     "copied_count_other": "{{count}} 件のメッセージをコピー",
     "fork_hint": "メッセージを送信するとこのブランチが始まります。",
     "continuation_summary": "会話の要約",
+    "earlier_dm": "以前のDM",
+    "quote_message": "引用",
+    "load_older_messages": "さらに前のメッセージを読み込む",
     "show_details": "詳細を表示",
     "replied_in": "{{elapsed}}で返信",
     "failed_after": "{{elapsed}}後に失敗",
@@ -292,6 +295,10 @@
     "removed": "コメント {{number}} を削除しました"
   },
   "decision": {
+    "request_title": "判断の依頼",
+    "request_label": "判断の依頼：{{state}}",
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
     "from_original_dm": "元の DM から",
     "inherited": "継承",

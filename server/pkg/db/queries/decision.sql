@@ -48,13 +48,13 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'))
 RETURNING *;
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, issue_comment_id)
-VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_task_id'), sqlc.arg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id)
+VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
@@ -333,10 +333,13 @@ SELECT * FROM decision_intent
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: DecisionAnswerSourceRemoved :one
-SELECT EXISTS (
+SELECT (EXISTS (
     SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
     WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
-)::boolean AS removed
+) OR (answer.source_comment_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM comment source WHERE source.id = answer.source_comment_id
+      AND source.workspace_id = request.workspace_id AND source.deleted_at IS NULL
+)))::boolean AS removed
 FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
@@ -348,10 +351,13 @@ JOIN chat_session session ON session.id = request.chat_session_id AND session.wo
 WHERE EXISTS (
     SELECT 1 FROM decision_answer answer
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
-      AND EXISTS (
+      AND (EXISTS (
           SELECT 1 FROM unnest(answer.chat_message_ids) AS source(id)
           WHERE NOT EXISTS (SELECT 1 FROM chat_message message WHERE message.id = source.id)
-      )
+      ) OR (answer.source_comment_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM comment source WHERE source.id = answer.source_comment_id
+            AND source.workspace_id = request.workspace_id AND source.deleted_at IS NULL
+      )))
 )
 ORDER BY request.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
@@ -412,7 +418,7 @@ LIMIT sqlc.arg('row_limit');
 -- for why the boundary is the claim. They reference a request by text, not by
 -- id, so they are read by message rather than through decision_request.
 SELECT message.content FROM chat_message message
-WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind = 'decision_reference'
+WHERE message.chat_session_id = sqlc.arg('chat_session_id') AND message.message_kind IN ('decision_reference', 'decision_cancel_notice')
   AND message.created_at > COALESCE((SELECT max(prior.dispatched_at) FROM agent_task_queue prior WHERE prior.chat_session_id = message.chat_session_id AND prior.id <> sqlc.arg('task_id') AND NOT (prior.task_kind = 'compact' AND prior.compact_reason IS NOT NULL)), '-infinity')
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT sqlc.arg('row_limit');

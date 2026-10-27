@@ -77,7 +77,10 @@ type IssueCreateParams struct {
 	ParentIssueID pgtype.UUID
 	ProjectID     pgtype.UUID
 	// WorkflowID is the issue's workflow override; invalid inherits the project's.
-	WorkflowID    pgtype.UUID
+	WorkflowID pgtype.UUID
+	// RequestedByID is the member this issue was created for; the "human by
+	// role" handler hands the issue to them first. Invalid when none.
+	RequestedByID pgtype.UUID
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
@@ -202,6 +205,8 @@ func (e *IssuePropertyValidationError) Error() string { return e.Message }
 // it arrived, so retrying against the refreshed catalog is the remedy.
 var ErrIssueStatusUnavailable = errors.New("issue status is no longer available")
 
+var ErrAgentIssueApproval = errors.New("only members can set approved")
+
 var ErrSourceContextAlreadyAttached = errors.New("source context is already attached")
 
 // IssueCreateResult is the typed return from IssueService.Create.
@@ -249,6 +254,9 @@ type IssueCreateResult struct {
 // Caller-owned validation is limited to transport-shaped checks: title
 // required, RFC3339 date format, assignee pair sanity.
 func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
+	if p.CreatorType == "agent" && p.Status == "approved" {
+		return IssueCreateResult{}, ErrAgentIssueApproval
+	}
 	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, p.WorkspaceID)
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -459,6 +467,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 			Stage:         p.Stage,
@@ -483,6 +492,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})

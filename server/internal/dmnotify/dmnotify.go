@@ -18,7 +18,7 @@ import (
 
 // Decision messages are announced by the decision ping, which already records
 // one item linked to the DM; notifying here would count them twice.
-var skippedKinds = map[string]bool{"decision_request": true, "decision_reference": true}
+var skippedKinds = map[string]bool{"decision_request": true, "decision_reference": true, protocol.ChatMessageKindDecisionCancelNotice: true}
 
 // Notified is the record a reply created or updated.
 type Notified struct {

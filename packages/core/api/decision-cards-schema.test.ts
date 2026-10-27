@@ -23,6 +23,33 @@ const bubble = {
 };
 
 describe("DM decision cards", () => {
+  it("recognizes decision requests and cancellation notices without downgrading their kind", () => {
+    for (const kind of ["decision_request", "decision_cancel_notice"]) {
+      expect(ChatMessageSchema.parse({ ...bubble, message_kind: kind }).message_kind).toBe(kind);
+    }
+  });
+
+  it("drops malformed request metadata without hiding the original ask", () => {
+    const parsed = ChatMessageSchema.parse({ ...bubble, decision_request: { id: 7 } });
+    expect(parsed.content).toBe("Yes");
+    expect(parsed.decision_request).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [{ id: 7 }] }).decision_requests).toBeUndefined();
+  });
+
+  it("keeps request state, source and original ask from additive metadata", () => {
+    const request = {
+      id: "request", issue_id: "issue", source_comment_id: "source",
+      ask: "Original ask", created_at: bubble.created_at, state: "withdrawn",
+      withdrawn_at: "2026-10-26T06:00:00Z", reason: "Superseded",
+    };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request).toEqual({
+      ...request, issue_identifier: "",
+    });
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, state: "future" } }).decision_request?.state).toBe("open");
+    expect(ChatMessageSchema.parse(bubble).decision_request).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [request] }).decision_requests?.[0]?.ask).toBe("Original ask");
+  });
+
   it("keeps decision_reference and its card instead of downgrading to a plain message", () => {
     const parsed = ChatMessageSchema.parse({
       ...bubble,
