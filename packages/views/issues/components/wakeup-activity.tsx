@@ -151,7 +151,11 @@ export function formatWakeupActivity(
     t(($) => $.activity.wakeup_assignee);
   switch (entry.action) {
     case "wakeup_created":
-      return t(($) => $.activity.wakeup_created, { condition, agent });
+      // A time rule's label already says "wake at ...", so the sentence names
+      // the agent up front instead of repeating "wake" after it.
+      return preview && !preview.condition && preview.kind !== "event"
+        ? t(($) => $.activity.wakeup_created_scheduled, { condition, agent })
+        : t(($) => $.activity.wakeup_created, { condition, agent });
     case "wakeup_triggered": {
       if (details.rule === "child_done") {
         const count = details.total ?? 1;
