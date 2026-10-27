@@ -423,22 +423,28 @@ export function WakeupsSection({
   return (
     <section>
       <div className="mb-1 flex items-center gap-1">
-        <button
-          type="button"
-          id={`issue-wakeups-${issueId}`}
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex min-h-9 flex-1 items-center gap-1 rounded-md px-2 py-1 text-caption font-medium hover:bg-accent/70 focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          {t(($) => $.wakeups.title)}{" "}
-          <span className="text-muted-foreground tabular-nums">
-            {current.length + systemRules.length}
-          </span>
-          <ChevronRight
-            className={`size-3 text-muted-foreground ${open ? "rotate-90" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
+        {hasContent ? (
+          <button
+            type="button"
+            id={`issue-wakeups-${issueId}`}
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            className="flex min-h-9 flex-1 items-center gap-1 rounded-md px-2 py-1 text-caption font-medium hover:bg-accent/70 focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            {t(($) => $.wakeups.title)}{" "}
+            <span className="text-muted-foreground tabular-nums">
+              {current.length + (!closed ? systemRules.length : 0)}
+            </span>
+            <ChevronRight
+              className={`size-3 text-muted-foreground ${open ? "rotate-90" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        ) : (
+          <div className="flex min-h-9 flex-1 items-center px-2 py-1 text-caption font-medium">
+            {t(($) => $.wakeups.title)}
+          </div>
+        )}
         {!closed && (
           <WakeupCreate workspaceId={workspaceId} issueId={issueId} defaultAgentId={defaultAgentId} />
         )}

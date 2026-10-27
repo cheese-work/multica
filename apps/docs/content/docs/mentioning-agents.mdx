@@ -49,6 +49,28 @@ Replies stay with the target agent even while its runtime is offline or busy. Mu
 
 Agent-authored comments use stricter routing: only an explicit `mention://agent/<id>` mention starts an agent run. An unmentioned comment does not wake the issue assignee, the parent-comment author, or a squad leader. An agent mentioning a squad also does not start its leader; mention the leader agent directly. A direct mention of the issue's assigned leader or the leader of the covered guest delegation keeps that squad's leader role and context. Workflow-edge and wakeup triggers remain separate from comment routing.
 
+## Steer a running agent
+
+When an agent is halfway through and heading the wrong way, you don't have to stop it and start over. Write the correction in the comment box and send it: the message joins its current run, the agent reads it once the current step ends, and it carries on with the original task in the new direction.
+
+<SteerDemo />
+
+While the recipient is running, a label under the comment box says how the message will be delivered. Click it to change that:
+
+| Option | What happens |
+|---|---|
+| Add to current run | Read after the current step; the agent keeps working on the original task. |
+| Start after this run | Doesn't interrupt the current run; handled in a new run once it ends. |
+| Stop and start over | Stops the current run now and starts over from this message. |
+| Won't start this time | Posts the comment without triggering this agent. |
+
+After you send, the comment shows "Waiting for … to read it", which changes to "Read by …" once the agent has read it. The step list in the execution log also marks the step where it was read. If delivery fails, you can retry or send it as a new run instead.
+
+- Only text can join a running run. A message with attachments is handled after the run ends.
+- Steering needs support from the agent's AI coding tool. Without it, **Add to current run** isn't offered.
+- Set the default in **Settings → Preferences** under **When replying to a running agent**. You can still change it for any message before sending.
+- In chat, **Steer** on a queued message works differently: it stops the current reply first; see [Chat](/chat#send-messages-while-a-reply-is-in-progress).
+
 ## Coalescing consecutive comments
 
 When the same agent already has a waiting run on the issue, new comments merge into that pending run and are handled together when it starts. If the agent is already running, each comment is handled the way you chose in the comment box; see the previous section. You can keep adding information without waiting for the agent to reply.

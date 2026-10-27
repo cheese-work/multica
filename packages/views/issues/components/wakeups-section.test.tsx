@@ -106,6 +106,52 @@ beforeEach(() => {
   };
 });
 describe("Wakeups sidebar", () => {
+  it("keeps the header to the add action without a settings-only menu", () => {
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByRole("button", { name: "Wakeups 1" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Wakeups options" })).not.toBeInTheDocument();
+  });
+  it("shows an empty static title with creation available", () => {
+    empty = true;
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByText("Wakeups")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Wakeups/ })).not.toBeInTheDocument();
+  });
+  it("keeps history accessible even without current rules", () => {
+    wakeup.enabled = false;
+    status = "completed";
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByRole("button", { name: "Wakeups 0" })).toHaveAttribute("aria-expanded", "true");
+  });
+  it("shows retry when system rules fail instead of treating the section as empty", () => {
+    empty = true;
+    systemError = true;
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    fireEvent.click(screen.getByRole("button", { name: "Could not load wakeups. Retry" }));
+    expect(refetch).toHaveBeenCalledTimes(2);
+  });
+  it("does not count hidden system rules on a closed issue", () => {
+    systemRules = [{
+      id: "rule",
+      revision: 1,
+      default_instruction: "Advance the next stage.",
+      customized: false,
+      paused_reason: null,
+      rule: "child_done",
+      workspace_default: true,
+      enabled: true,
+      instruction: "",
+      staged: false,
+      stage: null,
+      total: 3,
+      remaining: 2,
+      waiting: [],
+      target: { type: "agent", id: "agent", name: "Emacs" },
+      blocked: "",
+    }];
+    renderWithI18n(<WakeupsSection issueId="issue" closed />);
+    expect(screen.getByRole("button", { name: "Wakeups 1" })).toBeVisible();
+  });
   it("says so in the panel when the workspace paused its wakeups", () => {
     settings = { wakeups_paused: true, wakeups_paused_by: "u", wakeups_paused_at: "2026-10-15T08:00:00Z" };
     renderWithI18n(<WakeupsSection issueId="issue" />);
