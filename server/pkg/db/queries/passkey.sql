@@ -4,6 +4,13 @@ SELECT * FROM passkey_assertion_challenge WHERE id = $1;
 -- One open assertion challenge per user across every purpose. The issuer
 -- locks it NOWAIT: a verification holding it makes issuing fail fast.
 
+-- The open-row lock cannot serialize two first issuers: before the first
+-- commits there is no row to lock and the second would wait on the unique
+-- index. This per-user advisory lock is taken first and never waits.
+
+-- name: TryLockPasskeyChallengeIssue :one
+SELECT pg_try_advisory_xact_lock(hashtextextended(sqlc.arg(user_id)::uuid::text || ':passkey_challenge', 0))::boolean;
+
 -- name: LockOpenPasskeyChallenge :one
 SELECT * FROM passkey_assertion_challenge
 WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
@@ -18,7 +25,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: LockPasskeyChallengeNowait :one
-SELECT challenge.*, (challenge.expires_at <= now())::bool AS expired
+SELECT challenge.*, (challenge.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_assertion_challenge challenge
 WHERE challenge.id = $1
 FOR UPDATE NOWAIT;
@@ -88,7 +95,7 @@ VALUES ($1, $2, $3, now() + interval '10 minutes')
 RETURNING id, expires_at;
 
 -- name: LockPasskeyEnrollCeremonyNowait :one
-SELECT ceremony.*, (ceremony.expires_at <= now())::bool AS expired
+SELECT ceremony.*, (ceremony.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_enroll_ceremony ceremony WHERE ceremony.id = $1 FOR UPDATE NOWAIT;
 
 -- A wrong code or a rejected attestation costs one attempt. The fifth ends
