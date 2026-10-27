@@ -291,7 +291,7 @@ func buildDraftedPRWebhookBody(issueIdentifier string, prNumber int, installatio
 	pr["state"], pr["draft"], pr["merged"], pr["merged_at"], pr["closed_at"], pr["merge_commit_sha"] = "open", true, false, "", "", ""
 	// Newer than the mirrored row, or the upsert treats it as a stale event.
 	pr["updated_at"] = time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
-	pr["head"] = map[string]any{"ref": "fix/ship-it", "sha": headSHA}
+	pr["head"] = map[string]any{"ref": "fix/ship-it", "sha": headSHA, "repo": githubRepositoryForTest("acme", "widget")}
 	pr["base"] = map[string]any{"ref": "main"}
 	return body
 }
