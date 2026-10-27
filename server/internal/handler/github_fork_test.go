@@ -88,32 +88,47 @@ func TestGitHubForkGateAutoLinkAndManualLink(t *testing.T) {
 func TestGitHubForkGateReviewWake(t *testing.T) {
 	for _, candidate := range githubForkGateCases() {
 		t.Run(candidate.name, func(t *testing.T) {
-			fixture := newGitHubReviewFixture(t)
+			fixture := newGitHubIntakeFixture(t)
 			fixture.payload["repository"].(map[string]any)["id"] = 10
 			fixture.payload["pull_request"] = githubForkGatePR(t, fixture, candidate.head)
-			if response := fixture.post("pull_request_review", fixture.secret, candidate.name); response.Code != http.StatusAccepted {
+			delivery := fixture.issueID + "-fork-" + candidate.name
+			if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
 				t.Fatalf("review: %d %s", response.Code, response.Body.String())
 			}
-			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != candidate.want {
-				t.Errorf("task-key resolved runs = %d, want %d", count, candidate.want)
+			wantState, wantReason := "denied", "fork_pull_request"
+			if candidate.want == 1 {
+				wantState, wantReason = "deferred", "awaiting_admission"
 			}
-			if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != candidate.want {
-				t.Errorf("review comments = %d, want %d", count, candidate.want)
+			switch candidate.name {
+			case "deleted_head_repository", "missing_id", "missing_name", "missing_fork_flag":
+				wantState, wantReason = "deferred", "missing_pull_request_metadata"
 			}
+			var state, reason string
+			dbfx.QueryRow(t, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+			if state != wantState || reason != wantReason {
+				t.Errorf("revision = %s/%s, want %s/%s", state, reason, wantState, wantReason)
+			}
+			assertGitHubIntakeNoEffects(t, fixture)
 		})
 	}
 }
 
 func TestGitHubForkGateExplicitAuthorBinding(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+	fixture := newGitHubIntakeFixture(t)
 	fixture.payload["repository"].(map[string]any)["id"] = 10
 	fixture.payload["pull_request"] = githubForkGatePR(t, fixture, map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true})
 	dbfx.Exec(t, `UPDATE workspace SET settings=jsonb_set(settings,'{github_review_authors}',jsonb_build_object('acme/widget#2019',$1::text)) WHERE id=$2`, fixture.author, testWorkspaceID)
-	if response := fixture.post("pull_request_review", fixture.secret, "fork-explicit-author"); response.Code != http.StatusAccepted {
+	delivery := fixture.issueID + "-fork-explicit-author"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
 		t.Fatalf("review: %d %s", response.Code, response.Body.String())
 	}
 	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
 		t.Fatalf("explicit author binding bypassed fork gate: %d runs", count)
+	}
+	var state, reason string
+	dbfx.QueryRow(t, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+	if state != "denied" || reason != "fork_pull_request" {
+		t.Fatalf("explicit author binding revision = %s/%s, want denied/fork_pull_request", state, reason)
 	}
 }
 
