@@ -22,6 +22,18 @@ The after fixture uses this branch's implementation. Both widths were checked
 for the expected revision, absence of page errors, and visible card content.
 The temporary fixture and capture server were removed after capture.
 
+The resting before and after PNGs are byte-identical at each width. This is
+expected: the change adds annotation behavior and accessibility metadata, not
+new resting visuals. The popup, marker and chip appear only after interaction.
+The identical PNGs do not prove full-route behavior or a visual change.
+
+SHA-256 for each before/after pair:
+
+```text
+1440: d482b1ab7a87281551eb782ce6fcca9239799bf8544df65aeadd902100d4d521
+390:  26c4a5147f1f95870e2f523b1066052e1fbd627f56b0f07c2db514f06936a459
+```
+
 | Surface | Width | Before | After | Add note | Saved annotation |
 | --- | --- | --- | --- | --- | --- |
 | Decision cards | 1440 | [Before](chat-1440-before.png) | [After](chat-1440-after.png) | [Popup](chat-1440-note.png) | [Marker and chip](chat-1440-annotated.png) |
@@ -59,5 +71,11 @@ agent, workspace, active issue and open asked request before writing anything.
 The message, task, answer and issue quote commit together. Existing decision
 hold and turn-completion rules still apply. The source message is marked with
 its answer ID so the remaining open request cannot consume the same reply.
+Option (b) preserves the existing failed/cancelled-turn withdrawal rule.
+Withdrawal clears the user-message binding in the same transaction, but keeps
+the historical decision-reference message. Retry context and source reuse
+check for a live answer, so a stale or withdrawn binding does not prevent
+recording the reopened request. Re-recording still applies the decision hold.
+The bound send path refuses `/compact` commands without creating any rows.
 DM quotes use the existing plain-quote serializer; issue annotation escaping is
 unchanged.

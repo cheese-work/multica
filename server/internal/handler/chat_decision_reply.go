@@ -20,6 +20,9 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	if r.Header.Get("X-Actor-Source") != "interactive_jwt" || session.CreatorID != humanID || agent.Kind == "system" {
 		return nil, deny
 	}
+	if service.IsCompactCommand(content) {
+		return nil, decisionIntentRefusal{http.StatusBadRequest, "/compact cannot answer a decision request"}
+	}
 	if strings.TrimSpace(content) == "" || len(blockQuote(content)) > maxCommentContentBytes {
 		return nil, decisionIntentRefusal{http.StatusBadRequest, "decision reply is empty or too long"}
 	}

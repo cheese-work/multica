@@ -358,7 +358,11 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
 		}
-		if message.DecisionAnswerID.Valid {
+		bound, err := hasLiveDecisionAnswer(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
+		if err != nil {
+			return empty, err
+		}
+		if bound {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source message already answers its explicitly selected request"}
 		}
 		contents = append(contents, message.Content)

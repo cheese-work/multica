@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -155,5 +156,112 @@ func TestSendChatDecisionReplyRollback(test *testing.T) {
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, requestID) != 1 {
 		test.Fatal("rollback changed the request state")
+	}
+}
+
+func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
+	for _, status := range []string{"failed", "cancelled"} {
+		test.Run(status, func(test *testing.T) {
+			ctx := context.Background()
+			agentID, sessionID, runtimeID, _ := setupDirectChatSession(test, ctx, "Withdrawn bound answer")
+			requestID, parentID, issueID := seedDMDecision(test, agentID, sessionID, "Deploy?", "open", "1 minute")
+			dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, requestID)
+			request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": "> Deploy?\n\nYes", "decision_request_id": requestID})
+			request.Header.Set("X-Actor-Source", "interactive_jwt")
+			request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
+			var sent SendChatMessageResponse
+			testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusCreated).JSON(&sent)
+			message, err := testHandler.Queries.GetChatMessage(ctx, parseUUID(sent.MessageID))
+			if err != nil || !message.DecisionAnswerID.Valid {
+				test.Fatalf("missing initial message binding: %v", err)
+			}
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = $2, completed_at = clock_timestamp() WHERE id = $1`, sent.TaskID, status)
+			withdrawn, err := testHandler.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(requestID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			if withdrawn.Request.Status != "open" || !withdrawn.Answer.DisclaimedAt.Valid || withdrawn.Answer.DisclaimReason.String != "answering_turn_"+status || withdrawn.Answer.WakeAt.Valid {
+				test.Fatalf("withdrawal changed worker semantics: %+v / %+v", withdrawn.Request, withdrawn.Answer)
+			}
+			persisted, err := testHandler.Queries.GetChatMessage(ctx, message.ID)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if persisted.DecisionAnswerID.Valid {
+				test.Error("withdrawn answer kept the source message binding")
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE decision_answer_id = $1 AND message_kind = 'decision_reference'`, withdrawn.Answer.ID); count != 1 {
+				test.Error("withdrawal removed the historical decision reference")
+			}
+			session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			block, err := testHandler.decisionContextBlock(ctx, session, parseUUID(sent.TaskID), []db.ChatMessage{message})
+			if err != nil || strings.Contains(block, "already recorded") || !strings.Contains(block, requestID) {
+				test.Errorf("withdrawn answer still suppresses retry context: %q / %v", block, err)
+			}
+			dbfx.Exec(test, `UPDATE chat_message SET decision_answer_id = $2 WHERE id = $1`, message.ID, withdrawn.Answer.ID)
+			retryID := dbfx.Task(test, agentID, testutil.Cols{"chat_session_id": sessionID, "runtime_id": runtimeID})
+			markTaskRunning(test, ctx, retryID)
+			issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			recordRequest := newRequest(http.MethodPost, "/", nil)
+			recordRequest.Header.Set("X-Actor-Source", "task_token")
+			recordRequest.Header.Set("X-Task-ID", retryID)
+			recordRequest.Header.Set("X-Agent-ID", agentID)
+			before := time.Now()
+			recorded, err := testHandler.createAskedDecisionRecord(recordRequest, issue, decisionRecordInput{ParentID: parseUUID(parentID), MessageIDs: []pgtype.UUID{message.ID}})
+			if err != nil {
+				test.Fatalf("withdrawn source cannot be recorded again: %v", err)
+			}
+			if recorded.Request.Status != "answered" || recorded.Answer.DisclaimedAt.Valid || recorded.Answer.ID == withdrawn.Answer.ID || recorded.Answer.WakeAt.Valid || recorded.Answer.EffectiveAt.Time.Before(before.Add(10*time.Minute)) || recorded.Answer.ContentSnapshot != message.Content {
+				test.Fatalf("retry lost the answer or its hold: %+v", recorded.Answer)
+			}
+		})
+	}
+}
+
+func TestSendChatDecisionReplyRefusesCompact(test *testing.T) {
+	for _, content := range []string{"/compact", " /compact keep decisions ", "/compact\nkeep decisions"} {
+		test.Run(content, func(test *testing.T) {
+			agentID, sessionID, _, _ := setupDirectChatSession(test, context.Background(), "Compact is not an answer")
+			requestID, _, issueID := seedDMDecision(test, agentID, sessionID, "Ask", "open", "1 minute")
+			before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sessionID)
+			request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": content, "decision_request_id": requestID})
+			request.Header.Set("X-Actor-Source", "interactive_jwt")
+			request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
+			testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusBadRequest)
+			if dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sessionID) != before || dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, sessionID) != 0 || dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, requestID) != 0 || dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'quote'`, issueID) != 0 {
+				test.Fatal("refused compact command left a task, message, answer, or quote")
+			}
+		})
+	}
+}
+
+func TestSendChatDecisionReplyWithdrawalRollback(test *testing.T) {
+	ctx := context.Background()
+	agentID, sessionID, _, _ := setupDirectChatSession(test, ctx, "Atomic bound withdrawal")
+	requestID, _, _ := seedDMDecision(test, agentID, sessionID, "Ask", "open", "1 minute")
+	request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": "> Ask\n\nYes", "decision_request_id": requestID})
+	request.Header.Set("X-Actor-Source", "interactive_jwt")
+	request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
+	var sent SendChatMessageResponse
+	testutil.Call(test, testHandler.SendChatMessage, request).Want(http.StatusCreated).JSON(&sent)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'failed' WHERE id = $1`, sent.TaskID)
+	failure := errors.New("message unbind failed")
+	broken := *testHandler
+	broken.TxStarter = &requestCoreStarter{base: testPool, query: "-- name: ClearChatMessageDecisionAnswer", fail: failure}
+	result, err := broken.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(requestID))
+	if !errors.Is(err, failure) || len(result.Comments) != 0 {
+		test.Fatalf("failed unbind escaped rollback: %+v / %v", result, err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, requestID) != 1 || dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'answered'`, requestID) != 1 || dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE id = $1 AND decision_answer_id IS NOT NULL`, sent.MessageID) != 1 || dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id IN (SELECT id FROM decision_answer WHERE decision_request_id = $1) AND decision_comment_kind = 'disclaim'`, requestID) != 0 {
+		test.Fatal("failed unbind partially withdrew the answer, request, message binding, or receipt")
+	}
+	if _, err := testHandler.FinalizeDecisionAnswer(ctx, parseUUID(testWorkspaceID), parseUUID(requestID)); err != nil {
+		test.Fatalf("withdrawal could not recover after rollback: %v", err)
 	}
 }

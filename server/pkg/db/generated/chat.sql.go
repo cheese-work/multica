@@ -222,6 +222,26 @@ func (q *Queries) ClearChatMessageChannelMediaPending(ctx context.Context, arg C
 	return err
 }
 
+const clearChatMessageDecisionAnswer = `-- name: ClearChatMessageDecisionAnswer :exec
+UPDATE chat_message message
+SET decision_answer_id = NULL
+FROM chat_session session
+WHERE session.workspace_id = $1
+  AND message.chat_session_id = session.id
+  AND message.decision_answer_id = $2
+  AND message.role = 'user' AND message.message_kind = 'message'
+`
+
+type ClearChatMessageDecisionAnswerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AnswerID    pgtype.UUID `json:"answer_id"`
+}
+
+func (q *Queries) ClearChatMessageDecisionAnswer(ctx context.Context, arg ClearChatMessageDecisionAnswerParams) error {
+	_, err := q.db.Exec(ctx, clearChatMessageDecisionAnswer, arg.WorkspaceID, arg.AnswerID)
+	return err
+}
+
 const clearChatSessionProjectByProject = `-- name: ClearChatSessionProjectByProject :exec
 UPDATE chat_session
 SET project_id = NULL

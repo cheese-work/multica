@@ -695,6 +695,15 @@ WHERE session.workspace_id = sqlc.arg('workspace_id')
   AND message.id = sqlc.arg('message_id') AND message.decision_answer_id IS NULL
 RETURNING message.id;
 
+-- name: ClearChatMessageDecisionAnswer :exec
+UPDATE chat_message message
+SET decision_answer_id = NULL
+FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id')
+  AND message.chat_session_id = session.id
+  AND message.decision_answer_id = sqlc.arg('answer_id')
+  AND message.role = 'user' AND message.message_kind = 'message';
+
 -- name: TaskHasChannelIngestedMessages :one
 -- Immutable channel provenance for a task's user-message input batch:
 -- channel_ingested is stamped inside the channel append transaction and never

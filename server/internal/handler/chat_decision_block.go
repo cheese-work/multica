@@ -40,7 +40,11 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 	var recorded strings.Builder
 	unbound := make([]db.ChatMessage, 0, len(input))
 	for _, message := range input {
-		if message.DecisionAnswerID.Valid {
+		bound, err := hasLiveDecisionAnswer(ctx, h.Queries, session.WorkspaceID, message.DecisionAnswerID)
+		if err != nil {
+			return "", err
+		}
+		if bound {
 			fmt.Fprintf(&recorded, "\nUser message %s is already recorded as decision answer %s for its explicitly selected request. Do not record this message against another request.\n", uuidToString(message.ID), uuidToString(message.DecisionAnswerID))
 		} else {
 			unbound = append(unbound, message)
@@ -116,4 +120,15 @@ func (h *Handler) decisionContextBlock(ctx context.Context, session db.ChatSessi
 
 func escapeDecisionBlock(text string) string {
 	return strings.ReplaceAll(text, decisionBlockClose, `<\/decision_requests>`)
+}
+
+func hasLiveDecisionAnswer(ctx context.Context, queries *db.Queries, workspaceID, answerID pgtype.UUID) (bool, error) {
+	if !answerID.Valid {
+		return false, nil
+	}
+	answer, err := queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && !answer.DisclaimedAt.Valid, err
 }

@@ -155,3 +155,96 @@ ordered plain-text quotes, API/controller forwarding, exact-request issue
 binding, refusal without writes, the existing hold, single-answer behavior and
 transaction rollback. The full-route browser send is not covered by the
 component captures; see the UI evidence README.
+
+## Review correction B1 / N2: observed red and green
+
+Parent: `68879a987c23312d1510de10a8f3f68e26a99275`.
+The failed/cancelled-turn and `/compact` tests were added before the correction.
+The observed behavioral red was at 12:50:28 ICT on October 27, 2026.
+The same command passed at 12:59:47 ICT on October 27, 2026.
+The initial sandbox-only Go runner failure is not behavioral-red evidence.
+
+Run from `server/`, using this checkout's isolated database:
+
+```sh
+set -a; source ../.env.worktree; set +a
+go test ./internal/handler -run '^TestSendChatDecisionReply(WithdrawnTurnCanBeRecordedAgain|RefusesCompact)$' -count=1 -v
+```
+
+Observed red, exit 1:
+
+```text
+TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain/failed
+withdrawn answer kept the source message binding
+withdrawn answer still suppresses retry context: ... already recorded ...
+withdrawn source cannot be recorded again: source message already answers its explicitly selected request
+TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain/cancelled
+withdrawn answer kept the source message binding
+withdrawn answer still suppresses retry context: ... already recorded ...
+withdrawn source cannot be recorded again: source message already answers its explicitly selected request
+TestSendChatDecisionReplyRefusesCompact: all three subtests
+expected 400, got 201
+FAIL github.com/multica-ai/multica/server/internal/handler 0.545s
+```
+
+Observed green, exit 0, for the same tests and command:
+
+```text
+--- PASS: TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain (0.27s)
+    --- PASS: TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain/failed (0.16s)
+    --- PASS: TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain/cancelled (0.11s)
+--- PASS: TestSendChatDecisionReplyRefusesCompact (0.10s)
+    --- PASS: TestSendChatDecisionReplyRefusesCompact//compact (0.04s)
+    --- PASS: TestSendChatDecisionReplyRefusesCompact/_/compact_keep_decisions_ (0.03s)
+    --- PASS: TestSendChatDecisionReplyRefusesCompact//compact_keep_decisions (0.04s)
+PASS
+ok github.com/multica-ai/multica/server/internal/handler 0.444s
+```
+
+### Chosen correction and limits
+
+Option (b) keeps the existing withdrawal rule and worker scheduling semantics.
+Withdrawal clears the user-message binding atomically, but keeps the historical
+reference. The tests verify the reopened request, disclaimed answer and absent
+wake. They also supply a stale message snapshot to context rendering and restore
+a stale persisted binding before re-recording. Context and source reuse must
+check for a live answer, not just a non-null ID. Re-recording preserves the
+source snapshot and re-applies the 10-minute deploy hold.
+
+N2 refuses `/compact`, including whitespace and arguments, without creating a
+message, task, answer or issue quote. An additional rollback test injects failure
+at the binding-clear query and checks that the answer, request, source binding
+and withdrawal receipt all roll back. This rollback test is additional
+verification, not part of the observed red claim above.
+
+N1's byte-identical static PNGs and reason are documented in the UI pack README.
+N3 and N4 are intentionally skipped: overlay planning order remains unchanged,
+and the existing `&nbsp;` multi-note blank-paragraph separator remains unchanged.
+Neither optional note changes this correction's scope. Full-route captures and
+the fresh independent exact-head review remain with x99-claude-sonnet.
+
+### Correction focused gates
+
+These checks ran again for the correction, not just the previous head:
+
+| Check | Observed result |
+| --- | --- |
+| `go test -race ./internal/handler -run '^TestSendChatDecisionReply' -count=1 -v` | PASS, all seven named tests, handler 2.491s. Includes withdrawal rollback. |
+| Views focused suite, including workflow editor | PASS, 5 files / 166 tests. |
+| Core `api/client.test.ts` | PASS, 1 file / 131 tests. |
+| `pnpm lint` | PASS, 7 successful tasks, existing warnings only. |
+| `pnpm typecheck` | PASS, 10 successful tasks. |
+| `bash scripts/test-go.sh --race --only agent` | PASS, `pkg/agent` 97.343s. |
+| `go vet -race -tags agentintegration ./...` | PASS, exit 0. No real-agent smoke test was executed. |
+| `make sqlc` | PASS, pinned sqlc v1.31.1. |
+| `git diff --check` and gofmt check | PASS. |
+
+The CI-equivalent regular backend suite was also invoked. It observed failures
+in the unmodified CLI tests that detect the live managed-runtime marker, as
+described in the full-gate limits above. The final regular-suite result and CI
+snapshot are reported in the PR body and issue return. The runtime marker and
+trust-boundary guards remain intact. No check waiver is claimed.
+
+The local `command -v golangci-lint` probe returned exit 1 with no output, so
+golangci-lint is NOT-RUN locally. Its CI check remains required.
+The full frontend suite is not re-run for this backend-only correction.
