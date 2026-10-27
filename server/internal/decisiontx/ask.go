@@ -216,7 +216,7 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
-	return nil
+	return ask.validateReadable()
 }
 
 func (ask Ask) Content() string {
