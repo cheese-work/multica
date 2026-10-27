@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS workflow_webhook_endpoint_workflow_name_uidx;
