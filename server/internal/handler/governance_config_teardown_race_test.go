@@ -191,7 +191,7 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 	if writerPID == deleterPID {
 		t.Fatalf("PATCH and DELETE shared backend pid %d; race requires independent connections", writerPID)
 	}
-	waitForGovernanceConfigBackendLockWait(t, deleterPID)
+	waitForGovernanceConfigBackendLockWait(t, deleterPID, writerPID)
 
 	releasePatch()
 	awaitGovernanceConfigRaceSignal(t, deleteLockAcquired, "DELETE workspace lock after PATCH commit")
@@ -219,6 +219,52 @@ WHERE config.workspace_id = $1
 		t.Fatalf("workspace DELETE = %d: %s", deleteResponse.Code, deleteResponse.Body.String())
 	}
 	assertNoGovernanceConfigTeardownRows(t, workspaceID)
+}
+
+func TestGovernanceConfigBackendLockWaitWithoutActivityTracking(t *testing.T) {
+	if testPool == nil || dbfx == nil {
+		t.Skip("handler test database is unavailable")
+	}
+	ctx := t.Context()
+	workspaceID := newGovernanceConfigTeardownWorkspace(t, "governance-config-lock-observation")
+	holder, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	var holderPID int32
+	if err := holder.QueryRow(ctx, `SELECT pg_backend_pid() FROM workspace WHERE id = $1 FOR KEY SHARE`, workspaceID).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
+	waiter, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Rollback(ctx)
+	if _, err := waiter.Exec(ctx, `SET LOCAL track_activities = off`); err != nil {
+		t.Fatal(err)
+	}
+	var waiterPID int32
+	if err := waiter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&waiterPID); err != nil {
+		t.Fatal(err)
+	}
+	if holderPID == waiterPID {
+		t.Fatalf("lock holder and waiter shared backend pid %d", holderPID)
+	}
+	done := make(chan struct{})
+	var lockErr error
+	go func() {
+		defer close(done)
+		_, lockErr = waiter.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, workspaceID)
+	}()
+	defer func() {
+		_ = holder.Rollback(ctx)
+		awaitGovernanceConfigRaceDone(t, done, "workspace lock after holder rollback")
+		if lockErr != nil {
+			t.Errorf("acquire workspace lock after holder rollback: %v", lockErr)
+		}
+	}()
+	waitForGovernanceConfigBackendLockWait(t, waiterPID, holderPID)
 }
 
 func newGovernanceConfigTeardownWorkspace(t *testing.T, slugPrefix string) string {
@@ -280,25 +326,20 @@ func awaitGovernanceConfigRaceDone(t *testing.T, done <-chan struct{}, descripti
 	}
 }
 
-func waitForGovernanceConfigBackendLockWait(t *testing.T, pid int32) {
+func waitForGovernanceConfigBackendLockWait(t *testing.T, waiterPID, holderPID int32) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var waiting bool
-		if err := testPool.QueryRow(t.Context(), `
-SELECT EXISTS (
-    SELECT 1 FROM pg_stat_activity
-    WHERE pid = $1 AND state = 'active' AND wait_event_type = 'Lock'
-)
-`, pid).Scan(&waiting); err != nil {
-			t.Fatalf("poll lock wait for backend %d: %v", pid, err)
+		if err := testPool.QueryRow(t.Context(), `SELECT $2::integer = ANY(pg_blocking_pids($1::integer))`, waiterPID, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("poll lock wait for backend %d: %v", waiterPID, err)
 		}
 		if waiting {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("backend %d never blocked on the workspace teardown lock", pid)
+	t.Fatalf("backend %d never blocked on the workspace teardown lock held by backend %d", waiterPID, holderPID)
 }
 
 func assertNoGovernanceConfigTeardownRows(t *testing.T, workspaceID string) {
