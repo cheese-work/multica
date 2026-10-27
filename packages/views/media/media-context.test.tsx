@@ -71,4 +71,19 @@ describe("media viewer actions", () => {
     fireEvent.click(button);
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't open the media page"));
   });
+
+  it("restores More focus even when a nested action consumes Escape", async () => {
+    const oldWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    const view = renderWithI18n(<ViewerActions><button type="button" onKeyDown={(event) => event.stopPropagation()}>Show source</button></ViewerActions>);
+    const summary = await screen.findByLabelText("More");
+    fireEvent.click(summary);
+    const button = screen.getByRole("button", { name: "Show source" });
+    button.focus();
+    fireEvent.keyDown(button, { key: "Escape" });
+    expect(summary).toHaveFocus();
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    view.unmount();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth });
+  });
 });

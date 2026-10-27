@@ -73,10 +73,11 @@ export function ViewerActions({ children }: { children: ReactNode }) {
   const { t } = useT("editor");
   const mobile = useIsMobile();
   if (!mobile) return <div className="ml-auto flex items-center gap-0.5">{children}</div>;
-  return <details className="group relative ml-auto" onKeyDown={(event) => {
+  return <details className="group relative ml-auto" onKeyDownCapture={(event) => {
     if (event.key === "Escape") {
       event.currentTarget.open = false;
       event.currentTarget.querySelector("summary")?.focus();
+      event.preventDefault();
       event.stopPropagation();
     }
   }}>
