@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { IssueRelations } from "@multica/core/types";
-import { filterRelations, relationFilterOf, RELATION_FILTERS, type RelationFilter } from "@multica/core/issues/relations";
-import { normalizeIssueStatusCategory } from "@multica/core/issues/config/status";
+import { filterRelations, RELATION_FILTERS, type RelationFilter } from "@multica/core/issues/relations";
+import type { IssueStatusCatalog } from "@multica/core/issue-statuses/queries";
 import { useRelationsFilterStore } from "@multica/core/issues/stores/relations-filter-store";
 import { Button } from "@multica/ui/components/ui/button";
 import { getMermaid, getMermaidLayout, getMermaidThemeVariables } from "../../editor/mermaid-diagram";
@@ -17,8 +17,13 @@ const TITLE_LINES = 2;
 const FILL_WIDTH = 1000;
 const FILL_HEIGHT = 560;
 const MAX_GROW = 2.5;
-// Dash patterns double as the legend: parent/child solid, wakes dashed, mentions dotted.
-const EDGE_DASH: Record<RelationFilter, string | undefined> = { parent: undefined, wakeup: "8 4", mention: "2 4" };
+type EdgeType = IssueRelations["edges"][number]["type"];
+// Dash patterns double as the legend: parent/child solid, wakes dashed, mentions dotted,
+// duplicates dash-dot, unknown dash-dot-dot. Shared PR is solid but double-headed.
+const EDGE_DASH: Partial<Record<EdgeType, string>> = { wakeup: "8 4", children_done: "8 4", mention: "2 4", duplicate: "10 3 2 3", unknown: "12 4 2 4 2 4" };
+const CHIP_EDGE: Record<RelationFilter, EdgeType> = { parent: "parent", wakeup: "wakeup", mention: "mention" };
+// Edge types with no chip: always drawn, so the legend lists them when present.
+const UNFILTERED_EDGES = ["duplicate", "shared_pr", "unknown"] as const;
 // Inline style, not a fill-* class: Mermaid's own `.node rect` rule outranks a utility class.
 const STATUS_STRIPE = { unstarted: "var(--muted-foreground)", started: "var(--warning)", done: "var(--info)", closed: "color-mix(in srgb, var(--muted-foreground) 50%, transparent)" } as const;
 
@@ -54,8 +59,7 @@ export function buildRelationsChart(graph: IssueRelations, currentIssueId: strin
   edges.forEach((edge, index) => {
     const arrow = edge.type === "shared_pr" ? "<-->" : "-->";
     lines.push(`${nodeIds.get(edge.source)} ${arrow} ${nodeIds.get(edge.target)}`);
-    const filter = relationFilterOf(edge.type);
-    const dash = filter && EDGE_DASH[filter];
+    const dash = EDGE_DASH[edge.type];
     if (dash) lines.push(`linkStyle ${index} stroke-dasharray:${dash}`);
   });
   const current = nodeIds.get(currentIssueId);
@@ -63,9 +67,19 @@ export function buildRelationsChart(graph: IssueRelations, currentIssueId: strin
   return lines.join("\n");
 }
 
-export function IssueRelationsGraph({ graph: fullGraph, currentIssueId, onNavigate }: {
+function EdgeSample({ type }: { type: EdgeType }) {
+  return (
+    <svg aria-hidden width="28" height="10" viewBox="0 0 28 10" className="shrink-0" stroke="currentColor" strokeWidth="2">
+      <line x1="4" y1="5" x2="24" y2="5" strokeDasharray={EDGE_DASH[type]} />
+      {type === "shared_pr" && <path d="M5 1 1 5l4 4M23 1l4 4-4 4" fill="none" strokeWidth="1.5" />}
+    </svg>
+  );
+}
+
+export function IssueRelationsGraph({ graph: fullGraph, currentIssueId, catalog, onNavigate }: {
   graph: IssueRelations;
   currentIssueId: string;
+  catalog: Pick<IssueStatusCatalog, "categoryOf" | "colorOf">;
   onNavigate: (issueId: string) => void;
 }) {
   const { t } = useT("issues");
@@ -137,14 +151,15 @@ export function IssueRelationsGraph({ graph: fullGraph, currentIssueId, onNaviga
       const [x, y, height] = ["x", "y", "height"].map((name) => Number(box?.getAttribute(name)));
       if (box && [x, y, height].every(Number.isFinite)) {
         const stripe = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        const category = normalizeIssueStatusCategory(node.status) ?? "unstarted";
-        for (const [name, value] of Object.entries({ x, y, height, width: 6, style: `fill: ${STATUS_STRIPE[category]}`, "pointer-events": "none" })) stripe.setAttribute(name, String(value));
+        // A custom status keeps its catalog colour; built-ins return null and follow the theme token.
+        const fill = catalog.colorOf(node.status) ?? STATUS_STRIPE[catalog.categoryOf(node.status)];
+        for (const [name, value] of Object.entries({ x, y, height, width: 6, style: `fill: ${fill}`, "pointer-events": "none" })) stripe.setAttribute(name, String(value));
         element.appendChild(stripe);
       }
       if (node.id === currentIssueId) element.setAttribute("aria-current", "page");
     });
     return { __html: new XMLSerializer().serializeToString(document.documentElement) };
-  }, [rendered, issueNode, currentIssueId]);
+  }, [rendered, issueNode, currentIssueId, catalog]);
 
   return (
     <div ref={hostRef} className="flex min-h-0 flex-1 flex-col">
@@ -159,11 +174,14 @@ export function IssueRelationsGraph({ graph: fullGraph, currentIssueId, onNaviga
               onClick={() => toggleFilter(filter)}
               className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring ${visible ? "border-foreground/40 bg-accent text-foreground" : "border-border text-muted-foreground line-through"}`}
             >
-              <span aria-hidden className={`inline-block w-6 border-t-2 border-current ${filter === "wakeup" ? "border-dashed" : filter === "mention" ? "border-dotted" : "border-solid"}`} />
+              <EdgeSample type={CHIP_EDGE[filter]} />
               {filterLabels[filter]}
             </button>
           );
         })}
+        {UNFILTERED_EDGES.filter((type) => graph.edges.some((edge) => edge.type === type)).map((type) => (
+          <span key={type} className="inline-flex items-center gap-2 px-1 text-muted-foreground"><EdgeSample type={type} />{t(($) => $.relations[type])}</span>
+        ))}
       </div>
       {error ? <div role="alert"><p>{t(($) => $.relations.render_failed)}</p><Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>{t(($) => $.relations.retry)}</Button></div> : !rendered ? <p role="status">{t(($) => $.relations.loading)}</p> : (
         <>
