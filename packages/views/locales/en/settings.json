@@ -792,6 +792,7 @@
     "toast_profile_failed": "Failed to update profile"
   },
   "notifications": {
+    "focused_delivery": "Only decisions and issues assigned to me",
     "title": "Inbox Notifications",
     "description": "Muted events remain visible on the issue.",
     "toast_failed": "Failed to update notification settings",

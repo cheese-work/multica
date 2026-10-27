@@ -1,0 +1,1 @@
+DROP TABLE comment_trigger_rate_limit;

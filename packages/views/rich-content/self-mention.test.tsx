@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuthStore, registerAuthStore } from "@multica/core/auth";
@@ -21,6 +23,7 @@ vi.mock("../editor/link-hover-card", () => ({
 
 const VIEWER_ID = "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff";
 const OTHER_ID = "8f14e45f-ceea-4d0e-a1a2-9b1c0d3e4f5a";
+const MENTION_STYLES = readFileSync(resolve(import.meta.dirname, "rich-content.css"), "utf8");
 const CONTENT = [
   `[@ChEeSe](mention://member/${VIEWER_ID})`,
   `[@Other](mention://member/${OTHER_ID})`,
@@ -44,6 +47,31 @@ beforeEach(() => {
 });
 
 describe("RichContent self-member mentions", () => {
+  it.each(["compact", "document"] as const)(
+    "uses solid brand fill and background text tokens only for the viewer in %s content",
+    (density) => {
+      const { container } = render(
+        <>
+          <style>{MENTION_STYLES}</style>
+          <RichContent content={CONTENT} density={density} />
+        </>,
+      );
+      const selfRule = Array.from(container.querySelector("style")!.sheet!.cssRules).find(
+        (rule): rule is CSSStyleRule =>
+          rule instanceof CSSStyleRule && rule.selectorText.includes(".mention-self"),
+      )!;
+
+      expect(screen.getByText("@ChEeSe")).toHaveClass("mention-self");
+      expect(screen.getByText("@ChEeSe").matches(selfRule.selectorText)).toBe(true);
+      expect(selfRule.style.getPropertyValue("background-color")).toBe("var(--brand)");
+      expect(selfRule.style.getPropertyValue("color")).toBe("var(--background)");
+      for (const label of ["@Other", "@Agent", "@all"]) {
+        expect(screen.getByText(label).matches(selfRule.selectorText)).toBe(false);
+        expect(screen.getByText(label)).toHaveAttribute("class", "mention");
+      }
+    },
+  );
+
   it.each(["compact", "document"] as const)(
     "highlights only the viewer's member mention in %s content without changing case",
     (density) => {

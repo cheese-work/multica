@@ -215,6 +215,7 @@ func TestCommentSelfMentionByMemberEditorSuppressed(test *testing.T) {
 }
 
 func TestCommentSelfMentionSquadAndOtherAgent(test *testing.T) {
+	setAgentCommentWakePolicyForTest(test, false)
 	ctx := context.Background()
 	fixture := newSelfMentionFixture(test)
 	squadID := dbfx.Squad(test, "self-mention squad", fixture.JID)

@@ -9,6 +9,7 @@ Product contracts the runtime brief does not fully encode.
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
 - [Per-issue token usage](#per-issue-token-usage)
+- [Resolve the thread you answered](#resolve-the-thread-you-answered)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
 - [Comments: update, delete, resolve, search, subscribers](#comments-update-delete-resolve-search-subscribers)
@@ -393,6 +394,21 @@ prefixed with `>=` is a lower bound, not the real total: one or more terminal
 runs did not report usage (aborted or infra-failed), so the true figure is at
 least that but unknown above it. Do not compare an unprefixed total with a
 `>=`-prefixed one without checking which you have.
+## Resolve the thread you answered
+
+An answered thread left open keeps reading as pending work. When your reply
+settles the thread, post it with `--resolve-thread`:
+
+```bash
+multica issue comment add <issue-id> --parent <comment-id> --content-file ./reply.md --resolve-thread
+```
+
+- It needs `--parent`: it resolves the thread that reply belongs to.
+- Leave it off while the thread still waits on someone: a question to the
+  asker, a pending review, follow-up work.
+- The comment is posted first. If resolving then fails, the CLI says so; run
+  `multica issue comment resolve <comment-id>` and do not repost.
+
 ## Charts and files in a comment
 
 Where content goes decides how it shows:

@@ -915,3 +915,17 @@ func splitFrontmatter(content string) (map[string]string, string, bool) {
 	}
 	return fm, body, true
 }
+
+// CHE-2070: agents learn the resolve step from the platform skill, not only
+// from the brief.
+func TestPlatformSkillTeachesResolveThread(t *testing.T) {
+	data, err := builtinSkillsFS.ReadFile("builtin_skills/multica-platform/references/issues.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--resolve-thread"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("issues.md does not mention %s", want)
+		}
+	}
+}

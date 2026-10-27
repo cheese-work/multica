@@ -133,3 +133,51 @@ func TestCommentReplyReceipt(t *testing.T) {
 		}
 	}
 }
+
+// CHE-2070: --resolve-thread posts the reply, then resolves it so the whole
+// thread closes; without the flag nothing is resolved.
+func TestCommentAddResolveThread(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	const parentID = "22222222-2222-4222-8222-222222222222"
+	for _, resolve := range []bool{true, false} {
+		t.Run(map[bool]string{true: "flag", false: "no-flag"}[resolve], func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			if err := os.WriteFile("reply.md", []byte("done"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var resolved atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+				case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "new-comment", "parent_id": parentID})
+				case r.Method == http.MethodPost && r.URL.Path == "/api/comments/new-comment/resolve":
+					resolved.Add(1)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "new-comment"})
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			setCLITestServerEnv(t, srv.URL)
+			t.Setenv("MULTICA_TOKEN", "mat_test-token")
+			cmd := newIssueCommentAddTestCmd()
+			args := []string{"--parent", parentID, "--content-file", "reply.md", "--output", "table"}
+			if resolve {
+				args = append(args, "--resolve-thread")
+			}
+			if err := cmd.Flags().Parse(args); err != nil {
+				t.Fatal(err)
+			}
+			if err := runIssueCommentAdd(cmd, []string{issueID}); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := resolved.Load() == 1, resolve; got != want {
+				t.Fatalf("resolve called = %v, want %v", got, want)
+			}
+		})
+	}
+}
