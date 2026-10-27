@@ -30,6 +30,9 @@ type Ask struct {
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
 	SourceIssueID    string      `json:"source_issue_id"`
 	SourceCommentID  string      `json:"source_comment_id"`
+	HumanSteps       []HumanStep `json:"human_steps"`
+	Probes           []string    `json:"probes"`
+	AfterDone        string      `json:"after_done"`
 }
 
 // AskError carries a fixed, field-named message. It never echoes decoder text,
@@ -41,7 +44,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
@@ -65,12 +68,19 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+		{"after_done", &ask.AfterDone},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
+		return ask, err
+	}
+	if err := decodeSteps(fields["human_steps"], &ask.HumanSteps); err != nil {
+		return ask, err
+	}
+	if err := decodeStrings("ask.probes", fields["probes"], &ask.Probes); err != nil {
 		return ask, err
 	}
 	return ask, ask.Validate()
@@ -216,7 +226,7 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
-	return nil
+	return ask.validateHumanSteps()
 }
 
 func (ask Ask) Content() string {
@@ -231,6 +241,6 @@ func (ask Ask) Content() string {
 		}
 		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
-		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.AgentDid, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.AgentDid, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
 }

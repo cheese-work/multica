@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -120,5 +121,14 @@ func TestPrintAskHintsDedupesAndKeepsStdoutShape(test *testing.T) {
 	}
 	if _, ok := result["hints"]; ok {
 		test.Fatal("hints leaked into the JSON result")
+	}
+}
+
+func TestDecisionRequestAskFileHelpListsHumanSteps(test *testing.T) {
+	usage := decisionRequestCmd.Flags().Lookup("ask-file").Usage
+	for _, field := range []string{"human_steps[{action, command, values[{name, value, source}], verify_done}]", "probes[]", "after_done"} {
+		if !strings.Contains(usage, field) {
+			test.Fatalf("--ask-file help is missing %q: %s", field, usage)
+		}
 	}
 }

@@ -43,5 +43,5 @@ func LintAsk(ask Ask) []string {
 	if sentences < 2 || sentences > 5 {
 		hints = append(hints, fmt.Sprintf("context_eli10 has %d sentences; use 2 to 5", sentences))
 	}
-	return hints
+	return append(hints, lintHumanSteps(ask)...)
 }
