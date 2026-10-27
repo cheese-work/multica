@@ -186,6 +186,7 @@ type AgentTaskQueue struct {
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
 	ClaimedModel              pgtype.Text `json:"claimed_model"`
+	ChatCompactionEpoch       pgtype.Int8 `json:"chat_compaction_epoch"`
 }
 
 type AgentToLabel struct {
@@ -583,6 +584,7 @@ type ChatSession struct {
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
 	TitleManuallySet       bool               `json:"title_manually_set"`
+	CompactionEpoch        int64              `json:"compaction_epoch"`
 }
 
 type ChatWakeup struct {

@@ -29,6 +29,21 @@ SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updat
 WHERE id = $1
 RETURNING *;
 
+-- name: CompactChatSessionInPlace :one
+-- In-place compaction: open a new epoch and drop the resume pointer so the next
+-- turn starts a fresh session seeded from the summary. The DM id, status, pins
+-- and work_dir stay as they are.
+UPDATE chat_session
+SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: GetTaskCompactionSummary :one
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
 -- copied history counts as read. fork_last_message_id is the child's own copy
