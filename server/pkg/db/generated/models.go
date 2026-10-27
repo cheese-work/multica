@@ -716,6 +716,32 @@ type DaemonToken struct {
 	OwnerID     pgtype.UUID        `json:"owner_id"`
 }
 
+type DecisionAction struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	DecisionRequestID    pgtype.UUID        `json:"decision_request_id"`
+	ActionType           string             `json:"action_type"`
+	ActionVersion        int32              `json:"action_version"`
+	Params               []byte             `json:"params"`
+	Preconditions        []byte             `json:"preconditions"`
+	SecretSlots          []byte             `json:"secret_slots"`
+	PayloadSha256        string             `json:"payload_sha256"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	State                string             `json:"state"`
+	RequestedByAgentID   pgtype.UUID        `json:"requested_by_agent_id"`
+	RequestedByTaskID    pgtype.UUID        `json:"requested_by_task_id"`
+	ApprovedByUserID     pgtype.UUID        `json:"approved_by_user_id"`
+	ApprovedAt           pgtype.Timestamptz `json:"approved_at"`
+	ExecutedAt           pgtype.Timestamptz `json:"executed_at"`
+	WebauthnCredentialID pgtype.UUID        `json:"webauthn_credential_id"`
+	Result               []byte             `json:"result"`
+	ErrorCode            pgtype.Text        `json:"error_code"`
+	ErrorMessage         pgtype.Text        `json:"error_message"`
+	PostCommitDoneAt     pgtype.Timestamptz `json:"post_commit_done_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DecisionAnswer struct {
 	ID                      pgtype.UUID        `json:"id"`
 	DecisionRequestID       pgtype.UUID        `json:"decision_request_id"`
