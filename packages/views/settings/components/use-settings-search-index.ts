@@ -89,6 +89,11 @@ export function useSettingsSearchIndex(
         title: t(($) => $.preferences.issue_fields_title),
         description: t(($) => $.issue.description),
       },
+      {
+        tab: "notifications",
+        anchor: "unassigned_activity",
+        title: t(($) => $.notifications.focused_delivery),
+      },
       ...NOTIFICATION_GROUPS.map((group) => ({
         tab: "notifications",
         anchor: group,

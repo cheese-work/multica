@@ -1,4 +1,22 @@
 {
+  "relations": {
+    "title": "任务关系图",
+    "direction": "箭头从父任务指向子任务，从被监测的任务指向待唤醒的任务，从提及来源指向目标。当前任务以粗边框标出。",
+    "depth": "深度",
+    "loading": "正在加载关系...",
+    "load_failed": "无法加载关系。",
+    "render_failed": "无法显示关系图。",
+    "retry": "重试",
+    "empty": "没有关联任务。",
+    "omitted": "另有 {{count}} 个任务未显示（最多 40 个节点）。",
+    "parent": "父任务 → 子任务",
+    "duplicate": "重复目标",
+    "wakeup": "唤醒",
+    "children_done": "子任务完成 → 唤醒",
+    "mention": "提及",
+    "shared_pr": "共享 PR",
+    "unknown": "关联"
+  },
   "inline_run": {
     "label": "{{name}} 的运行",
     "stop": "停止",
@@ -399,6 +417,7 @@
     "section_parent_issue": "父任务",
     "section_pull_requests": "Pull Request",
     "section_metadata": "元数据",
+    "status_summary_label": "状态摘要",
     "section_details": "详情",
     "section_quick_actions": "快捷操作",
     "quick_actions_more": "显示其余 {{count}} 条",
@@ -1658,7 +1677,8 @@
       "override_follow_project": "跟随项目的工作流",
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
-      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」"
+      "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
+      "flowchart": "流程图"
     },
     "list_separator": "、",
     "handoff": {
@@ -1706,7 +1726,30 @@
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有这个项目使用这个工作流。",
       "no_handoff_here": "不交接",
-      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。"
+      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。",
+      "graph_label": "工作流图",
+      "exits_label": "工作流出口",
+      "exit_item": "{{guard}} 时，从 {{from}} 到 {{to}}",
+      "edit": {
+        "title": "{{step}} 的出口",
+        "pick": "选择一个步骤以编辑其出口。",
+        "empty": "没有出口。",
+        "group": "出口 {{n}}：{{to}}",
+        "guard": "条件",
+        "target": "前往",
+        "timeout": "超时",
+        "on_timeout": "超时后",
+        "add": "添加出口",
+        "remove": "删除出口",
+        "issues": {
+          "too_many_edges": "{{from}} 的出口超过 {{max}} 个。",
+          "missing_target": "{{from}} 的某个出口指向不存在的步骤。",
+          "bad_guard": "{{from}} 的某个出口含有未知条件。",
+          "bad_timeout": "{{from}} 的某个出口需要 1m 到 720h 之间的超时，例如 72h。",
+          "bad_on_timeout": "{{from}} 的某个出口需要有效的超时后步骤。",
+          "ci_green_source": "{{from}} 不能在 CI 通过时推进。"
+        }
+      }
     },
     "templates": {
       "delivery": {

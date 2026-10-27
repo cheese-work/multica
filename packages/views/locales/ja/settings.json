@@ -786,6 +786,7 @@
     "toast_profile_failed": "プロフィールを更新できませんでした"
   },
   "notifications": {
+    "focused_delivery": "決定事項と自分に割り当てられた課題のみ",
     "title": "インボックス通知",
     "description": "通知をオフにしても、タスク上で履歴を確認できます。",
     "toast_failed": "通知設定を更新できませんでした",

@@ -544,6 +544,7 @@ type ChatMessage struct {
 	SentVia                       pgtype.Text        `json:"sent_via"`
 	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
+	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
 }
 
 type ChatPinnedAgent struct {
@@ -581,6 +582,7 @@ type ChatSession struct {
 	ForkLastMessageID      pgtype.UUID        `json:"fork_last_message_id"`
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
+	TitleManuallySet       bool               `json:"title_manually_set"`
 }
 
 type ClientUsageDaily struct {
@@ -726,6 +728,20 @@ type DecisionClassChange struct {
 	ToClass           string             `json:"to_class"`
 	ChangedByUserID   pgtype.UUID        `json:"changed_by_user_id"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigest struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	HumanUserID pgtype.UUID        `json:"human_user_id"`
+	DigestDay   pgtype.Date        `json:"digest_day"`
+	InboxItemID pgtype.UUID        `json:"inbox_item_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionExpiryDigestRequest struct {
+	RequestID pgtype.UUID `json:"request_id"`
+	DigestID  pgtype.UUID `json:"digest_id"`
 }
 
 type DecisionIntent struct {
@@ -1546,6 +1562,9 @@ type IssueWorkflow struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	IsDefault        bool               `json:"is_default"`
 	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
 }
 
 type LarkBindingToken struct {
