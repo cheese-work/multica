@@ -27,6 +27,7 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +45,7 @@ import {
   renderSvgToPngBlob,
 } from "./utils/mermaid-export";
 import type { Size } from "./utils/zoom-transform";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 const COPY_FEEDBACK_MS = 2000;
 
@@ -82,16 +84,17 @@ function ToolbarButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={label}
-      aria-label={label}
-      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-    >
-      {children}
-    </button>
+    <TooltipHint label={label} side="bottom">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      >
+        {children}
+      </button>
+    </TooltipHint>
   );
 }
 
@@ -142,7 +145,7 @@ function MermaidViewerContent({
   onClose,
 }: MermaidViewerContentProps & {
   canvasRef: React.RefObject<HTMLDivElement | null>;
-  onClose: () => void;
+  onClose?: () => void;
 }) {
   const { t } = useT("editor");
   const [showSource, setShowSource] = useState(false);
@@ -201,14 +204,12 @@ function MermaidViewerContent({
     <>
       {/* Sibling of the scrolling canvas, never inside it: the toolbar must
           stay put no matter how far the diagram is panned or zoomed. */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-3 py-2">
-          <DialogTitle className="mr-1 truncate text-body font-medium">
-            {t(($) => $.mermaid.viewer_title)}
-          </DialogTitle>
+      <header data-testid="media-toolbar" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-3 py-2 max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10">
+          {onClose ? <DialogTitle className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</DialogTitle> : <h1 className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</h1>}
 
           <ZoomControls canvas={canvas} disabled={showSource} />
 
-          <div className="ml-auto flex items-center gap-0.5">
+          <ViewerActions>
             <ToolbarButton
               onClick={() => setShowSource((value) => !value)}
               label={
@@ -226,18 +227,19 @@ function MermaidViewerContent({
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
             </ToolbarButton>
             <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <button
-                    type="button"
-                    title={t(($) => $.mermaid.export)}
-                    aria-label={t(($) => $.mermaid.export)}
-                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  >
-                    <Download className="size-4" />
-                  </button>
-                }
-              />
+              <TooltipHint label={t(($) => $.mermaid.export)} side="bottom">
+                <DropdownMenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={t(($) => $.mermaid.export)}
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    >
+                      <Download className="size-4" />
+                    </button>
+                  }
+                />
+              </TooltipHint>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={handleDownloadPng} disabled={!canExportImage}>
                   <ImageIcon className="size-4" />
@@ -253,13 +255,14 @@ function MermaidViewerContent({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <ToolbarButton
+            <MediaLinkAction kind="mermaid" content={chart} />
+          </ViewerActions>
+            {onClose && <ToolbarButton
               onClick={onClose}
               label={t(($) => $.mermaid.close_viewer)}
             >
               <X className="size-4" />
-            </ToolbarButton>
-          </div>
+            </ToolbarButton>}
         </header>
 
         {showSource ? (
@@ -287,4 +290,9 @@ function MermaidViewerContent({
         )}
     </>
   );
+}
+
+export function MermaidViewerStandalone(props: MermaidViewerContentProps) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  return <div className="flex h-full min-h-0 w-full flex-col" data-testid="media-stage"><MermaidViewerContent {...props} canvasRef={canvasRef} /></div>;
 }

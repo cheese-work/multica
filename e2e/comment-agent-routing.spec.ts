@@ -2,7 +2,7 @@ import "./env";
 
 import { expect, test } from "@playwright/test";
 import pg from "pg";
-import { createTestApi } from "./helpers";
+import { clickWhenHydrated, createTestApi } from "./helpers";
 
 // Routing matrices live in the Go handler tests. This browser regression covers
 // the reply composer, real API routing, and historical inline-run visibility.
@@ -77,7 +77,7 @@ test("reply stays with the thread agent and hides unused historical fallbacks", 
     await expect(page.locator(`[data-run-id="${controlId}"]`)).toBeVisible();
     for (const id of hiddenIds) await expect(page.locator(`[data-run-id="${id}"]`)).toHaveCount(0);
 
-    await page.getByTestId("reply-composer-shell").first().click();
+    await clickWhenHydrated(page.getByTestId("reply-composer-shell").first());
     const editor = page.locator('.ProseMirror[data-placeholder="Leave a reply..."], .ProseMirror:has([data-placeholder="Leave a reply..."])').first();
     await editor.fill("Please continue, Agent B. The issue remains assigned to Agent A.");
     const posted = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/api/issues/${issue.id}/comments`));
@@ -100,7 +100,7 @@ test("reply stays with the thread agent and hides unused historical fallbacks", 
     await expect(page.locator(`[data-run-id="${controlId}"]`)).toBeVisible();
     for (const id of hiddenIds) await expect(page.locator(`[data-run-id="${id}"]`)).toHaveCount(0);
 
-    await page.getByTestId("comment-composer-shell").click();
+    await clickWhenHydrated(page.getByTestId("comment-composer-shell"));
     await page.locator('.ProseMirror[data-placeholder="Leave a comment..."], .ProseMirror:has([data-placeholder="Leave a comment..."])').first().fill("A separate top-level request for the assignee.");
     const topLevelPosted = page.waitForResponse((res) => res.request().method() === "POST" && res.url().endsWith(`/api/issues/${issue.id}/comments`));
     await page.keyboard.press("ControlOrMeta+Enter");

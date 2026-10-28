@@ -36,7 +36,12 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
 import { derivePRMergeStatus } from "@multica/core/github";
 import { useCurrentWorkspace } from "@multica/core/paths";
-import { issueStatusArchiveConflictCount, createIssueStatusListStore } from "@multica/core/issue-statuses";
+import {
+  issueStatusArchiveConflictCount,
+  parseIssueStatusCategoryChangeConflict,
+  type IssueStatusCategoryChangeConflict,
+  createIssueStatusListStore,
+} from "@multica/core/issue-statuses";
 import { baselineFromQuery } from "@multica/core/issue-views/baseline";
 import { IssueSurfaceWithStore } from "../../issues/surface/issue-surface";
 import { memberListOptions } from "@multica/core/workspace/queries";
@@ -61,6 +66,8 @@ import type {
 } from "@multica/core/types";
 import { ISSUE_STATUS_ICONS } from "@multica/core/types/issue-status";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Label as FieldLabel } from "@multica/ui/components/ui/label";
@@ -493,16 +500,18 @@ function StatusRow({
       className={`group/row relative flex min-h-12 items-center gap-2 bg-card py-2 pl-2 pr-4 motion-reduce:transition-none! ${isDragging ? "z-10 shadow-[var(--surface-shadow)]" : ""} ${archived ? "opacity-60" : ""}`}
     >
       {canReorder ? (
-        <button
-          type="button"
-          disabled={isReordering}
-          aria-label={t(($) => $.issue_statuses.actions.reorder, { name: label })}
-          className="flex size-6 shrink-0 touch-none items-center justify-center rounded-md cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing [@media(pointer:coarse)]:size-11"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="size-4" />
-        </button>
+        <TooltipHint label={t(($) => $.issue_statuses.actions.reorder, { name: label })}>
+          <button
+            type="button"
+            disabled={isReordering}
+            aria-label={t(($) => $.issue_statuses.actions.reorder, { name: label })}
+            className="flex size-6 shrink-0 touch-none items-center justify-center rounded-md cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing [@media(pointer:coarse)]:size-11"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="size-4" />
+          </button>
+        </TooltipHint>
       ) : <span className="size-6 shrink-0 [@media(pointer:coarse)]:size-11" />}
       <StatusIcon
         status={entry.key}
@@ -563,14 +572,14 @@ function StatusRow({
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button
+              <IconButton
                 variant="ghost"
                 size="icon-sm"
-                aria-label={t(($) => $.issue_statuses.actions.open, { name: label })}
+                label={t(($) => $.issue_statuses.actions.open, { name: label })}
                 className="shrink-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 data-popup-open:opacity-100 [@media(hover:hover)]:opacity-0 [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:opacity-100"
               >
                 <MoreHorizontal className="size-4" />
-              </Button>
+              </IconButton>
             }
           />
           <DropdownMenuContent align="end">
@@ -623,6 +632,8 @@ function StatusEditorDialog({
   const update = useUpdateIssueStatus();
   const [draft, setDraft] = useState<StatusDraft>(EMPTY_DRAFT);
   const [iconChanged, setIconChanged] = useState(false);
+  // Set when the server asks the admin to confirm a category change.
+  const [pendingCategoryChange, setPendingCategoryChange] = useState<IssueStatusCategoryChangeConflict | null>(null);
 
   const categoryItems = ALL_STATUSES.map((c) => ({
     value: c,
@@ -632,6 +643,7 @@ function StatusEditorDialog({
   useEffect(() => {
     if (!open) return;
     setIconChanged(false);
+    setPendingCategoryChange(null);
     setDraft(
       status
         ? {
@@ -646,15 +658,24 @@ function StatusEditorDialog({
     );
   }, [status, category, open]);
 
-  const submit = () => {
+  const currentCategory = status ? normalizeIssueStatusCategory(status.category) ?? "unstarted" : null;
+
+  const submit = (confirmCategoryChange = false) => {
     const name = draft.name.trim();
     if (!name || create.isPending || update.isPending) return;
-    const onError = (error: unknown) =>
+    const onError = (error: unknown) => {
+      const conflict = parseIssueStatusCategoryChangeConflict(error);
+      if (conflict) {
+        setPendingCategoryChange(conflict);
+        return;
+      }
       toast.error(
         error instanceof Error ? error.message : t(($) => $.issue_statuses.editor.save_failed),
       );
+    };
 
     if (status) {
+      const categoryChanged = draft.category !== currentCategory;
       update.mutate(
         {
           id: status.id,
@@ -663,8 +684,17 @@ function StatusEditorDialog({
           color: draft.color,
           // Preserve an unknown future icon when only other fields are edited.
           ...(iconChanged ? { icon: draft.icon } : {}),
+          ...(categoryChanged
+            ? { category: draft.category, confirm_category_change: confirmCategoryChange }
+            : {}),
         },
-        { onSuccess: () => onOpenChange(false), onError },
+        {
+          onSuccess: () => {
+            setPendingCategoryChange(null);
+            onOpenChange(false);
+          },
+          onError,
+        },
       );
       return;
     }
@@ -696,6 +726,7 @@ function StatusEditorDialog({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <form
@@ -743,8 +774,9 @@ function StatusEditorDialog({
             </div>
             <div className="space-y-2">
               <FieldLabel htmlFor="status-category">{t(($) => $.issue_statuses.editor.category)}</FieldLabel>
-              {/* Immutable after creation: changing it would alter the
-                  lifecycle of every issue already on this status. */}
+              {/* Changing it alters the lifecycle of every issue already on
+                  this status, so saving asks the server to count them and
+                  waits for the admin's confirmation. */}
               <Select
                 items={categoryItems}
                 value={draft.category}
@@ -752,7 +784,6 @@ function StatusEditorDialog({
                   value &&
                   setDraft((current) => ({ ...current, category: value as IssueStatusCategory }))
                 }
-                disabled={Boolean(status)}
               >
                 <SelectTrigger id="status-category">
                   <SelectValue />
@@ -766,8 +797,8 @@ function StatusEditorDialog({
                 </SelectContent>
               </Select>
               <p className="text-caption text-muted-foreground">
-                {status
-                  ? t(($) => $.issue_statuses.editor.category_locked)
+                {status && draft.category !== currentCategory
+                  ? t(($) => $.issue_statuses.editor.category_change_hint)
                   : t(($) => $.issue_statuses.categories[draft.category])}
               </p>
             </div>
@@ -822,24 +853,24 @@ function StatusEditorDialog({
               </legend>
               <div className="flex flex-wrap gap-2">
                 {(["", ...ISSUE_STATUS_ICONS] as const).map((icon) => (
-                  <Button
-                    key={icon}
-                    type="button"
-                    variant={draft.icon === icon ? "secondary" : "outline"}
-                    size={icon ? "icon" : "default"}
-                    className={`${icon ? "size-11" : "h-11"} aria-pressed:ring-2 aria-pressed:ring-ring`}
-                    aria-label={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
-                    aria-pressed={draft.icon === icon}
-                    title={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
-                    onClick={() => {
-                      setIconChanged(true);
-                      setDraft((current) => ({ ...current, icon }));
-                    }}
-                  >
-                    {icon
-                      ? <StatusIcon status="" category={draft.category} color={draft.color} icon={icon} className="size-5" />
-                      : t(($) => $.issue_statuses.editor.icon_shapes.default)}
-                  </Button>
+                  <TooltipHint key={icon} label={icon ? t(($) => $.issue_statuses.editor.icon_shapes[icon]) : undefined}>
+                    <Button
+                      type="button"
+                      variant={draft.icon === icon ? "secondary" : "outline"}
+                      size={icon ? "icon" : "default"}
+                      className={`${icon ? "size-11" : "h-11"} aria-pressed:ring-2 aria-pressed:ring-ring`}
+                      aria-label={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
+                      aria-pressed={draft.icon === icon}
+                      onClick={() => {
+                        setIconChanged(true);
+                        setDraft((current) => ({ ...current, icon }));
+                      }}
+                    >
+                      {icon
+                        ? <StatusIcon status="" category={draft.category} color={draft.color} icon={icon} className="size-5" />
+                        : t(($) => $.issue_statuses.editor.icon_shapes.default)}
+                    </Button>
+                  </TooltipHint>
                 ))}
               </div>
             </fieldset>
@@ -860,6 +891,34 @@ function StatusEditorDialog({
         </form>
       </DialogContent>
     </Dialog>
+    <AlertDialog
+      open={pendingCategoryChange !== null}
+      onOpenChange={(nextOpen) => !nextOpen && !update.isPending && setPendingCategoryChange(null)}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t(($) => $.issue_statuses.category_change_dialog.title)}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t(($) => $.issue_statuses.category_change_dialog.description, {
+              count: pendingCategoryChange?.issueCount ?? 0,
+              // The server's categories, not the editor snapshot: another admin
+              // may have moved this status since the dialog opened.
+              from: pendingCategoryChange ? t(($) => $.issue_statuses.category_labels[pendingCategoryChange.from]) : "",
+              to: pendingCategoryChange ? t(($) => $.issue_statuses.category_labels[pendingCategoryChange.to]) : "",
+            })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={update.isPending}>
+            {t(($) => $.issue_statuses.category_change_dialog.cancel)}
+          </AlertDialogCancel>
+          <AlertDialogAction disabled={update.isPending} onClick={() => submit(true)}>
+            {t(($) => $.issue_statuses.category_change_dialog.confirm)}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 

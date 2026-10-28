@@ -123,13 +123,13 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state,
+    head_sha, mergeable_state, head_repo_same,
     additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
-    $11, sqlc.narg('mergeable_state'),
+    $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
@@ -177,6 +177,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     END,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
+    head_repo_same = EXCLUDED.head_repo_same,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
     merged_at = CASE
@@ -227,6 +228,34 @@ RETURNING *;
 -- name: GetGitHubPullRequest :one
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: HasGitHubReviewWakeup :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = sqlc.arg(issue_id)
+      AND context->>'github_review_key' = sqlc.arg(review_key)::text
+);
+
+-- name: ListGitHubReviewAuthorCandidates :many
+SELECT DISTINCT task.agent_id
+FROM agent_task_queue task
+JOIN agent author ON author.id = task.agent_id
+JOIN github_pull_request pr ON pr.id = sqlc.arg(pull_request_id)
+WHERE pr.workspace_id = sqlc.arg(workspace_id)
+  AND author.workspace_id = pr.workspace_id
+  AND (
+    (sqlc.arg(task_key)::text <> '' AND right(replace(task.id::text, '-', ''), 12) = sqlc.arg(task_key)::text)
+    OR (task.branch_name = pr.branch AND task.created_at <= pr.pr_created_at AND EXISTS (
+        SELECT 1 FROM issue_pull_request link
+        WHERE link.pull_request_id = pr.id AND link.issue_id = task.issue_id
+    ))
+  )
+LIMIT 2;
+
+-- name: MarkGitHubReviewWakeup :exec
+UPDATE agent_task_queue
+SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_review_key', sqlc.arg(review_key)::text)
+WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
 
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the GitHub API snapshot (MUL-5265): the
@@ -374,3 +403,12 @@ WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower(sqlc.arg('html_url')::text)
 ORDER BY pr_updated_at DESC
 LIMIT 1;
+
+-- name: ListGitHubPRsWithUnverifiedHead :many
+-- CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
+-- repository id, so a repair must read GitHub to tell a real fork PR from a
+-- same-repository PR that the old fork-flag check rejected.
+SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE NOT head_repo_same
+ORDER BY installation_id, repo_owner, repo_name, pr_number;

@@ -272,6 +272,45 @@ const MODEL_PRICING: Record<
   "gpt-5.4":            { input: 2.50, output: 15,   cacheRead: 0.25,  cacheWrite: 2.50 },
   "gpt-5.3-codex":      { input: 1.75, output: 14,   cacheRead: 0.175, cacheWrite: 1.75 },
 
+  // -- Google: https://ai.google.dev/gemini-api/docs/pricing (2026-10-19).
+  //    Standard API-equivalent token estimates, not subscription charges.
+  //    Argon's intro rate ends 2026-11-30; Flash 3.6/3.8, Robotics and
+  //    3.8 TTS promotions end 2026-12-31. Update the static rows at expiry.
+  //    Google's deprecations page documents 3.5 Flash -> 3.6 and 3.7 -> 3.8
+  //    routing; those aliases use their destination's current rate.
+  //    Pro uses the <=200K request tier; totals lack per-request context
+  //    sizes. Flash/Lite use text/image/video input rates (audio can differ).
+  //    Cache writes estimate input processing only, excluding cache storage,
+  //    grounding and service-tier surcharges. Unsupported cache buckets are 0.
+  //    Speech-only SKUs have one input/output rate; mixed-modality Live,
+  //    Image, Omni and Embedding SKUs stay unmapped because aggregate tokens
+  //    cannot distinguish their rates. Mirror server/internal/metrics/pricing.go. --
+  "gemini-4-argon": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2 },
+  "gemini-3.8-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  "gemini-3.7-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  "gemini-3.6-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  "gemini-3.5-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  "gemini-3.5-flash-lite": { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.3 },
+  "gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0.25 },
+  "gemini-3.1-pro": { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2 },
+  "gemini-3.1-pro-preview": { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2 },
+  "gemini-3.1-pro-preview-customtools": { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2 },
+  "gemini-3-flash": { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0.5 },
+  "gemini-3-flash-preview": { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0.5 },
+  "gemini-2.5-pro": { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
+  "gemini-2.5-flash": { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.3 },
+  "gemini-2.5-flash-lite": { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 },
+  "gemini-robotics-er-2-preview": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+  "gemini-robotics-er-2-streaming-preview": { input: 1, output: 5, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.8-flash-tts": { input: 0.5, output: 9, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.8-flash-lite-tts": { input: 0.5, output: 6, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.1-flash-tts-preview": { input: 1, output: 20, cacheRead: 0, cacheWrite: 0 },
+  "gemini-2.5-flash-preview-tts": { input: 0.5, output: 10, cacheRead: 0, cacheWrite: 0 },
+  "gemini-2.5-pro-preview-tts": { input: 1, output: 20, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.5-transcribe": { input: 2, output: 12, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.5-transcribe-live": { input: 3.5, output: 21, cacheRead: 0, cacheWrite: 0 },
+  "gemini-3.5-live-translate-preview": { input: 3.5, output: 21, cacheRead: 0, cacheWrite: 0 },
+
   // -- OpenAI: GPT-5 family (Codex CLI's default is gpt-5-codex; -codex/-mini/-nano variants priced per OpenAI tiers) --
   "gpt-5-codex":        { input: 1.25, output: 10,   cacheRead: 0.125, cacheWrite: 1.25 },
   "gpt-5-mini":         { input: 0.25, output: 2,    cacheRead: 0.025, cacheWrite: 0.25 },
@@ -287,18 +326,21 @@ const MODEL_PRICING: Record<
   "gpt-4o-mini":        { input: 0.15, output: 0.60, cacheRead: 0.075, cacheWrite: 0.15 },
   "gpt-4o":             { input: 2.50, output: 10,   cacheRead: 1.25,  cacheWrite: 2.50 },
 
-  // -- DeepSeek (api-docs.deepseek.com/quick_start/pricing).
-  //    The official catalog lists exactly two current SKUs; `deepseek-chat`
-  //    and `deepseek-reasoner` are aliases that route to `deepseek-v4-flash`
-  //    (non-thinking and thinking mode respectively) per the same page.
-  //    `deepseek-v4-pro` is currently under a 75%-off promo that ends
-  //    2026-05-31 15:59 UTC; we price at the post-promo standard rate
-  //    ($1.74/$3.48) so the dashboard does not jump 4× on June 1 — accept
-  //    a brief over-estimate during the promo over a sudden cliff after it. --
-  "deepseek-v4-flash":  { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
+  // -- DeepSeek Flash: api-docs.deepseek.com/quick_start/pricing/ (2026-10-27).
+  // The English sheet supplies USD; the Chinese sheet lists CNY. The official
+  // Flash name and retired v4 aliases serve V4.1-Flash-1017. Preserve the
+  // existing Flash routing for chat/reasoner. Only known spellings and the
+  // 1017 snapshot resolve. Use peak USD rates because rollups lack each
+  // request's pricing window; off-peak costs half as much and reseller prices
+  // can differ. Cache writes bill as ordinary input. Mirror pricing.go.
+  "deepseek-flash":              { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-v4-flash":           { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-v4-flash-vision-exp": { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-v4.1-flash":          { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-v4.1-flash-1017":     { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-chat":               { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
+  "deepseek-reasoner":           { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0.30 },
   "deepseek-v4-pro":    { input: 1.74, output: 3.48, cacheRead: 0.0145, cacheWrite: 1.74 },
-  "deepseek-chat":      { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
-  "deepseek-reasoner":  { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
 
   // -- Moonshot Kimi (kimi.com/resources/kimi-k2-6-pricing).
   //    Only K2.6 is on the official price sheet today; earlier K2 variants
@@ -456,8 +498,8 @@ const MODEL_PRICING: Record<
   "cursor/gemini-4-argon":       { input: 2,    output: 10,   cacheRead: 0.1,   cacheWrite: 0 },
   "cursor/gemini-3.8-flash":     { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
   "cursor/gemini-3.7-flash":     { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
-  "cursor/gemini-3.6-flash":     { input: 1.5,  output: 7.5,  cacheRead: 0.15,  cacheWrite: 0 },
-  "cursor/gemini-3.5-flash":     { input: 1.5,  output: 9,    cacheRead: 0.15,  cacheWrite: 0 },
+  "cursor/gemini-3.6-flash":     { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
+  "cursor/gemini-3.5-flash":     { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
   "cursor/gemini-3.1-pro":       { input: 2,    output: 12,   cacheRead: 0.2,   cacheWrite: 0 },
   "cursor/gemini-3-flash":       { input: 0.5,  output: 3,    cacheRead: 0.05,  cacheWrite: 0 },
   "cursor/kimi-k3":              { input: 3,    output: 15,   cacheRead: 0.3,   cacheWrite: 0 },
@@ -474,7 +516,7 @@ const MODEL_PRICING: Record<
 };
 
 // Resolve a model string to its pricing tier. Exact match, with four
-// tolerances applied in order:
+// tolerances applied in order (plus Gemini effort/display-name normalization):
 //
 //  1. Provider-prefixed IDs (`anthropic/claude-opus-4.7` from openclaw /
 //     opencode) — the `<provider>/` segment is routing metadata, not part
@@ -659,24 +701,56 @@ function canonicalCandidates(model: string): string[] {
   // semantic, so we leave `gpt-5.4` etc. alone.
   const canonAnthropic = (s: string) =>
     s.startsWith("claude-") ? s.replace(/\./g, "-") : s;
+  // Amazon Bedrock prefixes Anthropic ids with a region family (`us.`, `eu.`,
+  // `apac.`, `global.`) and the vendor (`anthropic.`), and appends the
+  // inference-profile version to snapshot ids (`...-20250929-v1:0`). A Bedrock
+  // turn reports `us.anthropic.claude-sonnet-5`, which matched no table key at
+  // all, so every such turn rendered as $0 plus an "unmapped" warning. Only the
+  // vendor-prefixed forms are rewritten: `us.amazon.nova-*` and friends stay
+  // unmapped rather than borrowing a Claude rate. Mirrors `normalizeBedrockID`
+  // in server/internal/metrics/pricing.go.
+  const stripBedrock = (s: string) => {
+    const prefix = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(claude-)/;
+    if (!prefix.test(s)) return s;
+    return s
+      .replace(prefix, "$1")
+      .replace(/-v\d+:\d+(\[[^\]]+\])?$/, "$1");
+  };
   // Trailing context-window tag (`claude-opus-4-7[1m]`). Same family,
   // same price tier — see resolver comment above for the 1M-context
   // pricing trade-off.
   const stripContextTag = (s: string) => s.replace(/\[[^\]]+\]$/, "");
 
+  // Antigravity's display labels and effort-suffixed IDs refer to the same
+  // Gemini SKU. Match only recognized shapes; never strip arbitrary variants.
+  const canonGemini = (s: string) => {
+    const display = /^gemini (\d+(?:\.\d+)?) (flash(?:-lite)?|pro|argon)(?: \((?:minimal|low|medium|high)\))?$/i.exec(s);
+    if (display) return `gemini-${display[1]}-${display[2]}`.toLowerCase();
+    const slug = /^(gemini-\d+(?:\.\d+)?-(?:flash(?:-lite)?|pro|argon))(?:-(?:minimal|low|medium|high))?$/i.exec(s);
+    return slug ? slug[1]!.toLowerCase() : s;
+  };
+
   const raw = model;
   const noProvider = stripProvider(raw);
   const dashed = canonAnthropic(noProvider);
   const noTag = stripContextTag(dashed);
+  // Bedrock ids reach us with dots (`us.anthropic.claude-…`) and a
+  // `-v1:0` profile version, so they need the prefix strip BEFORE the
+  // dot↔dash normalisation that `canonAnthropic` only applies to `claude-*`.
+  const bedrock = canonAnthropic(stripContextTag(stripBedrock(noProvider)));
 
   push(raw);
   push(noProvider);
   push(dashed);
   push(noTag);
+  push(bedrock);
   push(stripDate(raw));
   push(stripDate(noProvider));
   push(stripDate(dashed));
   push(stripDate(noTag));
+  push(stripDate(bedrock));
+  push(canonGemini(noTag));
+  push(canonGemini(stripDate(noTag)));
   canonicalCandidatesCache.set(model, out);
   return out;
 }

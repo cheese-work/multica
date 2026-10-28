@@ -33,7 +33,7 @@
       "key_hint": "Désigné par {{key}} dans l'API et la CLI.",
       "created": "Statut créé. L'API et le CLI le désignent par {{key}}.",
       "category": "Catégorie",
-      "category_locked": "La catégorie ne peut plus être modifiée après la création du statut.",
+      "category_change_hint": "Changer la catégorie modifie le comportement de chaque ticket ayant ce statut. Une confirmation sera demandée avant l’enregistrement.",
       "description": "Description",
       "description_placeholder": "Ce que cet état signifie pour votre équipe",
       "color": "Couleur",
@@ -52,6 +52,13 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "save_failed": "L'état n'a pas pu être enregistré."
+    },
+    "category_change_dialog": {
+      "title": "Changer la catégorie ?",
+      "description_one": "{{count}} ticket de ce statut passera de {{from}} à {{to}}.",
+      "description_other": "{{count}} tickets de ce statut passeront de {{from}} à {{to}}.",
+      "cancel": "Annuler",
+      "confirm": "Changer la catégorie"
     },
     "archive_dialog": {
       "retry": "Réessayer l'archivage",
@@ -282,6 +289,8 @@
     "field_name": "Nom",
     "field_name_placeholder": "Relecture de code",
     "field_target": "S'exécute en tant que",
+    "no_target": "Aucune cible",
+    "no_target_hint": "Publie un message sans mentionner personne.",
     "field_prompt": "Invite",
     "field_prompt_placeholder": "Relire le code lié à cette tâche. Se concentrer sur la justesse et les cas limites.",
     "prompt_hint": "Envoyée telle quelle. L'agent voit déjà la tâche.",
@@ -305,7 +314,8 @@
     "language": {
       "title": "Langue",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -790,6 +800,7 @@
     "toast_profile_failed": "Échec de la mise à jour du profil"
   },
   "notifications": {
+    "focused_delivery": "Uniquement les décisions et les issues qui me sont attribuées",
     "title": "Notifications de la boîte de réception",
     "description": "Les événements désactivés restent visibles dans la tâche.",
     "toast_failed": "Échec de la mise à jour des réglages de notification",
@@ -821,8 +832,7 @@
     },
     "system": {
       "title": "Notifications système",
-      "description": "Afficher les notifications système lorsque Multica est en arrière-plan.",
-      "label": "Afficher les notifications système"
+      "label": "Afficher les notifications système lorsque Multica est en arrière-plan"
     },
     "browser": {
       "label": "Notifications du navigateur",
@@ -1400,6 +1410,15 @@
   "desktop": {
     "tabs": {
       "updates": "Mises à jour"
+    },
+    "tab_bar": {
+      "pin": "Épingler l'onglet",
+      "unpin": "Désépingler l'onglet",
+      "close": "Fermer l'onglet",
+      "close_others": "Fermer les autres onglets",
+      "open_window": "Ouvrir dans une nouvelle fenêtre",
+      "new": "Nouvel onglet",
+      "pinned_name": "{{title}} (épinglé)"
     },
     "updates": {
       "title": "Mises à jour",

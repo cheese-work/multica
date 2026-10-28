@@ -49,12 +49,12 @@ func TestWebhookStatusResolver(t *testing.T) {
 				fail           bool
 				wantReads      int
 			}{
-				{"custom", []string{"approved", "dropped", "review", "approved", "done"}, []string{"approved", "dropped", "done", "approved", "done"}, false, 1},
+				{"custom", []string{"approved", "dropped", "review", "approved", "done"}, []string{"done", "done", "done", "done", "done"}, false, 0},
 				{"builtins", []string{"done", "cancelled", "in_review"}, []string{"done", "cancelled", "done"}, false, 0},
-				// An unresolved key keeps the old nonterminal-gate behavior. This
-				// optimization must not introduce a new close-policy decision.
-				{"unknown", []string{"missing", "missing"}, []string{"done", "done"}, false, 1},
-				{"unavailable", []string{"review", "review"}, []string{"done", "done"}, true, 1},
+				// Only the literal built-in done and cancelled are terminal (CHE-1990),
+				// so the merge gate reads no catalog. An unresolved key is not terminal.
+				{"unknown", []string{"missing", "missing"}, []string{"done", "done"}, false, 0},
+				{"unavailable", []string{"review", "review"}, []string{"done", "done"}, true, 0},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					catalog := &webhookStatusCatalog{Querier: testHandler.Queries, reads: map[pgtype.UUID]int{}, fail: tc.fail}
@@ -95,7 +95,10 @@ func TestWebhookStatusResolver(t *testing.T) {
 							mirror = func(number int32) {
 								p := &ghPullRequestPayload{}
 								p.Action = "closed"
+								p.Repository.ID = 424242
 								p.Repository.Owner.Login, p.Repository.Name = "fixture", "resolver"
+								fork := false
+								p.PullRequest.Head.Repo = &ghPRHeadRepository{ID: 424242, FullName: "fixture/resolver", Fork: &fork}
 								p.PullRequest.Number, p.PullRequest.Title = number, "Resolve linked issues"
 								p.PullRequest.Body = strings.Join(closing, "\n")
 								p.PullRequest.State, p.PullRequest.Merged = "closed", true
@@ -120,9 +123,6 @@ func TestWebhookStatusResolver(t *testing.T) {
 						}
 						for i, id := range ids {
 							want := tc.want[i]
-							if workspace == 1 && tc.statuses[i] == "approved" {
-								want = "done"
-							}
 							var status string
 							fixture.QueryRow(t, "SELECT status FROM issue WHERE id = $1", id).Scan(&status)
 							if status != want {
@@ -130,23 +130,20 @@ func TestWebhookStatusResolver(t *testing.T) {
 							}
 						}
 						// A redelivery of the same merge is not a new PR event, so it
-						// decides nothing and reads nothing.
+						// decides nothing. A second merged PR is a new event and moves
+						// a custom closed status like any other non-built-in one.
 						if tc.name == "custom" {
 							fixture.Exec(t, "UPDATE issue SET status = 'dropped' WHERE id = $1", ids[0])
 							mirror(1)
-							if catalog.reads[wsID] != 1 {
-								t.Errorf("redelivered merge reads = %d, want 1 total", catalog.reads[wsID])
-							}
-							// A fresh delivery must not reuse even a successful
-							// prior resolver: a second merged PR re-reads once.
-							mirror(2)
-							if catalog.reads[wsID] != 2 {
-								t.Errorf("second delivery reads = %d, want 2 total", catalog.reads[wsID])
-							}
 							var status string
 							fixture.QueryRow(t, "SELECT status FROM issue WHERE id = $1", ids[0]).Scan(&status)
 							if status != "dropped" {
-								t.Errorf("replay changed terminal status to %q", status)
+								t.Errorf("redelivery changed status to %q", status)
+							}
+							mirror(2)
+							fixture.QueryRow(t, "SELECT status FROM issue WHERE id = $1", ids[0]).Scan(&status)
+							if status != "done" {
+								t.Errorf("second merge: dropped status = %q, want done", status)
 							}
 						}
 					}

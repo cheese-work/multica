@@ -21,7 +21,7 @@ jobs:
   changelog-line:
     name: Changelog line
     if: github.event.pull_request.state != 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout the check script
@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 

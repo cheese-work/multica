@@ -82,6 +82,7 @@ import type {
   WorkspaceDeletedPayload,
   WorkspaceUpdatedPayload,
   MemberRemovedPayload,
+  IssueStatusChangedPayload,
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
@@ -97,6 +98,7 @@ import type {
   CommentDeletedPayload,
   CommentResolvedPayload,
   CommentUnresolvedPayload,
+  DecisionAnswerUpdatedPayload,
   ActivityCreatedPayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
@@ -168,6 +170,19 @@ export function refetchPendingChatAggregate(
 ) {
   if (!wsId) return;
   qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+}
+
+/**
+ * A decision card changed state. Both surfaces render the same state, so
+ * refresh the issue's quote card and every DM message list.
+ */
+export function applyDecisionAnswerUpdated(
+  qc: QueryClient,
+  payload: DecisionAnswerUpdatedPayload,
+) {
+  qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }
 
 /**
@@ -1053,7 +1068,7 @@ export function useRealtimeSync(
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
-      "comment:resolved", "comment:unresolved",
+      "comment:resolved", "comment:unresolved", "decision_answer:updated",
       "activity:created",
       "reaction:added", "reaction:removed",
       "issue_reaction:added", "issue_reaction:removed",
@@ -1083,6 +1098,16 @@ export function useRealtimeSync(
       }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
+      // A category move is the one catalog edit that does reach issue caches:
+      // rows carry the server-resolved status_category, and groups, facets and
+      // category-scoped lists are bucketed by it. Presentation-only edits keep
+      // the catalog-only path above.
+      if (msg.type === "issue_status:changed" && (msg.payload as IssueStatusChangedPayload | undefined)?.category_changed) {
+        debouncedRefresh("issue_status:category", () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        });
+      }
     });
 
     // --- Specific event handlers (granular cache updates) ---
@@ -1231,6 +1256,10 @@ export function useRealtimeSync(
           invalidateIssueOwnerProjections(qc, wsId, comment.issue_id);
         }
       }
+    });
+
+    const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
+      applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1853,6 +1882,7 @@ export function useRealtimeSync(
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();
+      unsubDecisionAnswerUpdated();
       unsubActivityCreated();
       unsubReactionAdded();
       unsubReactionRemoved();

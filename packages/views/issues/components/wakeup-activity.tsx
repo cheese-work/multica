@@ -128,7 +128,9 @@ function triggerOf(details: WakeupDetails, preview: WakeupPreview | null, t: Iss
   if (event === "issue.status_changed") {
     return name ? t(($) => $.activity.trigger_status_by, { name }) : t(($) => $.activity.trigger_status);
   }
-  if (event) return text.eventName(event);
+  // "condition.met" is the scheduler's own event for a condition rule, not
+  // something that happened on the issue: read it as the rule's condition.
+  if (event && event !== "condition.met") return text.eventName(event);
   const named = preview && (preview.condition || preview.kind !== "event" || preview.event_types[0]);
   return named ? text.trigger(preview) : t(($) => $.activity.trigger_unknown);
 }
@@ -149,7 +151,11 @@ export function formatWakeupActivity(
     t(($) => $.activity.wakeup_assignee);
   switch (entry.action) {
     case "wakeup_created":
-      return t(($) => $.activity.wakeup_created, { condition, agent });
+      // A time rule's label already says "wake at ...", so the sentence names
+      // the agent up front instead of repeating "wake" after it.
+      return preview && !preview.condition && preview.kind !== "event"
+        ? t(($) => $.activity.wakeup_created_scheduled, { condition, agent })
+        : t(($) => $.activity.wakeup_created, { condition, agent });
     case "wakeup_triggered": {
       if (details.rule === "child_done") {
         const count = details.total ?? 1;

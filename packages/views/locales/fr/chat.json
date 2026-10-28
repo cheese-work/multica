@@ -69,6 +69,10 @@
     "copied_count_other": "{{count}} messages copiés",
     "fork_hint": "Envoyez un message pour démarrer cette branche.",
     "continuation_summary": "Résumé de la conversation",
+    "earlier_dm": "Conversation antérieure",
+    "quote_message": "Citer",
+    "speaker_you": "Vous",
+    "load_older_messages": "Charger les messages précédents",
     "show_details": "Afficher les détails",
     "replied_in": "Réponse en {{elapsed}}",
     "failed_after": "Échec après {{elapsed}}",
@@ -81,6 +85,7 @@
       "runtime_offline": "L'agent est actuellement hors ligne et n'a donc pas pu répondre. Veuillez réessayer dès son retour en ligne.",
       "runtime_access_denied": "Cet agent ne peut pas s'exécuter sur son runtime privé et n'a donc pas pu répondre. Passez le runtime en public, ou réassociez/copiez l'agent vers un runtime que son propriétaire peut utiliser.",
       "runtime_recovery": "L'agent a redémarré avant d'avoir pu terminer. Veuillez réessayer.",
+      "runtime_access_revoked": "L'accès au runtime a été révoqué. Associez l'agent à un runtime accessible avant de lancer une nouvelle exécution.",
       "manual": "Cette réponse a été annulée.",
       "skill_bundle_unavailable": "Les skills de l'agent n'ont pas pu être téléchargés : il n'a donc jamais démarré. C'est généralement un problème de connexion — veuillez réessayer.",
       "runtime_cli_timeout": "L'outil OpenClaw local n'a pas répondu à temps, l'exécution n'a donc jamais démarré. C'est un délai de démarrage local, pas un problème de réseau — réessayer ne servira à rien tant que l'outil ne démarrera pas plus vite ou que le délai ne sera pas allongé (MULTICA_OPENCLAW_CLI_TIMEOUT).",
@@ -295,5 +300,17 @@
     "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans une seule réponse, puis réessayez.",
     "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
     "removed": "Commentaire {{number}} supprimé"
+  },
+  "decision": {
+    "request_title": "Demande de décision",
+    "request_label": "Demande de décision : {{state}}",
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
+    "source_comment": "Commentaire source",
+    "quoted_in": "Cité dans {{issue}}",
+    "withdrawn_in": "Retirée dans {{issue}}",
+    "recorded_on": "Enregistré dans {{issue}}",
+    "from_original_dm": "du DM d'origine",
+    "inherited": "Hérité",
+    "message_unavailable": "Ce message n'est plus disponible"
   }
 }

@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "미디어",
+    "more": "더 보기",
+    "open_in_new_window": "새 창에서 열기",
+    "open_failed": "미디어 페이지를 열 수 없습니다",
+    "loading": "미디어 로딩 중…",
+    "load_failed": "미디어를 불러올 수 없습니다",
+    "offline": "오프라인 — 마지막으로 불러온 내용을 표시합니다.",
+    "retry": "다시 시도"
+  },
   "bubble_menu": {
     "bold": "굵게",
     "italic": "기울임",
@@ -110,6 +120,7 @@
   },
   "code_block": {
     "html_preview": "HTML 미리보기",
+    "close_preview": "닫기",
     "copy_code": "코드 복사",
     "show_preview": "미리보기 표시",
     "show_source": "소스 표시",
@@ -171,5 +182,21 @@
       "rename": "에이전트를 실행하지 않고 이 DM 이름 바꾸기",
       "fork": "이 DM을 새 DM으로 복사 (선택 메시지는 새 DM으로 전송)"
     }
+  },
+  "table": {
+    "reset_widths": "열 너비 초기화",
+    "expand": "표 펼치기",
+    "copy_markdown": "Markdown으로 복사",
+    "copy_csv": "CSV로 복사",
+    "copied": "복사됨",
+    "resize_column": "'{{name}}' 열 너비 조정",
+    "expanded_title": "표",
+    "filter_placeholder": "행 필터",
+    "clear_filter": "필터 지우기",
+    "no_matches": "일치하는 행이 없습니다",
+    "close": "닫기"
+  },
+  "next_self_mention": {
+    "label": "내 다음 멘션"
   }
 }

@@ -41,3 +41,7 @@ export {
   useCurrentWorkspace,
   useWorkspacePaths,
 } from "./hooks";
+
+export { isKnownWorkspacePath, workspaceSlugForPath } from "./workspace-slugs";
+export { mediaPath, parseMediaPath } from "./media";
+export type { MediaSource, MediaKind, MediaRoute } from "./media";

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, ChevronRight } from "lucide-react";
 import type { TimelineEntry } from "@multica/core/types";
 import { isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -14,6 +14,8 @@ import { useT, useTimeAgo } from "../../i18n";
 // focusing any tick opens one stationary, scrollable outline of every thread
 // with its replies listed under it. Rows jump to the same timeline anchors as
 // the ticks, including replies inside collapsed or resolved threads.
+// Resolved threads start folded to their root row, on the rail and in the
+// outline alike, until the reader expands them from the outline.
 
 /** Minimum number of threads before the rail is worth its pixels. */
 const MIN_THREADS = 2;
@@ -108,8 +110,9 @@ export interface ThreadMinimapThread {
   participants: TimelineEntry[];
   /**
    * Live (non-deleted) replies in timeline order. Each gets a short tick and an
-   * outline row; its `comment-${id}` anchor exists only once the thread is
-   * expanded, which the caller's `onJump` takes care of.
+   * outline row unless its resolved thread is folded in the outline; its
+   * `comment-${id}` anchor exists only once the thread is expanded in the
+   * timeline, which the caller's `onJump` takes care of.
    */
   replies: TimelineEntry[];
   /** The reply that resolved the thread ("Resolve thread with comment"), if any. */
@@ -122,6 +125,8 @@ interface ThreadMinimapProps {
   scrollContainerEl: HTMLElement | null;
   /** Called with a thread root id or a reply id. */
   onJump: (commentId: string) => void;
+  /** Lets the rail read only rows that exist; without it every tick's row is looked up. */
+  mountedRows?: MountedRows;
   /** Positioning within the page (e.g. `absolute right-3 top-12 bottom-0`) — owned by the caller, like FindBar. */
   className?: string;
 }
@@ -137,11 +142,19 @@ interface MinimapItem {
   threadIndex: number;
 }
 
-function flattenThreads(threads: readonly ThreadMinimapThread[]): MinimapItem[] {
+function isThreadFolded(thread: ThreadMinimapThread, expandedResolvedIds: ReadonlySet<string>) {
+  return thread.resolved && thread.replies.length > 0 && !expandedResolvedIds.has(thread.id);
+}
+
+function flattenThreads(
+  threads: readonly ThreadMinimapThread[],
+  expandedResolvedIds: ReadonlySet<string>,
+): MinimapItem[] {
   const items: MinimapItem[] = [];
   for (const thread of threads) {
     const threadIndex = items.length;
     items.push({ kind: "thread", id: thread.id, entry: thread.entry, thread, threadIndex });
+    if (isThreadFolded(thread, expandedResolvedIds)) continue;
     for (const reply of thread.replies) {
       items.push({ kind: "reply", id: reply.id, entry: reply, thread, threadIndex });
     }
@@ -161,7 +174,50 @@ function flattenThreads(threads: readonly ThreadMinimapThread[]): MinimapItem[] 
 // because Virtuoso mounts/unmounts rows while scrolling — an observer would
 // lose its targets. Unmounted rows are by definition outside the (overscanned)
 // viewport, and replies of a folded thread have no row at all, so "no element"
-// correctly counts as not visible.
+// correctly counts as not visible. With `mountedRows`, only the rows in
+// Virtuoso's current range are looked up, so a frame costs the window, not the
+// whole conversation.
+
+/** Indexes of the timeline rows Virtuoso currently has mounted. */
+export interface RowRange {
+  start: number;
+  end: number;
+}
+
+export interface RowRangeSource {
+  get(): RowRange | null;
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * A store the timeline writes on every Virtuoso `rangeChanged` and the rail
+ * reads, so a scroll never re-renders the issue page to tell the rail which
+ * rows exist.
+ */
+export function createRowRangeSource(): RowRangeSource & { set(range: RowRange): void } {
+  let current: RowRange | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    set(range) {
+      if (current?.start === range.start && current.end === range.end) return;
+      current = range;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+/** The timeline's row ids in order, and which of them are mounted. */
+export interface MountedRows {
+  rowIds: readonly string[];
+  range: RowRangeSource;
+}
 
 function sameIdSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
@@ -172,6 +228,7 @@ function sameIdSet(a: Set<string>, b: Set<string>): boolean {
 function useVisibleCommentIds(
   commentIds: readonly string[],
   scrollContainerEl: HTMLElement | null,
+  mountedRows?: MountedRows,
 ): Set<string> {
   const [visibleIds, setVisibleIds] = useState<Set<string>>(() => new Set());
 
@@ -179,12 +236,19 @@ function useVisibleCommentIds(
     const container = scrollContainerEl;
     if (!container) return;
 
+    const railIds = new Set(commentIds);
+    const candidates = (): Iterable<string> => {
+      const range = mountedRows?.range.get();
+      if (!mountedRows || !range) return commentIds;
+      return mountedRows.rowIds.slice(range.start, range.end + 1).filter((id) => railIds.has(id));
+    };
+
     let raf = 0;
     const compute = () => {
       raf = 0;
       const rect = container.getBoundingClientRect();
       const next = new Set<string>();
-      for (const id of commentIds) {
+      for (const id of candidates()) {
         const el = document.getElementById(`comment-${id}`);
         if (!el) continue;
         const r = el.getBoundingClientRect();
@@ -203,12 +267,14 @@ function useVisibleCommentIds(
     const ro = new ResizeObserver(schedule);
     ro.observe(container);
     if (container.firstElementChild) ro.observe(container.firstElementChild);
+    const unsubscribeRange = mountedRows?.range.subscribe(schedule);
     return () => {
       container.removeEventListener("scroll", schedule);
       ro.disconnect();
+      unsubscribeRange?.();
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [commentIds, scrollContainerEl]);
+  }, [commentIds, scrollContainerEl, mountedRows]);
 
   return visibleIds;
 }
@@ -288,12 +354,26 @@ export function ThreadMinimap({
   threads,
   scrollContainerEl,
   onJump,
+  mountedRows,
   className,
 }: ThreadMinimapProps) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const { getActorName, getActorInitials, getActorAvatarUrl } = useActorName();
-  const items = useMemo(() => flattenThreads(threads), [threads]);
+  const [expandedResolvedIds, setExpandedResolvedIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleThreadReplies = useCallback((threadId: string) => {
+    setExpandedResolvedIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(threadId)) next.add(threadId);
+      return next;
+    });
+  }, []);
+  const items = useMemo(
+    () => flattenThreads(threads, expandedResolvedIds),
+    [threads, expandedResolvedIds],
+  );
   // Item indexes that get a rail tick: every comment while they fit, one per
   // thread beyond MAX_RAIL_TICKS.
   const railIndexes = useMemo(
@@ -304,7 +384,7 @@ export function ThreadMinimap({
     [items],
   );
   const railIds = useMemo(() => railIndexes.map((i) => items[i]!.id), [items, railIndexes]);
-  const visibleIds = useVisibleCommentIds(railIds, scrollContainerEl);
+  const visibleIds = useVisibleCommentIds(railIds, scrollContainerEl, mountedRows);
 
   // Flattened previews, cached per comment by content so an unrelated timeline
   // update (reaction, new reply elsewhere) doesn't re-flatten every comment.
@@ -627,12 +707,14 @@ export function ThreadMinimap({
 
               const thread = item.thread;
               const participantNames = thread.participants.map(actorName);
+              const canFold = thread.resolved && thread.replies.length > 0;
+              const folded = isThreadFolded(thread, expandedResolvedIds);
               return (
-                <li key={item.id}>
+                <li key={item.id} className="flex items-center gap-0.5">
                   <button
                     {...rowProps}
                     aria-description={participantNames.join(", ") || undefined}
-                    className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-body text-muted-foreground transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-active:font-medium data-active:text-brand"
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left text-body text-muted-foreground transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-active:font-medium data-active:text-brand"
                   >
                     <span className="flex min-w-0 flex-1 items-center gap-1.5">
                       <span className="truncate">{title}</span>
@@ -663,6 +745,36 @@ export function ThreadMinimap({
                       )}
                     </span>
                   </button>
+                  {canFold && (
+                    <button
+                      type="button"
+                      aria-expanded={!folded}
+                      aria-label={
+                        folded
+                          ? t(($) => $.detail.thread_nav_show_replies, { count: thread.replies.length })
+                          : t(($) => $.detail.thread_nav_hide_replies)
+                      }
+                      onPointerEnter={() => showPreview({ index })}
+                      onFocus={() => showPreview({ index })}
+                      onClick={(event) => {
+                        if (event.detail > 0) {
+                          event.currentTarget.blur();
+                          cancelClose();
+                        }
+                        toggleThreadReplies(thread.id);
+                      }}
+                      className="flex h-7 shrink-0 items-center gap-0.5 rounded-md pl-1.5 pr-1 text-micro tabular-nums text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {thread.replies.length}
+                      <ChevronRight
+                        aria-hidden="true"
+                        className={cn(
+                          "size-3.5 transition-transform duration-150 ease-out motion-reduce:transition-none",
+                          !folded && "rotate-90",
+                        )}
+                      />
+                    </button>
+                  )}
                 </li>
               );
             })}

@@ -561,6 +561,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringSlice("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
+	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -841,6 +842,8 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
+	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
@@ -986,6 +989,34 @@ func TestRunIssueCreateRejectsDuplicateAndFilterPropertySyntaxBeforePost(t *test
 	}
 	if posts != 0 {
 		t.Fatalf("invalid property flags sent %d create POST(s)", posts)
+	}
+}
+
+func TestRunIssueCreateSendsOnBehalfOfAsRequestedByID(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "issue-1", "identifier": "MUL-1", "title": "For a member", "status": "todo", "priority": "none",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCreateTestCmd()
+	_ = cmd.Flags().Set("title", "For a member")
+	_ = cmd.Flags().Set("on-behalf-of", "user-42")
+	if err := runIssueCreate(cmd, nil); err != nil {
+		t.Fatalf("runIssueCreate: %v", err)
+	}
+	if got := body["requested_by_id"]; got != "user-42" {
+		t.Fatalf("requested_by_id = %#v, want user-42 in request body", got)
 	}
 }
 
@@ -4157,6 +4188,7 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
+	cmd.Flags().String("workflow", "", "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -4342,6 +4374,120 @@ func TestRunIssueUpdateSendsPosition(t *testing.T) {
 	}
 	if got := body["position"]; got != float64(7.5) {
 		t.Fatalf("position = %#v, want 7.5 in request body", got)
+	}
+}
+
+// --workflow has its own endpoint: an id sets the override, "none" sends null.
+func TestRunIssueUpdateSetsAndClearsTheWorkflowOverride(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			got = append(got, body)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	for _, value := range []string{"wf-1", "none"} {
+		cmd := newIssueUpdateTestCmd()
+		_ = cmd.Flags().Set("workflow", value)
+		if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
+			t.Fatalf("runIssueUpdate --workflow %s: %v", value, err)
+		}
+	}
+	if len(got) != 2 || got[0]["workflow_id"] != "wf-1" || got[1]["workflow_id"] != nil {
+		t.Fatalf("bodies = %#v, want workflow_id wf-1 then null", got)
+	}
+}
+
+// issue create --workflow takes an id, and "none" means no override, so the
+// body carries no workflow_id for it.
+func TestRunIssueCreateSendsTheWorkflowOverrideAndTreatsNoneAsInheritance(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/issues" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		bodies = append(bodies, body)
+		json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "title": "t", "status": "todo", "priority": "none"})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	for _, value := range []string{"wf-1", "none"} {
+		cmd := newIssueCreateTestCmd()
+		_ = cmd.Flags().Set("title", "t")
+		_ = cmd.Flags().Set("workflow", value)
+		if err := runIssueCreate(cmd, nil); err != nil {
+			t.Fatalf("runIssueCreate --workflow %s: %v", value, err)
+		}
+	}
+	if len(bodies) != 2 || bodies[0]["workflow_id"] != "wf-1" {
+		t.Fatalf("bodies = %#v, want workflow_id wf-1 first", bodies)
+	}
+	if _, sent := bodies[1]["workflow_id"]; sent {
+		t.Fatalf("--workflow none sent workflow_id %#v, want it omitted", bodies[1]["workflow_id"])
+	}
+}
+
+// A combined --workflow and --expected-revision call sends the caller's
+// revision with the switch, then chains the update on the revision the switch
+// produced instead of the one it replaced.
+func TestRunIssueUpdateChainsExpectedRevisionAcrossTheWorkflowSwitch(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var switchBody, updateBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
+			_ = json.NewDecoder(r.Body).Decode(&switchBody)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo", "revision": 6})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			_ = json.NewDecoder(r.Body).Decode(&updateBody)
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "in_progress", "revision": 7})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("workflow", "wf-1")
+	_ = cmd.Flags().Set("status", "in_progress")
+	_ = cmd.Flags().Set("expected-revision", "5")
+	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueUpdate: %v", err)
+	}
+	if switchBody["expected_revision"] != float64(5) {
+		t.Fatalf("switch body = %#v, want expected_revision 5", switchBody)
+	}
+	if updateBody["expected_revision"] != float64(6) {
+		t.Fatalf("update body = %#v, want expected_revision 6 (the revision after the switch)", updateBody)
 	}
 }
 

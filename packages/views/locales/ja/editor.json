@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "メディア",
+    "more": "その他",
+    "open_in_new_window": "新しいウィンドウで開く",
+    "open_failed": "メディアページを開けませんでした",
+    "loading": "メディアを読み込み中…",
+    "load_failed": "メディアを読み込めませんでした",
+    "offline": "オフライン — 最後に読み込んだ内容を表示しています。",
+    "retry": "再試行"
+  },
   "bubble_menu": {
     "bold": "太字",
     "italic": "斜体",
@@ -110,6 +120,7 @@
   },
   "code_block": {
     "html_preview": "HTML プレビュー",
+    "close_preview": "閉じる",
     "copy_code": "コードをコピー",
     "show_preview": "プレビューを表示",
     "show_source": "ソースを表示",
@@ -171,5 +182,21 @@
       "rename": "エージェントを実行せずにこの DM の名前を変更",
       "fork": "この DM を新しい DM にコピー（任意のメッセージは新しい DM に送信）"
     }
+  },
+  "table": {
+    "reset_widths": "列幅をリセット",
+    "expand": "表を展開",
+    "copy_markdown": "Markdown としてコピー",
+    "copy_csv": "CSV としてコピー",
+    "copied": "コピーしました",
+    "resize_column": "「{{name}}」列の幅を変更",
+    "expanded_title": "表",
+    "filter_placeholder": "行を絞り込む",
+    "clear_filter": "絞り込みを解除",
+    "no_matches": "一致する行がありません",
+    "close": "閉じる"
+  },
+  "next_self_mention": {
+    "label": "次の自分へのメンション"
   }
 }

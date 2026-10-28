@@ -350,6 +350,9 @@ deleted_draft_restores AS (
 deleted_agent_builder_drafts AS (
     DELETE FROM agent_builder_draft WHERE workspace_id = $1
 ),
+deleted_chat_wakeups AS (
+    DELETE FROM chat_wakeup WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -376,6 +379,14 @@ deleted_governed_vote_records AS (
 -- and no FK. Outlives issues and receipts; goes with the workspace.
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
+),
+-- CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
+-- with no dependents and no FK.
+deleted_github_workflow_runs AS (
+    DELETE FROM github_workflow_run WHERE workspace_id = $1
+),
+deleted_github_workflow_jobs AS (
+    DELETE FROM github_workflow_job WHERE workspace_id = $1
 ),
 -- CHE-685 Jev governance routing receipts: workspace-owned observation
 -- history, same leaf shape as issue_checkpoint above (no dependents, no FK).
@@ -483,6 +494,9 @@ deleted_issue_pr_automation AS (
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
+deleted_issue_review_admissions AS (
+    DELETE FROM issue_review_admission WHERE workspace_id = $1
+),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
@@ -506,6 +520,10 @@ deleted_squad_members AS (
 ),
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
+),
+deleted_github_route_grants AS (
+    DELETE FROM github_route_grant
+    WHERE project_id IN (SELECT id FROM project WHERE workspace_id = $1)
 ),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
@@ -634,6 +652,8 @@ DELETE FROM comment WHERE comment.workspace_id = $1;
 -- name: DeleteWorkspaceIssueRoots :exec
 WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_ci_advances AS (
+ DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id=$1)
 ), deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
@@ -695,7 +715,13 @@ WHERE autopilot_rule_version.workspace_id = $1;
 DELETE FROM autopilot WHERE autopilot.workspace_id = $1;
 
 -- name: DeleteWorkspacePullRequests :exec
-WITH deleted_github_prs AS (
+WITH deleted_github_webhook_dispatches AS (
+    DELETE FROM github_webhook_dispatch
+    WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_webhook_revisions AS (
+    DELETE FROM github_webhook_revision
+    WHERE github_webhook_revision.workspace_id = $1
+), deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
 )

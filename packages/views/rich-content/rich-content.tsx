@@ -25,7 +25,7 @@
  *             settled-but-malformed fence still renders as source.
  */
 
-import { createContext, isValidElement, memo, useContext, useMemo, useRef } from "react";
+import { createContext, isValidElement, memo, useContext, useMemo, useRef, useSyncExternalStore } from "react";
 import ReactMarkdown, {
   type Components,
   type ExtraProps,
@@ -42,6 +42,7 @@ import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
+import { useAuthStore } from "@multica/core/auth";
 import { api } from "@multica/core/api";
 import type { Attachment } from "@multica/core/types";
 import { attachmentIdFromDownloadURL } from "@multica/core/types";
@@ -80,6 +81,8 @@ import {
   isRichFenceLanguage,
   shouldUpgradeFence,
 } from "./rich-code-block";
+import { RichTable, RichTableSourceContext } from "./rich-table";
+import { getTextContent } from "./rich-table-model";
 import "katex/dist/katex.min.css";
 import "../editor/styles/index.css";
 import "./rich-content.css";
@@ -234,6 +237,27 @@ function ownAttachmentDownloadId(
   }
 }
 
+function subscribeToAuth(onChange: () => void) {
+  return useAuthStore.subscribe?.(onChange) ?? (() => {});
+}
+
+// `memberId` omitted = `@all`, which counts as a mention of every signed-in viewer.
+function SelfAwareMention({ memberId, children }: { memberId?: string; children?: ReactNode }) {
+  const isSelf = useSyncExternalStore(
+    subscribeToAuth,
+    () => {
+      const viewerId = useAuthStore.getState?.().user?.id;
+      return memberId === undefined ? Boolean(viewerId) : viewerId === memberId;
+    },
+    () => false,
+  );
+  return (
+    <span data-testid="member-mention" className={cn("mention", isSelf && "mention-self")}>
+      {children}
+    </span>
+  );
+}
+
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
@@ -284,7 +308,12 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
-    // Member / agent / all mentions
+    if (match?.[1] === "member" && match[2]) {
+      return <SelfAwareMention memberId={match[2]}>{children}</SelfAwareMention>;
+    }
+    if (match?.[1] === "all") {
+      return <SelfAwareMention>{children}</SelfAwareMention>;
+    }
     return <span className="mention">{children}</span>;
   }
 
@@ -353,16 +382,6 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
 }
 
 // Fenced code
-
-function getTextContent(node: ReactNode): string {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(getTextContent).join("");
-  if (isValidElement<{ children?: ReactNode }>(node)) {
-    return getTextContent(node.props.children);
-  }
-  return "";
-}
 
 // Props react-markdown actually passes to a component override: the intrinsic
 // element's own props plus the source hast node (`ExtraProps`). Deriving them
@@ -516,12 +535,9 @@ const COMPONENTS: Partial<Components> = {
     return <div {...props}>{children}</div>;
   },
 
-  // Tables — wrap in tableWrapper div for border/radius/scroll (matches Tiptap)
-  table: ({ children }) => (
-    <div className="tableWrapper">
-      <table>{children}</table>
-    </div>
-  ),
+  // Tables keep Tiptap's tableWrapper (border/radius/scroll) and add column
+  // resizing, an expanded view and copy.
+  table: RichTable,
 
   code: RichCode,
   pre: RichPre,
@@ -595,6 +611,7 @@ export const RichContent = memo(function RichContent({
   // with the hast node positions the `code`/`pre` renderers observe. Computing
   // it from the raw pre-preprocess text would mis-match every rewritten node.
   const closedFences = useMemo(() => computeClosedFences(processed), [processed]);
+  const tableSource = useMemo(() => ({ source: content, rendered: processed }), [content, processed]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hover = useLinkHover(wrapperRef);
@@ -609,17 +626,19 @@ export const RichContent = memo(function RichContent({
   const markdown = useMemo(
     () => (
       <ClosedFenceContext.Provider value={closedFences}>
-        <ReactMarkdown
-          remarkPlugins={REMARK_PLUGINS}
-          rehypePlugins={REHYPE_PLUGINS}
-          urlTransform={markdownUrlTransform}
-          components={COMPONENTS}
-        >
-          {processed}
-        </ReactMarkdown>
+        <RichTableSourceContext.Provider value={tableSource}>
+          <ReactMarkdown
+            remarkPlugins={REMARK_PLUGINS}
+            rehypePlugins={REHYPE_PLUGINS}
+            urlTransform={markdownUrlTransform}
+            components={COMPONENTS}
+          >
+            {processed}
+          </ReactMarkdown>
+        </RichTableSourceContext.Provider>
       </ClosedFenceContext.Provider>
     ),
-    [processed, closedFences],
+    [processed, closedFences, tableSource],
   );
 
   return (

@@ -58,13 +58,16 @@ WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
 -- name: CreateIssueWorkflow :one
-INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps)
+INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
 VALUES (
     sqlc.arg('workspace_id')::uuid,
     sqlc.arg('name')::text,
     sqlc.arg('description')::text,
     sqlc.arg('initial_status_key')::text,
-    sqlc.arg('steps')::jsonb
+    sqlc.arg('steps')::jsonb,
+    sqlc.arg('owner_id')::uuid,
+    NULLIF(sqlc.narg('max_runs_per_issue')::int, 0),
+    COALESCE(sqlc.narg('include_child_prs')::boolean, true)
 )
 RETURNING *;
 
@@ -74,6 +77,13 @@ UPDATE issue_workflow SET
     description = sqlc.arg('description')::text,
     initial_status_key = sqlc.arg('initial_status_key')::text,
     steps = sqlc.arg('steps')::jsonb,
+    -- A rule left out of the write keeps its value; a max of 0 clears it back
+    -- to the platform default.
+    max_runs_per_issue = CASE
+        WHEN sqlc.narg('max_runs_per_issue')::int IS NULL THEN max_runs_per_issue
+        ELSE NULLIF(sqlc.narg('max_runs_per_issue')::int, 0)
+    END,
+    include_child_prs = COALESCE(sqlc.narg('include_child_prs')::boolean, include_child_prs),
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
@@ -107,10 +117,13 @@ ORDER BY created_at, id;
 -- name: CountProjectIssuesByStatus :many
 -- Status census for a workflow switch or step removal, including terminal
 -- issues: every issue of the project must end on a status its workflow lists.
+-- Issues with their own workflow override follow that workflow, not the
+-- project's, so neither the census nor the remap below counts or moves them.
 SELECT status, COUNT(*)::bigint AS issue_count
 FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id = ANY(sqlc.arg('project_ids')::uuid[])
+  AND workflow_id IS NULL
 GROUP BY status
 ORDER BY status;
 
@@ -137,6 +150,7 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')::uuid
   AND i.project_id = ANY(sqlc.arg('project_ids')::uuid[])
   AND i.status = sqlc.arg('from_status')::text
   AND i.status <> sqlc.arg('to_status')::text
+  AND i.workflow_id IS NULL
 RETURNING i.*;
 
 -- name: LockProjectForWorkflowChange :one
@@ -163,3 +177,47 @@ UPDATE project SET
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
 RETURNING *;
+
+-- name: SetIssueWorkflow :one
+-- Sets or clears (NULL) one issue's workflow override. Administrative like a
+-- project workflow switch: no status, assignee or run changes.
+UPDATE issue SET
+    workflow_id = sqlc.narg('workflow_id')::uuid,
+    revision = revision + 1,
+    updated_at = now()
+WHERE id = sqlc.arg('id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+RETURNING *;
+
+-- name: HasLiveTaskForIssue :one
+-- Any task that can still run or retry. A deferred task is included: its retry
+-- keeps the old workflow step, so a switch under it would pass the stale-step
+-- check. HasActiveTaskForIssue covers only the first four states.
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = sqlc.arg('issue_id')::uuid
+      AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running', 'deferred')
+);
+
+-- name: CountIssuesOverridingToIssueWorkflow :one
+-- Direct references that block deleting a workflow.
+SELECT COUNT(*)::bigint FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND workflow_id = sqlc.arg('workflow_id')::uuid;
+
+-- name: ListOverrideIssueStatusesForWorkflow :many
+-- Statuses held by issues that follow this workflow by override, for an edit
+-- that would drop one of them.
+SELECT DISTINCT status FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND workflow_id = sqlc.arg('workflow_id')::uuid;
+
+-- name: ClaimIssueCIAdvance :execrows
+-- One green head advances an issue once. Zero rows means this head already did.
+INSERT INTO issue_ci_advance (issue_id, head_sha)
+VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('head_sha')::text)
+ON CONFLICT (issue_id, head_sha) DO NOTHING;
+
+-- name: ReleaseIssueCIAdvance :exec
+DELETE FROM issue_ci_advance
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text;
