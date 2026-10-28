@@ -53,6 +53,7 @@ function setup(sessions: ChatSession[] = [one]) {
     onTogglePin: vi.fn(),
     onOpenStatistics: vi.fn(),
     onUnarchiveSession: vi.fn(),
+    onOpenMessageHit: vi.fn(),
   };
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -134,12 +135,22 @@ describe("floating window history search", () => {
     expect(screen.queryByText("Chat two")).toBeNull();
   });
 
-  it("opens the hit's chat and closes the popover", async () => {
-    searchChats.mockResolvedValue({ results: [hit({})], next_cursor: null });
+  it("opens a title hit's chat and closes the popover", async () => {
+    searchChats.mockResolvedValue({ results: [hit({ message_id: null })], next_cursor: null });
     const { onSelectSession } = setup([one, pinned]);
     await userEvent.type(field(), "launch");
     fireEvent.click(await screen.findByRole("link", { name: /Chat one/ }));
     expect(onSelectSession).toHaveBeenCalledWith(one);
+    expect(screen.queryByRole("searchbox")).toBeNull();
+  });
+
+  it("hands a message hit to the owner with its message, and closes the popover", async () => {
+    searchChats.mockResolvedValue({ results: [hit({})], next_cursor: null });
+    const { onSelectSession, onOpenMessageHit } = setup([one, pinned]);
+    await userEvent.type(field(), "launch");
+    fireEvent.click(await screen.findByRole("link", { name: /Chat one/ }));
+    expect(onOpenMessageHit).toHaveBeenCalledWith(one, "m-1");
+    expect(onSelectSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("searchbox")).toBeNull();
   });
 

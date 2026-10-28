@@ -56,6 +56,7 @@ import {
 } from "../../issues/components/pickers/property-picker";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { ChatSearch } from "./chat-search";
+import { useChatMessageJump } from "./use-chat-message-jump";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
@@ -701,6 +702,8 @@ export function ChatWindow() {
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
+  // A message search hit opens its chat and scrolls to the message; the window has no URL to carry it.
+  const messageJump = useChatMessageJump(activeSessionId, t(($) => $.decision.message_unavailable));
   const { handleFork } = useChatFork(currentSession, handleSelectSession);
   // Statistics, the DM commands and the archived-send confirmation, shared with
   // the Chat page. Archiving the open chat advances to the next one (fall back
@@ -905,6 +908,10 @@ export function ChatWindow() {
             onSelectSession={handleSelectSession}
             onArchiveSession={dm.archive}
             onUnarchiveSession={dm.unarchive}
+            onOpenMessageHit={(session, messageId) => {
+              handleSelectSession(session);
+              messageJump.request(session.id, messageId);
+            }}
             onTogglePin={dm.togglePin}
             onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
@@ -977,6 +984,8 @@ export function ChatWindow() {
             }
             quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
             onQuoteMessage={quote}
+            jumpToMessageId={messageJump.jumpToMessageId}
+            onJumpSettled={messageJump.settle}
           >
             <EmptyState
               agent={activeAgent}
@@ -1243,6 +1252,7 @@ export function SessionDropdown({
   onSelectSession,
   onArchiveSession,
   onUnarchiveSession,
+  onOpenMessageHit,
   onTogglePin,
   onOpenStatistics,
   renameRequest,
@@ -1254,6 +1264,8 @@ export function SessionDropdown({
   /** Archives through the shared guarded door; the owner advances the selection. */
   onArchiveSession: (session: ChatSession) => unknown;
   onUnarchiveSession: (session: ChatSession) => unknown;
+  /** Open a chat at a matching message; the owner selects it and scrolls there. */
+  onOpenMessageHit: (session: ChatSession, messageId: string) => void;
   onTogglePin: (session: ChatSession) => unknown;
   onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
@@ -1700,7 +1712,13 @@ export function SessionDropdown({
             activeSessionId={activeSessionId}
             onOpenHit={(hit) => {
               const session = sessions.find((s) => s.id === hit.session_id);
-              if (session) handleSelectSession(session);
+              if (!session) return;
+              if (hit.message_id) {
+                onOpenMessageHit(session, hit.message_id);
+                setIsHistoryOpen(false);
+              } else {
+                handleSelectSession(session);
+              }
             }}
             onUnarchive={(session) => void onUnarchiveSession(session)}
             onTogglePin={(session) => void onTogglePin(session)}

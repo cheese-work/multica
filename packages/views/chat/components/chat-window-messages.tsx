@@ -28,6 +28,8 @@ export function ChatWindowMessages({
   quickActionsDisabled,
   quickActionsPendingMessageId,
   onQuoteMessage,
+  jumpToMessageId,
+  onJumpSettled,
   children,
 }: {
   sessionId: string | null;
@@ -50,6 +52,9 @@ export function ChatWindowMessages({
   quickActionsDisabled: boolean;
   quickActionsPendingMessageId: string | null;
   onQuoteMessage?: (content: string) => void;
+  /** Message to scroll to and flash, e.g. a search hit; see `ChatMessageList`. */
+  jumpToMessageId?: string | null;
+  onJumpSettled?: (outcome: "landed" | "missing") => void;
   children: ReactNode;
 }) {
   const isPresent = useIsPresent();
@@ -129,6 +134,8 @@ export function ChatWindowMessages({
             : undefined}
           quickActionsPendingMessageId={quickActionsPendingMessageId}
           onQuoteMessage={onQuoteMessage}
+          jumpToMessageId={jumpToMessageId}
+          onJumpSettled={onJumpSettled}
         />
       ) : children}
     </motion.div>

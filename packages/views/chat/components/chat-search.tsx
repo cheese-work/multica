@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { matchMutation, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, ArchiveRestore, Loader2, Pin, PinOff, Search, X } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -76,8 +76,19 @@ export function ChatSearch({ scope, bindShortcut, children, ...results }: ChatSe
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [bindShortcut]);
 
+  // Escape anywhere in the field or the results drops the query. The popover
+  // and dialogs close on Escape; with a query typed it only drops the query,
+  // and a second press does the usual thing.
+  const onSurfaceKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Escape" || !query || e.defaultPrevented) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clear(scope);
+    inputRef.current?.focus();
+  };
+
   return (
-    <>
+    <div className="contents" onKeyDown={onSurfaceKeyDown}>
       <div role="search" className="sticky top-0 z-10 bg-background px-1 pb-1">
         <div className="relative flex items-center">
           <Search aria-hidden="true" className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
@@ -89,15 +100,6 @@ export function ChatSearch({ scope, bindShortcut, children, ...results }: ChatSe
             placeholder={t(($) => $.search.placeholder)}
             value={query}
             onChange={(e) => setQuery(scope, e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape" && query) {
-                // The popover and dialogs close on Escape; with a query typed it
-                // only drops the query, and a second press does the usual thing.
-                e.preventDefault();
-                e.stopPropagation();
-                clear(scope);
-              }
-            }}
             // 16 px at phone width keeps iOS from zooming the page on focus.
             className="h-8 w-full appearance-none rounded-md border border-input bg-transparent pl-7 pr-14 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring md:text-caption [&::-webkit-search-cancel-button]:hidden"
           />
@@ -134,7 +136,7 @@ export function ChatSearch({ scope, bindShortcut, children, ...results }: ChatSe
       ) : (
         <ChatSearchResults query={trimmed} {...results} />
       )}
-    </>
+    </div>
   );
 }
 
@@ -171,15 +173,23 @@ function ChatSearchResults({
     return [...all.filter((h) => !h.message_id), ...all.filter((h) => h.message_id)];
   }, [search.data]);
 
-  // An action changes a hit's chat (archived, pinned); refetch so the rows agree.
-  const afterAction = (run: (session: ChatSession) => void) => (session: ChatSession) => {
-    run(session);
-    void queryClient.invalidateQueries({ queryKey: [...chatKeys.all(wsId), "search"] });
-  };
+  // A pin or archive changes a hit's chat. Refetch once the mutation has
+  // settled, success or failure, so the rows show what the server now holds.
+  useEffect(() => {
+    const filters = { mutationKey: chatKeys.sessionAction(wsId) };
+    return queryClient.getMutationCache().subscribe((event) => {
+      if (event.type !== "updated" || !matchMutation(filters, event.mutation)) return;
+      const { status } = event.mutation.state;
+      if (status !== "success" && status !== "error") return;
+      void queryClient.invalidateQueries({ queryKey: [...chatKeys.all(wsId), "search"] });
+    });
+  }, [queryClient, wsId]);
 
-  if (search.isPending) return <SearchingStatus />;
-  if (search.isError) {
-    const failure = chatSearchFailure(search.error);
+  // Offline, TanStack pauses the request: it neither runs nor fails.
+  const pausedOffline = search.isPending && search.fetchStatus === "paused";
+  if (search.isPending && !pausedOffline) return <SearchingStatus />;
+  if (search.isError || pausedOffline) {
+    const failure = pausedOffline ? "disconnected" : chatSearchFailure(search.error);
     return (
       <div role="alert" className="flex flex-col items-start gap-1.5 px-2 py-1.5 text-caption text-muted-foreground">
         <p>{t(($) => $.search[failure === "failed" ? "failed" : failure === "timed_out" ? "timed_out" : "disconnected"])}</p>
@@ -216,9 +226,9 @@ function ChatSearchResults({
             session={sessionById.get(hit.session_id) ?? null}
             isCurrent={hit.session_id === activeSessionId}
             onOpenHit={onOpenHit}
-            onUnarchive={afterAction(onUnarchive)}
-            onTogglePin={afterAction(onTogglePin)}
-            onArchive={afterAction(onArchive)}
+            onUnarchive={onUnarchive}
+            onTogglePin={onTogglePin}
+            onArchive={onArchive}
           />
         ))}
       </ul>
