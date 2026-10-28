@@ -30,7 +30,9 @@ import {
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RichContent } from "../../rich-content";
+import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { AttachmentList } from "../../issues/components/comment-card";
 import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
@@ -65,6 +67,7 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
 import { DecisionRequestCard } from "./decision-request-card";
+import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
 import { PredecessorDms } from "./predecessor-dms";
 import { predecessorChain } from "../lib/predecessor-chain";
 
@@ -441,15 +444,13 @@ export function ChatMessageList({
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
-    const updatedRequests = new Set(messages.flatMap((message) => message.decision_requests ?? []).map((card) => card.id));
     const items: ChatRenderItem[] = messages
       .filter(
         (message) =>
           message.message_kind !== "onboarding_kickoff" &&
           // The quote card replaces the plain "Decision recorded" line; one
           // without a card (legacy row) still renders as text.
-          !(message.message_kind === "decision_reference" && message.decision_ref) &&
-          !(message.decision_request && updatedRequests.has(message.decision_request.id)),
+          !(message.message_kind === "decision_reference" && message.decision_ref),
       )
       .map((message, i, visible) => ({
         key: messageRowKey(message),
@@ -577,6 +578,17 @@ export function ChatMessageList({
     [hasOlderMessages, sessions, continuedFromSessionId],
   );
 
+  // Per row, from the data: Virtuoso mounts only the visible window.
+  const mentionsViewer = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () => renderItems.map((item) => item.kind === "message" && mentionsViewer(item.message.content)),
+    [renderItems, mentionsViewer],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
+  );
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
@@ -610,7 +622,9 @@ export function ChatMessageList({
   );
 
   return (
+    <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
+    <div className="relative flex min-h-0 flex-1 flex-col">
     <div
       ref={setScrollContainerRef}
       data-tab-scroll-root
@@ -718,7 +732,17 @@ export function ChatMessageList({
       </RichContentScrollRootProvider>
       )}
     </div>
+    <NextSelfMention
+      scrollEl={scrollContainerEl}
+      enabled={active}
+      flags={selfMentionFlags}
+      firstItemIndex={firstIndex}
+      onJump={jumpToSelfMention}
+      positionClassName="absolute bottom-4 right-6 z-20"
+    />
+    </div>
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 }
 
@@ -805,7 +829,7 @@ const MessageBubble = memo(function MessageBubble({
   const { message } = item;
 
   if (message.decision_requests?.length) {
-    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionRequestCard key={card.id} card={card} />)}</div>;
+    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionWithdrawalCard key={card.id} card={card} />)}</div>;
   }
 
   if (message.decision_request) {

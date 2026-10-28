@@ -1,3 +1,5 @@
+import { parseMediaPath } from "@multica/core/paths/media";
+
 export const ISSUE_WINDOW_ARGUMENT_PREFIX = "--multica-issue-window=";
 
 const MAX_ISSUE_WINDOW_PATH_LENGTH = 2_048;
@@ -18,7 +20,25 @@ export type IssueWindowContext = IssueWindowRequest & {
 
 export type DesktopWindowContext =
   | { kind: "main" }
-  | IssueWindowContext;
+  | IssueWindowContext
+  | MediaWindowContext;
+
+export type MediaWindowContext = IssueWindowRequest & { kind: "media"; workspaceSlug: string };
+
+export function parseMediaWindowRequest(value: unknown): MediaWindowContext | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  const route = parseMediaPath(input.path);
+  if (!route || typeof input.path !== "string") return null;
+  const title = typeof input.title === "string" ? input.title.trim().slice(0, MAX_ISSUE_WINDOW_TITLE_LENGTH) : "";
+  return { kind: "media", path: input.path, title: title || "Media", workspaceSlug: route.workspaceSlug };
+}
+
+export function encodeMediaWindowArgument(request: IssueWindowRequest): string {
+  const context = parseMediaWindowRequest(request);
+  if (!context) throw new Error("Invalid media window request");
+  return `${ISSUE_WINDOW_ARGUMENT_PREFIX}${encodeURIComponent(JSON.stringify({ path: context.path, title: context.title }))}`;
+}
 
 /**
  * Validate renderer-controlled input before it can become a BrowserWindow
@@ -109,7 +129,7 @@ export function readDesktopWindowContext(
   try {
     const encoded = argument.slice(ISSUE_WINDOW_ARGUMENT_PREFIX.length);
     const decoded = JSON.parse(decodeURIComponent(encoded)) as unknown;
-    return parseIssueWindowRequest(decoded) ?? { kind: "main" };
+    return parseIssueWindowRequest(decoded) ?? parseMediaWindowRequest(decoded) ?? { kind: "main" };
   } catch {
     return { kind: "main" };
   }

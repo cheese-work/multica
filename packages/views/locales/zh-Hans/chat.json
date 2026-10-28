@@ -305,6 +305,7 @@
     "answer_error": "发送失败，请重试。",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
+    "withdrawn_in": "已在 {{issue}} 撤回",
     "recorded_on": "已记录到 {{issue}}",
     "from_original_dm": "来自原始私信",
     "inherited": "继承",

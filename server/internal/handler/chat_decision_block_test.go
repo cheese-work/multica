@@ -297,7 +297,7 @@ func TestChatClaimKeepsDecisionStakesAndRecommendationWhenAsksAreCut(test *testi
 			Recommendation: fmt.Sprintf("Recommendation-%02d pick Alpha", index), DefaultIfNoReply: "Wait",
 			SourceIssueID: "issue", SourceCommentID: "comment",
 		}
-		seedDMDecision(test, agentID, sessionID, ask.Content(), "open", fmt.Sprintf("%d hours", 13-index))
+		seedDMDecision(test, agentID, sessionID, ask.Content(handlerTestWorkspaceSlug), "open", fmt.Sprintf("%d hours", 13-index))
 	}
 	sendDirectChat(test, ctx, agentID, sessionID, "which one?")
 

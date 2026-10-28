@@ -171,7 +171,7 @@ func TestComposerMessageCarriesOpenCardsAndRecordsNothing(test *testing.T) {
 		Options: []decisiontx.AskOption{{Label: "Option A", WhatHappens: "ship now"}, {Label: "Option B", WhatHappens: "ship Monday"}}}
 	var ids []string
 	for range 4 {
-		requestID, _, _ := seedDMDecision(test, agentID, sessionID, ask.Content(), "open", "3 hours")
+		requestID, _, _ := seedDMDecision(test, agentID, sessionID, ask.Content(handlerTestWorkspaceSlug), "open", "3 hours")
 		dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, requestID, cardOptions)
 		ids = append(ids, requestID)
 	}

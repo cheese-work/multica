@@ -311,6 +311,7 @@
     "answer_error": "Échec de l'envoi. Réessayez.",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
+    "withdrawn_in": "Retirée dans {{issue}}",
     "recorded_on": "Enregistré dans {{issue}}",
     "from_original_dm": "du DM d'origine",
     "inherited": "Hérité",
