@@ -124,6 +124,15 @@ func TestPrintAskHintsDedupesAndKeepsStdoutShape(test *testing.T) {
 	}
 }
 
+func TestAskFileHelpNamesBlockingRules(test *testing.T) {
+	usage := decisionRequestCmd.Flags().Lookup("ask-file").Usage
+	for _, want := range []string{"one question", "numbered list", "bare ID", "agent_did", "options[].label", "options[].cost_or_time"} {
+		if !strings.Contains(usage, want) {
+			test.Fatalf("--ask-file help lacks %q: %s", want, usage)
+		}
+	}
+}
+
 func TestDecisionRequestAskFileHelpListsHumanSteps(test *testing.T) {
 	usage := decisionRequestCmd.Flags().Lookup("ask-file").Usage
 	for _, field := range []string{"human_steps[{action, command, values[{name, value, source}], verify_done}]", "probes[]", "after_done"} {

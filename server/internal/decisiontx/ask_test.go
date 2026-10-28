@@ -16,7 +16,7 @@ func validAskMap() map[string]any {
 		return map[string]any{"label": label, "what_happens": label + " happens.", "pros": []string{"Pro"}, "cons": []string{"Con"}, "cost_or_time": "No extra time"}
 	}
 	return map[string]any{
-		"context_eli10": "A change is ready. You decide when it ships.", "agent_did": "Ran checks.", "decision": "Ship now?",
+		"context_eli10": "A change is ready. You decide when it ships.", "agent_did": "Ran all requested checks.", "decision": "Ship now?",
 		"stakes_if_wrong": "A bad change could reach users.", "options": []any{option("NOW"), option("LATER")},
 		"recommendation": "LATER", "default_if_no_reply": "LATER", "source_issue_id": testIssueID, "source_comment_id": testCommentID,
 	}
@@ -80,14 +80,14 @@ func decodedAsk(test *testing.T) Ask {
 func TestAskContentRenderOrder(test *testing.T) {
 	content := decodedAsk(test).Content()
 	last := -1
-	for _, marker := range []string{"**Context**", "**Decision**", "**What is at stake**", "**Options**", "**Recommendation**", "**Default if no reply**", "<details>", "<summary>Details</summary>", "Ran checks.", "</details>", "Investigate in issue"} {
+	for _, marker := range []string{"**Context**", "**Decision**", "**What is at stake**", "**Options**", "**Recommendation**", "**Default if no reply**", "<details>", "<summary>Details</summary>", "Ran all requested checks.", "</details>", "Investigate in issue"} {
 		at := strings.Index(content, marker)
 		if at <= last {
 			test.Fatalf("%q missing or out of order in %q", marker, content)
 		}
 		last = at
 	}
-	if strings.Count(content, "Investigate in issue") != 1 || strings.Contains(content, "**Agent did**\nRan checks.\n\n**Decision**") {
+	if strings.Count(content, "Investigate in issue") != 1 || strings.Contains(content, "**Agent did**\nRan all requested checks.\n\n**Decision**") {
 		test.Fatalf("investigate link must appear once, after details: %q", content)
 	}
 	for _, link := range []string{"mention://issue/" + testIssueID, "/issue/" + testIssueID + "#comment-" + testCommentID} {

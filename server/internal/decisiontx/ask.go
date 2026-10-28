@@ -226,6 +226,9 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
+	if err := ask.validateReadable(); err != nil {
+		return err
+	}
 	return ask.validateHumanSteps()
 }
 
