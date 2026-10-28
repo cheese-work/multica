@@ -155,6 +155,64 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(revealDocument).toHaveBeenCalledWith("comment-long");
   });
 
+  it("re-scrolls the active match when layout shifts after the first scroll", async () => {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    let documentY = 1200;
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
+    };
+    const documents = [{ id: "comment-long", text: "one distant match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
+    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
+    await flushFrames();
+    expect(container.scrollTop).toBeGreaterThan(0);
+
+    // A table or fold lays out below the first scroll and pushes the match away.
+    documentY = 7200;
+    await flushFrames(4);
+    const top = documentY - container.scrollTop;
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top + 20).toBeLessThanOrEqual(400);
+  });
+
+  // A settled-layout re-scroll must stop with the match it was started for.
+  // Drives a scroll (which starts the settle window), ends the match via
+  // `endMatch`, then shifts layout again and asserts nothing scrolls the view.
+  async function expectNoSettleScrollAfter(
+    endMatch: (result: { current: ReturnType<typeof useInPageFind> }) => void,
+  ): Promise<void> {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    let documentY = 1200;
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
+    };
+    const documents = [{ id: "comment-long", text: "one distant match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
+    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
+    await flushFrames();
+    expect(container.scrollTop).toBeGreaterThan(0);
+
+    act(() => endMatch(result));
+    await flushFrames(1);
+    // The host restores its own scroll position after find ends.
+    container.scrollTop = 0;
+    documentY = 7200;
+    await flushFrames(4);
+    expect(container.scrollTop).toBe(0);
+  }
+
+  it("stops the settle re-scroll when find closes", async () => {
+    await expectNoSettleScrollAfter((result) => result.current.closeFind());
+  });
+
+  it("stops the settle re-scroll when the query is cleared", async () => {
+    await expectNoSettleScrollAfter((result) => result.current.setQuery(""));
+  });
+
   it("does not reveal an unchanged match after a timeline refresh", async () => {
     const revealDocument = vi.fn();
     const documents = [{ id: "first", text: "needle needle" }];
