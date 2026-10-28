@@ -44,8 +44,11 @@ import {
 } from "./window-state";
 import {
   encodeIssueWindowArgument,
+  encodeMediaWindowArgument,
   parseIssueWindowRequest,
+  parseMediaWindowRequest,
   type IssueWindowContext,
+  type MediaWindowContext,
 } from "../shared/issue-window";
 import {
   AUTH_SESSION_STATE_CHANNEL,
@@ -466,7 +469,7 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function createIssueWindow(context: IssueWindowContext): void {
+function createIssueWindow(context: IssueWindowContext | MediaWindowContext): void {
   const systemLocale = getSystemLocale();
   lastKnownSystemLocale = systemLocale;
 
@@ -486,7 +489,7 @@ function createIssueWindow(context: IssueWindowContext): void {
     webPreferences: createRendererWebPreferences(
       join(__dirname, "../preload/index.js"),
       systemLocale,
-      [encodeIssueWindowArgument(context)],
+      [context.kind === "media" ? encodeMediaWindowArgument(context) : encodeIssueWindowArgument(context)],
     ),
   });
 
@@ -679,6 +682,14 @@ if (!gotTheLock) {
       if (!context) {
         return { ok: false, reason: "invalid_request" } as const;
       }
+      createIssueWindow(context);
+      return { ok: true } as const;
+    });
+
+    ipcMain.handle("window:open-media", (event, request: unknown) => {
+      if (!BrowserWindow.fromWebContents(event.sender)) return { ok: false, reason: "invalid_request" } as const;
+      const context = parseMediaWindowRequest(request);
+      if (!context) return { ok: false, reason: "invalid_request" } as const;
       createIssueWindow(context);
       return { ok: true } as const;
     });

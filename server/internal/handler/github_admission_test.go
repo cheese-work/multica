@@ -249,7 +249,7 @@ func TestGitHubAdmissionWithdrawalScopeAndDispatchHistory(test *testing.T) {
 		if _, err := transaction.Exec(context.Background(), statement, delivery); err != nil {
 			test.Fatal(err)
 		}
-		if _, err := transaction.Exec(context.Background(), `UPDATE withdrawal_copy SET `+alternate.field+`=`+alternate.value+`, body_hash=repeat('a',64)`); err != nil {
+		if _, err := transaction.Exec(context.Background(), `UPDATE withdrawal_copy SET id=gen_random_uuid(), `+alternate.field+`=`+alternate.value+`, body_hash=repeat('a',64)`); err != nil {
 			test.Fatal(err)
 		}
 		if _, err := transaction.Exec(context.Background(), `INSERT INTO github_webhook_revision SELECT * FROM withdrawal_copy`); err != nil {

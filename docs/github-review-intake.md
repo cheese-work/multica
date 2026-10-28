@@ -51,9 +51,15 @@ signed recovery source. Intake retention is separate from workspace teardown.
 
 ## Notify-only boundary
 
-This slice creates no issue comment, agent mention or run, including for a
-mapped member. The former synchronous CHE-2019 review wakeup is not called by
-the webhook endpoint. Its internal helpers remain dormant.
+The webhook endpoint creates no issue comment, agent mention or run. The
+worker projects only a provenance-admitted revision whose mapped member
+passes `can_route` for that issue. Its system comment contains the canonical
+GitHub permalink, author login and numeric ID, event type, object ID and
+intake ID. Review bodies, inline text, filenames and supplied URLs are not
+copied into issue history. The former synchronous CHE-2019 path stays dormant.
+An `issue_comment` delivery does not contain a PR head object. That event
+uses the non-fork repository verification already mirrored from signed PR
+events. Missing or unverified stored metadata does not authorize projection.
 
 The schema permits `denied`, `deferred`, `quarantined`, `unsigned`, `projected`
 and `dispatched`. This handler initializes signed work as `denied` or
@@ -72,6 +78,84 @@ reconciliation are separate changes (CHE-2208 and CHE-2209).
 Keep the deployed `github_review_members` mapping unset until gate G. Numeric
 ID `129714106` is not mapped by this change. No actionable dispatch, App
 subscription update, webhook replay or deployment is enabled here.
+
+## Worker and retry state
+
+The server starts a context-bound worker that drains up to 25 due deliveries
+every 5 seconds. PostgreSQL row locks with `SKIP LOCKED` let multiple servers
+claim different deliveries. Normalized revision rows are locked in workspace
+order, so different GUIDs for the same revision serialize on the same work.
+The original signed payload supplies the content; the worker does not fetch
+replacement content from GitHub.
+
+The production admission function currently rechecks the intake guards and
+leaves eligible items `deferred` with `awaiting_admission`. Full provenance
+admission (CHE-2214) and authorized notify-only comment projection (CHE-2212)
+are separate slices. They must complete before production claims `projected`.
+The worker accepts the six intake states from admission and stops at
+`projected` when its internal dispatch gate is closed. No production caller
+opens that gate, and no setting or environment variable enables it.
+
+`attempts`, `next_attempt_at`, `received_at`, state and reason expose retry
+progress without retaining error messages or third-party text. A deferred pass
+backs off from 5 seconds to a maximum of 300 seconds, with no retry-count limit.
+`ListDeferredGitHubWebhookIntakes` includes `age_seconds` for the subsequent
+stale-item monitor. An admission or processing error rolls back its savepoint
+before scheduling `processing_error`. A database commit failure rolls back
+the entire pass and leaves the signed intake available for another worker.
+
+When one delivery spans workspaces, its aggregate state prioritizes `deferred`,
+`quarantined`, `unsigned`, `projected`, `dispatched`, then `denied`. Each
+workspace's normalized revision retains its own state and reason. Duplicate
+GUIDs retain separate delivery dispositions but share revision work.
+
+Projection and the dormant dispatch primitive write their effects,
+`github_webhook_dispatch` receipt and final revision/delivery state in one
+transaction. Receipts use the normalized revision UUID and target issue, not
+the delivery GUID or body hash alone. The worker matches the full signed
+event/action, sender, author, state and timestamps before locking a revision.
+A same-body self-edit is a separate revision; duplicate deliveries share one
+committed receipt.
+
+The receipt records `projected` with a comment and no task, `denied` with no
+comment or task, or `dispatched` with both. Each linked issue gets its own
+authorization result. The worker evaluates `can_route` during projection
+admission and again through transaction-bound queries immediately before
+creating effects. It reloads the current issue/project and verifies the
+installation, PR link and target agent. Revoked grants give `denied`; lookup
+errors give `deferred`, not authorization. A denied issue does not prevent
+projection on another granted issue. Transient failures remain retryable.
+
+Notify-only comments carry the server-owned `github_notify_only` marker.
+Database comment-event triggers skip marked inserts, updates and deletes,
+so a `comment.created` subscription cannot turn a notification into a run.
+Ordinary comments retain their wakeup behavior. The server does not expose
+the marker as an input to ordinary comment APIs.
+
+Notifications publish only after commit. A failed or interrupted transaction
+cannot commit a receipt alone; a retry reads the committed receipt before
+creating another effect. Production keeps the actionable gate closed.
+Workspace teardown removes that workspace's dispatch receipts with its
+normalized revisions and preserves the shared signed delivery source.
+
+Worker tests simulate an admission/API outage, restart after intake commit,
+commit failure, concurrent duplicate deliveries and the closed gate. Tests
+exercise the dormant transaction with a test-only open gate and injected
+admission. Projection tests exercise the signed HTTP intake through real
+provenance admission, per-project authorization and the worker transaction.
+They cover T10, T19 and T21, same-body self-edits, duplicate receipts,
+lookup failures at both route checks and a normal-comment wakeup control.
+These checks do not qualify gate G or deployment acceptance.
+
+Migrations `748` through `752` add normalized revision IDs, route-result
+receipts and the no-wakeup marker. An existing dispatch receipt must match
+exactly one normalized revision. Migration `748` fails closed on an ambiguous
+or missing match; an operator must reconcile that receipt before retrying.
+Rollback preserves issue comments and signed intake, but removes notify-only
+and denied receipts before restoring the older body-key index. Rollback after
+actionable dispatch may need operator reconciliation if multiple dispatched
+revisions share the former body-only key. No deployment or rollback is run
+in production by this change.
 
 ## Recovery window
 

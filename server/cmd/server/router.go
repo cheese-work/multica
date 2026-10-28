@@ -2307,6 +2307,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
+					r.Get("/github-route-grants", h.ListGitHubRouteGrants)
+					r.Put("/github-route-grants/{userId}", h.SetGitHubRouteGrant)
+					r.Delete("/github-route-grants/{userId}", h.DeleteGitHubRouteGrant)
 					r.Route("/wakeup-definitions", func(r chi.Router) {
 						d := h.WakeupDefinitionAPI(service.WakeupScopeProject)
 						r.Get("/", d.List)

@@ -659,6 +659,7 @@ type Comment struct {
 	DecisionAnswerID    pgtype.UUID        `json:"decision_answer_id"`
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
+	GithubNotifyOnly    bool               `json:"github_notify_only"`
 }
 
 type CommentReaction struct {
@@ -959,15 +960,38 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubRouteGrant struct {
+	ProjectID pgtype.UUID        `json:"project_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	GrantedBy pgtype.UUID        `json:"granted_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type GithubWebhookDispatch struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ObjectKind  string             `json:"object_kind"`
+	ObjectID    int64              `json:"object_id"`
+	BodyHash    string             `json:"body_hash"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	CommentID   pgtype.UUID        `json:"comment_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	CommittedAt pgtype.Timestamptz `json:"committed_at"`
+	RevisionID  pgtype.UUID        `json:"revision_id"`
+	State       string             `json:"state"`
+	Reason      string             `json:"reason"`
+}
+
 type GithubWebhookIntake struct {
-	DeliveryGuid string             `json:"delivery_guid"`
-	Event        string             `json:"event"`
-	Signature    string             `json:"signature"`
-	Payload      []byte             `json:"payload"`
-	State        string             `json:"state"`
-	Reason       string             `json:"reason"`
-	ReceivedAt   pgtype.Timestamptz `json:"received_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	DeliveryGuid  string             `json:"delivery_guid"`
+	Event         string             `json:"event"`
+	Signature     string             `json:"signature"`
+	Payload       []byte             `json:"payload"`
+	State         string             `json:"state"`
+	Reason        string             `json:"reason"`
+	ReceivedAt    pgtype.Timestamptz `json:"received_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
 }
 
 type GithubWebhookRevision struct {
@@ -995,6 +1019,7 @@ type GithubWebhookRevision struct {
 	Reason             string             `json:"reason"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ID                 pgtype.UUID        `json:"id"`
 }
 
 type GovernanceAttempt struct {
