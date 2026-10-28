@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
-
 async function getDocument(slug = "acme", origin = "https://app.multica.test") {
   return GET(new Request(`${origin}/${encodeURIComponent(slug)}/opensearch.xml`), {
     params: Promise.resolve({ workspaceSlug: slug }),
@@ -8,8 +7,20 @@ async function getDocument(slug = "acme", origin = "https://app.multica.test") {
 }
 
 describe("workspace OpenSearch description", () => {
-  beforeEach(() => vi.stubEnv("MULTICA_APP_URL", ""));
+  beforeEach(() => {
+    vi.stubEnv("MULTICA_APP_URL", "");
+    vi.stubEnv("MULTICA_COOKIE_PROBE", "");
+  });
   afterEach(() => vi.unstubAllEnvs());
+  it("advertises the stable authenticated suggestions endpoint", async () => {
+    const response = await getDocument();
+    const document = new DOMParser().parseFromString(await response.text(), "application/xml");
+    const suggestions = document.querySelector('Url[type="application/x-suggestions+json"]');
+    expect(suggestions?.getAttribute("template")).toBe(
+      "https://app.multica.test/api/search/suggestions?workspace_slug=acme&q={searchTerms}",
+    );
+    expect(document.querySelectorAll("Url")).toHaveLength(2);
+  });
 
   it("serves a public UTF-8 XML description without authentication", async () => {
     const response = await getDocument();
@@ -26,7 +37,7 @@ describe("workspace OpenSearch description", () => {
     expect(document.querySelector("ShortName")?.textContent).toBe("Multica acme");
     expect(document.querySelector("InputEncoding")?.textContent).toBe("UTF-8");
     const urls = document.querySelectorAll("Url");
-    expect(urls).toHaveLength(1);
+    expect(urls).toHaveLength(2);
     expect(urls[0]?.getAttribute("type")).toBe("text/html");
     expect(urls[0]?.getAttribute("template")).toBe(
       "https://app.multica.test/acme/search?q={searchTerms}",
@@ -135,7 +146,7 @@ describe("workspace OpenSearch description", () => {
     expect(response.status).toBe(200);
     const document = new DOMParser().parseFromString(await response.text(), "application/xml");
     expect(Array.from(document.documentElement.children, (element) => element.localName)).toEqual([
-      "ShortName", "Description", "InputEncoding", "Url",
+      "ShortName", "Description", "InputEncoding", "Url", "Url",
     ]);
     expect(document.querySelector("ShortName")?.textContent?.length).toBeLessThanOrEqual(16);
     expect(document.querySelector("Url")?.getAttribute("template")).toContain(
