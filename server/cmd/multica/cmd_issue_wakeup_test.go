@@ -181,6 +181,10 @@ func TestIssueWakeupCLIConditionsAndManagement(t *testing.T) {
 		{[]string{"--until-pr", "checks", "--mode", "continuous", "--max-fires", "5"}, `{"event":"checks_finished","type":"pull_request"}`},
 		{[]string{"--until-pr", "conflicts", "--mode", "continuous", "--max-fires", "5"}, `{"event":"conflicts","type":"pull_request"}`},
 		{[]string{"--until-assignee", "agent:a1"}, `{"assignee_id":"a1","assignee_type":"agent","field":"assignee","type":"issue_field"}`},
+		{[]string{"--until-gh-run", "cheese-work/multica:40343069164"}, `{"repo":"cheese-work/multica","run_id":40343069164,"state":"completed","type":"github_run"}`},
+		{[]string{"--until-gh-run", "cheese-work/multica:40343069164", "--until-gh-run-state", "waiting"}, `{"repo":"cheese-work/multica","run_id":40343069164,"state":"waiting","type":"github_run"}`},
+		{[]string{"--until-gh-run", "cheese-work/multica:cd-qualification.yml@59819ba721b4d542791db013ec2bb43ed9d66503"}, `{"head_sha":"59819ba721b4d542791db013ec2bb43ed9d66503","repo":"cheese-work/multica","state":"completed","type":"github_run","workflow":"cd-qualification.yml"}`},
+		{[]string{"--until-gh-run", "https://github.com/cheese-work/multica/actions/runs/40343069164", "--until-gh-run-state", "waiting"}, `{"repo":"cheese-work/multica","run_id":40343069164,"state":"waiting","type":"github_run"}`},
 	} {
 		calls = nil
 		if err := run(append([]string{"create", issue, "--instruction", "go"}, tc.args...)...); err != nil {
@@ -199,6 +203,15 @@ func TestIssueWakeupCLIConditionsAndManagement(t *testing.T) {
 		{"--stage", "2"},
 		{"--until-pr", "reviews"},
 		{"--until-assignee", "a1"},
+		{"--until-gh-run", "cheese-work/multica"},
+		{"--until-gh-run", "cheese-work/multica:0"},
+		{"--until-gh-run", "cheese-work/multica:abc"},
+		{"--until-gh-run", "multica:123"},
+		{"--until-gh-run", "cheese-work/multica:ci.yml@"},
+		{"--until-gh-run", "https://github.com/cheese-work/multica/pull/5"},
+		{"--until-gh-run", "cheese-work/multica:123", "--until-gh-run-state", "done"},
+		{"--until-gh-run-state", "waiting"},
+		{"--until-gh-run", "cheese-work/multica:123", "--until-pr", "checks"},
 	} {
 		if err := run(append([]string{"create", issue, "--instruction", "go"}, bad...)...); err == nil {
 			t.Errorf("%v accepted", bad)
