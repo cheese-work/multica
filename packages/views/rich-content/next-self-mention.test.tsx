@@ -28,6 +28,16 @@ describe("mentionsViewer", () => {
     expect(mentionsViewer("```\n[@all](mention://all/all)\n```", VIEWER)).toBe(false);
     expect(mentionsViewer(null, VIEWER)).toBe(false);
   });
+
+  it("ignores mentions in tilde fences and indented code", () => {
+    expect(mentionsViewer("~~~\n[@all](mention://all/all)\n~~~", VIEWER)).toBe(false);
+    expect(mentionsViewer("text\n\n    [@all](mention://all/all)\n", VIEWER)).toBe(false);
+  });
+
+  it("matches legacy member shortcodes the renderer normalizes", () => {
+    expect(mentionsViewer(`hi [@ id="${VIEWER}" label="Me"]`, VIEWER)).toBe(true);
+    expect(mentionsViewer(`hi [@ id="${OTHER}" label="Them"]`, VIEWER)).toBe(false);
+  });
 });
 
 // jsdom has no layout: the scroller is 0..100px tall and each mounted row sits
@@ -61,6 +71,21 @@ describe("NextSelfMention", () => {
     // Rows 0-1 are on screen; the only mention is in visible row 1.
     const scroller = mountList({ 0: 0, 1: 50 });
     render(<NextSelfMention scrollEl={scroller} flags={[false, true, false]} onJump={vi.fn()} />);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("shows the button when every mounted row is below the viewport", () => {
+    // A long description above the timeline: row 0 starts past the scroller's bottom edge.
+    const scroller = mountList({ 0: 150, 1: 200 });
+    const onJump = vi.fn();
+    render(<NextSelfMention scrollEl={scroller} flags={[true, false]} onJump={onJump} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onJump).toHaveBeenCalledWith(0);
+  });
+
+  it("hides the button when every mounted row is above the viewport and holds no mention", () => {
+    const scroller = mountList({ 0: -200, 1: -150 });
+    render(<NextSelfMention scrollEl={scroller} flags={[true, false]} onJump={vi.fn()} />);
     expect(screen.queryByRole("button")).toBeNull();
   });
 

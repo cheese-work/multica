@@ -1,8 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowDown } from "lucide-react";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { visit } from "unist-util-visit";
 import { useAuthStore } from "@multica/core/auth";
+import { preprocessMentionShortcodes } from "@multica/ui/markdown";
+import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
 
 // Floating "next mention of me" jump for long virtualized lists (issue thread,
@@ -17,32 +21,61 @@ import { useT } from "../i18n";
 const SETTLE_TOLERANCE_PX = 40;
 const SETTLE_MAX_FRAMES = 60;
 
-const FENCED_CODE = /```[\s\S]*?```|`[^`\n]*`/g;
-
-/** Whether markdown mentions the viewer: their member mention, or `@all`. */
+/**
+ * Whether markdown mentions the viewer: their member mention, or `@all`.
+ * Parses the markdown, so only link nodes count — code of any kind (inline,
+ * backtick or tilde fence, indented) never does. Legacy `[@ id=".." label=".."]`
+ * shortcodes are normalized first, as the renderer does.
+ */
 export function mentionsViewer(markdown: string | null | undefined, viewerId: string | undefined) {
   if (!markdown || !viewerId) return false;
-  const text = markdown.replace(FENCED_CODE, "");
-  return text.includes(`](mention://member/${viewerId})`) || text.includes("](mention://all/");
+  let found = false;
+  visit(fromMarkdown(preprocessMentionShortcodes(markdown)), "link", (node) => {
+    if (node.url === `mention://member/${viewerId}` || node.url.startsWith("mention://all/")) found = true;
+  });
+  return found;
 }
 
-/** Hook form: a predicate over markdown for the signed-in viewer. */
+function subscribeToAuth(onChange: () => void) {
+  return useAuthStore.subscribe?.(onChange) ?? (() => {});
+}
+
+/**
+ * Hook form: a predicate over markdown for the signed-in viewer. Reads the
+ * store like RichContent does, so a host without a registered auth store
+ * (tests, previews) just sees no viewer.
+ */
 export function useMentionsViewer() {
-  const viewerId = useAuthStore((s) => s.user?.id);
+  const viewerId = useSyncExternalStore(
+    subscribeToAuth,
+    () => useAuthStore.getState?.().user?.id,
+    () => undefined,
+  );
   return useCallback((markdown: string | null | undefined) => mentionsViewer(markdown, viewerId), [viewerId]);
 }
 
-/** Highest row index with any part inside the scroller's viewport, if any row is mounted. */
+/**
+ * Highest row index at or above the viewport's bottom edge, if any row is
+ * mounted. With no row on screen (a long description can push every row below
+ * it) that is the row just before the first mounted one, or the last mounted
+ * row when all of them sit above the viewport.
+ */
 function lastVisibleRow(scrollEl: HTMLElement): number | null {
   const view = scrollEl.getBoundingClientRect();
-  let last: number | null = null;
+  let visible: number | null = null;
+  let lastAbove: number | null = null;
+  let firstBelow: number | null = null;
   for (const row of scrollEl.querySelectorAll<HTMLElement>("[data-item-index]")) {
     const rect = row.getBoundingClientRect();
-    if (rect.bottom <= view.top || rect.top >= view.bottom) continue;
     const index = Number(row.dataset.itemIndex);
-    if (last === null || index > last) last = index;
+    if (rect.bottom <= view.top) {
+      if (lastAbove === null || index > lastAbove) lastAbove = index;
+    } else if (rect.top >= view.bottom) {
+      if (firstBelow === null || index < firstBelow) firstBelow = index;
+    } else if (visible === null || index > visible) visible = index;
   }
-  return last;
+  if (visible !== null) return visible;
+  return firstBelow !== null ? firstBelow - 1 : lastAbove;
 }
 
 interface NextSelfMentionProps {
@@ -53,16 +86,19 @@ interface NextSelfMentionProps {
   firstItemIndex?: number;
   /** Scroll the row at this data index into view. */
   onJump: (index: number) => void;
-  className?: string;
+  /** Off while the host list is closing: no measuring, nothing rendered. Default on. */
+  enabled?: boolean;
+  /** Placement utilities; the default floats above a composer that lives inside the scroller. */
+  positionClassName?: string;
 }
 
-export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, className }: NextSelfMentionProps) {
+export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, enabled = true, positionClassName = "absolute bottom-28 right-6 z-20" }: NextSelfMentionProps) {
   const { t } = useT("editor");
   const [visibleEnd, setVisibleEnd] = useState<number | null>(null);
   const jumpId = useRef(0);
 
   useEffect(() => {
-    if (!scrollEl) return;
+    if (!scrollEl || !enabled) return;
     let frame = 0;
     const measure = () => {
       cancelAnimationFrame(frame);
@@ -87,7 +123,7 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, c
       resize.disconnect();
       mutations.disconnect();
     };
-  }, [scrollEl, flags, firstItemIndex]);
+  }, [scrollEl, enabled, flags, firstItemIndex]);
 
   const below = useMemo(() => {
     if (visibleEnd === null) return [];
@@ -111,15 +147,15 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, c
     requestAnimationFrame(settle);
   };
 
-  if (below.length === 0) return null;
+  if (!enabled || below.length === 0) return null;
   return (
     <button
       type="button"
       onClick={() => jump(below[0]!)}
-      className={
-        className ??
-        "absolute bottom-28 right-6 z-20 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground shadow-md outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"
-      }
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground shadow-md outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring",
+        positionClassName,
+      )}
     >
       <ArrowDown className="size-3.5" aria-hidden />
       {t(($) => $.next_self_mention.label)}
