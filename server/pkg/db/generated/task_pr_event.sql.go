@@ -163,6 +163,7 @@ SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
              AND prev.issue_id = e.issue_id
              AND prev.pull_request_id = e.pull_request_id
              AND prev.head_sha <> e.head_sha
+             AND prev.status <> 'superseded'
              AND prev.observed_at < e.observed_at
            ORDER BY prev.observed_at DESC
            LIMIT 1

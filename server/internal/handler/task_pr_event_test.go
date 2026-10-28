@@ -119,6 +119,30 @@ func TestTaskPREventNewCapabilityClaimHasNoMemberAuthor(t *testing.T) {
 	f.ack(t, true, http.StatusOK) // replayed ack is idempotent
 }
 
+func TestTaskPREventOldHeadIgnoresSupersededObservation(t *testing.T) {
+	f := newPREventFixture(t, protocol.DaemonCapabilityTaskSupplementPREventV1)
+	var prID string
+	if err := testPool.QueryRow(t.Context(), `SELECT pull_request_id FROM issue_pr_event WHERE id = $1`, f.eventID).Scan(&prID); err != nil {
+		t.Fatal(err)
+	}
+	// A real earlier head, then a rejected stale webhook observed after it.
+	for _, row := range []struct{ head, status, age string }{
+		{"real-old-head", "delivered", "2 minutes"},
+		{"stale-webhook-head", "superseded", "1 minute"},
+	} {
+		dbfx.Exec(t, `
+			INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, observed_at, dedupe_key, status)
+			VALUES ($1, $2, $3, 'head_changed', $4, now() - $5::interval, $6, $7)
+		`, testWorkspaceID, f.issueID, prID, row.head, row.age, "head_changed|"+row.head, row.status)
+	}
+	if err := f.enqueue(t); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.claim(t)["old_head_sha"]; got != "real-old-head" {
+		t.Fatalf("old_head_sha = %v, want real-old-head", got)
+	}
+}
+
 func TestTaskPREventLegacyDaemonGetsNoMidRunDelivery(t *testing.T) {
 	f := newPREventFixture(t, protocol.DaemonCapabilityTaskSupplementV1)
 	if err := f.enqueue(t); !errors.Is(err, pgx.ErrNoRows) {
