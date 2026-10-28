@@ -77,6 +77,18 @@ func linkPR(t *testing.T, issueID string, prNumber int32, head string) {
 // changed" does not pass only because the hook has not run yet.
 func settle() { time.Sleep(700 * time.Millisecond) }
 
+// waitForRunBudgetBlock waits for the blocking hook of a refused run to finish
+// its write, so a test that goes on to change the issue does not race it.
+func waitForRunBudgetBlock(t *testing.T, c edgeCase) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted'`, c.issueID) > 0 {
+			return
+		}
+	}
+	t.Fatal("the run budget block hook did not finish in 10s")
+}
+
 func TestRunBudgetKeepsMergedStatusAndAssignee(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -146,6 +158,12 @@ func TestRunBudgetFirstReviewOfEachHeadIsAdmitted(t *testing.T) {
 	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
 		t.Fatalf("second run on the same head = %v, want ErrRunBudgetExhausted", err)
 	}
+	// The same-head refusal schedules the blocking hook, which moves the issue
+	// to blocked on its own connection. Wait for it, then put the issue back in
+	// review, so the next head is judged on the review state and not on how
+	// fast the hook ran. The spent budget and its window stay as they were.
+	waitForRunBudgetBlock(t, c)
+	c.enter(t, "in_review")
 
 	if _, err := testPool.Exec(ctx, `UPDATE github_pull_request SET head_sha='head-two' WHERE id IN (SELECT pull_request_id FROM issue_pull_request WHERE issue_id=$1)`, c.issueID); err != nil {
 		t.Fatal(err)
