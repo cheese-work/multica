@@ -1,0 +1,12 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run editor/extensions/code-block-view.test.tsx -t 'unsaved HTML'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 6 skipped (7)
+   Start at  20:31:00
+   Duration  6.00s (transform 1.19s, setup 138ms, import 2.64s, tests 1.23s, environment 1.71s)

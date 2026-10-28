@@ -8,6 +8,8 @@ import {
   within,
 } from "@testing-library/react";
 import { mockNativeDialog } from "../test-utils/native-dialog";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { MediaSourceProvider } from "../../media/media-context";
 
 // Tiptap's NodeView primitives are hard to instantiate in jsdom without a
 // full editor. Stub them so the test can render <CodeBlockView /> as a plain
@@ -155,6 +157,20 @@ describe("CodeBlockView — html language toggle", () => {
     expect(screen.queryByRole("button", { name: "Show preview" })).toBeNull();
     expect(document.querySelector("iframe")).toBeNull();
     expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
+  });
+
+  it("hides media links for unsaved HTML editor content inside a persisted source", () => {
+    render(
+      <WorkspaceSlugProvider slug="acme">
+        <MediaSourceProvider source={{ type: "issues", id: "issue-1" }}>
+          <CodeBlockView {...makeProps("html", "<p>unsaved draft</p>")} />
+        </MediaSourceProvider>
+      </WorkspaceSlugProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector("iframe")?.getAttribute("srcdoc")).toBe("<p>unsaved draft</p>");
+    expect(within(dialog).queryByTestId("media-link-action")).toBeNull();
   });
 
   it("reloads inline and enlarged HTML while preserving the editor and surface", () => {

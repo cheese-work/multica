@@ -3943,6 +3943,85 @@ func (q *Queries) MarkChatTaskCompact(ctx context.Context, arg MarkChatTaskCompa
 	return i, err
 }
 
+const moveChatMessagesOfTasksToSession = `-- name: MoveChatMessagesOfTasksToSession :exec
+WITH moved AS (
+    SELECT source.id, row_number() OVER (ORDER BY source.created_at, source.id) AS position
+    FROM chat_message AS source
+    WHERE source.chat_session_id = $3 AND source.role = 'user'
+      AND source.task_id IN (
+          SELECT COALESCE(task.chat_input_task_id, task.id) FROM agent_task_queue AS task
+          WHERE task.id = ANY($4::uuid[])
+      )
+),
+attached AS (
+    UPDATE attachment AS file SET chat_session_id = $1
+    WHERE file.chat_message_id IN (SELECT id FROM moved)
+)
+UPDATE chat_message AS message
+SET chat_session_id = $1,
+    created_at = $2::timestamptz + moved.position * interval '1 microsecond'
+FROM moved
+WHERE message.id = moved.id
+`
+
+type MoveChatMessagesOfTasksToSessionParams struct {
+	ToSessionID      pgtype.UUID        `json:"to_session_id"`
+	SummaryCreatedAt pgtype.Timestamptz `json:"summary_created_at"`
+	FromSessionID    pgtype.UUID        `json:"from_session_id"`
+	TaskIds          []pgtype.UUID      `json:"task_ids"`
+}
+
+// Moves the input messages of the tasks above, in their original order, to just
+// after the continuation summary so the new DM reads summary, then questions.
+// A retry reads the batch of the root it cloned (chat_input_task_id), so the
+// messages are matched through that owner, not the moved task's own id.
+func (q *Queries) MoveChatMessagesOfTasksToSession(ctx context.Context, arg MoveChatMessagesOfTasksToSessionParams) error {
+	_, err := q.db.Exec(ctx, moveChatMessagesOfTasksToSession,
+		arg.ToSessionID,
+		arg.SummaryCreatedAt,
+		arg.FromSessionID,
+		arg.TaskIds,
+	)
+	return err
+}
+
+const moveUnstartedChatTasksToSession = `-- name: MoveUnstartedChatTasksToSession :many
+UPDATE agent_task_queue
+SET chat_session_id = $1
+WHERE chat_session_id = $2 AND status IN ('queued', 'deferred')
+RETURNING id
+`
+
+type MoveUnstartedChatTasksToSessionParams struct {
+	ToSessionID   pgtype.UUID `json:"to_session_id"`
+	FromSessionID pgtype.UUID `json:"from_session_id"`
+}
+
+// A continuation answers the turns still waiting in the archived DM. A task no
+// daemon has claimed (queued, or deferred behind a retry) moves with its input
+// batch to the new DM; ClaimAgentTask does not read chat_session.status, so
+// leaving it behind would answer it in the archived DM. The running task that
+// called continue is not matched.
+func (q *Queries) MoveUnstartedChatTasksToSession(ctx context.Context, arg MoveUnstartedChatTasksToSessionParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, moveUnstartedChatTasksToSession, arg.ToSessionID, arg.FromSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const placeForkFirstMessage = `-- name: PlaceForkFirstMessage :one
 UPDATE chat_message AS message
 SET created_at = GREATEST(message.created_at, (

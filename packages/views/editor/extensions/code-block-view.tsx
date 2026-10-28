@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
 import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "lucide-react";
@@ -11,6 +11,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useDebouncedValue } from "../../common/use-debounced-value";
 import { useT } from "../../i18n";
+import { MediaSourceProvider, useMediaSource, usePersistedEditorMedia } from "../../media/media-context";
+import { markdownMedia } from "../../media/markdown-media";
 import { MermaidDiagram } from "../mermaid-diagram";
 import { CodeBlockIframe } from "../code-block-iframe";
 
@@ -50,6 +52,11 @@ function CodeBlockView({ node }: NodeViewProps) {
     PREVIEW_DEBOUNCE_MS,
     showHtmlPreview || fullscreen,
   );
+  const source = useMediaSource();
+  const persistedMarkdown = usePersistedEditorMedia();
+  const persistedBlocks = useMemo(() => markdownMedia(persistedMarkdown ?? ""), [persistedMarkdown]);
+  const previewContent = isHtml ? debouncedHtml : debouncedChart;
+  const persisted = chart === previewContent && persistedBlocks.some((block) => block.kind === language && block.content === chart);
 
   const handleCopy = async () => {
     const text = node.textContent;
@@ -64,6 +71,7 @@ function CodeBlockView({ node }: NodeViewProps) {
     setView((v) => (v === "preview" ? "source" : "preview"));
 
   return (
+    <MediaSourceProvider source={persisted ? source : null}>
     <NodeViewWrapper className="code-block-wrapper group/code relative my-3">
       {isMermaid && debouncedChart.trim() && (
         <div
@@ -83,6 +91,7 @@ function CodeBlockView({ node }: NodeViewProps) {
           hidden={!showHtmlPreview && !fullscreen}
         >
           <HtmlPreviewSurface
+            mediaContent={debouncedHtml}
             open={fullscreen}
             inlineHeight={showHtmlPreview ? HTML_PREVIEW_HEIGHT_PX : 0}
             onOpenChange={setFullscreen}
@@ -186,6 +195,7 @@ function CodeBlockView({ node }: NodeViewProps) {
         <NodeViewContent as="code" />
       </pre>
     </NodeViewWrapper>
+    </MediaSourceProvider>
   );
 }
 
