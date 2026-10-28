@@ -7519,7 +7519,7 @@ const listUnreleasedSupersededReviews = `-- name: ListUnreleasedSupersededReview
 SELECT t.id, t.agent_id, t.pull_request_id, t.workflow_step FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE t.issue_id = $1
-  AND t.status = 'cancelled' AND t.failure_reason = 'superseded_head'
+  AND ((t.status = 'cancelled' AND t.failure_reason = 'superseded_head') OR t.stop_unconfirmed_at IS NOT NULL)
   AND t.pull_request_id IS NOT NULL
   AND t.workflow_step IN ('in_review', 'agent_review')
   AND t.workflow_step = i.status
@@ -7536,7 +7536,10 @@ type ListUnreleasedSupersededReviewsRow struct {
 
 // Superseded review runs of the issue whose single replacement has not been
 // enqueued yet, newest first. Rows of one (pull_request_id, workflow_step)
-// share one replacement.
+// share one replacement. A run stays superseded after a later writer rewrites
+// its status or reason (a cleanup-unconfirmed report, /fail, a late complete):
+// the b1 trigger keeps stop_unconfirmed_at, the same identity the cancel-ack
+// settles (MarkAgentTaskCancelAcked).
 func (q *Queries) ListUnreleasedSupersededReviews(ctx context.Context, issueID pgtype.UUID) ([]ListUnreleasedSupersededReviewsRow, error) {
 	rows, err := q.db.Query(ctx, listUnreleasedSupersededReviews, issueID)
 	if err != nil {
@@ -8442,7 +8445,7 @@ SET replacement_released_at = now()
 WHERE issue_id = $1
   AND pull_request_id = $2
   AND workflow_step = $3
-  AND status = 'cancelled' AND failure_reason = 'superseded_head'
+  AND ((status = 'cancelled' AND failure_reason = 'superseded_head') OR stop_unconfirmed_at IS NOT NULL)
   AND replacement_released_at IS NULL
 `
 

@@ -102,7 +102,9 @@ func (h *Handler) prAwaitsReview(ctx context.Context, prID pgtype.UUID) bool {
 // staleVerdictRun reports whether run is a review that was superseded by a
 // newer head, and the head it reviewed.
 func staleVerdictRun(run *db.AgentTaskQueue) (oldHead string, stale bool) {
-	if run == nil || !run.PullRequestID.Valid || run.FailureReason.String != service.FailureReasonSupersededHead {
+	// stop_unconfirmed_at outlives a rewrite of status/failure_reason (b1 trigger).
+	if run == nil || !run.PullRequestID.Valid ||
+		(run.FailureReason.String != service.FailureReasonSupersededHead && !run.StopUnconfirmedAt.Valid) {
 		return "", false
 	}
 	var ctxJSON struct {

@@ -1661,11 +1661,14 @@ WHERE t.pull_request_id = sqlc.arg('pull_request_id')
 -- name: ListUnreleasedSupersededReviews :many
 -- Superseded review runs of the issue whose single replacement has not been
 -- enqueued yet, newest first. Rows of one (pull_request_id, workflow_step)
--- share one replacement.
+-- share one replacement. A run stays superseded after a later writer rewrites
+-- its status or reason (a cleanup-unconfirmed report, /fail, a late complete):
+-- the b1 trigger keeps stop_unconfirmed_at, the same identity the cancel-ack
+-- settles (MarkAgentTaskCancelAcked).
 SELECT t.id, t.agent_id, t.pull_request_id, t.workflow_step FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE t.issue_id = sqlc.arg('issue_id')
-  AND t.status = 'cancelled' AND t.failure_reason = 'superseded_head'
+  AND ((t.status = 'cancelled' AND t.failure_reason = 'superseded_head') OR t.stop_unconfirmed_at IS NOT NULL)
   AND t.pull_request_id IS NOT NULL
   AND t.workflow_step IN ('in_review', 'agent_review')
   AND t.workflow_step = i.status
@@ -1678,7 +1681,7 @@ SET replacement_released_at = now()
 WHERE issue_id = sqlc.arg('issue_id')
   AND pull_request_id = sqlc.arg('pull_request_id')
   AND workflow_step = sqlc.arg('workflow_step')
-  AND status = 'cancelled' AND failure_reason = 'superseded_head'
+  AND ((status = 'cancelled' AND failure_reason = 'superseded_head') OR stop_unconfirmed_at IS NOT NULL)
   AND replacement_released_at IS NULL;
 
 -- name: GetUnackedSupersededRun :one

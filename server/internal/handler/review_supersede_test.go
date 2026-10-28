@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -224,5 +225,38 @@ func TestReviewSupersede_ReplacementStaysBoundToItsPR(t *testing.T) {
 	q := queuedRuns(t, f.issueID)
 	if len(q) != 1 || q[0].head != reviewHeadB {
 		t.Fatalf("replacement = %+v, want one run for the superseded PR's head %s", q, reviewHeadB)
+	}
+}
+
+// A cleanup-unconfirmed report rewrites the cancelled review to failed. The b1
+// trigger keeps it in the stop gate; it must stay a superseded review too, so a
+// confirmed ack still releases the one replacement.
+func TestReviewSupersede_CleanupUnconfirmedRewriteStillReleasesReplacement(t *testing.T) {
+	f := reviewIssue(t)
+	pushHead(t, f.prID, reviewHeadB)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', failure_reason = 'cleanup_unconfirmed' WHERE id = $1`, f.review)
+
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent_task_queue WHERE id = $1`, f.review).Scan(&runtimeID)
+	ackCancelled(t, f.review, map[string]any{"cancel_ack_proof": auth.CancelAckProof(f.review, runtimeID), "process_cleanup_confirmed": true})
+
+	q := queuedRuns(t, f.issueID)
+	if len(q) != 1 || q[0].head != reviewHeadB {
+		t.Fatalf("queued after confirmed ack = %+v, want one run for head %s", q, reviewHeadB)
+	}
+}
+
+// The same rewrite must not let the old review's verdict through.
+func TestReviewSupersede_StaleVerdictRefusedAfterCleanupUnconfirmedRewrite(t *testing.T) {
+	f := reviewIssue(t)
+	pushHead(t, f.prID, reviewHeadB)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', failure_reason = 'cleanup_unconfirmed' WHERE id = $1`, f.review)
+
+	body := agentUpdateIssue(t, f.issueID, f.agentID, f.review, map[string]any{"status": "blocked"}).Want(http.StatusConflict).Map()
+	if body["code"] != "review_verdict_stale" {
+		t.Fatalf("refusal = %v", body)
+	}
+	if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "in_review" {
+		t.Fatalf("issue status after refused verdict = %q, want in_review", status)
 	}
 }
