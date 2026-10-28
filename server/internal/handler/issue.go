@@ -4729,6 +4729,11 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
 		}
+		// DeleteIssue's own event sweep misses a capture that committed while it
+		// waited on that capture's issue lock; this later statement sees it.
+		if err := qtx.DeleteIssuePREvents(ctx, db.DeleteIssuePREventsParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("sweep issue pr events: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return issueDeleteResult{}, fmt.Errorf("commit issue delete: %w", err)

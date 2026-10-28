@@ -2,9 +2,11 @@ package ghsnapshot
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -83,6 +85,12 @@ func capturePREventForIssue(ctx context.Context, q *db.Queries, pr db.LockGitHub
 	}
 	if staleHead && in.Kind == PREventChecksFailed {
 		return PREventDropped, nil
+	}
+	if _, err := q.LockIssueForPREvent(ctx, issueID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PREventNotCaptured, nil
+		}
+		return "", err
 	}
 	status, outcome := "accepted", PREventAccepted
 	superseded := staleHead

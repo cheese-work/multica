@@ -10,6 +10,17 @@ FOR UPDATE;
 -- name: ListIssueIDsForPR :many
 SELECT issue_id FROM issue_pull_request WHERE pull_request_id = $1;
 
+-- name: LockIssueForPREvent :one
+-- Share-locks the issue so a concurrent DeleteIssue waits for this capture
+-- instead of sweeping events before the capture's insert commits. No row means
+-- the issue is already gone; the capture must write nothing for it.
+SELECT id FROM issue WHERE id = $1 FOR SHARE;
+
+-- name: DeleteIssuePREvents :exec
+-- Second-pass sweep, run after DeleteIssue: it sees events a capture committed
+-- while DeleteIssue waited on that capture's issue lock.
+DELETE FROM issue_pr_event WHERE issue_id = $1 AND workspace_id = $2;
+
 -- name: PREventKindEnabled :one
 -- Absent or non-false = enabled; only an explicit false disables one kind.
 SELECT COALESCE(

@@ -472,9 +472,6 @@ deleted_issue_pr_automation AS (
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
-deleted_issue_pr_events AS (
-    DELETE FROM issue_pr_event WHERE workspace_id = $1
-),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
@@ -697,6 +694,10 @@ WITH deleted_github_webhook_dispatches AS (
 ), deleted_github_webhook_revisions AS (
     DELETE FROM github_webhook_revision
     WHERE github_webhook_revision.workspace_id = $1
+), deleted_issue_pr_events AS (
+    -- Runs after DeleteWorkspaceIssueRoots: a capture that share-locked an issue
+    -- has committed by then, so this sweep sees its events (CHE-2298 a1).
+    DELETE FROM issue_pr_event WHERE issue_pr_event.workspace_id = $1
 ), deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1

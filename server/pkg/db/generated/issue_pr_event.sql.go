@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteIssuePREvents = `-- name: DeleteIssuePREvents :exec
+DELETE FROM issue_pr_event WHERE issue_id = $1 AND workspace_id = $2
+`
+
+type DeleteIssuePREventsParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Second-pass sweep, run after DeleteIssue: it sees events a capture committed
+// while DeleteIssue waited on that capture's issue lock.
+func (q *Queries) DeleteIssuePREvents(ctx context.Context, arg DeleteIssuePREventsParams) error {
+	_, err := q.db.Exec(ctx, deleteIssuePREvents, arg.IssueID, arg.WorkspaceID)
+	return err
+}
+
 const getGitHubPRSnapshotState = `-- name: GetGitHubPRSnapshotState :one
 SELECT api_mergeable, checks_rollup_state, snapshot_head_sha
 FROM github_pull_request
@@ -135,6 +151,20 @@ func (q *Queries) LockGitHubPRForEvent(ctx context.Context, id pgtype.UUID) (Loc
 	var i LockGitHubPRForEventRow
 	err := row.Scan(&i.ID, &i.WorkspaceID, &i.HeadSha)
 	return i, err
+}
+
+const lockIssueForPREvent = `-- name: LockIssueForPREvent :one
+SELECT id FROM issue WHERE id = $1 FOR SHARE
+`
+
+// Share-locks the issue so a concurrent DeleteIssue waits for this capture
+// instead of sweeping events before the capture's insert commits. No row means
+// the issue is already gone; the capture must write nothing for it.
+func (q *Queries) LockIssueForPREvent(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockIssueForPREvent, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const pREventKindEnabled = `-- name: PREventKindEnabled :one
