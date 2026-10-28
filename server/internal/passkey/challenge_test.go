@@ -242,3 +242,27 @@ func TestIssueFailsFastWhileTheFirstIssuerIsStillCommitting(test *testing.T) {
 		test.Error("the user must keep exactly one open challenge")
 	}
 }
+
+func TestChallengeExpiryIsReadAtVerificationTimeNotTransactionStart(test *testing.T) {
+	pool := testPool(test)
+	ctx := context.Background()
+	user := newUser(test, pool)
+	var id pgtype.UUID
+	err := pool.QueryRow(ctx, `INSERT INTO passkey_assertion_challenge (nonce, user_id, purpose, subject_id, session_data, expires_at) VALUES (decode(repeat('ab', 32), 'hex'), $1, 'decision_approve', gen_random_uuid(), '{}', clock_timestamp() + interval '300 milliseconds') RETURNING id`, user).Scan(&id)
+	if err != nil {
+		test.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	time.Sleep(600 * time.Millisecond)
+	row, err := db.New(tx).LockPasskeyChallengeNowait(ctx, id)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !row.Expired {
+		test.Fatal("a challenge that expired before the lock read it must read as expired")
+	}
+}

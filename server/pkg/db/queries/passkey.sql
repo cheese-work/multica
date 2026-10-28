@@ -25,7 +25,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: LockPasskeyChallengeNowait :one
-SELECT challenge.*, (challenge.expires_at <= now())::bool AS expired
+SELECT challenge.*, (challenge.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_assertion_challenge challenge
 WHERE challenge.id = $1
 FOR UPDATE NOWAIT;

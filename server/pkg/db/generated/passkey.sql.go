@@ -186,7 +186,7 @@ func (q *Queries) LockPasskeyByCredentialNowait(ctx context.Context, credentialI
 }
 
 const lockPasskeyChallengeNowait = `-- name: LockPasskeyChallengeNowait :one
-SELECT challenge.id, challenge.nonce, challenge.user_id, challenge.purpose, challenge.subject_id, challenge.session_data, challenge.expires_at, challenge.consumed_at, challenge.superseded_at, challenge.created_at, (challenge.expires_at <= now())::bool AS expired
+SELECT challenge.id, challenge.nonce, challenge.user_id, challenge.purpose, challenge.subject_id, challenge.session_data, challenge.expires_at, challenge.consumed_at, challenge.superseded_at, challenge.created_at, (challenge.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_assertion_challenge challenge
 WHERE challenge.id = $1
 FOR UPDATE NOWAIT
