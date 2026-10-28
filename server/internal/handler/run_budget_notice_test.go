@@ -373,3 +373,38 @@ func TestRunBudgetWarningDroppedOnSlowRollback(t *testing.T) {
 		t.Fatalf("claim rows = %d, want 0", n)
 	}
 }
+
+// A direct enqueue (no caller transaction) whose INSERT waits on a lock longer
+// than the commit wait still gets its warning once the INSERT lands.
+func TestRunBudgetWarningSurvivesDelayedDirectInsert(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	old := runBudgetCommitWait
+	runBudgetCommitWait = 300 * time.Millisecond
+	t.Cleanup(func() { runBudgetCommitWait = old })
+
+	c := newBudgetCase(t, 2310014, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	ctx := context.Background()
+	lock, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `LOCK TABLE agent_task_queue IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.admit(t) }()
+	time.Sleep(3 * runBudgetCommitWait)
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("delayed admission: %v", err)
+	}
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("notices after a delayed direct insert = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}

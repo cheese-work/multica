@@ -384,6 +384,14 @@ deleted_governed_vote_records AS (
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
 ),
+-- CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
+-- with no dependents and no FK.
+deleted_github_workflow_runs AS (
+    DELETE FROM github_workflow_run WHERE workspace_id = $1
+),
+deleted_github_workflow_jobs AS (
+    DELETE FROM github_workflow_job WHERE workspace_id = $1
+),
 -- CHE-685 Jev governance routing receipts: workspace-owned observation
 -- history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 deleted_governance_receipts AS (
@@ -489,6 +497,9 @@ deleted_issue_pr_automation AS (
 ),
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
+),
+deleted_issue_review_admissions AS (
+    DELETE FROM issue_review_admission WHERE workspace_id = $1
 ),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target

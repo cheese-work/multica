@@ -25,16 +25,13 @@ var (
 	runBudgetTxWait = 10 * time.Minute
 )
 
-// onRunBudgetEvent blocks the issue when the budget is spent, then writes the
-// run-budget notice for the admission or refusal (CHE-2297 L1a).
+// onRunBudgetEvent writes the 80% warning once the admission that raised it
+// committed (CHE-2297 L1a).
 func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent) {
-	if e.Kind == service.RunBudgetKindExhausted {
-		h.blockExhaustedIssue(ctx, e)
-	}
-	if e.Kind == service.RunBudgetKindWarn80 && !h.admissionCommitted(ctx, e) {
+	if e.Kind != service.RunBudgetKindWarn80 || !h.admissionCommitted(ctx, e) {
 		return
 	}
-	h.writeRunBudgetNotice(ctx, e)
+	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue used %d of %d runs of its run budget. When the budget is spent, nothing derived from this issue runs until a member moves its status.", e.Runs, e.Max))
 }
 
 // admissionCommitted reports whether the admission that raised a warning has
@@ -91,13 +88,13 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 // (issue, budget window, kind). The claim row, the comment and the inbox items
 // share one transaction: the inserting transaction alone writes the notice, and
 // a failed write rolls the claim back so the next event retries it.
-func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent) {
+func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
 	}
-	content, title := h.runBudgetNoticeText(ctx, issue, e)
+	content, title := h.runBudgetNoticeText(ctx, issue, e, text)
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
@@ -177,19 +174,18 @@ func runBudgetRecipients(ctx context.Context, q *db.Queries, issue db.Issue) ([]
 	return q.ListWorkspaceOwnerUserIDs(ctx, issue.WorkspaceID)
 }
 
-// runBudgetNoticeText reads the token figure best-effort: a failed read leaves
-// it out rather than losing the notice.
-func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e service.RunBudgetEvent) (content, title string) {
+// runBudgetNoticeText appends the token figure to the notice text, best-effort:
+// a failed read leaves it as "unknown" rather than losing the notice.
+func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, text string) (content, title string) {
 	tokens := "unknown"
 	if u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID); err == nil {
 		tokens = fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
 	} else {
 		slog.Warn("run budget: usage summary failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
+	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
 	if e.Kind == service.RunBudgetKindWarn80 {
-		return fmt.Sprintf("This issue used %d of %d runs of its run budget. Tokens used so far (input and output): %s. When the budget is spent, nothing derived from this issue runs until a member moves its status.", e.Runs, e.Max, tokens),
-			"Run budget at 80%"
+		return content, "Run budget at 80%"
 	}
-	return fmt.Sprintf("This issue used its run budget: %d of %d runs. Nothing derived from this issue runs now. Tokens used so far (input and output): %s. To reopen it, a member moves its status.", e.Runs, e.Max, tokens),
-		"Run budget used up"
+	return content, "Run budget used up"
 }

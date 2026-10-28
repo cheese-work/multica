@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"738_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
 	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
 	"728_github_revision_identity":                              "idx_github_webhook_revision_identity",
@@ -239,6 +240,12 @@ var concurrentIndexCleanups = map[string]string{
 	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
 	"680_cloud_agent_connection_provider_index":                 "cloud_agent_connection_provider_index",
 	"683_member_delegation_day_unique_index":                    "member_delegation_day_user_date_uidx",
+	"712_github_workflow_run_identity_index":                    "github_workflow_run_identity_uidx",
+	"713_github_workflow_run_head_sha_index":                    "github_workflow_run_head_sha_idx",
+	"714_github_workflow_run_updated_at_index":                  "github_workflow_run_updated_at_idx",
+	"716_github_workflow_job_identity_index":                    "github_workflow_job_identity_uidx",
+	"717_github_workflow_job_run_attempt_index":                 "github_workflow_job_run_attempt_idx",
+	"718_github_workflow_job_updated_at_index":                  "github_workflow_job_updated_at_idx",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",

@@ -130,7 +130,7 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 }
 
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one
-SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id FROM issue
+SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override FROM issue
 JOIN issue_pull_request link ON link.issue_id=issue.id
 JOIN github_pull_request pull ON pull.id=link.pull_request_id AND pull.workspace_id=issue.workspace_id
 JOIN github_installation installation ON installation.workspace_id=issue.workspace_id AND installation.installation_id=pull.installation_id
@@ -187,6 +187,7 @@ func (q *Queries) GetGitHubRouteIssue(ctx context.Context, arg GetGitHubRouteIss
 		&i.DuplicateOfIssueID,
 		&i.WorkflowID,
 		&i.RequestedByID,
+		&i.MaxRunsOverride,
 	)
 	return i, err
 }
@@ -240,6 +241,78 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 		&i.NextAttemptAt,
 	)
 	return i, err
+}
+
+const getLatestGitHubWebhookRevision = `-- name: GetLatestGitHubWebhookRevision :one
+SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at, id FROM github_webhook_revision
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestGitHubWebhookRevisionParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepositoryID   int64       `json:"repository_id"`
+	ObjectKind     string      `json:"object_kind"`
+	ObjectID       int64       `json:"object_id"`
+}
+
+func (q *Queries) GetLatestGitHubWebhookRevision(ctx context.Context, arg GetLatestGitHubWebhookRevisionParams) (GithubWebhookRevision, error) {
+	row := q.db.QueryRow(ctx, getLatestGitHubWebhookRevision,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+	)
+	var i GithubWebhookRevision
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepositoryID,
+		&i.PullRequestID,
+		&i.PrNumber,
+		&i.ObjectKind,
+		&i.ObjectID,
+		&i.BodyHash,
+		&i.SourceDeliveryGuid,
+		&i.Event,
+		&i.Action,
+		&i.SenderID,
+		&i.AuthorID,
+		&i.AuthorLogin,
+		&i.AuthorType,
+		&i.HeadSha,
+		&i.ReviewState,
+		&i.ObjectCreatedAt,
+		&i.ObjectUpdatedAt,
+		&i.ObjectSubmittedAt,
+		&i.State,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ID,
+	)
+	return i, err
+}
+
+const hasGitHubWebhookRevisionDispatch = `-- name: HasGitHubWebhookRevisionDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND revision_id = $2 AND state = 'dispatched')
+`
+
+type HasGitHubWebhookRevisionDispatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RevisionID  pgtype.UUID `json:"revision_id"`
+}
+
+func (q *Queries) HasGitHubWebhookRevisionDispatch(ctx context.Context, arg HasGitHubWebhookRevisionDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubWebhookRevisionDispatch, arg.WorkspaceID, arg.RevisionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertGitHubWebhookIntake = `-- name: InsertGitHubWebhookIntake :execrows
@@ -379,6 +452,51 @@ func (q *Queries) ListDeferredGitHubWebhookIntakes(ctx context.Context, limit in
 	return items, nil
 }
 
+const listGitHubReconcilePullRequests = `-- name: ListGitHubReconcilePullRequests :many
+SELECT DISTINCT pull.id, pull.workspace_id, pull.installation_id, pull.repo_owner, pull.repo_name, pull.pr_number
+FROM github_pull_request pull
+JOIN issue_pull_request link ON link.pull_request_id = pull.id
+JOIN github_installation installation ON installation.workspace_id = pull.workspace_id AND installation.installation_id = pull.installation_id
+WHERE pull.state = 'open' AND pull.head_repo_same
+ORDER BY pull.id
+`
+
+type ListGitHubReconcilePullRequestsRow struct {
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	PrNumber       int32       `json:"pr_number"`
+}
+
+func (q *Queries) ListGitHubReconcilePullRequests(ctx context.Context) ([]ListGitHubReconcilePullRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubReconcilePullRequests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubReconcilePullRequestsRow{}
+	for rows.Next() {
+		var i ListGitHubReconcilePullRequestsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubWebhookRevisionsForWork = `-- name: ListGitHubWebhookRevisionsForWork :many
 SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at, id FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
@@ -456,6 +574,53 @@ func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg Lis
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleGitHubWebhookItems = `-- name: ListStaleGitHubWebhookItems :many
+SELECT 'intake'::text AS item, delivery_guid AS ref, state, reason,
+       EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
+FROM github_webhook_intake
+WHERE state = 'deferred' AND received_at < now() - $1::bigint * interval '1 second'
+UNION ALL
+SELECT 'revision'::text, id::text, state, reason,
+       EXTRACT(EPOCH FROM (now() - created_at))::bigint
+FROM github_webhook_revision
+WHERE state = 'unsigned' AND created_at < now() - $1::bigint * interval '1 second'
+ORDER BY 5 DESC
+`
+
+type ListStaleGitHubWebhookItemsRow struct {
+	Item       string `json:"item"`
+	Ref        string `json:"ref"`
+	State      string `json:"state"`
+	Reason     string `json:"reason"`
+	AgeSeconds int64  `json:"age_seconds"`
+}
+
+func (q *Queries) ListStaleGitHubWebhookItems(ctx context.Context, minAgeSeconds int64) ([]ListStaleGitHubWebhookItemsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleGitHubWebhookItems, minAgeSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleGitHubWebhookItemsRow{}
+	for rows.Next() {
+		var i ListStaleGitHubWebhookItemsRow
+		if err := rows.Scan(
+			&i.Item,
+			&i.Ref,
+			&i.State,
+			&i.Reason,
+			&i.AgeSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -570,6 +735,61 @@ func (q *Queries) SetGitHubWebhookRevisionState(ctx context.Context, arg SetGitH
 		arg.ID,
 		arg.State,
 		arg.Reason,
+	)
+	return err
+}
+
+const supersedePendingGitHubWebhookRevisions = `-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.workspace_id, scoped.installation_id, scoped.repository_id, scoped.pull_request_id, scoped.pr_number, scoped.object_kind, scoped.object_id, scoped.body_hash, scoped.source_delivery_guid, scoped.event, scoped.action, scoped.sender_id, scoped.author_id, scoped.author_login, scoped.author_type, scoped.head_sha, scoped.review_state, scoped.object_created_at, scoped.object_updated_at, scoped.object_submitted_at, scoped.state, scoped.reason, scoped.created_at, scoped.updated_at, scoped.id FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND (
+        (pending.object_kind = 'review' AND (
+          pending.action = 'submitted'
+          OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+        ))
+        OR (pending.object_kind <> 'review' AND newer.object_updated_at IS NOT NULL AND (
+          newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_created_at)
+          OR (newer.object_updated_at = COALESCE(pending.object_updated_at, pending.object_created_at) AND (
+            pending.action = 'created'
+            OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+          ))
+        ))
+      )
+  )
+`
+
+type SupersedePendingGitHubWebhookRevisionsParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepositoryID   int64  `json:"repository_id"`
+	ObjectKind     string `json:"object_kind"`
+	ObjectID       int64  `json:"object_id"`
+}
+
+func (q *Queries) SupersedePendingGitHubWebhookRevisions(ctx context.Context, arg SupersedePendingGitHubWebhookRevisionsParams) error {
+	_, err := q.db.Exec(ctx, supersedePendingGitHubWebhookRevisions,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
 	)
 	return err
 }

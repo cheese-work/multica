@@ -404,7 +404,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			// run — caught only later, by the claim gate cancelling the task.
 			// It writes its own 422; it runs before the transaction, so a
 			// rejection leaves nothing behind.
-			if !h.requireWorktreeCapableDaemon(w, r, wsUUID, res.ResourceType, ref) {
+			if !requireWorktreeCapableDaemon(w, r, h.Queries, wsUUID, res.ResourceType, ref) {
 				return
 			}
 		}
@@ -931,31 +931,11 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset
 
-	type projectSearchRow struct {
-		project     db.Project
-		matchSource string
-	}
-
-	var results []projectSearchRow
+	var results []searchProjectResult
 	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 		for rows.Next() {
-			var row projectSearchRow
-			if err := rows.Scan(
-				&row.project.ID,
-				&row.project.WorkspaceID,
-				&row.project.Title,
-				&row.project.Description,
-				&row.project.Icon,
-				&row.project.Status,
-				&row.project.Priority,
-				&row.project.LeadType,
-				&row.project.LeadID,
-				&row.project.StartDate,
-				&row.project.DueDate,
-				&row.project.CreatedAt,
-				&row.project.UpdatedAt,
-				&row.matchSource,
-			); err != nil {
+			row, err := scanSearchProject(rows)
+			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
 			results = append(results, row)
@@ -971,12 +951,12 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 		if isSearchStatementTimeout(err) {
 			slog.Warn("search projects timed out",
 				"workspace_id", workspaceID,
-				"query", q,
+				"query_length", len([]rune(q)),
 				"timeout", searchStatementTimeout)
 			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
 			return
 		}
-		slog.Warn("search projects failed", "error", err, "workspace_id", workspaceID, "query", q)
+		slog.Warn("search projects failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
 		writeError(w, http.StatusInternalServerError, "failed to search projects")
 		return
 	}
