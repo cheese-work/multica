@@ -197,6 +197,8 @@ type Task struct {
 	InitiatorID    string `json:"initiator_id,omitempty"`
 	InitiatorName  string `json:"initiator_name,omitempty"`
 	InitiatorEmail string `json:"initiator_email,omitempty"`
+	// CancelAckProof is echoed in the cancel-ack to prove this daemon ran the task.
+	CancelAckProof string `json:"cancel_ack_proof,omitempty"`
 	// AuthToken is the task-scoped credential the server mints at claim time.
 	// The daemon injects it into the spawned agent as MULTICA_TOKEN so the
 	// agent never sees the daemon's own (often workspace-owner) credential.

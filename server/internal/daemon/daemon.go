@@ -5872,6 +5872,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// got a single message out of must not stay this issue's resume
 		// pointer (MUL-8188).
 		ack := taskCancelAcknowledgement(result, err, provider)
+		ack.CancelAckProof = task.CancelAckProof
 		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
@@ -5922,7 +5923,9 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// completed/failed rows the complete/fail callback is the
 		// authoritative channel and a stale run's late ack must not touch
 		// them.
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, taskCancelAcknowledgement(result, nil, provider)); ackErr != nil {
+		ack := taskCancelAcknowledgement(result, nil, provider)
+		ack.CancelAckProof = task.CancelAckProof
+		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
 		return

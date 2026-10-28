@@ -7354,8 +7354,21 @@ func canDispatchDelegatedFailureRecovery(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return false, err
 	}
-	return issue.Status != issuestatus.Backlog &&
-		(category == issuestatus.CategoryUnstarted || category == issuestatus.CategoryStarted), nil
+	if issue.Status == issuestatus.Backlog ||
+		(category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted) {
+		return false, nil
+	}
+	// A superseded run whose runner is not confirmed stopped holds the shared
+	// stop gate (CHE-2309). Like a paused lifecycle, this leaves the durable
+	// recovery signal pending: the sweeper replays it once the ack lands.
+	if err := StopGate(ctx, q, issue.ID); err != nil {
+		var notConfirmed *StopNotConfirmedError
+		if errors.As(err, &notConfirmed) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ensureDelegatedFailureRecoveryComment creates one durable recovery signal
