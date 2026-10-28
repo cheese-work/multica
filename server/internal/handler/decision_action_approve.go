@@ -60,12 +60,23 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.copy":      executeAgentCopyAction,
 }
 
+// decisionActionPermitted applies the rule of the action's own HTTP path to
+// the approver's current role, read under the member lock: a passkey proves
+// who clicked, not that they may do this.
+func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
+	if actionType == "agent.env.patch" {
+		return canManageAgentEnv(target, approver)
+	}
+	return true
+}
+
 var (
 	errApprovalUnavailable = decisionIntentRefusal{http.StatusForbidden, "approval_proof_unavailable: this server cannot verify an approval yet"}
 	errNotExecutable       = decisionIntentRefusal{http.StatusNotImplemented, "action_not_executable: this action type cannot be approved yet"}
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
+	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
 
@@ -489,13 +500,4 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		return err
 	}
 	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
-}
-
-// decisionActionPermitted re-checks, under the member lock, the authority the
-// action would have had if its approver had made the change directly.
-func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
-	if actionType == "agent.env.patch" {
-		return canManageAgentEnv(target, approver)
-	}
-	return true
 }
