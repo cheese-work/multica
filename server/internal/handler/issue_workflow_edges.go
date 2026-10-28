@@ -231,7 +231,7 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
 		return
 	}
-	raise := h.runBudgetRaiseCommand(ctx, issue, e.Max)
+	raise := h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
 	refused := h.runBudgetRefusedRun(ctx, e)
 	details := map[string]any{
 		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
@@ -273,18 +273,16 @@ func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetEx
 	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
 }
 
-// runBudgetRaiseCommand is the command that lifts this issue's cap by a few
-// runs, using the issue's identifier when the workspace prefix is known.
-func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max int) string {
+// runBudgetRaiseCommand is the command that lifts this issue's cap to leave
+// 10 runs after the ones already used, using the issue's identifier when the
+// workspace prefix is known.
+func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
 	ref := uuidToString(issue.ID)
 	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
 		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
 	}
-	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, max+runBudgetRaiseStep)
+	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, service.SuggestedRaiseTarget(max, used))
 }
-
-// runBudgetRaiseStep is how many runs the suggested raise command adds.
-const runBudgetRaiseStep = 5
 
 // postSystemComment adds a top-level system comment to the issue.
 func (h *Handler) postSystemComment(ctx context.Context, issue db.Issue, content string) {
