@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/internal/webhookguard"
@@ -516,3 +518,61 @@ func TestWorkflowWebhookFailedAdmissionRollsBackAndRetryAdmitsOnce(t *testing.T)
 	}
 }
 
+// Case 11: rotation keeps the old secret for the overlap, then drops it;
+// disable rejects at once.
+func TestWorkflowWebhookRotationOverlapAndDisable(t *testing.T) {
+	f := newWebhookFixture(t, 60)
+	newSecret := bytes.Repeat([]byte{9}, 32)
+	sealed, err := testHandler.VCSSecretBox.Seal(newSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.Queries.RotateWorkflowWebhookEndpointSecret(context.Background(), db.RotateWorkflowWebhookEndpointSecretParams{
+		ID: parseUUID(f.endpointID), SecretSealed: sealed,
+		PreviousExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldCall, newCall := f.call("failure"), f.call("failure")
+	newCall.secret = newSecret
+	wantStatus(t, serveWebhook(oldCall), http.StatusOK)
+	wantStatus(t, serveWebhook(newCall), http.StatusOK)
+
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workflow_webhook_endpoint SET previous_expires_at = now() - interval '1 second' WHERE id=$1`, f.endpointID); err != nil {
+		t.Fatal(err)
+	}
+	expired := f.call("failure")
+	wantStatus(t, serveWebhook(expired), http.StatusUnauthorized)
+	current := f.call("failure")
+	current.secret = newSecret
+	wantStatus(t, serveWebhook(current), http.StatusOK)
+
+	if _, err := testHandler.Queries.DisableWorkflowWebhookEndpoint(context.Background(), parseUUID(f.endpointID)); err != nil {
+		t.Fatal(err)
+	}
+	disabled := f.call("failure")
+	disabled.secret = newSecret
+	wantStatus(t, serveWebhook(disabled), http.StatusUnauthorized)
+}
+
+// Case 13: an event stored before the issue entered the step is history, not
+// a pass.
+func TestWorkflowWebhookEventBeforeStepEntryDoesNotFireGuard(t *testing.T) {
+	f := newWebhookFixture(t, 60)
+	if _, err := testHandler.Queries.InsertWorkflowWebhookEvent(context.Background(), db.InsertWorkflowWebhookEventParams{
+		EndpointID: parseUUID(f.endpointID), WorkspaceID: parseUUID(testWorkspaceID), IssueID: parseUUID(f.issueID),
+		Name: "ci", Result: "success", BodySha256: make([]byte, 32), BodyBytes: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workflow_webhook_event SET received_at = now() - interval '1 hour' WHERE endpoint_id=$1`, f.endpointID); err != nil {
+		t.Fatal(err)
+	}
+	testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, f.issueID)
+	tickEdges(t)
+	if got := f.status(t); got != "in_progress" {
+		t.Fatalf("stale event moved the issue to %s", got)
+	}
+}
