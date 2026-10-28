@@ -131,7 +131,7 @@ func (q *Queries) ListIssueIDsForPR(ctx context.Context, pullRequestID pgtype.UU
 }
 
 const listNextTurnPREvents = `-- name: ListNextTurnPREvents :many
-SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha,
+SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
        pr.pr_number, pr.repo_owner, pr.repo_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
@@ -150,38 +150,52 @@ WHERE (e.status = 'next_turn'
         AND w.system_rule = 'pr_needs_attention'
         AND r.event_type = 'pr.event'
         AND r.payload->>'event_id' = e.id::text
-        AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched')))
+        AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
+  AND ($2::timestamptz IS NULL
+       OR (e.observed_at, e.id) > ($2::timestamptz, $3::uuid))
 ORDER BY e.observed_at, e.id
-LIMIT $2
+LIMIT $4
 FOR UPDATE OF e SKIP LOCKED
 `
 
 type ListNextTurnPREventsParams struct {
-	WorkspaceIds []pgtype.UUID `json:"workspace_ids"`
-	RowLimit     int32         `json:"row_limit"`
+	WorkspaceIds    []pgtype.UUID      `json:"workspace_ids"`
+	AfterObservedAt pgtype.Timestamptz `json:"after_observed_at"`
+	AfterID         pgtype.UUID        `json:"after_id"`
+	RowLimit        int32              `json:"row_limit"`
 }
 
 type ListNextTurnPREventsRow struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	Kind        string      `json:"kind"`
-	HeadSha     string      `json:"head_sha"`
-	BaseSha     string      `json:"base_sha"`
-	PrNumber    int32       `json:"pr_number"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Kind        string             `json:"kind"`
+	HeadSha     string             `json:"head_sha"`
+	BaseSha     string             `json:"base_sha"`
+	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
+	PrNumber    int32              `json:"pr_number"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
 }
 
 // Events no mid-run delivery will take (CHE-2298 a3): next_turn ones, and
 // accepted ones while the issue has no live run with the PR-event channel. Not
 // filtered by the capture switch: that stops new capture only, stored events
 // keep draining. An event with a receipt still in flight (pending, or carried by
-// a run that has not started) is skipped; a receipt that was discarded or whose
-// run ended unstarted leaves the event eligible again.
+// a run that is queued, dispatched or has started) is skipped; a receipt that
+// was discarded or whose run ended unstarted leaves the event eligible again.
+// A started carrier is excluded here, not only swept to delivered, so a start
+// between the sweep and this read never makes the event eligible twice. The
+// after_* pair is the caller's cursor: a batch full of causes the rule cannot
+// take now must not hold every later batch back.
 func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
-	rows, err := q.db.Query(ctx, listNextTurnPREvents, arg.WorkspaceIds, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listNextTurnPREvents,
+		arg.WorkspaceIds,
+		arg.AfterObservedAt,
+		arg.AfterID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +210,7 @@ func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREv
 			&i.Kind,
 			&i.HeadSha,
 			&i.BaseSha,
+			&i.ObservedAt,
 			&i.PrNumber,
 			&i.RepoOwner,
 			&i.RepoName,

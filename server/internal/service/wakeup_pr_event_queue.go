@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"context"
 	"time"
@@ -28,6 +29,30 @@ const (
 	wakeupPREventBatch   = 100
 )
 
+// prEventCursor makes the bridge walk the eligible events in batches. Events a
+// rule cannot take now (switched off, held) keep no receipt, so without a
+// cursor the same oldest batch would be selected on every pass and starve every
+// later event. The cursor lives in memory: a restart begins a new walk.
+type prEventCursor struct {
+	mu sync.Mutex
+	at pgtype.Timestamptz
+	id pgtype.UUID
+}
+
+func (c *prEventCursor) position() (pgtype.Timestamptz, pgtype.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at, c.id
+}
+
+func (c *prEventCursor) advance(at pgtype.Timestamptz, id pgtype.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at, c.id = at, id
+}
+
+func (c *prEventCursor) rewind() { c.advance(pgtype.Timestamptz{}, pgtype.UUID{}) }
+
 // queueNextTurnPREvents settles started wakes, then bridges every event no
 // receipt is carrying. It follows TriggerPullRequestWakeup: same issue and
 // configuration checks, same rebase, so a cause is never recorded under a
@@ -43,9 +68,16 @@ func (s *IssueWakeupService) queueNextTurnPREvents(ctx context.Context, workspac
 	}
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
-	events, err := q.ListNextTurnPREvents(ctx, db.ListNextTurnPREventsParams{WorkspaceIds: workspaceIDs, RowLimit: wakeupPREventBatch})
-	if err != nil || len(events) == 0 {
+	afterAt, afterID := s.prEvents.position()
+	events, err := q.ListNextTurnPREvents(ctx, db.ListNextTurnPREventsParams{
+		WorkspaceIds: workspaceIDs, RowLimit: wakeupPREventBatch, AfterObservedAt: afterAt, AfterID: afterID,
+	})
+	if err != nil {
 		return err
+	}
+	if len(events) == 0 {
+		s.prEvents.rewind()
+		return nil
 	}
 	var withdrawn []db.AgentTaskQueue
 	var noted []wakeupActivity
@@ -59,6 +91,12 @@ func (s *IssueWakeupService) queueNextTurnPREvents(ctx context.Context, workspac
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
+	}
+	if len(events) < wakeupPREventBatch {
+		s.prEvents.rewind()
+	} else {
+		last := events[len(events)-1]
+		s.prEvents.advance(last.ObservedAt, last.ID)
 	}
 	for _, task := range withdrawn {
 		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)

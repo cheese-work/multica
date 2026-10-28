@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -261,5 +263,66 @@ func TestPREventStaysUntilItsWakeStarts(t *testing.T) {
 	e.tickAll(t, e.s)
 	if got := e.status(t); got != "delivered" {
 		t.Fatalf("event is %q after its wake started, want delivered", got)
+	}
+}
+
+// beforeBeginTx runs one hook just before the next transaction opens: the point
+// between the bridge's settlement and its selection.
+type beforeBeginTx struct {
+	TxStarter
+	before func()
+}
+
+func (b *beforeBeginTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	if b.before != nil {
+		before := b.before
+		b.before = nil
+		before()
+	}
+	return b.TxStarter.Begin(ctx)
+}
+
+// A carrier that starts between settlement and selection already carries the
+// cause: it must not become eligible for a second wake.
+func TestPREventCarrierStartingMidPassIsNotWokenTwice(t *testing.T) {
+	e := newPREventEnv(t)
+	e.endWhileDelivering(t)
+	e.tickAll(t, e.s)
+	wake := e.lastTask(t, SystemRulePRAttention)
+	original := e.s.Tasks.TxStarter
+	e.s.Tasks.TxStarter = &beforeBeginTx{TxStarter: original, before: func() {
+		e.f.Exec(t, `UPDATE agent_task_queue SET status='running', started_at=now() WHERE id=$1`, wake.ID)
+	}}
+	t.Cleanup(func() { e.s.Tasks.TxStarter = original })
+	e.tickAll(t, e.s)
+	e.s.Tasks.TxStarter = original
+
+	e.endRun(t, util.UUIDToString(wake.ID))
+	e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+	if got := e.tasks(t, SystemRulePRAttention); got != 1 {
+		t.Fatalf("one event produced %d wakes after its carrier started, want 1", got)
+	}
+}
+
+// A full batch of causes the rule cannot take now must not keep later events
+// out of every pass.
+func TestPREventHeldBatchDoesNotStarveOtherIssues(t *testing.T) {
+	held := newPREventEnv(t)
+	held.endWhileDelivering(t)
+	held.f.Exec(t, `UPDATE workspace SET settings=settings || $2::jsonb WHERE id=$1`, held.f.WorkspaceID, `{"`+WorkspaceSettingPRAttention+`":false}`)
+	held.f.Exec(t, `UPDATE issue_pr_event SET observed_at=now()-interval '1 hour' WHERE id=$1`, held.event)
+	held.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status)
+		SELECT workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key || ':batch:' || sequence, 'next_turn'
+		FROM issue_pr_event CROSS JOIN generate_series(1,99) AS sequence WHERE id=$1`, held.event)
+	active := newPREventEnv(t)
+	active.endRun(t, active.run)
+
+	for pass := 0; pass < 3; pass++ {
+		if err := active.s.TickWorkspaces(context.Background(), parseTestUUID(t, held.f.WorkspaceID), parseTestUUID(t, active.f.WorkspaceID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := active.tasks(t, SystemRulePRAttention); got != 1 {
+		t.Fatalf("100 held causes starved another issue for 3 passes: %d wakes, event is %q", got, active.status(t))
 	}
 }
