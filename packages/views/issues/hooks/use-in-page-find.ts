@@ -194,8 +194,14 @@ export function useInPageFind(options: {
   const revealDocumentRef = useRef(revealDocument);
   revealDocumentRef.current = revealDocument;
   const pendingSourceScroll = useRef(false);
+  // The settle re-scroll belongs to one active match. Cancel it whenever that
+  // match ends: find closes, the query changes or clears, or no match is left.
   const stopSettleRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => stopSettleRef.current?.(), []);
+  const stopSettle = useCallback(() => {
+    stopSettleRef.current?.();
+    stopSettleRef.current = null;
+  }, []);
+  useEffect(() => stopSettle, [stopSettle]);
   const navigationCountRef = useRef(0);
   useEffect(() => {
     if (!open || !activeSourceId) return;
@@ -230,13 +236,14 @@ export function useInPageFind(options: {
           CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
         }
       }
+      if (!range) stopSettle();
       if (range && scroll) {
-        stopSettleRef.current?.();
+        stopSettle();
         scrollRangeIntoView(containerRef.current, range);
         stopSettleRef.current = keepRangeInView(containerRef.current, range);
       }
     },
-    [supported],
+    [supported, stopSettle],
   );
 
   // Rebuild the match set from the live DOM. `resetActive` starts navigation
@@ -254,6 +261,7 @@ export function useInPageFind(options: {
     (resetActive: boolean) => {
       const root = containerRef.current;
       if (!open || !root || query.trim().length === 0) {
+        stopSettle();
         rangesRef.current = [];
         clearHighlights();
         setMatchCount(0);
@@ -325,7 +333,7 @@ export function useInPageFind(options: {
       // while content mutates underneath a fixed active match.
       applyActive(ranges, nextActive, resetActive);
     },
-    [open, query, supported, clearHighlights, applyActive, documents, sourceMatches],
+    [open, query, supported, clearHighlights, applyActive, stopSettle, documents, sourceMatches],
   );
 
   const recomputeRef = useRef(recompute);
@@ -445,11 +453,15 @@ export function useInPageFind(options: {
   useEffect(() => clearHighlights, [clearHighlights]);
 
   const setQuery = useCallback((value: string) => {
+    stopSettle();
     setActiveIndex(0);
     setQueryState(value);
-  }, []);
+  }, [stopSettle]);
   const openFind = useCallback(() => setOpen(true), []);
-  const closeFind = useCallback(() => setOpen(false), []);
+  const closeFind = useCallback(() => {
+    stopSettle();
+    setOpen(false);
+  }, [stopSettle]);
 
   const goNext = useCallback(() => {
     setActiveIndex((prev) => {
