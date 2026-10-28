@@ -1215,34 +1215,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 		for rows.Next() {
-			var sr searchResult
-			if err := rows.Scan(
-				&sr.issue.ID,
-				&sr.issue.WorkspaceID,
-				&sr.issue.Title,
-				&sr.issue.Description,
-				&sr.issue.Status,
-				&sr.issue.Priority,
-				&sr.issue.AssigneeType,
-				&sr.issue.AssigneeID,
-				&sr.issue.CreatorType,
-				&sr.issue.CreatorID,
-				&sr.issue.ParentIssueID,
-				&sr.issue.AcceptanceCriteria,
-				&sr.issue.ContextRefs,
-				&sr.issue.Position,
-				&sr.issue.StartDate,
-				&sr.issue.DueDate,
-				&sr.issue.CreatedAt,
-				&sr.issue.UpdatedAt,
-				&sr.issue.LastActivityAt,
-				&sr.issue.Number,
-				&sr.issue.ProjectID,
-				&sr.issue.Revision,
-				&sr.issue.DuplicateOfIssueID,
-				&sr.matchSource,
-				&sr.matchedCommentContent,
-			); err != nil {
+			sr, err := scanSearchIssue(rows)
+			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
 			results = append(results, sr)
@@ -1261,12 +1235,12 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		if isSearchStatementTimeout(err) {
 			slog.Warn("search issues timed out",
 				"workspace_id", workspaceID,
-				"query", q,
+				"query_length", len([]rune(q)),
 				"timeout", searchStatementTimeout)
 			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
 			return
 		}
-		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query", q)
+		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
 		writeError(w, http.StatusInternalServerError, "failed to search issues")
 		return
 	}

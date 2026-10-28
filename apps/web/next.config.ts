@@ -39,6 +39,15 @@ const allowedDevOrigins = process.env.CORS_ALLOWED_ORIGINS
   : undefined;
 
 const nextConfig: NextConfig = {
+  logging: {
+    incomingRequests: {
+      ignore: [
+        /^\/api\/search\/suggestions(?:\?|$)/,
+        /^\/api\/(?:issues|projects)\/search(?:\?|$)/,
+        /^\/[^/]+\/search(?:\?|$)/,
+      ],
+    },
+  },
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
   outputFileTracingIncludes: {
