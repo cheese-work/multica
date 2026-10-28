@@ -107,3 +107,26 @@ func TestRaiseIssueRunBudgetValidatesTheNewCap(t *testing.T) {
 		t.Fatalf("lowering 5 -> 4 = %d, want 400 (a raise only goes up)", w.Code)
 	}
 }
+
+func TestGetIssueRunBudgetReportsUsedLimitAndSuggestedRaise(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newEdgeCase(t, 2339010, mergeEdgeSteps)
+	spendBudget(t, c, 2, "in_progress")
+	settle()
+
+	req := withURLParam(newRequest(http.MethodGet, "/api/issues/"+c.issueID+"/run-budget", nil), "id", c.issueID)
+	w := httptest.NewRecorder()
+	testHandler.GetIssueRunBudget(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get = %d: %s", w.Code, w.Body.String())
+	}
+	var got service.RunBudgetSnapshot
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Budgeted || got.RunsLimit != 2 || got.RunsUsed < 2 || got.RunsSource != "workflow" || got.RaisePreview == nil {
+		t.Fatalf("snapshot = %+v, want a budgeted workflow limit of 2 spent, with a raise preview", got)
+	}
+}
