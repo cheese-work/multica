@@ -344,6 +344,9 @@ type MoveNotAllowedError struct {
 }
 
 func (e *MoveNotAllowedError) Error() string {
+	if len(e.Allowed) == 0 {
+		return fmt.Sprintf("status %q is not an allowed move from %q; this step has no agent exit, the workflow moves the issue", e.To, e.From)
+	}
 	return fmt.Sprintf("status %q is not an allowed move from %q; use one of: %s",
 		e.To, e.From, strings.Join(e.Allowed, ", "))
 }
@@ -363,11 +366,15 @@ func (d Definition) AgentMoves(key string) []string {
 }
 
 // CheckAgentMove refuses an agent's move off a step to a status the step has
-// no agent exit for. A step without agent exits restricts nothing, and
-// cancelling stays open so an agent can still close a duplicate.
+// no agent exit for, including every move off a step whose exits all wait on
+// facts. A step with no exits at all restricts nothing, and cancelling stays
+// open so an agent can still close a duplicate.
 func CheckAgentMove(def Definition, from, to string) error {
+	if len(def.EdgesOf(from)) == 0 || to == issuestatus.Cancelled {
+		return nil
+	}
 	moves := def.AgentMoves(from)
-	if len(moves) == 0 || to == issuestatus.Cancelled || slices.Contains(moves, to) {
+	if slices.Contains(moves, to) {
 		return nil
 	}
 	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}

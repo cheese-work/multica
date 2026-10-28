@@ -44,10 +44,11 @@ type workflowHandoff struct {
 // prospective update and may rewrite params: the status of an issue moving
 // into the project, and the assignee when the write enters a handoff step.
 // enterOnMove makes a project move enter the step the issue lands on.
-// run is the calling agent's run on this issue (nil for members): it may only
-// move the issue from the step it works on. It returns the handoff that write
-// triggers, or nil.
-func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+// caller is who writes: a run on this issue may only move the issue from the
+// step it works on, and an agent only along its step's exits. It returns the
+// handoff that write triggers, or nil.
+func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
+	run := caller.run
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
@@ -73,10 +74,9 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
-	// A run decides its step's exits: a move the step has no agent exit for was
-	// not decided by the workflow.
-	if run != nil && run.WorkflowStep.Valid && run.WorkflowStep.String == prev.Status &&
-		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+	// An agent decides its step's exits, whichever issue its run belongs to: a
+	// move the step has no agent exit for was not decided by the workflow.
+	if caller.agent && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		if err := issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String); err != nil {
 			return nil, err
 		}
@@ -235,6 +235,14 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		return true
 	}
 	return false
+}
+
+// workflowCaller is who makes a status write: run is the agent's run on this
+// issue, nil for members and for runs on other issues; agent is true for any
+// agent, whatever run it carries.
+type workflowCaller struct {
+	run   *db.AgentTaskQueue
+	agent bool
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,

@@ -483,3 +483,19 @@ func TestCheckAgentMoveRefusesAMoveTheStepDoesNotAllow(t *testing.T) {
 		t.Errorf("todo → in_progress refused: %v", err)
 	}
 }
+
+// A step that waits on a PR fact still has exits: an agent cannot skip past
+// the gate (CHE-2320 review, P1).
+func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
+	def := withHandoffs(deliveryExits(), []Step{
+		{StatusKey: "in_review", Edges: []Edge{{To: "merged", Guard: "pr.merged", Timeout: "72h"}}},
+	})
+	for _, to := range []string{"done", "merged", "approved"} {
+		if err := CheckAgentMove(def, "in_review", to); err == nil {
+			t.Errorf("in_review → %s allowed for an agent", to)
+		}
+	}
+	if err := CheckAgentMove(def, "in_review", "cancelled"); err != nil {
+		t.Errorf("in_review → cancelled refused: %v", err)
+	}
+}
