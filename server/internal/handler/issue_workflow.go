@@ -619,7 +619,7 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
-	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, steps); err != nil {
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	} else if msg != "" {
@@ -843,7 +843,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
-	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, steps); err != nil {
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	} else if msg != "" {

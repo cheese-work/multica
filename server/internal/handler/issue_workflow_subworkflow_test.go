@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -227,6 +228,76 @@ func TestSubWorkflowChildRefusesAgentTheRequesterCannotInvoke(t *testing.T) {
 	tickEdges(t)
 	if got := c.children(t); got != 0 {
 		t.Fatalf("spawned %d children under an agent the requester may not invoke, want 0", got)
+	}
+}
+
+// updateWorkflowSteps saves new steps on a workflow through the API.
+func updateWorkflowSteps(t *testing.T, id string, steps []map[string]any) *testutil.Response {
+	t.Helper()
+	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+id, map[string]any{"steps": steps}), "id", id)
+	return testutil.Call(t, testHandler.UpdateIssueWorkflow, req)
+}
+
+// A workflow may not run itself as its own sub-workflow, directly (A -> A) or
+// through others (A -> B -> A): the spawn would never end.
+func TestSubWorkflowSaveRejectsCycles(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	a := createTestWorkflowSteps(t, "Cycle A "+workflowTestSuffix(), statusSteps("backlog", "todo", "in_progress", "in_review", "blocked"))
+	b := createTestWorkflowSteps(t, "Cycle B "+workflowTestSuffix(), statusSteps("backlog", "todo", "in_progress", "in_review", "blocked"))
+
+	t.Run("A to A", func(t *testing.T) {
+		var errBody struct {
+			Code string `json:"code"`
+		}
+		updateWorkflowSteps(t, a.ID, subWorkflowSteps(a.ID, 1)).Want(http.StatusBadRequest).JSON(&errBody)
+		if errBody.Code != "invalid_workflow" {
+			t.Fatalf("code = %q, want invalid_workflow", errBody.Code)
+		}
+	})
+	t.Run("A to B to A", func(t *testing.T) {
+		updateWorkflowSteps(t, a.ID, subWorkflowSteps(b.ID, 1)).Want(http.StatusOK)
+		var errBody struct {
+			Code string `json:"code"`
+		}
+		updateWorkflowSteps(t, b.ID, subWorkflowSteps(a.ID, 1)).Want(http.StatusBadRequest).JSON(&errBody)
+		if errBody.Code != "invalid_workflow" {
+			t.Fatalf("code = %q, want invalid_workflow", errBody.Code)
+		}
+	})
+	t.Run("a chain without a cycle saves", func(t *testing.T) {
+		c := createTestWorkflowSteps(t, "Cycle C "+workflowTestSuffix(), statusSteps("backlog", "todo", "in_progress", "in_review", "blocked"))
+		updateWorkflowSteps(t, b.ID, subWorkflowSteps(c.ID, 1)).Want(http.StatusOK)
+	})
+}
+
+// A stored definition can predate the save-time check (or be written around
+// it): the spawn stops once the issue already sits MaxSubWorkflowDepth
+// sub-workflow children deep.
+func TestSubWorkflowSpawnStopsAtDepthBound(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for depth, want := range map[int]int{maxSubWorkflowDepth - 1: 1, maxSubWorkflowDepth: 0} {
+		c, targetID := newSubWorkflowCase(t, 1)
+		parent := c.issueID
+		for level := range depth {
+			child := uuidToString(mustCreateIssue(t, fmt.Sprintf("ancestor %d-%d", depth, level), "in_progress"))
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET workflow_id=$2::uuid, stage=1 WHERE id=$1`, child, targetID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET parent_issue_id=$2 WHERE id=$1`, parent, child); err != nil {
+				t.Fatal(err)
+			}
+			parent = child
+		}
+		c.enter(t, "in_progress")
+		tickEdges(t)
+		if got := c.children(t); got != want {
+			t.Fatalf("issue %d sub-workflow levels deep spawned %d children, want %d", depth, got, want)
+		}
 	}
 }
 
