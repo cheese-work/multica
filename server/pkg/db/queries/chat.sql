@@ -29,6 +29,29 @@ SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updat
 WHERE id = $1
 RETURNING *;
 
+-- name: CompactChatSessionInPlace :one
+-- In-place compaction: open a new epoch and drop the resume pointer so the next
+-- turn starts a fresh session seeded from the summary. The DM id, status, pins
+-- and work_dir stay as they are.
+UPDATE chat_session
+SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: LockAgentTaskForCompaction :one
+-- Row lock on the task that asks to compact, taken after the DM lock. NOWAIT:
+-- terminal transitions take the task row first and the DM second, so waiting
+-- here could deadlock against one. The caller refuses a locked task.
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE NOWAIT;
+
+-- name: GetTaskCompactionSummary :one
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: MoveUnstartedChatTasksToSession :many
 -- A continuation answers the turns still waiting in the archived DM. A task no
 -- daemon has claimed (queued, or deferred behind a retry) moves with its input
@@ -723,6 +746,16 @@ VALUES (
     sqlc.narg(decision_answer_id)
 )
 RETURNING *;
+
+-- name: BindChatMessageDecisionAnswer :one
+UPDATE chat_message message
+SET decision_answer_id = sqlc.arg('answer_id')
+FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id')
+  AND session.id = sqlc.arg('session_id') AND message.chat_session_id = session.id
+  AND message.id = sqlc.arg('message_id')
+  AND (message.decision_answer_id IS NULL OR message.decision_answer_id = sqlc.narg('previous_answer_id'))
+RETURNING message.id;
 
 -- name: TaskHasChannelIngestedMessages :one
 -- Immutable channel provenance for a task's user-message input batch:

@@ -5,6 +5,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
+import { AnnotatableAnswer } from "./annotatable-answer";
+import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const { t } = useT("chat");
@@ -64,7 +66,9 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
         )}
         <div data-testid="decision-request-ask">
-          <RichContent content={card.ask} density="compact" phase="settled" />
+          <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
+            <RichContent content={card.ask} density="compact" phase="settled" />
+          </AnnotatableAnswer>
         </div>
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">

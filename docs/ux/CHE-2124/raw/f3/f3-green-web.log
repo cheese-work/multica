@@ -1,0 +1,16 @@
+F3 green: 27 October 2026 17:36:10 ICT
+Command: make env-exec ARGS='-- node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep reads'
+◇ injected env (1) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+
+Running 1 test using 1 worker
+
+(node:4070240) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4070240) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+  ✓  1 e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths (16.0s)
+
+  1 passed (20.3s)
+
+Exit: 0

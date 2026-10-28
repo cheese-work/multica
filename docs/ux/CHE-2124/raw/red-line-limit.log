@@ -1,0 +1,33 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/packages/core
+
+ ❯ attachments/plan-revisions.test.ts (6 tests | 1 failed) 65ms
+     × bounds expensive comparisons rather than freezing on oversized inputs 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  attachments/plan-revisions.test.ts > literal plan line diff > bounds expensive comparisons rather than freezing on oversized inputs
+AssertionError: expected [Function] to throw an error
+
+- Expected:
+null
+
++ Received:
+undefined
+
+ ❯ attachments/plan-revisions.test.ts:58:79
+     56|   it("bounds expensive comparisons rather than freezing on oversized i…
+     57|     expect(() => diffRevisionLines("old\n".repeat(3000), "new\n".repea…
+     58|     expect(() => diffRevisionLines("\n".repeat(12_000), "\n".repeat(12…
+       |                                                                               ^
+     59|   });
+     60| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 5 passed (6)
+   Start at  13:56:21
+   Duration  1.14s (transform 214ms, setup 0ms, import 339ms, tests 65ms, environment 0ms)
+

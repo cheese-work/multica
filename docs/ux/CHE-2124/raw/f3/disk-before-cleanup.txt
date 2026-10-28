@@ -1,0 +1,2 @@
+Filesystem        1B-blocks         Used    Available Use% Mounted on
+/dev/nvme1n1   502922461184 361646571520 115653603328  76% /mnt/ssd2
