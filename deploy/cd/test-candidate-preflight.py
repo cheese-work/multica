@@ -185,13 +185,15 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             else:
                 os.environ["STUB_LIVE_ERROR"] = original
 
-    def test_new_main_push_cancels_running_qualification(self):
+    def test_new_main_push_keeps_running_qualification_and_replaces_only_pending(self):
         qualification = yaml.safe_load((ROOT / ".github/workflows/cd-qualification.yml").read_text())
         triggers = qualification.get("on", qualification.get(True))
         self.assertEqual(triggers["push"]["branches"], ["main"])
         lock = qualification["concurrency"]
         self.assertEqual(lock["group"], "cd-qualification-build-${{ github.ref }}")
-        self.assertIs(lock["cancel-in-progress"], True)
+        # false: one running + one pending run per group; a newer push replaces
+        # only the pending run, never the build already in progress.
+        self.assertIs(lock["cancel-in-progress"], False)
 
     def test_candidate_checks_that_fail_while_settling_skip(self):
         state, reason = self.approval_state(

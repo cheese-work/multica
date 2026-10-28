@@ -314,7 +314,8 @@
     "language": {
       "title": "Langue",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -1596,6 +1597,20 @@
     "status_not_connected": "Non connecté",
     "status_loading": "Vérification...",
     "status_unknown": "État indisponible"
+  },
+  "github_review": {
+    "section_title": "Revues GitHub",
+    "members_label": "Relecteurs",
+    "members_description": "Associe un ID utilisateur GitHub au membre de l’espace de travail dont la revue compte.",
+    "members_key": "ID utilisateur GitHub",
+    "members_value": "Membre",
+    "authors_label": "Auteurs des pull requests",
+    "authors_description": "Associe une pull request à l’agent qui l’a écrite. Sans association, le nom de la branche décide.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Ajouter",
+    "remove": "Retirer",
+    "toast_failed": "Échec de l’enregistrement de l’association"
   },
   "pr_merge_status": {
     "label": "Après la fusion des PR, passer la tâche à",

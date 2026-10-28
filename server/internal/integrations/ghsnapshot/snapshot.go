@@ -326,3 +326,17 @@ func normalizeStatusState(s string) (status, conclusion string) {
 		return "queued", ""
 	}
 }
+
+// FetchPullRequest returns the raw REST pull request. Its shape matches the
+// webhook pull_request object, so a caller can replay it as an event.
+func (c *Client) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
+	if !c.Enabled() {
+		return nil, errors.New("ghsnapshot: client not configured")
+	}
+	return c.restGet(ctx, installationID, fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number))
+}
+
+// FetchPullRequest is Client.FetchPullRequest on the manager's client.
+func (manager *Manager) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
+	return manager.client.FetchPullRequest(ctx, installationID, owner, repo, number)
+}

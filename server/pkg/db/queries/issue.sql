@@ -512,6 +512,9 @@ cleared_pr_exclusions AS (
 ),
 cleared_pr_events AS (
     DELETE FROM issue_pr_event WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_review_admissions AS (
+    DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
