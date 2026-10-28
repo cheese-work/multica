@@ -1639,15 +1639,17 @@ WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
 -- The newest run of the issue cancelled by the stop gate whose runner is not yet
 -- proven stopped. A superseded head holds the gate at the step the issue is in
 -- now; a merged or closed PR (CHE-2298 c1) holds it whatever the step, because
--- the merge itself moves the issue on. A rewritten run (stop_unconfirmed_at)
--- keeps only the step-bound hold. A run that never reached a daemon
--- (dispatched_at NULL) has no runner to wait for.
+-- the merge itself moves the issue on. A rewrite of such a run (for example to
+-- failed/cleanup_unconfirmed) keeps the issue-wide hold via stop_hold_issue_wide;
+-- any other rewritten run keeps only the step-bound hold. A run that never
+-- reached a daemon (dispatched_at NULL) has no runner to wait for.
 SELECT t.id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE t.issue_id = sqlc.arg('issue_id')
   AND t.dispatched_at IS NOT NULL
   AND t.cancel_acked_at IS NULL
   AND ((t.status = 'cancelled' AND t.failure_reason IN ('pr_merged', 'pr_closed'))
+       OR (t.stop_hold_issue_wide AND t.stop_unconfirmed_at IS NOT NULL)
        OR (((t.status = 'cancelled' AND t.failure_reason = 'superseded_head')
             OR t.stop_unconfirmed_at IS NOT NULL)
            AND t.workflow_step = i.status))

@@ -244,3 +244,73 @@ func TestPRDraftAndReadyAreNoticesOnly(t *testing.T) {
 		t.Fatalf("live run = %s, want running", s)
 	}
 }
+
+// A cancel that failed after the mirror committed leaves the PR merged with its
+// run still running; the redelivered payload must finish the stop.
+func TestPRLifecycleRetryFinishesUnfinishedStop(t *testing.T) {
+	w := newC1World(t)
+	prRun := w.prWakeRun(t, "running", "pr.checks_failed", "")
+
+	w.fire(t, "closed", "closed", true, false)
+	if s, r := taskState(t, prRun); s != "cancelled" || r != "pr_merged" {
+		t.Fatalf("first delivery = %s/%q, want cancelled/pr_merged", s, r)
+	}
+
+	// The failed first attempt, as the retry finds it: mirror merged, run alive.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', failure_reason = NULL, completed_at = NULL WHERE id = $1`, prRun)
+	w.fire(t, "closed", "closed", true, false)
+	if s, r := taskState(t, prRun); s != "cancelled" || r != "pr_merged" {
+		t.Fatalf("redelivery = %s/%q, want cancelled/pr_merged: the unfinished stop must be retried", s, r)
+	}
+}
+
+// The unconfirmed-cleanup ack rewrites the cancelled run to failed. The gate
+// must stay closed for a merged or closed PR whatever step the issue moves to.
+func TestPRLifecycleHoldSurvivesRewriteAndStepChange(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		merged       bool
+	}{{"merged", "pr_merged", true}, {"closed", "pr_closed", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newC1World(t)
+			prRun := w.prWakeRun(t, "running", "pr.checks_failed", "")
+			w.fire(t, "closed", "closed", tc.merged, false)
+			if s, r := taskState(t, prRun); s != "cancelled" || r != tc.reason {
+				t.Fatalf("run = %s/%q, want cancelled/%s", s, r, tc.reason)
+			}
+
+			var runtimeID string
+			dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent_task_queue WHERE id = $1`, prRun).Scan(&runtimeID)
+			ackCancelled(t, prRun, map[string]any{
+				"cancel_ack_proof": auth.CancelAckProof(prRun, runtimeID),
+				"failure_reason":   "cleanup_unconfirmed",
+				"error_message":    "cleanup failed",
+			})
+			if s, r := taskState(t, prRun); s != "failed" || r != "cleanup_unconfirmed" {
+				t.Fatalf("run after unconfirmed ack = %s/%q, want failed/cleanup_unconfirmed", s, r)
+			}
+
+			dbfx.Exec(t, `UPDATE issue SET status = 'todo' WHERE id = $1`, w.issueID)
+			stopGateClosedFor(t, w.issueID, prRun)
+		})
+	}
+}
+
+// A draft notice stored while no capable run was live is delivered by the next
+// delivery for the PR, even though that delivery is not a state transition.
+func TestPRLifecycleRetryDeliversStoredNotice(t *testing.T) {
+	w := newC1World(t)
+	w.fire(t, "converted_to_draft", "open", false, true)
+	taskID := dbfx.Task(t, w.agentID, testutil.Cols{
+		"issue_id": w.issueID, "runtime_id": w.runtimeID, "status": "running",
+		"dispatched_at": testutil.Raw("now()"), "started_at": testutil.Raw("now()"),
+	})
+	dbfx.Exec(t, `INSERT INTO task_pr_event_capability (task_id, workspace_id, issue_id, capability) VALUES ($1, $2, $3, $4)`,
+		taskID, testWorkspaceID, w.issueID, protocol.DaemonCapabilityTaskSupplementPREventV1)
+	dbfx.Cleanup(t, `DELETE FROM task_pr_event_capability WHERE task_id = $1`, taskID)
+
+	w.fire(t, "synchronize", "open", false, true)
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_pr_event_delivery d JOIN issue_pr_event e ON e.id = d.event_id WHERE d.task_id = $1 AND e.kind = 'draft' AND d.status = 'pending'`, taskID); n != 1 {
+		t.Fatalf("pending draft notices for the live run = %d, want 1", n)
+	}
+}

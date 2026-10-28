@@ -2111,14 +2111,15 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
-	if lifecycle != "" && pr.HeadRepoSame {
-		// A failure returns 5xx so GitHub redelivers; the capture dedupes and
-		// the stop or notice repeats safely.
+	if pr.HeadRepoSame {
+		// Applied from the stored state, not only on a transition: a failure
+		// returns 5xx so GitHub redelivers, and the redelivery no longer sees a
+		// transition. Stopping and delivering are idempotent.
 		if err := h.TaskService.ApplyPRLifecycleEvent(ctx, service.PRLifecycleEvent{
 			PRID: pr.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
-			Number: p.PullRequest.Number, Kind: string(lifecycle),
+			Number: p.PullRequest.Number, Kind: prLifecycleApplyKind(state),
 		}); err != nil {
-			return fmt.Errorf("github: apply pr %s event: %w", lifecycle, err)
+			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
 		}
 	}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
@@ -2348,6 +2349,20 @@ func prLifecycleKind(prev, state string) ghsnapshot.PREventKind {
 		return ghsnapshot.PREventReady
 	}
 	return ""
+}
+
+// prLifecycleApplyKind maps the stored PR state to the lifecycle action still
+// owed to the PR's runs: stop for merged and closed, notice for draft and open.
+func prLifecycleApplyKind(state string) string {
+	switch state {
+	case "merged":
+		return "merged"
+	case "closed":
+		return "closed"
+	case "draft":
+		return "draft"
+	}
+	return "ready"
 }
 
 func derivePRState(state string, draft, merged bool) string {

@@ -17,3 +17,5 @@ CREATE TRIGGER agent_task_keep_stop_unconfirmed
           AND (NEW.status IS DISTINCT FROM OLD.status
                OR NEW.failure_reason IS DISTINCT FROM OLD.failure_reason))
     EXECUTE FUNCTION agent_task_keep_stop_unconfirmed();
+
+ALTER TABLE agent_task_queue DROP COLUMN IF EXISTS stop_hold_issue_wide;
