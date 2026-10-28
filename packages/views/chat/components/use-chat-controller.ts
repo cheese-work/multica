@@ -228,6 +228,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const {
     data: rawMessagePages,
     isLoading: messagesLoading,
+    isSuccess: messagesFetched,
     error: messagesError,
     fetchNextPage: fetchOlderMessages,
     hasNextPage: hasOlderMessages,
@@ -240,6 +241,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const { data: pendingTask, isLoading: pendingTaskLoading } = useQuery(
     pendingChatTaskOptions(activeSessionId ?? ""),
   );
+  // True only once the transcript query answered; a paused or failed one has not.
+  const messagesLoaded = !!activeSessionId && messagesFetched;
   const showSkeleton =
     !!activeSessionId && (messagesLoading || pendingTaskLoading);
   const messages = hideQueuedChatMessages(allMessages, pendingTask);
@@ -861,6 +864,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
     pendingTask,
     pendingTaskId,
     showSkeleton,
+    messagesLoaded,
     hasMessages,
     firstItemIndex,
     hasOlderMessages: !!hasOlderMessages,

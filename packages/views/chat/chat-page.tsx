@@ -118,10 +118,13 @@ export function ChatPage() {
     !!c.currentSession?.forked_from_session_id;
   // The list reports a missing target; an empty chat never mounts it, so the
   // jump settles here once the chat has loaded and has nothing to scroll to.
-  const emptyChatLoaded = !!c.currentSession && !c.showSkeleton && !showsMessageList;
+  const emptyChatLoaded =
+    !!c.currentSession && c.messagesLoaded && !c.showSkeleton && !showsMessageList;
   const jumpTargetsEmptyChat = !!urlMessage && urlSession === c.activeSessionId && emptyChatLoaded;
   const settledEmptyJump = useRef<string | null>(null);
   useEffect(() => {
+    // Forget the target once the URL drops it, so the same hit can settle again.
+    if (!urlMessage) settledEmptyJump.current = null;
     if (!jumpTargetsEmptyChat || settledEmptyJump.current === urlMessage) return;
     settledEmptyJump.current = urlMessage;
     settleJump("missing");

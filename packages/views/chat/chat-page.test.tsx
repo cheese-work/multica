@@ -149,6 +149,7 @@ vi.mock("@multica/core/platform", async (importOriginal) => ({
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
+const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -209,6 +210,7 @@ vi.mock("./components/use-chat-controller", async () => {
       pendingTask: null,
       pendingTaskId: null,
       showSkeleton: false,
+      messagesLoaded: messagesLoadedRef.current,
       hasMessages: false,
       firstItemIndex: 0,
       hasOlderMessages: false,
@@ -313,6 +315,7 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
+  messagesLoadedRef.current = true;
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -353,6 +356,25 @@ describe("ChatPage URL synchronization", () => {
   it("settles an empty chat's missing message once under StrictMode", () => {
     seedSession("session-empty");
     renderPage("session=session-empty&message=gone", { strict: true });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles the same hit again after the first notice cleared the param", () => {
+    seedSession("session-empty");
+    const { rerender } = renderPage("session=session-empty&message=gone");
+    rerender({ search: "session=session-empty" });
+    rerender({ search: "session=session-empty&message=gone" });
+    expect(mockToastError).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the transcript to load before calling the message gone", () => {
+    seedSession("session-empty");
+    messagesLoadedRef.current = false;
+    const { replace, rerender } = renderPage("session=session-empty&message=m-1");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    messagesLoadedRef.current = true;
+    rerender();
     expect(mockToastError).toHaveBeenCalledTimes(1);
   });
 
