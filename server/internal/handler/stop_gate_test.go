@@ -288,3 +288,48 @@ func TestStopGate_AckWithoutValidProofDoesNotOpenGate(t *testing.T) {
 		stopGateClosedFor(t, issueID, run)
 	}
 }
+
+// An ack that reports the runner's cleanup unconfirmed is not a confirmed
+// stop, whatever else it carries — and the FailTask rewrite it triggers
+// (cancelled -> failed/cleanup_unconfirmed) must not drop the run out of the
+// gate. Only a confirmed stop with the claim proof opens it.
+func TestStopGate_UnconfirmedCleanupAckKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := mul8188Agent(t)
+	pending := testutil.Cols{"result": `{"process_cleanup_pending":true}`}
+	proof := func(taskID string) string { return auth.CancelAckProof(taskID, runtimeID) }
+	cases := map[string]struct {
+		over testutil.Cols
+		body func(taskID string) map[string]any
+	}{
+		"no proof, cleanup_unconfirmed reason": {nil, func(string) map[string]any {
+			return map[string]any{"failure_reason": "cleanup_unconfirmed", "error_message": "cleanup failed"}
+		}},
+		"valid proof, cleanup_unconfirmed reason": {nil, func(id string) map[string]any {
+			return map[string]any{"cancel_ack_proof": proof(id), "failure_reason": "cleanup_unconfirmed", "error_message": "cleanup failed"}
+		}},
+		"valid proof, pending cleanup not confirmed": {pending, func(id string) map[string]any {
+			return map[string]any{"cancel_ack_proof": proof(id), "process_cleanup_confirmed": false}
+		}},
+		"valid proof, pending cleanup unreported": {pending, func(id string) map[string]any {
+			return map[string]any{"cancel_ack_proof": proof(id)}
+		}},
+	}
+	for name, tc := range cases {
+		issueID := dbfx.Issue(t, "stop gate unconfirmed cleanup", testutil.Cols{"status": "todo"})
+		run := supersededRun(t, agentID, runtimeID, issueID, "todo", tc.over)
+		ackCancelled(t, run, tc.body(run))
+		if _, ok := cancelAckedAt(t, run); ok {
+			t.Fatalf("%s: unconfirmed cleanup set cancel_acked_at", name)
+		}
+		stopGateClosedFor(t, issueID, run)
+	}
+
+	// Control: the same pending run opens the gate once cleanup is confirmed.
+	issueID := dbfx.Issue(t, "stop gate confirmed cleanup", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo", pending)
+	ackCancelled(t, run, map[string]any{"cancel_ack_proof": proof(run), "process_cleanup_confirmed": true})
+	stopGateOpen(t, issueID)
+}

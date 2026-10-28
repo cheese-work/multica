@@ -6234,16 +6234,31 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// An ack carrying the claim-time proof shows the runner stopped; it opens
 	// the stop gate. The owner's PAT/JWT is also what the real daemon uses, so
 	// the credential alone proves nothing — without the proof the ack still
-	// delivers the work pointers below but leaves the gate closed. First write
-	// wins, so a replay changes nothing. Fails loud like the writes below: a
-	// dropped write keeps the gate closed until the daemon retries.
-	if auth.VerifyCancelAckProof(taskID, uuidToString(task.RuntimeID), req.CancelAckProof) {
+	// delivers the work pointers below but leaves the gate closed. An ack that
+	// reports the cleanup unconfirmed is not a stop either, proof or not: the
+	// gate stays closed, and the FailTask below must not drop the run out of
+	// it (stop_unconfirmed_at). First write wins, so a replay changes nothing.
+	// Fails loud like the writes below: a dropped write keeps the gate closed
+	// until the daemon retries.
+	var cancellationResult map[string]any
+	_ = json.Unmarshal(task.Result, &cancellationResult)
+	needsConfirmation, _ := cancellationResult["process_cleanup_pending"].(bool)
+	cleanupUnconfirmed := req.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() ||
+		(needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed))
+	switch {
+	case cleanupUnconfirmed:
+		if err := h.Queries.MarkAgentTaskStopUnconfirmed(r.Context(), task.ID); err != nil {
+			slog.Error("cancel ack: record unconfirmed stop failed", "task_id", taskID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to record unconfirmed stop")
+			return
+		}
+	case auth.VerifyCancelAckProof(taskID, uuidToString(task.RuntimeID), req.CancelAckProof):
 		if err := h.Queries.MarkAgentTaskCancelAcked(r.Context(), task.ID); err != nil {
 			slog.Error("cancel ack: record cancel_acked_at failed", "task_id", taskID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to record cancel ack")
 			return
 		}
-	} else {
+	default:
 		slog.Warn("cancel ack without a valid proof; stop gate stays closed", "task_id", taskID)
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
@@ -6295,10 +6310,7 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var cancellationResult map[string]any
-	_ = json.Unmarshal(task.Result, &cancellationResult)
-	needsConfirmation, _ := cancellationResult["process_cleanup_pending"].(bool)
-	if req.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() || (needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed)) {
+	if cleanupUnconfirmed {
 		msg := strings.TrimSpace(req.ErrorMessage)
 		if msg == "" {
 			msg = "Process cleanup is unconfirmed; background processes may still be running. Check them before manually rerunning the task."

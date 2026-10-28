@@ -1632,6 +1632,15 @@ UPDATE agent_task_queue
 SET cancel_acked_at = now()
 WHERE id = sqlc.arg('id') AND status = 'cancelled' AND cancel_acked_at IS NULL;
 
+-- name: MarkAgentTaskStopUnconfirmed :exec
+-- An armed superseded run reported its cleanup unconfirmed. The FailTask that
+-- follows rewrites the row to failed/cleanup_unconfirmed, so remember the run
+-- is still owed a stop confirmation. Armed rows only; first write wins.
+UPDATE agent_task_queue
+SET stop_unconfirmed_at = now()
+WHERE id = sqlc.arg('id') AND status = 'cancelled' AND failure_reason = 'superseded_head'
+  AND cancel_acked_at IS NULL AND stop_unconfirmed_at IS NULL;
+
 -- name: GetUnackedSupersededRun :one
 -- The newest run of the issue cancelled as superseded whose runner is not yet
 -- proven stopped, at the step the issue is in now. A run that never reached a
@@ -1639,8 +1648,8 @@ WHERE id = sqlc.arg('id') AND status = 'cancelled' AND cancel_acked_at IS NULL;
 SELECT t.id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE t.issue_id = sqlc.arg('issue_id')
-  AND t.status = 'cancelled'
-  AND t.failure_reason = 'superseded_head'
+  AND ((t.status = 'cancelled' AND t.failure_reason = 'superseded_head')
+       OR t.stop_unconfirmed_at IS NOT NULL)
   AND t.dispatched_at IS NOT NULL
   AND t.cancel_acked_at IS NULL
   AND t.workflow_step = i.status

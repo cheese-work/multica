@@ -187,6 +187,7 @@ type AgentTaskQueue struct {
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 	ClaimedModel              pgtype.Text        `json:"claimed_model"`
 	CancelAckedAt             pgtype.Timestamptz `json:"cancel_acked_at"`
+	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 }
 
 type AgentToLabel struct {
