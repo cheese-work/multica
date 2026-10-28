@@ -548,6 +548,7 @@
     "squad_leader_no_action_reason": "평가 완료: 필요한 작업 없음({{reason}})",
     "squad_leader_failed": "평가 실패",
     "squad_leader_failed_reason": "평가 실패: {{reason}}",
+    "stop_not_confirmed": "실행 {{taskId}}의 중지가 확인되지 않음",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "활동 {{count}}개",
     "show_more_activities_other": "활동 {{count}}개 더 보기",

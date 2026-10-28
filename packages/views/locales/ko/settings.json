@@ -1586,6 +1586,20 @@
     "status_loading": "확인 중...",
     "status_unknown": "상태를 확인할 수 없음"
   },
+  "github_review": {
+    "section_title": "GitHub 리뷰",
+    "members_label": "리뷰어",
+    "members_description": "GitHub 사용자 ID를 리뷰가 인정되는 워크스페이스 멤버에 연결합니다.",
+    "members_key": "GitHub 사용자 ID",
+    "members_value": "멤버",
+    "authors_label": "풀 리퀘스트 작성자",
+    "authors_description": "풀 리퀘스트를 작성한 에이전트에 고정합니다. 고정하지 않으면 브랜치 이름으로 판단합니다.",
+    "authors_key": "풀 리퀘스트",
+    "authors_value": "에이전트",
+    "add": "추가",
+    "remove": "삭제",
+    "toast_failed": "매핑을 저장하지 못했습니다"
+  },
   "pr_merge_status": {
     "label": "PR 병합 후 태스크 상태",
     "description": "연결된 PR이 모두 병합되면 적용되며, 이후 병합에만 영향을 줍니다.",

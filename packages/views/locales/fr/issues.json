@@ -556,6 +556,7 @@
     "squad_leader_no_action_reason": "a évalué : aucune action nécessaire ({{reason}})",
     "squad_leader_failed": "évaluation en échec",
     "squad_leader_failed_reason": "évaluation en échec : {{reason}}",
+    "stop_not_confirmed": "arrêt non confirmé pour l’exécution {{taskId}}",
     "coalesced_badge": "×{{count}}",
     "activity_count_one": "{{count}} activité",
     "activity_count_other": "{{count}} activités",

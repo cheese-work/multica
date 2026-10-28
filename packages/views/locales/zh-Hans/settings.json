@@ -1586,6 +1586,20 @@
     "status_loading": "正在检查...",
     "status_unknown": "状态暂不可用"
   },
+  "github_review": {
+    "section_title": "GitHub 评审",
+    "members_label": "评审人",
+    "members_description": "将 GitHub 用户 ID 对应到其评审会生效的工作区成员。",
+    "members_key": "GitHub 用户 ID",
+    "members_value": "成员",
+    "authors_label": "拉取请求作者",
+    "authors_description": "将拉取请求固定到编写它的智能体。未固定时，由分支名称决定。",
+    "authors_key": "拉取请求",
+    "authors_value": "智能体",
+    "add": "添加",
+    "remove": "移除",
+    "toast_failed": "保存对应关系失败"
+  },
   "pr_merge_status": {
     "label": "PR 合并后，任务状态改为",
     "description": "关联的 PR 全部合并后生效，只影响之后合并的 PR。",
