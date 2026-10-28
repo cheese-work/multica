@@ -1,6 +1,6 @@
 # CHE-2297 Run budget: progress-based grants and visible blocks
 
-Status: plan, phase 1, revision 4. No code yet. Revision 4 answers the CHANGES REQUESTED review by x99-codex-sol on revision 3 (`0bd2fa5`); earlier revisions answered the reviews on revision 2 (`7a3c228`) and revision 1 (`2fb227f`). Code read at `81d28c3`.
+Status: plan, phase 1, revision 5. No code yet. Revision 5 answers the CHANGES REQUESTED review by x99-codex-sol on revision 4 (`4d9b75f`); earlier revisions answered the reviews on revision 3 (`0bd2fa5`), revision 2 (`7a3c228`) and revision 1 (`2fb227f`). Code read at `81d28c3`.
 
 ## What a person will notice
 
@@ -48,8 +48,9 @@ L1 does not open a decision request. Decision requests stay task-only (fact 4); 
 
 | Event | Credit | Key | Counts in the 3-grant cap |
 |---|---|---|---|
-| Window opened by a member | workflow `max_runs_per_issue` runs, plus token allowance A once token accounting is active | `window:<activity_id>` | no |
+| Window opened by a member | workflow `max_runs_per_issue` runs only | `window:<activity_id>` | no |
 | Member top-up (`POST /api/issues/{id}/run-budget/top-up`, CLI `multica issue budget top-up`) | same as a window | `window:<activity_id>` | no |
+| Token allowance of a window, only while the issue is activated (see Allowance invariant) | +A tokens | `allowance:<window_id>` | no |
 | First entry to a status in this window by an agent or by a workflow edge (see Step-grant policy) | +6 runs / 15M tokens | `step:<window_id>:<status_key>` | yes |
 | PR head SHA never seen on this issue | +6 runs / 15M tokens | `head:<pr_id>:<sha>` | yes |
 | CHE-2295 step 4 option C stale-PR return | +6 runs / 15M tokens | `stale_pr:<pr_id>:<sha>:<cause>` | yes |
@@ -77,10 +78,17 @@ The top-up endpoint accepts member sessions only; a `task_token` caller gets 403
 Each issue is activated once, by the first admission **or** the first usage report on it after the workflow stores A and E, whichever comes first. Both paths call the same step first, under the issue lock. Activation writes:
 
 1. `token_activation` (unique per issue), which stores the epoch = the start of the window open at that moment;
-2. `token_seed:<window_id>` = **+A** only, with nothing subtracted;
+2. `allowance:<current window_id>` = **+A** only, with nothing subtracted, through the shared allowance claim below;
 3. for each task of the issue created at or after the epoch that already has `task_usage` rows: `tokens:<task_id>:1` = −(its weighted tokens).
 
-Tasks created before the epoch are outside token accounting: they are never settled, now or later. Every counted token therefore sits in exactly one place, its task's `tokens:` entries; the seed holds none.
+Tasks created before the epoch are outside token accounting: they are never settled, now or later. Every counted token therefore sits in exactly one place, its task's `tokens:` entries; the allowance holds none.
+
+**Allowance invariant.** Each window gets at most one token allowance: the entry with key `allowance:<window_id>`, unique per issue. Two writers can reach it, and both go through one function under the issue lock; the second insert is a no-op:
+
+- **activation** writes `allowance:<window_id>` for the window open at activation;
+- **opening a window** (a member status move or a top-up) writes `allowance:<new window_id>` only if the issue is already activated. Before activation it writes runs only (`window:<activity_id>`).
+
+So a member move or top-up before activation gives runs now and its token allowance at activation, once. Every later member window still gets its own +A. Example: A = 10M, no usage, a member moves the status before the first admission: the move writes runs only; the first admission activates and writes `allowance:<that window>` = +10M; balance 10M, not 20M.
 
 **Usage settlement.** `ReportTaskUsage` upserts one `task_usage` row per (task, provider, model), and a report can repeat or correct an earlier one (`server/internal/handler/daemon.go:5698`). In the same transaction as the upsert, under the issue lock, after the activation step, for a task created at or after the epoch, the server:
 
@@ -89,7 +97,7 @@ Tasks created before the epoch are outside token accounting: they are never sett
 3. inserts `tokens:<task_id>:<n+1>` with the difference, only when the difference is not zero. A retried identical report writes nothing; a corrected report writes only the correction;
 4. when a `reserve:<task_id>` entry exists and no `release:<task_id>` entry exists, inserts `release:<task_id>` = + the stored reservation amount, once.
 
-Worked example (the review's counterexample): A = 10M; a legacy task (created after the epoch's window start, admitted before activation, no reservation) reports 6M, and that report is the first event after activation. Activation writes +10M and `tokens:<task>:1` = −6M; settlement finds a difference of 0 and writes nothing. Balance = +4M. A later admission does not seed again, because `token_activation` exists.
+Worked example (the review's counterexample): A = 10M; a legacy task (created after the epoch's window start, admitted before activation, no reservation) reports 6M, and that report is the first event after activation. Activation writes +10M and `tokens:<task>:1` = −6M; settlement finds a difference of 0 and writes nothing. Balance = +4M. A later admission writes no second allowance, because `allowance:<window_id>` and `token_activation` exist.
 
 A task with no reservation gets no release, so no credit is created without a matching debit. A later change of E does not change a stored reservation. A terminal run with no usage row keeps its reservation as the charge (fact 8).
 
@@ -124,7 +132,7 @@ All steps: test-first server PRs in `cheese-work/multica`, stacked in this order
 | L1b | Budget line in the run prompt (runs left, tokens used, unreported runs) | 1.5 h | 1 |
 | L2a | Ledger table and migration, initial entry from today's window, locked admission and run debit, named-origin fix for agent mentions and agent wakeups | 2 h | 2 |
 | L2b | Token reservation and usage settlement (all model rows, corrections, exact release once) | 2 h | 3 |
-| L2e | Token activation per workflow (A and E stored), seed for existing issues, token notices at usage report | 1.5 h | 3 |
+| L2e | Token activation per workflow (A and E stored), shared allowance claim, token notices at usage report | 1.5 h | 3 |
 | L2c | Window credit, 3 progress grants with cap, `superseded_head` refund, step 4 C grant entry | 2 h | 3 |
 | L2d | Member top-up endpoint and CLI | 1.5 h | 3 |
 | L3 | Recovery reserve: claim, time limit, recovery-caused tagging with no grants, no runs and 403 restrictions | 2 h | 4 |
@@ -138,7 +146,7 @@ Total 14.5 h of authoring (16.5 h with L1c), up from 13 h in revision 2, plus on
 - **L1b:** the prompt shows runs left, tokens used and unreported runs, matching `GetIssueUsageSummary`.
 - **L2a:** an issue at 38 of 40 before deploy has 2 after; two concurrent admissions at a balance of 1 admit exactly one; a member mention at zero is admitted and debited; an agent mention and an agent-created wakeup at zero are refused; a member wakeup at zero is admitted; admission on a workflow without stored A and E checks runs only and writes no token entry.
 - **L2b:** a usage report releases the exact stored reservation once; a task admitted before activation (no reservation) gets a debit and no release; E changed between admission and report releases the stored amount, not the new E; a retried identical report adds no entry; a corrected report adds one entry equal to the difference; a report with two models settles in one transaction; a terminal run without usage keeps its reservation.
-- **L2e:** activation by a first admission on an issue with earlier usage gives balance A minus that usage; activation by a usage report that arrives before any admission (the review's example: A = 10M, legacy 6M) gives +4M, and the next admission writes no second seed; a retried or corrected report for a task already settled by activation writes only the difference; a task created before the epoch is never settled; two concurrent first events activate once; the usage report that crosses 80% of tokens writes the warning with no later enqueue; a negative balance is shown as overshoot.
+- **L2e:** activation by a first admission on an issue with earlier usage gives balance A minus that usage; activation by a usage report that arrives before any admission (the review's example: A = 10M, legacy 6M) gives +4M, and the next admission writes no second allowance; a member move, then the first admission, with A = 10M and no usage gives 10M; a top-up, then the first usage report, gives one allowance; a member move and a first admission at the same time give one allowance in either order; after activation, each new member window or top-up adds exactly +A; a member move before activation gives its runs at once and no token entry; a retried or corrected report for a task already settled by activation writes only the difference; a task created before the epoch is never settled; two concurrent first events activate once; the usage report that crosses 80% of tokens writes the warning with no later enqueue; a negative balance is shown as overshoot.
 - **L2c:** a replayed head SHA grants once; 4 distinct heads in one window grant 3 times; concurrent grants keep the cap; one case per row of the Step-grant policy table, each with its expected grant: an agent's first entry to an unvisited status grants once, a workflow edge's first entry grants once, a plain flip back to a visited status grants nothing, a member move opens a window and gives no step grant, a member move to the same status opens no window, a recovery-caused move grants nothing (also in L3), a move after exhaustion grants nothing; a refund applies once per task and only for a `superseded_head` cancellation; a new head or step entry after the window's exhaustion claim gives no credit until a member acts.
 - **L2d:** a member top-up opens a window; a `task_token` top-up gets 403.
 - **L3:** the exhaustion move enqueues one recovery run for the `blocked` handler; a second claim in the window is refused; negative control: the recovery run moves the issue to a step not yet visited in the window, with a grant slot left, and gets no grant and no handoff run; its assignment, rerun, @mention and reply start no run; after a member top-up its writes still start no run; it gets 403 on child creation, wakeup creation and top-up; the server cancels it at 20 minutes; after a failed recovery a member move still admits runs.
