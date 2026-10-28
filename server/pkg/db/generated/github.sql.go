@@ -585,10 +585,11 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 }
 
 const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
-SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
+SELECT installation_id, repo_owner, repo_name, pr_number
 FROM github_pull_request
-WHERE NOT head_repo_same
-ORDER BY installation_id, repo_owner, repo_name, pr_number
+WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
+GROUP BY installation_id, repo_owner, repo_name, pr_number
+ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number
 `
 
 type ListGitHubPRsWithUnverifiedHeadRow struct {
@@ -600,7 +601,12 @@ type ListGitHubPRsWithUnverifiedHeadRow struct {
 
 // CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
 // repository id, so a repair must read GitHub to tell a real fork PR from a
-// same-repository PR that the old fork-flag check rejected.
+// same-repository PR that the old fork-flag check rejected. Rows whose PR was
+// last updated before the fork check shipped (CHE-2210, 2026-10-27) hold the
+// column default and were never judged. pr_updated_at only moves on webhook
+// writes; updated_at also moves on snapshot refresh, so it can't tell. One row
+// per PR address (workspaces mirror it), newest first, so a rate limit cuts off
+// the oldest.
 func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGitHubPRsWithUnverifiedHeadRow, error) {
 	rows, err := q.db.Query(ctx, listGitHubPRsWithUnverifiedHead)
 	if err != nil {
