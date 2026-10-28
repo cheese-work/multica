@@ -11,6 +11,40 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearGitHubPRReview = `-- name: ClearGitHubPRReview :exec
+UPDATE github_pull_request
+SET review_state = '', review_head_sha = '', review_id = 0, review_at = NULL
+WHERE workspace_id = $1
+  AND installation_id = $2
+  AND repo_owner = $3
+  AND repo_name = $4
+  AND pr_number = $5
+  AND review_id = $6::bigint
+`
+
+type ClearGitHubPRReviewParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	PrNumber       int32       `json:"pr_number"`
+	ReviewID       int64       `json:"review_id"`
+}
+
+// Withdraws the stored review when GitHub dismisses that exact review. A
+// dismissal of any other review leaves it alone.
+func (q *Queries) ClearGitHubPRReview(ctx context.Context, arg ClearGitHubPRReviewParams) error {
+	_, err := q.db.Exec(ctx, clearGitHubPRReview,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+		arg.ReviewID,
+	)
+	return err
+}
+
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
     workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
@@ -116,7 +150,7 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 }
 
 const findGitHubPullRequestByURL = `-- name: FindGitHubPullRequestByURL :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower($2::text)
 ORDER BY pr_updated_at DESC
@@ -167,6 +201,7 @@ func (q *Queries) FindGitHubPullRequestByURL(ctx context.Context, arg FindGitHub
 		&i.HeadRepoSame,
 		&i.ReviewState,
 		&i.ReviewHeadSha,
+		&i.ReviewID,
 		&i.ReviewAt,
 	)
 	return i, err
@@ -195,7 +230,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -248,13 +283,14 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.HeadRepoSame,
 		&i.ReviewState,
 		&i.ReviewHeadSha,
+		&i.ReviewID,
 		&i.ReviewAt,
 	)
 	return i, err
 }
 
 const getGitHubPullRequestInWorkspace = `-- name: GetGitHubPullRequestInWorkspace :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -300,6 +336,7 @@ func (q *Queries) GetGitHubPullRequestInWorkspace(ctx context.Context, arg GetGi
 		&i.HeadRepoSame,
 		&i.ReviewState,
 		&i.ReviewHeadSha,
+		&i.ReviewID,
 		&i.ReviewAt,
 	)
 	return i, err
@@ -788,23 +825,26 @@ const recordGitHubPRReview = `-- name: RecordGitHubPRReview :exec
 UPDATE github_pull_request
 SET review_state = $1::text,
     review_head_sha = $2::text,
-    review_at = $3::timestamptz
-WHERE id = $4 AND (review_at IS NULL OR review_at <= $3::timestamptz)
+    review_id = $3::bigint,
+    review_at = $4::timestamptz
+WHERE id = $5 AND (review_at IS NULL OR review_at <= $4::timestamptz)
 `
 
 type RecordGitHubPRReviewParams struct {
 	ReviewState string             `json:"review_state"`
 	HeadSha     string             `json:"head_sha"`
+	ReviewID    int64              `json:"review_id"`
 	SubmittedAt pgtype.Timestamptz `json:"submitted_at"`
 	ID          pgtype.UUID        `json:"id"`
 }
 
-// Keeps the latest approved or changes_requested review of a PR; a review that
-// was submitted before the stored one is dropped.
+// Keeps the latest approved, changes_requested or commented review of a PR; a
+// review that was submitted before the stored one is dropped.
 func (q *Queries) RecordGitHubPRReview(ctx context.Context, arg RecordGitHubPRReviewParams) error {
 	_, err := q.db.Exec(ctx, recordGitHubPRReview,
 		arg.ReviewState,
 		arg.HeadSha,
+		arg.ReviewID,
 		arg.SubmittedAt,
 		arg.ID,
 	)
@@ -990,7 +1030,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     changed_files = EXCLUDED.changed_files,
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_at
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -1123,6 +1163,7 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.HeadRepoSame,
 		&i.ReviewState,
 		&i.ReviewHeadSha,
+		&i.ReviewID,
 		&i.ReviewAt,
 	)
 	return i, err

@@ -44,6 +44,16 @@ func (fixture githubReviewFixture) review(t *testing.T, id int64, state string) 
 	}
 }
 
+func (fixture githubReviewFixture) dismiss(t *testing.T, id int64) {
+	t.Helper()
+	review := fixture.payload["review"].(map[string]any)
+	review["id"], review["state"] = id, "dismissed"
+	fixture.payload["action"] = "dismissed"
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"dismissed"); response.Code != http.StatusAccepted {
+		t.Fatalf("dismissed review: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestEdgesGitHubReviewMovesIssue(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -91,5 +101,32 @@ func TestEdgesGitHubLaterCommentClearsEarlierDecision(t *testing.T) {
 	tickEdges(t)
 	if got := c.status(t); got != "in_review" {
 		t.Fatalf("changes_requested then commented on the same head moved the issue to %s", got)
+	}
+}
+
+// Dismissing the review that holds the stored decision withdraws it; dismissing
+// any other review leaves it alone.
+func TestEdgesGitHubDismissedReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cases := []struct {
+		name      string
+		dismissed int64
+		want      string
+	}{
+		{"the deciding review", 77, "in_review"},
+		{"an older review", 70, "in_progress"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, c := newReviewEdgeCase(t)
+			fixture.review(t, 77, "changes_requested")
+			fixture.dismiss(t, tc.dismissed)
+			tickEdges(t)
+			if got := c.status(t); got != tc.want {
+				t.Fatalf("dismissing review %d left the issue at %s, want %s", tc.dismissed, got, tc.want)
+			}
+		})
 	}
 }

@@ -939,6 +939,7 @@ type GithubPullRequest struct {
 	HeadRepoSame        bool               `json:"head_repo_same"`
 	ReviewState         string             `json:"review_state"`
 	ReviewHeadSha       string             `json:"review_head_sha"`
+	ReviewID            int64              `json:"review_id"`
 	ReviewAt            pgtype.Timestamptz `json:"review_at"`
 }
 
