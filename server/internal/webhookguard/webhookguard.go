@@ -21,6 +21,9 @@ const (
 	MaxBodyBytes = 16 << 10
 	MaxSkew      = 300 * time.Second
 	MaxRefLen    = 128
+	// NonceRetention outlives the timestamp window (twice MaxSkew plus
+	// margin), so a captured call cannot be replayed once its nonce is gone.
+	NonceRetention = 900 * time.Second
 )
 
 var (
