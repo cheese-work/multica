@@ -125,7 +125,7 @@ func TestDecisionActionRequestAgentCopySnapshotsSource(test *testing.T) {
 	}
 	// sha256 of the empty instructions the fixture agent carries.
 	const emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	if preconditions["source_agent_id"] != fixture.agentID || preconditions["instructions_sha256"] != emptySHA {
+	if preconditions["source_agent_id"] != fixture.agentID || preconditions["instructions_sha256"] != emptySHA || preconditions["settings_sha256"] == "" {
 		test.Fatalf("preconditions = %v", preconditions)
 	}
 }
@@ -205,5 +205,48 @@ func TestActionRequestClassNeverLowersTheAgentsClass(test *testing.T) {
 		if got := actionRequestClass(tc.agent, tc.min); got != tc.want {
 			test.Errorf("actionRequestClass(%s, %s) = %s, want %s", tc.agent, tc.min, got, tc.want)
 		}
+	}
+}
+
+// The copy snapshot must change whenever a setting the copy would carry over
+// changes, so a signed hash never covers less than the copy executes.
+func TestAgentCopySettingsDigestCoversEveryCopiedSetting(test *testing.T) {
+	fixture := newActionFixture(test)
+	agentID := parseUUID(fixture.agentID)
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private' WHERE id = $1`, fixture.agentID)
+	dbfx.Exec(test, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, fixture.agentID)
+	digest := func() string {
+		source, err := testHandler.Queries.GetAgent(test.Context(), agentID)
+		if err != nil {
+			test.Fatal(err)
+		}
+		value, err := agentCopySettingsDigest(test.Context(), testHandler.Queries, source)
+		if err != nil {
+			test.Fatal(err)
+		}
+		return value
+	}
+	seen := map[string]string{"start": digest()}
+	if again := digest(); again != seen["start"] {
+		test.Fatalf("digest is not stable: %s then %s", seen["start"], again)
+	}
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'public_to' WHERE id = $1`, fixture.agentID)
+	seen["permission mode"] = digest()
+	dbfx.Exec(test, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id, created_by) VALUES ($1, 'workspace', $2, $3)`, fixture.agentID, testWorkspaceID, testUserID)
+	seen["invocation target"] = digest()
+	var skillID string
+	dbfx.QueryRow(test, `INSERT INTO skill (workspace_id, name, description, content, config, created_by) VALUES ($1, 'digest skill', '', '', '{}'::jsonb, $2) RETURNING id::text`, testWorkspaceID, testUserID).Scan(&skillID)
+	test.Cleanup(func() {
+		testPool.Exec(test.Context(), `DELETE FROM agent_skill WHERE skill_id = $1`, skillID)
+		testPool.Exec(test.Context(), `DELETE FROM skill WHERE id = $1`, skillID)
+	})
+	dbfx.Exec(test, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, fixture.agentID, skillID)
+	seen["skill assignment"] = digest()
+	distinct := map[string]string{}
+	for step, value := range seen {
+		if earlier, ok := distinct[value]; ok {
+			test.Errorf("%q left the digest equal to %q", step, earlier)
+		}
+		distinct[value] = step
 	}
 }
