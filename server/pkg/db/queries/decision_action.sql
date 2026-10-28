@@ -90,3 +90,12 @@ WHERE id = $1 AND workspace_id = $2 AND state IN ('executed', 'failed') AND post
 -- name: DecisionActionExpired :one
 -- Judged on the database clock, never the application's.
 SELECT expires_at <= clock_timestamp() FROM decision_action WHERE id = $1 AND workspace_id = $2;
+
+-- name: ListDecisionActionsAwaitingPostCommit :many
+-- The 30 s grace keeps the sweeper off an approval whose own request is still
+-- doing its post-commit work.
+SELECT * FROM decision_action
+WHERE state IN ('executed', 'failed') AND post_commit_done_at IS NULL
+  AND executed_at <= clock_timestamp() - interval '30 seconds'
+ORDER BY executed_at, id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
