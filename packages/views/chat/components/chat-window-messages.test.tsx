@@ -19,9 +19,8 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useRegenerateChatQuickActions: () => ({ mutateAsync: vi.fn() }),
 }));
 vi.mock("./chat-message-list", () => ({
-  ChatMessageList: ({ active, messages, continuedFromSessionId, jumpToMessageId, onJumpSettled }: { active: boolean; messages: ChatMessage[]; continuedFromSessionId?: string | null; jumpToMessageId?: string | null; onJumpSettled?: (outcome: "landed" | "missing") => void }) => (
-    <div data-testid="messages" data-active={active} data-continued-from={continuedFromSessionId ?? ""} data-jump-to={jumpToMessageId ?? ""}>
-      <button type="button" onClick={() => onJumpSettled?.("landed")}>settle jump</button>
+  ChatMessageList: ({ active, messages, continuedFromSessionId }: { active: boolean; messages: ChatMessage[]; continuedFromSessionId?: string | null }) => (
+    <div data-testid="messages" data-active={active} data-continued-from={continuedFromSessionId ?? ""}>
       {messages.map((message) => <p key={message.id}>{message.content}</p>)}
     </div>
   ),
@@ -47,8 +46,6 @@ function renderWindow(
     interactiveLoginRequired?: boolean;
     seed?: (qc: QueryClient, key: readonly unknown[]) => void;
     onMessages?: (messages: ChatMessage[]) => void;
-    jumpToMessageId?: string | null;
-    onJumpSettled?: (outcome: "landed" | "missing") => void;
   } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,8 +61,6 @@ function renderWindow(
             session={opts.session as ChatSession | undefined}
             interactiveLoginRequired={opts.interactiveLoginRequired ?? false}
             onMessages={opts.onMessages}
-            jumpToMessageId={opts.jumpToMessageId}
-            onJumpSettled={opts.onJumpSettled}
             pendingTask={undefined}
             pendingTaskLoading={false}
             availability={undefined}
@@ -186,15 +181,5 @@ describe("message report for annotations", () => {
     setOpen(false);
     await waitFor(() => expect(screen.queryByTestId("messages")).not.toBeInTheDocument());
     await waitFor(() => expect(seen.at(-1)).toEqual([]));
-  });
-});
-
-describe("floating chat message jump", () => {
-  it("hands the jump target and its outcome to the message list", () => {
-    const onJumpSettled = vi.fn();
-    renderWindow(true, { jumpToMessageId: "m-7", onJumpSettled });
-    expect(screen.getByTestId("messages")).toHaveAttribute("data-jump-to", "m-7");
-    screen.getByRole("button", { name: "settle jump" }).click();
-    expect(onJumpSettled).toHaveBeenCalledWith("landed");
   });
 });
