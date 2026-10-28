@@ -387,3 +387,37 @@ func TestFromEnvRequiresBothSettingsAndHTTPSOrigins(test *testing.T) {
 		test.Errorf("two https origins: %v %v", wa, err)
 	}
 }
+
+// A busy refusal aborts the approval transaction, which rolls the verifier
+// back. The browser retries the same signed assertion on the still-open
+// challenge: it must succeed once and move the counter by exactly one.
+func TestVerifyAcceptsTheSameAssertionAgainAfterARolledBackAttempt(test *testing.T) {
+	f := newFixture(test)
+	issued, challenge := f.issue()
+	assertion := f.sign(issued, challenge, startCount+1, nil)
+
+	ctx := context.Background()
+	aborted, err := f.pool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, err := f.service.VerifyApproval(ctx, db.New(aborted), f.user, f.action, testPayload, assertion); err != nil {
+		test.Fatal(err)
+	}
+	aborted.Rollback(ctx)
+	if count, _ := f.stored(); count != startCount {
+		test.Fatalf("a rolled-back attempt moved the counter to %d", count)
+	}
+
+	if _, err := f.verify(assertion); err != nil {
+		test.Fatalf("retry: %v", err)
+	}
+	if count, suspect := f.stored(); count != startCount+1 || suspect {
+		test.Fatalf("stored counter %d suspect %v, want %d false", count, suspect, startCount+1)
+	}
+	_, err = f.verify(assertion)
+	f.wantRefusal(err, http.StatusForbidden, "assertion_rejected")
+	if count, _ := f.stored(); count != startCount+1 {
+		test.Fatalf("a replay moved the counter to %d", count)
+	}
+}

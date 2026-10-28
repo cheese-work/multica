@@ -18,6 +18,8 @@ type Service struct {
 	WebAuthn *webauthn.WebAuthn
 	Queries  *db.Queries
 	Tx       Beginner
+	Mail     Mailer
+	CodeKey  []byte // HMAC key for enrollment codes (MULTICA_PASSKEY_ENROLL_KEY)
 }
 
 type Issued struct {

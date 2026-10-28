@@ -163,6 +163,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"passkey_assertion_challenge":        workspaceDeleteKeep,
 	"passkey_enroll_ceremony":            workspaceDeleteKeep,
 	"passkey_enroll_limit":               workspaceDeleteKeep,
+	"passkey_event":                      workspaceDeleteKeep,
 	"pinned_item":                        workspaceDelete,
 	"plugin_installation":                workspaceDelete,
 	"plugin_hook_schedule":               workspaceDelete,

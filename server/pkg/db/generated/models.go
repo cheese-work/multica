@@ -1784,6 +1784,14 @@ type PasskeyEnrollLimit struct {
 	LockedUntil   pgtype.Timestamptz `json:"locked_until"`
 }
 
+type PasskeyEvent struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Action    string             `json:"action"`
+	Details   []byte             `json:"details"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type PersonalAccessToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`

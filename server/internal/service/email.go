@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"mime"
@@ -432,3 +433,23 @@ func sanitizeSubjectField(s string) string {
 	runes := []rune(cleaned)
 	return string(runes[:maxSubjectFieldRunes-1]) + "…"
 }
+
+// SendPrivileged sends a security-sensitive message (a passkey enrollment code
+// or a notice about one). It delivers only through a configured SMTP relay or
+// Resend: the stdout fallback that login codes use would leak the code into
+// logs, so with neither provider it returns ErrNoMailProvider.
+func (s *EmailService) SendPrivileged(to, subject, htmlBody string) error {
+	switch {
+	case s == nil:
+		return ErrNoMailProvider
+	case s.smtpHost != "":
+		return s.sendSMTP(to, subject, htmlBody)
+	case s.client != nil:
+		_, err := s.client.Emails.Send(&resend.SendEmailRequest{From: s.fromEmail, To: []string{to}, Subject: subject, Html: htmlBody})
+		return err
+	}
+	return ErrNoMailProvider
+}
+
+// ErrNoMailProvider means neither SMTP nor Resend is configured.
+var ErrNoMailProvider = errors.New("email: no real mail provider configured")

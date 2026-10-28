@@ -89,3 +89,41 @@ func (a *Authenticator) Assert(test *testing.T, s Signing) json.RawMessage {
 	}
 	return credential
 }
+
+const flagAttestedData = 0x40
+
+// Registration is one "none"-attestation credential creation to sign.
+type Registration struct {
+	Challenge string // base64url, as the server sent it
+	RPID      string
+	Origin    string
+	Flags     byte // FlagUserPresent|FlagUserVerified; the attested-data bit is added
+}
+
+// Register answers navigator.credentials.create for this credential.
+func (a *Authenticator) Register(test *testing.T, r Registration) json.RawMessage {
+	test.Helper()
+	encode := base64.RawURLEncoding.EncodeToString
+	rpHash := sha256.Sum256([]byte(r.RPID))
+	authData := append(rpHash[:], r.Flags|flagAttestedData, 0, 0, 0, 0)
+	authData = append(authData, make([]byte, 16)...) // AAGUID
+	authData = binary.BigEndian.AppendUint16(authData, uint16(len(a.CredentialID)))
+	authData = append(authData, a.CredentialID...)
+	authData = append(authData, a.COSEPublicKey(test)...)
+	attestation, err := webauthncbor.Marshal(map[string]any{"fmt": "none", "attStmt": map[string]any{}, "authData": authData})
+	if err != nil {
+		test.Fatal(err)
+	}
+	clientData, err := json.Marshal(map[string]any{"type": "webauthn.create", "challenge": r.Challenge, "origin": r.Origin})
+	if err != nil {
+		test.Fatal(err)
+	}
+	credential, err := json.Marshal(map[string]any{
+		"id": encode(a.CredentialID), "rawId": encode(a.CredentialID), "type": "public-key",
+		"response": map[string]string{"clientDataJSON": encode(clientData), "attestationObject": encode(attestation)},
+	})
+	if err != nil {
+		test.Fatal(err)
+	}
+	return credential
+}
