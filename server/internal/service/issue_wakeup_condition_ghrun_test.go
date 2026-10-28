@@ -356,3 +356,45 @@ func TestWakeupConditionGitHubRunCoreFlow(t *testing.T) {
 		t.Fatalf("%d condition.met receipts, want 1", n)
 	}
 }
+
+func TestWakeupConditionGitHubRunPartialEvictionKeepsSeenEpisodes(t *testing.T) {
+	review := newGHRunFixture(t)
+	for _, runID := range []int64{701, 702} {
+		review.run(t, runID, "cd-deploy.yml", ghDeploySHA)
+		review.setRun(t, runID, 1, 2, "completed", "success", 0)
+	}
+	rule := review.rule(t, map[string]any{"workflow": "cd-deploy.yml", "head_sha": ghDeploySHA, "state": "completed"}, WakeupInput{Mode: "continuous"})
+	first := wakeTick(t, review.f, review.s, rule.ID)
+	review.expectRuns(t, rule, 1, "two completed runs observed together")
+	review.finishRuns(t, rule)
+	review.f.Exec(t, "DELETE FROM github_workflow_run WHERE run_id=701 AND workspace_id=$1", review.f.WorkspaceID)
+	second := wakeTick(t, review.f, review.s, rule.ID)
+	if second.ConditionState != first.ConditionState {
+		t.Errorf("partial cache eviction forgot seen episode: before=%q after=%q", first.ConditionState, second.ConditionState)
+	}
+	review.run(t, 701, "cd-deploy.yml", ghDeploySHA)
+	review.setRun(t, 701, 1, 2, "completed", "success", 0)
+	wakeTick(t, review.f, review.s, rule.ID)
+	review.expectRuns(t, rule, 1, "redelivery of the same completed episode after partial eviction")
+}
+
+func TestWakeupConditionGitHubRunStaleAfterObservedGate(t *testing.T) {
+	review := newGHRunFixture(t)
+	review.run(t, 703, "cd-deploy.yml", ghDeploySHA)
+	review.job(t, 703, 1, 7031, "approve", 1)
+	review.setRun(t, 703, 1, 1, "in_progress", "", 1)
+	rule := review.rule(t, map[string]any{"run_id": 703, "state": "waiting"}, WakeupInput{Mode: "continuous"})
+	first := wakeTick(t, review.f, review.s, rule.ID)
+	review.expectRuns(t, rule, 1, "observed gate")
+	review.finishRuns(t, rule)
+	review.f.Exec(t, "UPDATE github_workflow_job SET phase=2 WHERE job_id=7031 AND workspace_id=$1", review.f.WorkspaceID)
+	review.f.Exec(t, "UPDATE github_workflow_run SET updated_at=now()-interval '7 hours' WHERE run_id=703 AND workspace_id=$1", review.f.WorkspaceID)
+	second := wakeTick(t, review.f, review.s, rule.ID)
+	if second.LastError.String != conditionDiagnosticPrefix+errGHRunStale.Error() {
+		t.Errorf("lost-terminal diagnostic after a closed gate: got=%q want=%q", second.LastError.String, conditionDiagnosticPrefix+errGHRunStale.Error())
+	}
+	if second.ConditionState != first.ConditionState {
+		t.Errorf("diagnostic forgot the previously observed gate: got=%q want=%q", second.ConditionState, first.ConditionState)
+	}
+	review.expectRuns(t, rule, 1, "stale gate episode does not refire")
+}

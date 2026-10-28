@@ -509,13 +509,14 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	// condition_state dedups a satisfied predicate; each new satisfaction
 	// gets its own receipt key.
 	state := w.ConditionState
+	var condition WakeupCondition
+	if err := json.Unmarshal(w.Condition, &condition); err != nil {
+		return w.NextFireAt, err
+	}
+	isRun := condition.Type == "github_run"
 	if met {
 		newlyMet := fingerprint != state
-		var condition WakeupCondition
-		if err := json.Unmarshal(w.Condition, &condition); err != nil {
-			return w.NextFireAt, err
-		}
-		if condition.Type == "github_run" || (condition.Type == "pull_request" && condition.Event == "conflicts") {
+		if isRun || (condition.Type == "pull_request" && condition.Event == "conflicts") {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
 		if newlyMet {
@@ -524,8 +525,10 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 			}
 		}
 		state = fingerprint
-	} else if !errors.Is(err, errGHRunAgedOut) {
-		// An aged-out run keeps the rule's memory so its return is not news.
+		if isRun {
+			state = mergeGitHubRunKeys(w.ConditionState, fingerprint)
+		}
+	} else if !isRun {
 		state = ""
 	}
 	next := pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}

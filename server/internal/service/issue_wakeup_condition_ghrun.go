@@ -113,8 +113,8 @@ func evaluateGitHubRun(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.Issue
 				waiting = append(waiting, job.JobName)
 			}
 		}
+		stale = stale || (inProgress && len(waiting) == 0)
 		if key == "" {
-			stale = stale || len(waiting) == 0
 			continue
 		}
 		keys = append(keys, key)
@@ -126,7 +126,11 @@ func evaluateGitHubRun(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.Issue
 	}
 	if len(keys) > 0 {
 		slices.Sort(keys)
-		return true, "gh:" + strings.Join(keys, ","), map[string]any{"runs": facts}, nil
+		var diagnostic error
+		if stale {
+			diagnostic = errGHRunStale
+		}
+		return true, "gh:" + strings.Join(keys, ","), map[string]any{"runs": facts}, diagnostic
 	}
 	switch {
 	case len(runs) > 0 && stale:
@@ -145,4 +149,23 @@ func evaluateGitHubRun(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.Issue
 		return false, "", nil, errGHRunNoEvents
 	}
 	return false, "", nil, errGHRunNoMatch
+}
+
+// mergeGitHubRunKeys unions the episode keys a rule has seen with the current
+// ones. A key names one run attempt or gate and never repeats, so the set only
+// grows: cache eviction of some matching runs, or of all of them, must not make
+// a redelivered episode look new.
+func mergeGitHubRunKeys(previous, current string) string {
+	seen := map[string]bool{}
+	for _, fingerprint := range []string{previous, current} {
+		for key := range conditionKeys(fingerprint) {
+			seen[key] = true
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return "gh:" + strings.Join(keys, ",")
 }
