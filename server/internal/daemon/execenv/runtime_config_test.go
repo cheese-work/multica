@@ -1096,6 +1096,7 @@ func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
 		{"reasonix", "AGENTS.md"},
 		{"dsh", "AGENTS.md"},
 		{"dim", "AGENTS.md"},
+		{"devin", "AGENTS.md"},
 		{"zeroclaw", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
@@ -1159,6 +1160,17 @@ func TestRuntimeConfigPathDistinguishesCodebuddyFromClaude(t *testing.T) {
 	}
 	if claudePath == codebuddyPath {
 		t.Fatal("claude and codebuddy must not share a runtime config path")
+	}
+}
+
+func TestRuntimeConfigPathDevinUsesAgentsMd(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	got := runtimeConfigPath(dir, "devin")
+	want := filepath.Join(dir, "AGENTS.md")
+	if got != want {
+		t.Fatalf("devin runtime config path = %q, want %q", got, want)
 	}
 }
 
@@ -1477,6 +1489,7 @@ func TestCleanupRuntimeConfigByProvider(t *testing.T) {
 		{"reasonix", "AGENTS.md"},
 		{"dsh", "AGENTS.md"},
 		{"dim", "AGENTS.md"},
+		{"devin", "AGENTS.md"},
 		{"zeroclaw", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},

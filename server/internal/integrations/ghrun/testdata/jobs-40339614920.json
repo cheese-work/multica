@@ -1,0 +1,34 @@
+[
+  {
+    "id": 121630407432,
+    "run_id": 40339614920,
+    "run_attempt": 1,
+    "name": "fork-changelog",
+    "head_sha": "7f6712c77a32f4d45b51182169ab05c5a18af0f5",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_name": "CD qualification build",
+    "head_branch": "main",
+    "created_at": "2026-10-26T14:26:06Z",
+    "started_at": "2026-10-26T14:26:08Z",
+    "completed_at": "2026-10-26T14:26:22Z",
+    "url": "https://api.github.com/repos/cheese-work/multica/actions/jobs/121630407432",
+    "html_url": "https://github.com/cheese-work/multica/actions/runs/40339614920/job/121630407432"
+  },
+  {
+    "id": 121630547603,
+    "run_id": 40339614920,
+    "run_attempt": 1,
+    "name": "cd-qualification",
+    "head_sha": "7f6712c77a32f4d45b51182169ab05c5a18af0f5",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_name": "CD qualification build",
+    "head_branch": "main",
+    "created_at": "2026-10-26T14:26:22Z",
+    "started_at": "2026-10-26T14:26:25Z",
+    "completed_at": "2026-10-26T14:48:09Z",
+    "url": "https://api.github.com/repos/cheese-work/multica/actions/jobs/121630547603",
+    "html_url": "https://github.com/cheese-work/multica/actions/runs/40339614920/job/121630547603"
+  }
+]

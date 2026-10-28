@@ -83,17 +83,26 @@ UPDATE workspace SET
     -- CHE-1612: compact_prompt patches one settings key; every other key survives.
     -- CHE-1806: auto_compact patches one settings key the same way, merging the
     -- named fields into the saved object so an unnamed field keeps its value.
+    -- CHE-2269: github_review_members / github_review_authors replace one settings
+    -- key each; the other survives.
     settings = (
         SELECT CASE
+            WHEN sqlc.narg('github_review_authors')::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', sqlc.narg('github_review_authors')::jsonb)
+            ELSE m.v
+        END
+        FROM (SELECT CASE
+            WHEN sqlc.narg('github_review_members')::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', sqlc.narg('github_review_members')::jsonb)
+            ELSE a.v
+        END AS v FROM (SELECT CASE
             WHEN sqlc.narg('auto_compact_reset')::bool THEN base.v - 'auto_compact'
             WHEN sqlc.narg('auto_compact')::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || sqlc.narg('auto_compact')::jsonb)
             ELSE base.v
-        END
+        END AS v
         FROM (SELECT CASE
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base
+        END AS v) AS base) AS a) AS m
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
