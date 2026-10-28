@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,6 +19,8 @@ import (
 	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+var errCopySourceNotVisible = decisionIntentRefusal{http.StatusForbidden, "source_not_visible: you cannot view the agent being copied"}
 
 // executeAgentCopyAction is the agent.copy core: the same fields and checks as
 // CreateAgent for a copy, owned by the human who approved. Secrets (custom_env)
@@ -36,6 +39,26 @@ func executeAgentCopyAction(ctx context.Context, execution decisionActionExecuti
 	})
 	if err != nil {
 		return nil, err
+	}
+	targets, err := execution.Queries.ListAgentInvocationTargets(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := execution.Queries.ListAgentSkills(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	// The approver may only copy what the normal view rule shows them, and
+	// only the settings they were shown at request time.
+	if !memberAllowedToViewAgent(source, targets, uuidToString(execution.Approver.UserID), member.Role) {
+		return nil, errCopySourceNotVisible
+	}
+	if digest, err := digestAgentCopySettings(source, targets, skills); err != nil {
+		return nil, err
+	} else if drifted, err := copySettingsDrifted(execution.Action, digest); err != nil {
+		return nil, err
+	} else if drifted {
+		return nil, errPreconditionDrift
 	}
 	runtime := execution.Runtime
 	if !runtime.ID.Valid || runtime.WorkspaceID != source.WorkspaceID || !canUseRuntimeForAgent(member, runtime) {
@@ -66,17 +89,9 @@ func executeAgentCopyAction(ctx context.Context, execution decisionActionExecuti
 	if err != nil {
 		return nil, err
 	}
-	targets, err := execution.Queries.ListAgentInvocationTargets(ctx, source.ID)
-	if err != nil {
-		return nil, err
-	}
 	permission := resolvedPermission{mode: source.PermissionMode}
 	for _, target := range targets {
 		permission.targets = append(permission.targets, targetSpec{targetType: target.TargetType, targetID: target.TargetID})
-	}
-	skills, err := execution.Queries.ListAgentSkills(ctx, source.ID)
-	if err != nil {
-		return nil, err
 	}
 	startersJSON, err := json.Marshal(starters)
 	if err != nil {
@@ -165,6 +180,18 @@ func copyPreconditionDrifted(action db.DecisionAction, source db.Agent) (bool, e
 	}
 	digest := sha256.Sum256([]byte(source.Instructions))
 	return wanted.InstructionsSHA256 != hex.EncodeToString(digest[:]), nil
+}
+
+// copySettingsDrifted reports whether the source's permission mode, invocation
+// targets or skills differ from the digest the request snapshotted.
+func copySettingsDrifted(action db.DecisionAction, digest string) (bool, error) {
+	var wanted struct {
+		SettingsSHA256 string `json:"settings_sha256"`
+	}
+	if err := json.Unmarshal(action.Preconditions, &wanted); err != nil {
+		return false, err
+	}
+	return wanted.SettingsSHA256 != digest, nil
 }
 
 // publishAgentCopyCreated announces the agent a copy action created. It is
