@@ -188,6 +188,8 @@ type AgentTaskQueue struct {
 	ClaimedModel              pgtype.Text        `json:"claimed_model"`
 	CancelAckedAt             pgtype.Timestamptz `json:"cancel_acked_at"`
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
+	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
+	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 }
 
 type AgentToLabel struct {
