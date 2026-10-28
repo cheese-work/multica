@@ -6634,6 +6634,90 @@ func TestHandleTask_AcksCancelOnPostRunStatusCheck(t *testing.T) {
 	}
 }
 
+// TestHandleTask_PartitionThenReconnectInterruptsAndAcksWithProof drives the
+// stop-gate sequence through a real handleTask: the server cancels the task
+// while the daemon is partitioned, the daemon keeps running (network errors
+// never count as a cancel), then reconnects, sees the terminal status,
+// interrupts the runner and acks with the proof it received at claim time.
+func TestHandleTask_PartitionThenReconnectInterruptsAndAcksWithProof(t *testing.T) {
+	t.Parallel()
+
+	const partitionedPolls = 3
+	var (
+		mu          sync.Mutex
+		statusCalls int
+		ackBody     map[string]any
+		ackAtPoll   int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+			mu.Lock()
+			ackAtPoll = statusCalls
+			_ = json.NewDecoder(r.Body).Decode(&ackBody)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			mu.Lock()
+			statusCalls++
+			n := statusCalls
+			mu.Unlock()
+			if n <= partitionedPolls {
+				// Partition: drop the connection without a response.
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		cancelPollInterval: 10 * time.Millisecond,
+	}
+	var interruptedAtPoll int
+	d.runner = taskRunnerFunc(func(runCtx context.Context, _ Task, _ string, _ int, _ *slog.Logger) (TaskResult, error) {
+		<-runCtx.Done()
+		mu.Lock()
+		interruptedAtPoll = statusCalls
+		mu.Unlock()
+		return TaskResult{Status: "aborted"}, nil
+	})
+
+	d.handleTask(context.Background(), Task{
+		ID:             "task-partition",
+		RuntimeID:      "rt-1",
+		IssueID:        "issue-partition",
+		CancelAckProof: "proof-from-claim",
+		Agent:          &AgentData{Name: "test-agent"},
+	}, 0)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if interruptedAtPoll <= partitionedPolls {
+		t.Fatalf("runner interrupted at poll %d, want after the %d partitioned polls", interruptedAtPoll, partitionedPolls)
+	}
+	if ackBody == nil {
+		t.Fatal("daemon never acked the cancellation after reconnecting")
+	}
+	if ackAtPoll <= partitionedPolls {
+		t.Fatalf("ack sent at poll %d, before the partition healed", ackAtPoll)
+	}
+	if got := ackBody["cancel_ack_proof"]; got != "proof-from-claim" {
+		t.Fatalf("ack cancel_ack_proof = %v, want the claim-time proof", got)
+	}
+}
+
 func TestConvertDisabledRuntimeSkillsForEnvScopesToClaimedRuntime(t *testing.T) {
 	t.Parallel()
 

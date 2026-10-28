@@ -545,6 +545,9 @@ func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reas
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
+	// CancelAckProof is the claim-time proof the server checks before it
+	// treats this ack as confirmation that the runner stopped.
+	CancelAckProof string
 	// Nil is an older daemon with no explicit cleanup acknowledgement.
 	ProcessCleanupConfirmed *bool
 	// BranchName: a cancelled worktree task has already finalized — its
@@ -580,6 +583,9 @@ type TaskCancelAck struct {
 // The server never overwrites already-recorded values, so replays are safe.
 func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCancelAck) error {
 	body := map[string]any{}
+	if ack.CancelAckProof != "" {
+		body["cancel_ack_proof"] = ack.CancelAckProof
+	}
 	if ack.ProcessCleanupConfirmed != nil {
 		body["process_cleanup_confirmed"] = *ack.ProcessCleanupConfirmed
 	}

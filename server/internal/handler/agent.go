@@ -417,6 +417,10 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// CancelAckProof is minted at claim time and echoed in the daemon's
+	// cancel-ack. It is what lets the stop gate trust an ack: the runtime
+	// owner's credential alone cannot (CHE-2309).
+	CancelAckProof string `json:"cancel_ack_proof,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —

@@ -11,7 +11,7 @@ import (
 )
 
 func (b *Bridge) prepare(ctx context.Context, t *claimedTask) (*run, error) {
-	r := &run{TaskID: t.ID, Phase: "prepared", Resources: []map[string]any{}}
+	r := &run{TaskID: t.ID, CancelAckProof: t.CancelAckProof, Phase: "prepared", Resources: []map[string]any{}}
 	if t.RuntimeID != b.state.RuntimeID || t.WorkspaceID != b.cfg.WorkspaceID {
 		return nil, fmt.Errorf("claim identity does not match bridge")
 	}
