@@ -1362,7 +1362,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed, RunTarget{}); err != nil {
 			return err
 		}
 		headSHA := ""
