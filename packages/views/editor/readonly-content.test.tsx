@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { parse } from "yaml";
 
 const { getAttachmentTextContentMock, resolveIssueIdentifierMock } = vi.hoisted(
   () => ({
@@ -470,15 +471,23 @@ describe("ReadonlyContent Mermaid rendering", () => {
       expect(iframe?.style.height).toBe("45px");
     });
 
-    expect(mermaid.initialize).toHaveBeenCalledWith(
+    const [, renderedChart] = vi.mocked(mermaid.render).mock.calls[0]!;
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(renderedChart);
+    expect(frontmatter).not.toBeNull();
+    expect(parse(frontmatter![1]!)).toEqual(
       expect.objectContaining({
-        themeVariables: expect.objectContaining({
-          lineColor: "rgb(12, 34, 56)",
-          primaryBorderColor: "rgb(12, 34, 56)",
-          primaryColor: "rgb(12, 34, 56)",
-          primaryTextColor: "rgb(12, 34, 56)",
+        config: expect.objectContaining({
+          themeVariables: expect.objectContaining({
+            lineColor: "rgb(12, 34, 56)",
+            primaryBorderColor: "rgb(12, 34, 56)",
+            primaryColor: "rgb(12, 34, 56)",
+            primaryTextColor: "rgb(12, 34, 56)",
+          }),
         }),
       }),
+    );
+    expect(renderedChart.slice(frontmatter![0].length)).toBe(
+      "graph LR\n  A[Start] --> B[Done]",
     );
   });
 

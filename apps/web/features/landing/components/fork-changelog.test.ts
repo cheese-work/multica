@@ -46,4 +46,21 @@ describe("fork changelog page data", () => {
     expect(forkBuildStamp("dev", "2026-10-13T19:00:00Z")).toBe("dev");
     expect(forkBuildStamp("sha-98fea199475b", "2026-10-13T19:00:00Z")).toBe("98fea19 · 2026-10-14 02:00 ICT");
   });
+
+  it("groups backfilled entries by ISO week, dated on the Monday", () => {
+    const old = (number: number, mergedAt: string, date: string) => ({ ...entry(number, mergedAt), date, group: "week" });
+    const fork = parseForkChangelog(JSON.stringify({ entries: [
+      old(1, "2026-05-31T18:00:00Z", "2026-06-01"), // Mon 1 Jun ICT, ISO week 23
+      old(2, "2026-06-04T05:00:00Z", "2026-06-04"), // Thu, same week
+      old(3, "2026-05-31T05:00:00Z", "2026-05-31"), // Sun, previous week 22
+      entry(4),
+    ] }));
+    expect(fork.releases.map((r) => [r.version, r.date])).toEqual([
+      ["fork-2026-10-14", "2026-10-14"],
+      ["fork-2026-W23", "2026-06-01"],
+      ["fork-2026-W22", "2026-05-25"],
+    ]);
+    expect(fork.releases[1]?.changeKeys?.features).toEqual(["fork-pr-2", "fork-pr-1"]);
+    expect(releaseVersionLabel(fork.releases[1]!)).toBe("Fork");
+  });
 });

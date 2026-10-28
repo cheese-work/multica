@@ -3,7 +3,7 @@
  *
  * jsdom has no IntersectionObserver, so these tests install a controllable
  * fake: it records observed elements and lets a test decide when a block
- * becomes near-viewport. That makes the deferral, the latch and the size
+ * becomes near-viewport. That makes the deferral, the release and the size
  * reservation observable rather than assumed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,6 @@ import { createRoot, hydrateRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { LazyRichBlock } from "./lazy-rich-block";
 import { RichContentScrollRootProvider } from "./scroll-root";
-import { resetMountedBlocks } from "./mounted-block-registry";
 
 type IOCallback = (entries: { isIntersecting: boolean }[]) => void;
 
@@ -28,7 +27,6 @@ let observers: FakeObserver[] = [];
 
 beforeEach(() => {
   observers = [];
-  resetMountedBlocks();
   class FakeIntersectionObserver {
     private readonly self: FakeObserver;
     constructor(callback: IOCallback, options?: IntersectionObserverInit) {
@@ -88,9 +86,7 @@ describe("LazyRichBlock", () => {
     expect(screen.getByTestId("expensive")).toBeInTheDocument();
   });
 
-  // The latch: re-running Mermaid / rebuilding an iframe on every scroll pass
-  // would be worse than mounting eagerly once.
-  it("stops observing after mounting so the block never unmounts", () => {
+  it("releases far-offscreen children while preserving their measured height", () => {
     render(
       <LazyRichBlock reservedHeightPx={280}>
         <Expensive />
@@ -98,17 +94,59 @@ describe("LazyRichBlock", () => {
     );
     enterViewport();
 
-    expect(observers[0]?.disconnected).toBe(true);
+    const shell = document.querySelector<HTMLElement>("[data-rich-block-shell]")!;
+    vi.spyOn(shell, "getBoundingClientRect").mockReturnValue({ height: 640 } as DOMRect);
+    expect(observers[0]?.disconnected).toBe(false);
 
-    // A later "left the viewport" signal must not tear the block down.
     act(() => {
       observers[0]?.callback([{ isIntersecting: false }]);
     });
+    expect(screen.queryByTestId("expensive")).toBeNull();
+    expect(shell.style.minHeight).toBe("640px");
+    enterViewport();
     expect(screen.getByTestId("expensive")).toBeInTheDocument();
+  });
+
+  it("retains an offscreen block until its viewer closes", async () => {
+    const { rerender } = render(<LazyRichBlock reservedHeightPx={280}><div data-rich-block-active=""><Expensive /></div></LazyRichBlock>);
+    enterViewport();
+    act(() => observers[0]?.callback([{ isIntersecting: false }]));
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+    rerender(<LazyRichBlock reservedHeightPx={280}><div><Expensive /></div></LazyRichBlock>);
+    await act(async () => {});
+    expect(screen.queryByTestId("expensive")).toBeNull();
   });
 
   // Howard's stated risk: lazy mounting must not disturb Virtuoso's height
   // measurement. The shell therefore reserves the same space before and after.
+  it("keeps focused content mounted until focus leaves", async () => {
+    render(<LazyRichBlock reservedHeightPx={280}><button>Block control</button></LazyRichBlock>);
+    enterViewport();
+    const control = screen.getByRole("button");
+    control.focus();
+    act(() => observers[0]?.callback([{ isIntersecting: false }]));
+    expect(control).toBeInTheDocument();
+    control.blur();
+    await act(async () => {});
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("keeps selected content mounted until the selection clears", () => {
+    render(<LazyRichBlock reservedHeightPx={280}><Expensive /></LazyRichBlock>);
+    enterViewport();
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByTestId("expensive"));
+    const selection = window.getSelection()!;
+    selection.addRange(range);
+    act(() => observers[0]?.callback([{ isIntersecting: false }]));
+    expect(screen.getByTestId("expensive")).toBeInTheDocument();
+    act(() => {
+      selection.removeAllRanges();
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    expect(screen.queryByTestId("expensive")).toBeNull();
+  });
+
   it("reserves the same height before and after mount", () => {
     const { container } = render(
       <LazyRichBlock reservedHeightPx={480}>
@@ -191,20 +229,11 @@ describe("LazyRichBlock", () => {
 /**
  * Virtualized-row recycling.
  *
- * Chat's list unmounts rows that scroll far enough away. A `mounted` flag held
- * only in component state disappears with the row, so scrolling back would
- * re-run Mermaid, rebuild the sandboxed iframe and drop the viewer's pan/zoom —
- * turning the one-time mount cost into a per-pass cost. The latch therefore
- * lives outside the component, keyed by content.
  */
 describe("LazyRichBlock across row recycling", () => {
   const SOURCE = "flowchart LR\n  A --> B";
 
-  beforeEach(() => {
-    resetMountedBlocks();
-  });
-
-  it("re-mounts a recycled block immediately, without waiting to be seen again", () => {
+  it("defers a recycled block until it is near the viewport again", () => {
     const first = render(
       <LazyRichBlock reservedHeightPx={280} sourceKey={SOURCE}>
         <Expensive />
@@ -217,14 +246,14 @@ describe("LazyRichBlock across row recycling", () => {
     first.unmount();
     observers = [];
 
-    // The row comes back. No intersection is reported this time — the block was
-    // already built once, so it must not wait to be observed again.
     const second = render(
       <LazyRichBlock reservedHeightPx={280} sourceKey={SOURCE}>
         <Expensive />
       </LazyRichBlock>,
     );
 
+    expect(second.queryByTestId("expensive")).toBeNull();
+    enterViewport();
     expect(second.getByTestId("expensive")).toBeInTheDocument();
   });
 

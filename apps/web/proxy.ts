@@ -13,6 +13,7 @@ import { isOfficialMarketingHost } from "./lib/public-host";
 // and post-revert-and-reapply users don't hit 404.
 const LEGACY_ROUTE_SEGMENTS = new Set([
   "issues",
+  "issue",
   "projects",
   "agents",
   "squads",
@@ -72,7 +73,10 @@ export function proxy(req: NextRequest) {
 
     if (lastSlug) {
       // Preserve deep-link path + query: /issues/abc → /{lastSlug}/issues/abc
-      url.pathname = `/${lastSlug}${pathname}`;
+      const workspacePath = firstSegment === "issue"
+        ? pathname.replace(/^\/issue(?=\/|$)/, "/issues")
+        : pathname;
+      url.pathname = `/${lastSlug}${workspacePath}`;
       return NextResponse.redirect(url);
     }
 

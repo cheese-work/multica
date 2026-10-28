@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { CommentDraftKey } from "@multica/core/issues/stores";
 import type { ChatMessage } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -24,9 +24,17 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
   const { t } = useT("chat");
   const active = enabled && !!sessionId;
   const draftKey: CommentDraftKey = `chat:${sessionId ?? ""}`;
+  const [earlier, setEarlier] = useState<Record<string, string>>({});
+  const registerSource = useCallback(
+    (id: string, name: string) => setEarlier((prev) => (prev[id] === name ? prev : { ...prev, [id]: name })),
+    [],
+  );
   const sources = useMemo(
-    () => messages.filter((m) => m.role === "assistant").map((m) => ({ id: m.id, name: agentName ?? "" })),
-    [messages, agentName],
+    () => [
+      ...messages.filter((m) => m.role === "assistant").map((m) => ({ id: m.id, name: agentName ?? "" })),
+      ...Object.entries(earlier).map(([id, name]) => ({ id, name })),
+    ],
+    [messages, agentName, earlier],
   );
   const labels: AnnotationLabels = {
     selectionFailed: t(($) => $.annotations.selection_failed),
@@ -41,7 +49,10 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
     remove: (number) => t(($) => $.annotations.remove, { number }),
   };
   const annotation = useCommentAnnotations({ draftKey, sources, enabled: active, surface: "chat", labels });
-  const scope = useMemo<ChatAnnotationScope>(() => ({ enabled: active, agentName }), [active, agentName]);
+  const scope = useMemo<ChatAnnotationScope>(
+    () => ({ enabled: active, agentName, registerSource }),
+    [active, agentName, registerSource],
+  );
   const input: ChatInputAnnotations | undefined = active
     ? {
         draftKey,

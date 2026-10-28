@@ -130,6 +130,7 @@ SELECT CASE
     WHEN issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved') THEN 'issue_closed'
     WHEN NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id) THEN 'human_removed'
     WHEN agent.archived_at IS NOT NULL THEN 'agent_archived'
+    WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' THEN 'expired'
     ELSE ''
 END::text AS reason
 FROM decision_request request
@@ -151,7 +152,7 @@ func (q *Queries) DecisionLifecycleReason(ctx context.Context, arg DecisionLifec
 }
 
 const getDecisionCancelComment = `-- name: GetDecisionCancelComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind FROM comment
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only FROM comment
 WHERE workspace_id = $1 AND decision_request_id = $2 AND decision_comment_kind = 'cancel'
 `
 
@@ -188,6 +189,7 @@ func (q *Queries) GetDecisionCancelComment(ctx context.Context, arg GetDecisionC
 		&i.DecisionAnswerID,
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
 	)
 	return i, err
 }
@@ -291,6 +293,7 @@ WHERE request.status IN ('open', 'answered') AND (
     issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
     OR agent.archived_at IS NOT NULL
     OR NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id)
+    OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours')
 )
 ORDER BY request.id
 LIMIT LEAST(GREATEST($1::int, 0), 100)

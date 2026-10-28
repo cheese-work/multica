@@ -16,6 +16,14 @@ const comment = {
 };
 
 describe("comment decision stamps", () => {
+  it("keeps advisory hints and tolerates absent or malformed hints", () => {
+    expect(CommentSchema.parse({ ...comment, hints: ["Use a decision request"] }).hints).toEqual(["Use a decision request"]);
+    expect(CommentSchema.parse(comment).hints).toBeUndefined();
+    for (const hints of [null, "hint", [123], {}]) {
+      expect(CommentSchema.parse({ ...comment, hints }).hints).toBeUndefined();
+    }
+  });
+
   it("accepts older comments without stamps", () => {
     expect(CommentSchema.parse(comment).decision_answer_id).toBeUndefined();
   });

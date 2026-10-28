@@ -2153,6 +2153,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
+					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
@@ -2306,6 +2307,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
+					r.Get("/github-route-grants", h.ListGitHubRouteGrants)
+					r.Put("/github-route-grants/{userId}", h.SetGitHubRouteGrant)
+					r.Delete("/github-route-grants/{userId}", h.DeleteGitHubRouteGrant)
 					r.Route("/wakeup-definitions", func(r chi.Router) {
 						d := h.WakeupDefinitionAPI(service.WakeupScopeProject)
 						r.Get("/", d.List)
@@ -2638,6 +2642,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
+			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
+			r.Get("/api/chat/wakeups", h.ListChatWakeups)
+			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
 			r.Post("/api/chat/fork", h.ForkChatSession)
 
 			// Inbox

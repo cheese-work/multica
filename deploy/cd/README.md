@@ -564,15 +564,28 @@ than the workflow run's default-branch SHA.
 `candidate-preflight` runs on X99 without the `c00-production` environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
 does not need to contain the new preflight script. Before requesting approval,
-it checks that no newer `main` commit supersedes the candidate, waits for
-required checks, and checks again. A newer commit supersedes the candidate only
-if it would be admitted itself or its required checks are still running; one
-whose checks settled without passing never can deploy, so it does not. The
+`require-current.sh` requires the candidate to be an ancestor of (or equal to)
+`main` and a strict descendant of C00's running commit (CHE-2159). A qualified
+older `main` commit is eligible even when a newer commit has pending or passing
+checks. Same-version, downgrade, divergent and off-main candidates are skipped.
+The guard reads C00's public `/api/config` over verified HTTPS using the
+repository Actions variable `C00_CONFIG_URL`, without SSH or deployment
+credentials. Set that variable to the live C00 HTTPS `/api/config` endpoint
+reachable from the X99 runner before enabling this workflow revision. An unset
+URL fails closed; the endpoint is not embedded in the public repository. The
+reported short `server_commit` is resolved to a full SHA through GitHub; missing,
+malformed, ambiguous or unknown versions fail closed. The bounded version read
+and ancestry checks run before and after waiting for required checks. The
 recorder keeps the newest run of each check, so a green re-run replaces the
-failure it re-ran. A superseded candidate or non-admissible check
+failure it re-ran. A non-forward candidate or non-admissible check
 result leaves `eligible=false`; `prepare-release-candidate` and the automatic
 admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
+
+`cd-qualification.yml` groups pushes by `github.ref` with
+`cancel-in-progress: true`: a new `main` push cancels superseded qualification
+work instead of waiting for the old build. This group is separate from every
+approval and C00 mutation lock; cancellation cannot interrupt a started deploy.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual
@@ -808,9 +821,13 @@ package (`multica-backend`, `multica-web`) to list `cheese-work/multica` under
 Package settings, Manage Actions access, with role Read. The token is scoped
 to the job, so D1's `cd-qualification.yml` stays credential-free.
 `deploy.sh` logs in to `ghcr.io` with that token immediately before the pull step
-and logs out unconditionally on exit — success, rollback, or an early
+and cleans up on exit — success, rollback, or an early
 argument/file-check failure — via a single EXIT trap; unset, both steps are
 skipped (local `--dry-run` runs, or a host with its own credential store).
+The login uses a private temporary Docker configuration and a credential
+helper that reads the job token from the environment. The helper never
+stores the token on disk. Exit cleanup removes only that configuration and
+helper and restores the caller's Docker configuration and executable path.
 `cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
 by exporting it inside a script piped over the session's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
@@ -818,3 +835,6 @@ command-line argument or a file written to C00, so it is not visible to
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
 scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
 GHCR is still pending the runner above).
+`deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
+on-disk credentials, cleanup after successful and failed login, and restoration
+of the caller's environment without contacting a registry.

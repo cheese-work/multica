@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "exports": {
+    "./media": "./media/index.ts",
     "./navigation": "./navigation/index.ts",
     "./common/actor-avatar": "./common/actor-avatar.tsx",
     "./common/cli-install-command": "./common/cli-install-command.tsx",
@@ -97,6 +98,7 @@
     "@tiptap/react": "3.31.3",
     "@tiptap/starter-kit": "3.31.3",
     "@tiptap/suggestion": "3.31.3",
+    "@xyflow/react": "12.12.0",
     "cmdk": "^1.1.1",
     "hast-util-to-html": "^9.0.5",
     "katex": "catalog:",

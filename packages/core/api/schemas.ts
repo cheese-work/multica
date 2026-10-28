@@ -988,6 +988,8 @@ const decisionCommentShape = {
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   decision_source_session_id: z.string().optional().catch(undefined),
   decision_source_message_id: z.string().optional().catch(undefined),
+  decision_request_session_id: z.string().optional().catch(undefined),
+  decision_request_message_id: z.string().optional().catch(undefined),
 };
 
 const DecisionCardSchema = z.object({
@@ -1013,6 +1015,7 @@ const DecisionRequestCardSchema = z.object({
   created_at: z.string(),
   withdrawn_at: z.string().nullish().catch(undefined),
   reason: z.string().optional().catch(undefined),
+  record_comment_id: z.string().nullish().catch(undefined),
 }).loose();
 
 export const ChatMessageSchema = z.object({
@@ -1320,6 +1323,7 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
+  hints: z.array(z.string()).optional().catch(undefined),
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),

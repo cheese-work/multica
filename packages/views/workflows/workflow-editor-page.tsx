@@ -45,6 +45,8 @@ import {
   useIssueWorkflows,
   useUpdateIssueWorkflow,
   workflowMiddleKeys,
+  MAX_EDGES_PER_STEP,
+  validateWorkflowGraph,
   workflowNextStatus,
 } from "@multica/core/issue-workflows";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -76,6 +78,8 @@ import { useT } from "../i18n";
 import { BriefPreviewDialog, HandoffFields, savedHandoff } from "./handoff-form";
 import { stepHandlerActor, useStepHandlerLabel } from "./step-handler";
 import { WORKFLOW_TEMPLATES, type WorkflowTemplateId } from "./templates";
+import { WorkflowEdgeEditor } from "./workflow-edge-editor";
+import { WorkflowGraph } from "./workflow-graph";
 import { WorkflowMappingDialog } from "./workflow-mapping-dialog";
 
 /**
@@ -323,7 +327,14 @@ export function WorkflowEditorPage({
     : draft.middle.flatMap((c) => ("new_name" in c ? [c.new_name] : []));
   // An existing workflow is edited and saved only from its loaded row.
   const rowReady = !workflowId || !!saved;
-  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending && missingStatuses.length === 0;
+  // The graph and exits form edit steps that exist before the save; a column
+  // the save creates has no status key to point an exit at.
+  const graphSteps = useMemo<IssueWorkflowStep[]>(
+    () => draftColumns(draft).flatMap((c) => ("status_key" in c ? [{ status_key: c.status_key, ...(draft.handoffs[c.id] ?? NO_HANDOFF) }] : [])),
+    [draft],
+  );
+  const graphIssues = useMemo(() => validateWorkflowGraph(graphSteps), [graphSteps]);
+  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -350,6 +361,17 @@ export function WorkflowEditorPage({
       : null;
   const patchHandoff = (id: string, patch: Partial<Handoff>) =>
     setDraft((d) => ({ ...d, handoffs: { ...d.handoffs, [id]: { ...(d.handoffs[id] ?? NO_HANDOFF), ...patch } } }));
+  const onGraphChange = (next: IssueWorkflowStep[]) =>
+    setDraft((d) => {
+      const before = new Map(graphSteps.map((s) => [s.status_key, s]));
+      const handoffs = { ...d.handoffs };
+      for (const s of next) {
+        if (s === before.get(s.status_key)) continue;
+        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges } = s;
+        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges };
+      }
+      return { ...d, handoffs };
+    });
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -535,7 +557,24 @@ export function WorkflowEditorPage({
     setSelected(key);
   };
   const removeColumn = (column: DraftColumn) => {
-    setDraft((d) => ({ ...d, middle: d.middle.filter((c) => c.id !== column.id) }));
+    // Exits into the removed column go with it, legacy next/back included, and
+    // a timeout that fell back to it is left for the form to flag.
+    const key = columnKey(column);
+    setDraft((d) => ({
+      ...d,
+      middle: d.middle.filter((c) => c.id !== column.id),
+      handoffs: Object.fromEntries(
+        Object.entries(d.handoffs).map(([id, h]) => [
+          id,
+          {
+            ...h,
+            next_status_key: h.next_status_key === key ? undefined : h.next_status_key,
+            back_status_key: h.back_status_key === key ? undefined : h.back_status_key,
+            ...(h.edges && { edges: h.edges.filter((e) => e.to !== key).map((e) => (e.on_timeout === key ? { ...e, on_timeout: undefined } : e)) }),
+          },
+        ]),
+      ),
+    }));
     setSelected("todo");
   };
 
@@ -655,6 +694,24 @@ export function WorkflowEditorPage({
           </div>
         )}
       </div>
+
+      <WorkflowGraph
+        workflow={{ steps: graphSteps }}
+        project={null}
+        currentStatus={selectedId}
+        onChange={canEdit ? onGraphChange : undefined}
+        onSelectStep={setSelected}
+      />
+      <WorkflowEdgeEditor steps={graphSteps} stepKey={graphSteps.some((s) => s.status_key === selectedId) ? selectedId : null} canEdit={canEdit} onChange={onGraphChange} />
+      {graphIssues.length > 0 && (
+        <ul role="alert" className="space-y-1 text-caption text-destructive">
+          {graphIssues.map((i) => (
+            <li key={`${i.code}:${i.from}:${i.index ?? ""}`}>
+              {t(($) => $.workflows.flow.edit.issues[i.code], { from: labelOf(i.from), max: MAX_EDGES_PER_STEP })}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
         <div className="min-w-0">

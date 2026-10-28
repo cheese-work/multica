@@ -78,11 +78,12 @@ function AnnotationNoteEditor({ inputRef, initialNote, label, showLabel, placeho
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
 type SourceAnchor = { id: string; range: Range; root: HTMLElement };
 
-export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, editable = false, surface = "issue", labels }: {
+export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onRevealSource, editable = false, surface = "issue", labels }: {
   draftKey: CommentDraftKey;
   sources: { id: string; name: string; revision?: number }[];
   enabled: boolean;
   onAdded?: () => void;
+  onRevealSource?: (annotation: ReplyAnnotation) => boolean;
   /** Editable descriptions use their existing toolbar to call addSelection. */
   editable?: boolean;
   /** `chat` renders markers inside the message (reading order) and returns focus to them. */
@@ -137,6 +138,25 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   onAddedRef.current = onAdded;
   const anchorKey = annotations.map((a) => a.id).join(",");
   const highlightName = `reply-annotation-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`;
+  const editorOpenEvent = `reply-annotation-open:${draftKey}`;
+  const claimEditor = useCallback(() => {
+    document.dispatchEvent(new CustomEvent(editorOpenEvent, { detail: highlightName }));
+  }, [editorOpenEvent, highlightName]);
+
+  const findSource = useCallback((sourceCommentId: string) => {
+    const card = cardRef.current;
+    if (!card) return undefined;
+    const local = findAnnotationSource(card, sourceCommentId);
+    if (local) return local;
+    const timeline = card.closest("[data-issue-timeline-scroll]");
+    if (!timeline) return undefined;
+    for (const scope of timeline.querySelectorAll<HTMLElement>("[data-annotation-thread]")) {
+      if (scope.dataset.annotationThread !== draftKey) continue;
+      const source = findAnnotationSource(scope, sourceCommentId);
+      if (source) return source;
+    }
+    return undefined;
+  }, [draftKey]);
 
   const markerFor = (id: string) =>
     cardRef.current?.querySelector<HTMLElement>(`[data-annotation-marker="${id}"]`) ?? null;
@@ -156,14 +176,31 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   }, [enabled, editable]);
   const capture = () => {
     const captured = readSelection();
-    if (captured) { setSelection(captured); setEditor(null); setError(false); }
+    if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
   useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
 
+  // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
+  // a document-level pointerup; captureCommentSelection then decides from the selection alone.
+  const armed = useRef(false);
+  const captureRef = useRef(capture);
+  captureRef.current = capture;
+  useEffect(() => {
+    const onUp = () => { if (armed.current) { armed.current = false; captureRef.current(); } };
+    const disarm = () => { armed.current = false; };
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", disarm);
+    return () => { document.removeEventListener("pointerup", onUp); document.removeEventListener("pointercancel", disarm); };
+  }, []);
+
   // Dismiss on the next press, never on the click completing the opening drag.
   useEffect(() => {
     if (!selection) return;
+    const onEditorOpen = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail === highlightName) return;
+      setSelection(null); setEditor(null); setError(false);
+    };
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Element &&
         event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
@@ -185,12 +222,14 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("focusin", onFocusIn);
+    document.addEventListener(editorOpenEvent, onEditorOpen);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener(editorOpenEvent, onEditorOpen);
     };
-  }, [selection, draftKey, editable]);
+  }, [selection, draftKey, editable, editorOpenEvent, highlightName]);
 
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
@@ -221,9 +260,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
           a.start === current.start && a.quote === current.quote);
         const anchor = saved && next.find((a) => a.id === saved.id);
         if (anchor) return { ...current, root: anchor.root, range: anchor.range };
-        const pending = editingRef.current;
-        if (!saved && pending?.sourceCommentId === current.sourceCommentId) {
-          const root = findAnnotationSource(card, pending.sourceCommentId);
+        const pending = saved ?? editingRef.current;
+        if (pending?.sourceCommentId === current.sourceCommentId) {
+          const root = findSource(pending.sourceCommentId);
           const range = root && annotationRange(root, pending, editable);
           return root && range ? { ...current, root, range } : null;
         }
@@ -242,9 +281,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
             (node.matches("[data-comment-content]") || node.querySelector("[data-comment-content]")));
       })) update();
     });
-    observer.observe(card, { childList: true, subtree: true, characterData: true });
+    observer.observe(editingId ? card.closest("[data-issue-timeline-scroll]") ?? card : card,
+      { childList: true, subtree: true, characterData: true });
     return () => { observer.disconnect(); if (canHighlight) CSS.highlights.delete(highlightName); };
-  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId]);
+  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId, findSource]);
 
   useEffect(() => {
     if (!selection || (editor?.existing && !annotations.some((a) => a.id === editingId))) {
@@ -254,13 +294,16 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
 
   const editAnnotation = (id: string, scrollToSource = false): boolean => {
     const annotation = annotationsRef.current.find((a) => a.id === id);
-    const root = cardRef.current && annotation && findAnnotationSource(cardRef.current, annotation.sourceCommentId);
+    const root = annotation && findSource(annotation.sourceCommentId);
+    if (annotation && !root) return onRevealSource?.(annotation) ?? false;
     const range = root && annotation && annotationRange(root, annotation, editable);
     if (!root || !range || !annotation) return false;
+    pendingMarkerFocus.current = null;
     if (scrollToSource) {
       const element = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       element?.scrollIntoView({ block: "center", behavior: "instant" });
     }
+    claimEditor();
     pendingFocusId.current = id;
     setSelection({ ...annotation, range, root }); setEditor({ annotation, existing: true }); setError(false);
     return true;
@@ -282,6 +325,8 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
         : Lref.current.countLimit(MAX_REPLY_ANNOTATIONS));
       return false;
     }
+    pendingMarkerFocus.current = null;
+    claimEditor();
     setSelection(captured);
     const next = duplicate ?? {
       id: crypto.randomUUID(), sourceCommentId, sourceActorName: source.name,
@@ -292,7 +337,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     setError(false);
     window.getSelection()?.removeAllRanges();
     return true;
-  }, []);
+  }, [claimEditor]);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
   const confirmNote = (note: string) => {
@@ -336,9 +381,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
     addSelection,
     captureProps: {
       "data-annotation-thread": draftKey,
-      onPointerUp: (event: React.PointerEvent) => {
-        if (!editable && event.target instanceof Element && event.target.closest("[data-comment-content]") &&
-          !event.target.closest("button, [contenteditable=true]")) capture();
+      onPointerDown: (event: React.PointerEvent) => {
+        armed.current = !editable && event.target instanceof Element && !!event.target.closest("[data-comment-content]") &&
+          !event.target.closest("button, [contenteditable=true]");
       },
       onKeyUp: (event: React.KeyboardEvent) => {
         if (!editable && event.shiftKey && event.key.startsWith("Arrow")) capture();
@@ -373,7 +418,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
             onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
         </CommentSelectionBubble>;
       })}
-      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
+      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
           {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}

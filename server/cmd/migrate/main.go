@@ -144,6 +144,16 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
+	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
+	"728_github_revision_identity":                              "idx_github_webhook_revision_identity",
+	"740_github_webhook_dispatch_key":                           "idx_github_webhook_dispatch_key",
+	"741_github_webhook_worker_due":                             "idx_github_webhook_worker_due",
+	"723_github_webhook_delivery_unique_index":                  "idx_github_webhook_delivery_guid",
+	"724_github_webhook_revision_unique_index":                  "idx_github_webhook_revision_key",
+	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
+	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
+	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
 	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
 	"651_inbox_item_dedupe_index":                               "idx_inbox_item_dedupe_unread",
@@ -179,6 +189,7 @@ var concurrentIndexCleanups = map[string]string{
 	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
 	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
 	"677_issue_workflow_override_index":                         "idx_issue_workflow_override",
+	"700_comment_trigger_rate_limit_unique_index":               "comment_trigger_rate_limit_issue_agent_uidx",
 	"675_issue_ci_advance_index":                                "idx_issue_ci_advance_issue_head",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
 	"564_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
@@ -534,6 +545,8 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"751_github_dispatch_drop_body_key":                     "idx_github_webhook_dispatch_key",
+	"729_github_revision_body_key":                          "idx_github_webhook_revision_key",
 	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",

@@ -768,6 +768,15 @@ multica issue get <id> --output json
 multica issue get <id> --resolve-properties   # property names beside the ids, as in issue list
 ```
 
+### Issue Relations
+
+```bash
+multica issue relations <id> --output json
+multica issue relations <id> --depth 2 --output json
+```
+
+Returns the same `nodes`, typed `edges`, `depth` and `omitted_count` as the sidebar graph. Traversal includes both directions: issues this issue references and issues that wait on or mention it. Depth defaults to 1; only 1 and 2 are accepted. The response contains at most 40 nodes, restricted to the issue's workspace and the caller's access. No issue state is changed. See [issue relations](docs/engineering/issue-relations.md) for edge directions and sources.
+
 ### Create Issue
 
 ```bash
