@@ -583,9 +583,12 @@ admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
 
 `cd-qualification.yml` groups pushes by `github.ref` with
-`cancel-in-progress: true`: a new `main` push cancels superseded qualification
-work instead of waiting for the old build. This group is separate from every
-approval and C00 mutation lock; cancellation cannot interrupt a started deploy.
+`cancel-in-progress: false`: the running qualification build finishes, and a new
+`main` push replaces only the older pending run, so at most one build runs and
+one waits. The newest commit can wait for the running build (about 25-45 min).
+A finished older build is not wasted: `require-current.sh` accepts a qualified
+older `main` commit that is a forward move from C00. This group is separate from
+every approval and C00 mutation lock.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual

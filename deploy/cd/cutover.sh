@@ -251,7 +251,11 @@ published_port_matches() {
 conf_upstreams() {
   awk '
     /listen 127\.0\.0\.1:[0-9]+/ { match($0, /:[0-9]+/); listen = substr($0, RSTART + 1, RLENGTH - 1) }
-    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ { match($0, /127\.0\.0\.1:[0-9]+/); print listen "=" substr($0, RSTART + 10, RLENGTH - 10) }
+    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ {
+      match($0, /127\.0\.0\.1:[0-9]+/)
+      route = listen "=" substr($0, RSTART + 10, RLENGTH - 10)
+      if (!seen[route]++) print route
+    }
   '
 }
 
