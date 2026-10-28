@@ -720,6 +720,9 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
 	var errs []error
+	if err := s.queueNextTurnPREvents(ctx, workspaceIDs); err != nil {
+		errs = append(errs, fmt.Errorf("queue next-turn PR events: %w", err))
+	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
 	}

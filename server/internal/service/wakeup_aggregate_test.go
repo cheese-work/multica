@@ -779,35 +779,3 @@ func TestAggregatePartialConsumptionKeepsTheQueueAgeOfPendingFacts(t *testing.T)
 		t.Fatal("the instance with the oldest pending fact did not get the slot")
 	}
 }
-
-// The same through a real pre-admission path: facts suppressed because the agent
-// is already running on the issue are consumed without a start, so the instance
-// loses the age they gave it.
-func TestAggregateSuppressedFactsLoseTheirQueueAge(t *testing.T) {
-	e := newBuiltinEnv(t)
-	e.cleanAggregate(t)
-	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":1`)
-	holder, early, between := e.issueIn(t, e.project), e.issueIn(t, e.project), e.issueIn(t, e.project)
-	e.mergedOn(t, holder, 1)
-	e.mergedOn(t, early, 2)
-	e.mergedOn(t, between, 3)
-	var runtime pgtype.UUID
-	if err := e.f.Pool.QueryRow(context.Background(), `SELECT runtime_id FROM agent WHERE id=$1`, e.agent).Scan(&runtime); err != nil {
-		t.Fatal(err)
-	}
-	e.f.Exec(t, `INSERT INTO agent_task_queue(id,agent_id,runtime_id,issue_id,status,priority,started_at) VALUES (gen_random_uuid(),$1,$2,$3,'running',0,now()-interval '1 hour')`, e.agent, runtime, early)
-	e.redispatch(t, early)
-	if e.pendingOn(t, early) != 0 || e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'outcome'='suppressed_active_run'`, early) != 1 {
-		t.Fatalf("setup: the active run must have suppressed the instance's facts (pending=%d)", e.pendingOn(t, early))
-	}
-	e.f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=now() WHERE issue_id=$1 AND status='running'`, early)
-	e.cancelRuns(t, holder)
-	e.mergedOn(t, early, 4)
-	if e.runs(t, early) != 0 {
-		t.Fatal("a new fact kept the queue age of facts the active run had suppressed")
-	}
-	e.redispatch(t, between)
-	if e.runs(t, between) != 1 {
-		t.Fatal("the older delayed fact did not get the freed slot")
-	}
-}

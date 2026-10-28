@@ -54,3 +54,29 @@ FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;
 
+
+-- name: ListNextTurnPREvents :many
+-- Events a mid-run delivery could not take (CHE-2298 a3). Not filtered by the
+-- capture switch: that stops new capture only, accepted events keep draining.
+SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha,
+       pr.pr_number, pr.repo_owner, pr.repo_name
+FROM issue_pr_event e
+JOIN github_pull_request pr ON pr.id = e.pull_request_id
+WHERE e.status = 'next_turn'
+  AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR e.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
+ORDER BY e.observed_at, e.id
+LIMIT @row_limit
+FOR UPDATE OF e SKIP LOCKED;
+
+-- name: MarkPREventQueued :exec
+UPDATE issue_pr_event SET status = 'queued' WHERE id = @id AND status = 'next_turn';
+
+-- name: MarkQueuedPREventsDelivered :exec
+-- A next-turn wake that started carries its receipts' events.
+UPDATE issue_pr_event e
+SET status = 'delivered'
+FROM issue_wakeup_receipt r
+WHERE r.id = ANY(@receipt_ids::uuid[])
+  AND r.event_type = 'pr.event'
+  AND e.id::text = r.payload->>'event_id'
+  AND e.status = 'queued';

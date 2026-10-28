@@ -130,6 +130,67 @@ func (q *Queries) ListIssueIDsForPR(ctx context.Context, pullRequestID pgtype.UU
 	return items, nil
 }
 
+const listNextTurnPREvents = `-- name: ListNextTurnPREvents :many
+SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha,
+       pr.pr_number, pr.repo_owner, pr.repo_name
+FROM issue_pr_event e
+JOIN github_pull_request pr ON pr.id = e.pull_request_id
+WHERE e.status = 'next_turn'
+  AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
+ORDER BY e.observed_at, e.id
+LIMIT $2
+FOR UPDATE OF e SKIP LOCKED
+`
+
+type ListNextTurnPREventsParams struct {
+	WorkspaceIds []pgtype.UUID `json:"workspace_ids"`
+	RowLimit     int32         `json:"row_limit"`
+}
+
+type ListNextTurnPREventsRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Kind        string      `json:"kind"`
+	HeadSha     string      `json:"head_sha"`
+	BaseSha     string      `json:"base_sha"`
+	PrNumber    int32       `json:"pr_number"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+}
+
+// Events a mid-run delivery could not take (CHE-2298 a3). Not filtered by the
+// capture switch: that stops new capture only, accepted events keep draining.
+func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
+	rows, err := q.db.Query(ctx, listNextTurnPREvents, arg.WorkspaceIds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNextTurnPREventsRow{}
+	for rows.Next() {
+		var i ListNextTurnPREventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.Kind,
+			&i.HeadSha,
+			&i.BaseSha,
+			&i.PrNumber,
+			&i.RepoOwner,
+			&i.RepoName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockGitHubPRForEvent = `-- name: LockGitHubPRForEvent :one
 
 SELECT id, workspace_id, head_sha
@@ -169,6 +230,31 @@ func (q *Queries) LockIssueForPREvent(ctx context.Context, id pgtype.UUID) (pgty
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const markPREventQueued = `-- name: MarkPREventQueued :exec
+UPDATE issue_pr_event SET status = 'queued' WHERE id = $1 AND status = 'next_turn'
+`
+
+func (q *Queries) MarkPREventQueued(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markPREventQueued, id)
+	return err
+}
+
+const markQueuedPREventsDelivered = `-- name: MarkQueuedPREventsDelivered :exec
+UPDATE issue_pr_event e
+SET status = 'delivered'
+FROM issue_wakeup_receipt r
+WHERE r.id = ANY($1::uuid[])
+  AND r.event_type = 'pr.event'
+  AND e.id::text = r.payload->>'event_id'
+  AND e.status = 'queued'
+`
+
+// A next-turn wake that started carries its receipts' events.
+func (q *Queries) MarkQueuedPREventsDelivered(ctx context.Context, receiptIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markQueuedPREventsDelivered, receiptIds)
+	return err
 }
 
 const pREventKindEnabled = `-- name: PREventKindEnabled :one

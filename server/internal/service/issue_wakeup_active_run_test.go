@@ -59,10 +59,10 @@ func (e builtinEnv) prNote(t *testing.T, number int32) string {
 	return fmt.Sprintf("pull/%d", number)
 }
 
-// Nothing selects defer implicitly: no definition, an instruction-only
-// override, and an explicit suppress all consume a fact that arrives while the
-// agent runs, and say so.
-func TestActiveRunSuppressStaysTheDefault(t *testing.T) {
+// Nothing selects defer implicitly, but a PR fact is never dropped (CHE-2298
+// a3): no definition, an instruction-only override, and an explicit suppress
+// all queue a fact that arrives while the agent runs, and say so.
+func TestActiveRunPRFactsAreQueuedByDefault(t *testing.T) {
 	for _, tc := range []struct{ name, fields string }{
 		{"legacy, no definition", ``},
 		{"instruction-only override", `"instruction":"Look at the merge"`},
@@ -75,11 +75,11 @@ func TestActiveRunSuppressStaysTheDefault(t *testing.T) {
 			}
 			e.runningRun(t, e.f.UserID)
 			e.mergedPR(t, 700)
-			if e.tasks(t, SystemRulePRMerged) != 0 || e.pending(t, SystemRulePRMerged) != 0 {
-				t.Fatalf("suppress: %d runs, %d pending; want 0 and 0", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
+			if e.tasks(t, SystemRulePRMerged) != 0 || e.pending(t, SystemRulePRMerged) != 1 {
+				t.Fatalf("while running: %d runs, %d pending; want 0 and 1", e.tasks(t, SystemRulePRMerged), e.pending(t, SystemRulePRMerged))
 			}
-			if e.outcomeCount(t, SystemRulePRMerged, "suppressed_active_run") != 1 {
-				t.Fatalf("suppression is not visible: %v", e.outcomes(t, SystemRulePRMerged))
+			if e.outcomeCount(t, SystemRulePRMerged, "queued_next_turn") != 1 || e.outcomeCount(t, SystemRulePRMerged, "suppressed_active_run") != 0 {
+				t.Fatalf("queueing is not visible: %v", e.outcomes(t, SystemRulePRMerged))
 			}
 		})
 	}
@@ -155,7 +155,7 @@ func TestActiveRunDeferIsInheritedAndOverridable(t *testing.T) {
 		t.Helper()
 		e.runningRun(t, e.f.UserID)
 		e.mergedPR(t, 710)
-		return e.pending(t, SystemRulePRMerged) == 1
+		return e.outcomeCount(t, SystemRulePRMerged, "deferred_active_run") == 1
 	}
 	t.Run("inherited through an instruction-only override", func(t *testing.T) {
 		e := newBuiltinEnv(t)
@@ -178,7 +178,7 @@ func TestActiveRunDeferIsInheritedAndOverridable(t *testing.T) {
 		e.define(t, WakeupScopeWorkspace, SystemRulePRMerged, `"active_run":"defer"`)
 		e.define(t, WakeupScopeProject, SystemRulePRMerged, `"active_run":null`)
 		if deferred(t, e) {
-			t.Fatal("a cleared active_run did not return to suppress")
+			t.Fatal("a cleared active_run did not return to the default")
 		}
 	})
 }
