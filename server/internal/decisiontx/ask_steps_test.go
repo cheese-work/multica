@@ -145,7 +145,7 @@ func TestContentRendersHumanSteps(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	content := ask.Content()
+	content := ask.Content("acme")
 	last := -1
 	for _, marker := range []string{
 		"**Default if no reply**", "**Steps for you**",
@@ -168,7 +168,7 @@ func TestContentKeepsTokenOutOfTheCommand(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if content := ask.Content(); strings.Contains(content, "MULTICA_TOKEN -R cheese-work/multica-dotfiles --body") {
+	if content := ask.Content("acme"); strings.Contains(content, "MULTICA_TOKEN -R cheese-work/multica-dotfiles --body") {
 		test.Fatalf("token step must prompt, not take --body: %q", content)
 	}
 }
@@ -180,13 +180,13 @@ func TestContentFenceGrowsPastBackticks(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if content := ask.Content(); !strings.Contains(content, "   ````\n   echo ``` MULTICA_SERVER_URL\n   ````") {
+	if content := ask.Content("acme"); !strings.Contains(content, "   ````\n   echo ``` MULTICA_SERVER_URL\n   ````") {
 		test.Fatalf("command fence did not grow: %q", content)
 	}
 }
 
 func TestContentWithoutHumanStepsMatchesLegacy(test *testing.T) {
-	content := decodedAsk(test).Content()
+	content := decodedAsk(test).Content("acme")
 	for _, section := range []string{"**Steps for you**", "**Checked first**", "**After you finish**"} {
 		if strings.Contains(content, section) {
 			test.Fatalf("legacy ask rendered %q: %q", section, content)
