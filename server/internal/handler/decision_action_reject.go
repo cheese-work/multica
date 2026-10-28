@@ -59,7 +59,6 @@ var (
 	errOutcomeUnknown = decisionIntentRefusal{http.StatusServiceUnavailable, "outcome_unknown: check the issue before deciding again"}
 	errOutcomeRetry   = decisionIntentRefusal{http.StatusServiceUnavailable, "outcome_unknown_retry: the decision was not applied; decide again"}
 	errNotTheHuman    = decisionIntentRefusal{http.StatusForbidden, "only the request's human can decide this action"}
-	errNotPermitted   = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errActionNotFound = decisionIntentRefusal{http.StatusNotFound, "decision action not found"}
 )
 
