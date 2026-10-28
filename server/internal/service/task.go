@@ -1297,7 +1297,7 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 	if issueAssignee && issue.AssigneeID != agentID {
 		return nil, fmt.Errorf("comment trigger agent does not match issue assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: "comment", ReviewRun: true}); err != nil {
 		return nil, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
@@ -1469,7 +1469,12 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "assignment or status handoff"
+	if triggerCommentID.Valid {
+		trigger = "comment"
+	}
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid})
+	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 
@@ -1528,6 +1533,7 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 	}
+	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
@@ -1557,7 +1563,7 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			FireAt:               fireAt,
 		})
 	} else {
-		task, err = queries.CreateAgentTask(ctx, createParams)
+		task, err = createAgentTask(ctx, queries, createParams)
 	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1610,7 +1616,8 @@ func (s *TaskService) PrepareTaskForMention(ctx context.Context, issue db.Issue,
 }
 
 func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin) (db.AgentTaskQueue, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: "mention", ReviewRun: true})
+	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	agent, err := queries.GetAgent(ctx, params.AgentID)
@@ -1622,7 +1629,8 @@ func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, que
 	}
 	params.RuntimeID = agent.RuntimeID
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
-	return queries.CreateAgentTask(ctx, params)
+	gate.Apply(&params)
+	return createAgentTask(ctx, queries, params)
 }
 
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
@@ -1690,7 +1698,7 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
-	task, err := queries.CreateAgentTask(ctx, params)
+	task, err := createAgentTask(ctx, queries, params)
 	if err != nil {
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -1708,7 +1716,12 @@ func (s *TaskService) prepareMentionTaskWithQueries(ctx context.Context, queries
 }
 
 func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.CreateAgentTaskParams, attribution.Result, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "mention"
+	if isLeader {
+		trigger = "squad leader callback"
+	}
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true})
+	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 	agent, err := queries.GetAgent(ctx, agentID)
@@ -1740,7 +1753,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	return db.CreateAgentTaskParams{
+	params := db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -1765,7 +1778,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
-	}, attr, nil
+	}
+	gate.Apply(&params)
+	return params, attr, nil
 }
 
 // QuickCreateContext is the JSON payload stored on a quick-create task's
@@ -5723,7 +5738,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -6316,7 +6331,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
 		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),

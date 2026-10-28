@@ -1506,6 +1506,18 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+	case "workflow_run":
+		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_run event")
+			return
+		}
+	case "workflow_job":
+		if err := h.handleWorkflowJobEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_job event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_job event")
+			return
+		}
 	case "check_suite", "check_run", "status":
 		// CI events are pure triggers under Plan C (MUL-5265): their payload is
 		// never read for display. Each just asks the API pipeline to re-fetch
@@ -1647,9 +1659,13 @@ type ghPRHeadRepository struct {
 	Fork     *bool  `json:"fork"`
 }
 
+// sameRepository compares head and base by repository id and full name only.
+// GitHub's `fork` flag describes the repository, not the PR: a same-repo PR in
+// a repository that is itself a fork (cheese-work/multica) carries fork=true.
+// The flag must be present, so a truncated payload still defers.
 func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
 	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
-		repo.Fork != nil && !*repo.Fork && strings.EqualFold(repo.FullName, owner+"/"+name)
+		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
 }
 
 type ghPullRequestPayload struct {

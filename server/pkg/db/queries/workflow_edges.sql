@@ -38,3 +38,19 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND created_at > sqlc.arg('since')::
 SELECT created_at FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1;
+
+-- name: HasIssueReviewAdmission :one
+-- Whether the issue's first review of this PR head was already admitted. The
+-- row is written with the task row (CreateAgentTask), so it exists exactly when
+-- a run was admitted as the reviewer for that head.
+SELECT EXISTS (
+    SELECT 1 FROM issue_review_admission
+    WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text
+);
+
+-- name: RaiseIssueMaxRuns :one
+-- Sets the issue's own run cap, only upward from the cap now in force.
+UPDATE issue SET max_runs_override = sqlc.arg('runs')::int
+WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
+RETURNING max_runs_override;
