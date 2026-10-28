@@ -176,6 +176,11 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	if invalid != "" {
 		return "denied", invalid, nil, nil
 	}
+	if err := queries.SupersedePendingGitHubWebhookRevisions(ctx, db.SupersedePendingGitHubWebhookRevisionsParams{
+		InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID, ObjectKind: kind, ObjectID: object.ID,
+	}); err != nil {
+		return "", "", nil, err
+	}
 	digest := sha256.Sum256([]byte(object.Body))
 	revisions, err := queries.ListGitHubWebhookRevisionsForWork(ctx, db.ListGitHubWebhookRevisionsForWorkParams{
 		InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
@@ -191,8 +196,30 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	priority := map[string]int{"denied": 0, "dispatched": 1, "projected": 2, "unsigned": 3, "quarantined": 4, "deferred": 5}
 	var publications []githubIntakePublication
 	for _, revision := range revisions {
+		if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
+			// No signed delivery backs this revision (R3). Settle it as unsigned; retrying cannot create one.
+			if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
+				WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: "unsigned", Reason: "no_signed_delivery",
+			}); err != nil {
+				return "", "", nil, err
+			}
+			if priority["unsigned"] >= priority[state] {
+				state, reason = "unsigned", "no_signed_delivery"
+			}
+			continue
+		}
 		decision := githubIntakeDecision{State: revision.State, Reason: revision.Reason}
-		if revision.State == "deferred" || revision.State == "dispatched" {
+		needsAdmission := revision.State == "deferred"
+		if revision.State == "dispatched" {
+			recorded, err := queries.HasGitHubWebhookRevisionDispatch(ctx, db.HasGitHubWebhookRevisionDispatchParams{
+				WorkspaceID: revision.WorkspaceID, RevisionID: revision.ID,
+			})
+			if err != nil {
+				return "", "", nil, err
+			}
+			needsAdmission = !recorded
+		}
+		if needsAdmission {
 			if worker.admit == nil {
 				return "", "", nil, errors.New("github: admission unavailable")
 			}

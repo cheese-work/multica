@@ -15,22 +15,22 @@ type ReviewComment struct {
 	Body string `json:"body"`
 }
 
-func (m *Manager) FetchReviewComments(ctx context.Context, installationID int64, owner, repo string, number int32, reviewID int64) ([]ReviewComment, error) {
-	if m == nil || !m.client.Enabled() {
+func (manager *Manager) FetchReviewComments(ctx context.Context, installationID int64, owner, repo string, number int32, reviewID int64) ([]ReviewComment, error) {
+	if manager == nil || !manager.client.Enabled() {
 		return nil, errors.New("github: review comments API is not configured")
 	}
-	return m.client.FetchReviewComments(ctx, installationID, owner, repo, number, reviewID)
+	return manager.client.FetchReviewComments(ctx, installationID, owner, repo, number, reviewID)
 }
 
-func (c *Client) FetchReviewComments(ctx context.Context, installationID int64, owner, repo string, number int32, reviewID int64) ([]ReviewComment, error) {
-	if !c.Enabled() {
+func (client *Client) FetchReviewComments(ctx context.Context, installationID int64, owner, repo string, number int32, reviewID int64) ([]ReviewComment, error) {
+	if !client.Enabled() {
 		return nil, errors.New("github: review comments API is not configured")
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews/%d/comments", url.PathEscape(owner), url.PathEscape(repo), number, reviewID)
 	var comments []ReviewComment
 	contentBytes := 0
 	for page := 1; page <= maxSnapshotContextPages; page++ {
-		body, err := c.restGet(ctx, installationID, fmt.Sprintf("%s?per_page=%d&page=%d", path, snapshotPageSize, page))
+		body, err := client.restGet(ctx, installationID, fmt.Sprintf("%s?per_page=%d&page=%d", path, snapshotPageSize, page))
 		if err != nil {
 			return nil, err
 		}

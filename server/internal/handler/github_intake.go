@@ -150,6 +150,12 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 				if err != nil {
 					return err
 				}
+				if err := recordGitHubReviewDecision(ctx, queries, event, payload, object, pullID, revisionReason); err != nil {
+					return err
+				}
+				if err := withdrawDismissedGitHubReview(ctx, queries, event, installation.WorkspaceID, payload, object, number); err != nil {
+					return err
+				}
 				digest := sha256.Sum256([]byte(object.Body))
 				revision := db.InsertGitHubWebhookRevisionParams{
 					WorkspaceID: installation.WorkspaceID, InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
@@ -230,7 +236,7 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 			return pullID, "deferred", "missing_pull_request_metadata", nil
 		}
 	} else {
-		if headRepo.ID <= 0 || headRepo.FullName == "" {
+		if headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
 			return pullID, "deferred", "missing_pull_request_metadata", nil
 		}
 		if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
@@ -261,6 +267,39 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 	}
 	return pullID, "denied", "no_linked_issue", nil
+}
+
+// withdrawDismissedGitHubReview clears the stored review decision when GitHub
+// dismisses that exact review, so the pr.review_* guards stop firing on it.
+// The delivery is signature-checked, and the review id only matches a decision
+// intake already admitted.
+func withdrawDismissedGitHubReview(ctx context.Context, queries *db.Queries, event string, workspaceID pgtype.UUID, payload githubIntakePayload, object githubIntakeObject, number int32) error {
+	if event != "pull_request_review" || payload.Action != "dismissed" {
+		return nil
+	}
+	return queries.ClearGitHubPRReview(ctx, db.ClearGitHubPRReviewParams{
+		WorkspaceID: workspaceID, InstallationID: payload.Installation.ID,
+		RepoOwner: payload.Repository.Owner.Login, RepoName: payload.Repository.Name, PrNumber: number, ReviewID: object.ID,
+	})
+}
+
+// recordGitHubReviewDecision stores the latest admitted approve,
+// request-changes or comment review on its PR, where the pr.review_* edge
+// guards read it. A later comment supersedes an earlier decision. Admitted means
+// intake already checked the author: a mapped member of this workspace, on a
+// same-repository PR linked to one of its issues.
+func recordGitHubReviewDecision(ctx context.Context, queries *db.Queries, event string, payload githubIntakePayload, object githubIntakeObject, pullID pgtype.UUID, reason string) error {
+	if event != "pull_request_review" || payload.Action != "submitted" || reason != "awaiting_admission" ||
+		(object.State != "approved" && object.State != "changes_requested" && object.State != "commented") {
+		return nil
+	}
+	submitted := githubIntakeTimestamp(object.SubmittedAt)
+	if !submitted.Valid {
+		submitted = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	return queries.RecordGitHubPRReview(ctx, db.RecordGitHubPRReviewParams{
+		ID: pullID, ReviewState: object.State, HeadSha: payload.PullRequest.Head.SHA, ReviewID: object.ID, SubmittedAt: submitted,
+	})
 }
 
 func githubIntakeTimestamp(value *time.Time) pgtype.Timestamptz {
