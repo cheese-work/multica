@@ -8056,21 +8056,6 @@ func (q *Queries) MarkAgentTaskCancelAcked(ctx context.Context, id pgtype.UUID) 
 	return err
 }
 
-const markAgentTaskStopUnconfirmed = `-- name: MarkAgentTaskStopUnconfirmed :exec
-UPDATE agent_task_queue
-SET stop_unconfirmed_at = now()
-WHERE id = $1 AND status = 'cancelled' AND failure_reason = 'superseded_head'
-  AND cancel_acked_at IS NULL AND stop_unconfirmed_at IS NULL
-`
-
-// An armed superseded run reported its cleanup unconfirmed. The FailTask that
-// follows rewrites the row to failed/cleanup_unconfirmed, so remember the run
-// is still owed a stop confirmation. Armed rows only; first write wins.
-func (q *Queries) MarkAgentTaskStopUnconfirmed(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, markAgentTaskStopUnconfirmed, id)
-	return err
-}
-
 const markAgentTaskWaitingLocalDirectory = `-- name: MarkAgentTaskWaitingLocalDirectory :one
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',

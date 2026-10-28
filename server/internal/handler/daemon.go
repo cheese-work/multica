@@ -6236,8 +6236,7 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// the credential alone proves nothing — without the proof the ack still
 	// delivers the work pointers below but leaves the gate closed. An ack that
 	// reports the cleanup unconfirmed is not a stop either, proof or not: the
-	// gate stays closed, and the FailTask below must not drop the run out of
-	// it (stop_unconfirmed_at). First write wins, so a replay changes nothing.
+	// gate stays closed. First write wins, so a replay changes nothing.
 	// Fails loud like the writes below: a dropped write keeps the gate closed
 	// until the daemon retries.
 	var cancellationResult map[string]any
@@ -6247,11 +6246,8 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		(needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed))
 	switch {
 	case cleanupUnconfirmed:
-		if err := h.Queries.MarkAgentTaskStopUnconfirmed(r.Context(), task.ID); err != nil {
-			slog.Error("cancel ack: record unconfirmed stop failed", "task_id", taskID, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to record unconfirmed stop")
-			return
-		}
+		// The FailTask below rewrites the row; the agent_task_keep_stop_unconfirmed
+		// trigger keeps an armed run in the gate.
 	case auth.VerifyCancelAckProof(taskID, uuidToString(task.RuntimeID), req.CancelAckProof):
 		if err := h.Queries.MarkAgentTaskCancelAcked(r.Context(), task.ID); err != nil {
 			slog.Error("cancel ack: record cancel_acked_at failed", "task_id", taskID, "error", err)

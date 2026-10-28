@@ -333,3 +333,47 @@ func TestStopGate_UnconfirmedCleanupAckKeepsGateClosed(t *testing.T) {
 	ackCancelled(t, run, map[string]any{"cancel_ack_proof": proof(run), "process_cleanup_confirmed": true})
 	stopGateOpen(t, issueID)
 }
+
+// Every terminal transition of an armed run keeps it owed a stop confirmation,
+// not only /cancel-ack: the owner credential reaches /fail too, and the row's
+// status or failure_reason is rewritten by many writers. The guard lives with
+// the row, so a writer added later inherits it.
+func TestStopGate_TerminalTransitionsKeepArmedRunClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := mul8188Agent(t)
+	fail := func(body map[string]any) func(t *testing.T, id string) {
+		return func(t *testing.T, id string) {
+			req := newOwnerDaemonRequest(http.MethodPost, "/api/daemon/tasks/"+id+"/fail", body)
+			testutil.Call(t, testHandler.FailTask, testutil.WithURLParams(req, "taskId", id)).Want(http.StatusOK)
+		}
+	}
+	cases := map[string]func(t *testing.T, id string){
+		"/fail cleanup_unconfirmed": fail(map[string]any{"error": "cleanup failed", "failure_reason": "cleanup_unconfirmed"}),
+		"/fail plain error":         fail(map[string]any{"error": "boom"}),
+		"status rewritten directly": func(t *testing.T, id string) {
+			dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', failure_reason = 'agent_error' WHERE id = $1`, id)
+		},
+		"failure_reason rewritten directly": func(t *testing.T, id string) {
+			dbfx.Exec(t, `UPDATE agent_task_queue SET failure_reason = 'cleanup_unconfirmed' WHERE id = $1`, id)
+		},
+	}
+	for name, transition := range cases {
+		issueID := dbfx.Issue(t, "stop gate terminal transition", testutil.Cols{"status": "todo"})
+		run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+		transition(t, run)
+		if _, ok := cancelAckedAt(t, run); ok {
+			t.Fatalf("%s: set cancel_acked_at", name)
+		}
+		stopGateClosedFor(t, issueID, run)
+	}
+
+	// Control: a proof-bearing ack still opens the gate, and a later rewrite
+	// of the acked row does not close it again.
+	issueID := dbfx.Issue(t, "stop gate acked then rewritten", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+	daemonAck(t, run)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', failure_reason = 'agent_error' WHERE id = $1`, run)
+	stopGateOpen(t, issueID)
+}
