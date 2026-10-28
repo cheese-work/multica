@@ -195,5 +195,8 @@
     "clear_filter": "絞り込みを解除",
     "no_matches": "一致する行がありません",
     "close": "閉じる"
+  },
+  "next_self_mention": {
+    "label": "次の自分へのメンション"
   }
 }

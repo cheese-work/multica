@@ -12,6 +12,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
@@ -2332,6 +2333,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const mountedRows = useMemo<MountedRows>(
     () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
     [items, rowRange],
+  );
+  // Per timeline row, whether it mentions the viewer: the root row its own
+  // content, each reply row that reply's. Controls, footers and runs never do.
+  const mentionsViewerText = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () =>
+      items.map((item) => {
+        if (item.kind === "comment" || item.kind === "resolved-bar") return mentionsViewerText(item.entry.content);
+        if (item.kind !== "thread-row" || item.row.kind !== "reply") return false;
+        const reply = timelineView.threadReplies.get(item.entry.id)?.find((r) => r.id === item.row.id);
+        return mentionsViewerText(reply?.content);
+      }),
+    [items, timelineView.threadReplies, mentionsViewerText],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
   );
   revealFindDocumentRef.current = (documentId) => {
     if (!documentId.startsWith("comment-")) {
@@ -4778,6 +4796,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             the resize handle's 4px drag strip at the panel edge. Hover
             previews a comment, click jumps to it. Hidden on mobile: no
             hover, and the gutter is too tight. */}
+        <NextSelfMention scrollEl={scrollContainerEl} flags={selfMentionFlags} onJump={jumpToSelfMention} />
         {!isMobile && !isPeek && (
           <ThreadMinimap
             threads={minimapThreads}
