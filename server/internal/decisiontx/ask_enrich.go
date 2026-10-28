@@ -24,12 +24,6 @@ var (
 	markdownPunctuate = strings.NewReplacer("*", "", "`", "", "~", "", "[", "", "]", "", "“", `"`, "”", `"`, "<", "", ">", "")
 )
 
-// WithoutEnrichment drops what the server adds after the caller wrote the
-// ask (source tail, asking agent, comment excerpts), so a re-ask compares equal.
-func WithoutEnrichment(content string) string {
-	return excerptSuffix.ReplaceAllString(askedByLine.ReplaceAllString(WithoutSourceTail(content), ""), "$1")
-}
-
 // Excerpt reduces a comment to its first nonblank line as plain text, at most
 // excerptRunes characters plus an ellipsis. It returns "" when nothing is left.
 func Excerpt(content string) string {
@@ -87,4 +81,14 @@ func mapStrings(items []string, fn func(string) string) []string {
 		out[index] = fn(item)
 	}
 	return out
+}
+
+// SameAsk reports whether an incoming (not yet enriched) ask repeats a stored
+// one. Only the stored side can carry server additions, so only it is stripped;
+// the caller's own quotes stay in the incoming text. A stored ask whose
+// excerpt was never added (empty comment, over the cap) matches unstripped.
+func SameAsk(stored, incoming string) bool {
+	incoming = WithoutSourceTail(incoming)
+	plain := askedByLine.ReplaceAllString(WithoutSourceTail(stored), "")
+	return plain == incoming || excerptSuffix.ReplaceAllString(plain, "$1") == incoming
 }

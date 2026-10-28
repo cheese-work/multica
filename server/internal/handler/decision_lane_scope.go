@@ -50,15 +50,14 @@ func requireLaneNamesIssue(ctx context.Context, queries *db.Queries, issue db.Is
 
 // requireNoRecentReask refuses the same unanswered ask from the same agent to
 // the same person on the same issue within decisionReaskWindow of the earlier
-// one. The ask is compared without its source link.
+// one. The earlier ask is compared without its source link and server additions.
 func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, ask string) error {
 	earlier, err := queries.OpenDecisionAsksSince(ctx, db.OpenDecisionAsksSinceParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
 	if err != nil {
 		return err
 	}
-	identity := decisiontx.WithoutEnrichment(ask)
 	for _, row := range earlier {
-		if decisiontx.WithoutEnrichment(row.Ask) != identity {
+		if !decisiontx.SameAsk(row.Ask, ask) {
 			continue
 		}
 		const layout = "2006-01-02 15:04 ICT"

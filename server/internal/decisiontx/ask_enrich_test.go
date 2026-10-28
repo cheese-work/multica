@@ -47,7 +47,7 @@ func TestWithExcerptsCapsAtFiveAndSkipsEmpty(test *testing.T) {
 	}
 }
 
-func TestWithoutEnrichmentRestoresCallerText(test *testing.T) {
+func TestSameAskRestoresCallerText(test *testing.T) {
 	ask := decodedAsk(test)
 	base := ask.Content("ws")
 	ask.AskedBy = "x99 agent"
@@ -58,21 +58,30 @@ func TestWithoutEnrichmentRestoresCallerText(test *testing.T) {
 	if !strings.Contains(enriched.Content("ws"), "**Asked by** x99 agent\n\n**Agent did**") {
 		test.Fatal("Asked by must be the first line of the Details block")
 	}
-	if WithoutEnrichment(enriched.Content("ws")) != WithoutEnrichment(plain.Content("ws")) {
+	if !SameAsk(enriched.Content("ws"), plain.Content("ws")) {
 		test.Fatal("enrichment leaked into identity")
 	}
-	if WithoutEnrichment(base) != WithoutEnrichment(decodedAsk(test).Content("ws")) {
+	if !SameAsk(base, decodedAsk(test).Content("ws")) {
 		test.Fatal("unenriched identity drifted")
 	}
 }
 
-func TestWithoutEnrichmentKeepsCallerQuotes(test *testing.T) {
-	first, second := "Deploy (“canary”)?", "Deploy (“production”)?"
-	if WithoutEnrichment(first) != first || WithoutEnrichment(first) == WithoutEnrichment(second) {
-		test.Fatalf("caller quotes were stripped: %q", WithoutEnrichment(first))
-	}
+func TestSameAskComparesStoredEnrichmentOnly(test *testing.T) {
 	link := "[c](/issue/i#comment-00000000-0000-0000-0000-000000000001)"
-	if got := WithoutEnrichment(link + " (“hello”) and (“kept”)"); got != link+" and (“kept”)" {
-		test.Fatalf("excerpt after a comment link must go, other quotes stay: %q", got)
+	cases := []struct {
+		name, stored, incoming string
+		want                   bool
+	}{
+		{"excerpt added, no caller quote", link + " (“hello”) ok", link + " ok", true},
+		{"excerpt added before caller quote", link + " (“hello”) (“mine”) ok", link + " (“mine”) ok", true},
+		{"no excerpt added, caller quote", link + " (“mine”) ok", link + " (“mine”) ok", true},
+		{"asked by line is ours", "**Asked by** a\n\n" + link + " ok", link + " ok", true},
+		{"different caller quote", link + " (“hello”) (“mine”) ok", link + " (“other”) ok", false},
+		{"different text", link + " (“hello”) ok", link + " nope", false},
+	}
+	for _, c := range cases {
+		if got := SameAsk(c.stored, c.incoming); got != c.want {
+			test.Errorf("%s: SameAsk(%q, %q) = %v, want %v", c.name, c.stored, c.incoming, got, c.want)
+		}
 	}
 }

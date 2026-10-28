@@ -307,3 +307,16 @@ func TestDecisionReusedIntentCommentIsEnriched(test *testing.T) {
 		test.Fatalf("reused=%v comment differs from the request ask:\n%s", created.IssueCommentID == parseUUID(fixture.tagID), content)
 	}
 }
+
+// A later task repeating the same unanswered ask is refused even when the ask
+// links a comment and carries the caller's own quote after the link.
+func TestDecisionReaskWithLinkedCommentAndCallerQuote(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, true)
+	linked := fixture.comment(test, testWorkspaceID, fixture.issueID, "Linked excerpt")
+	ask := askWithContext(fixture, "Read "+commentLink("the notes", fixture.issueID, linked)+" (“mine”) first.")
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusConflict)
+}
