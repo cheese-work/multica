@@ -4,6 +4,7 @@ package redact
 
 import (
 	"regexp"
+	"strings"
 )
 
 // secretPattern pairs a compiled regex with its replacement text.
@@ -66,9 +67,84 @@ var patterns = []secretPattern{
 
 	// Connection strings with embedded passwords
 	{regexp.MustCompile(`(?i)(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@`), "[REDACTED CONNECTION STRING]@"},
+}
 
-	// Generic key=value patterns for common secret env var names
-	{regexp.MustCompile(`(?i)(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*\S+`), "[REDACTED CREDENTIAL]"},
+var genericCredentialPattern = regexp.MustCompile(`(?i)(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*`)
+var credentialValuePattern = regexp.MustCompile(`^\S+`)
+var credentialReferencePattern = regexp.MustCompile(`^(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|<[A-Za-z_][A-Za-z0-9_-]*>|\*{3,})`)
+
+func credentialReferenceLength(value string) int {
+	if !strings.HasPrefix(value, "$(") {
+		return len(credentialReferencePattern.FindString(value))
+	}
+	depth, quote := 0, byte(0)
+	for index := 1; index < len(value); index++ {
+		character := value[index]
+		if character == '\\' && quote != '\'' {
+			index++
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch character {
+		case '\'', '"':
+			quote = character
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index + 1
+			}
+		}
+	}
+	return 0
+}
+
+func isCredentialReference(value string) bool {
+	quote := byte(0)
+	if len(value) > 0 && (value[0] == '\'' || value[0] == '"') {
+		quote, value = value[0], value[1:]
+	}
+	end := credentialReferenceLength(value)
+	if end == 0 {
+		return false
+	}
+	rest := value[end:]
+	if quote != 0 {
+		if len(rest) == 0 || rest[0] != quote {
+			return false
+		}
+		rest = rest[1:]
+	}
+	return len(rest) == 0 || strings.ContainsRune(" \t\r\n\f;|&", rune(rest[0]))
+}
+
+func redactGenericCredentials(text string) string {
+	var result strings.Builder
+	end := 0
+	for _, match := range genericCredentialPattern.FindAllStringIndex(text, -1) {
+		if match[0] < end {
+			continue
+		}
+		value := text[match[1]:]
+		literal := credentialValuePattern.FindString(value)
+		if literal == "" || isCredentialReference(value) {
+			continue
+		}
+		result.WriteString(text[end:match[0]])
+		result.WriteString("[REDACTED CREDENTIAL]")
+		end = match[1] + len(literal)
+	}
+	if end == 0 {
+		return text
+	}
+	result.WriteString(text[end:])
+	return result.String()
 }
 
 // maxRedactDepth bounds the walk in redactValue. Tool inputs are decoded from
@@ -165,5 +241,5 @@ func Text(s string) string {
 	for _, p := range patterns {
 		s = p.re.ReplaceAllString(s, p.replacement)
 	}
-	return s
+	return redactGenericCredentials(s)
 }
