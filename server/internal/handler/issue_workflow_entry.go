@@ -49,6 +49,9 @@ type workflowHandoff struct {
 // handoff that write triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
 	run := caller.run
+	if err := h.checkAgentMove(ctx, q, prev, params, statusExplicit, caller); err != nil {
+		return nil, err
+	}
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
@@ -73,13 +76,6 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		(!def.IsDefault || def.HandsOffAnywhere()) &&
 		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
-	}
-	// An agent decides its step's exits, whichever issue its run belongs to: a
-	// move the step has no agent exit for was not decided by the workflow.
-	if caller.agent && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
-		if err := issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String); err != nil {
-			return nil, err
-		}
 	}
 	if assigneeTouched || prev.TriageState.Valid {
 		return nil, nil
@@ -113,6 +109,21 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	params.AssigneeType = pgtype.Text{String: assigneeType, Valid: true}
 	params.AssigneeID = assigneeID
 	return &workflowHandoff{def: *def, step: step, project: project}, nil
+}
+
+// checkAgentMove refuses an agent's status write the issue's current step has
+// no agent exit for. An agent decides its step's exits, whichever issue its run
+// belongs to, so the step comes from the workflow the issue is in now: a write
+// that also clears or changes the project must not drop that policy first.
+func (h *Handler) checkAgentMove(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit bool, caller workflowCaller) error {
+	if !caller.agent || !statusExplicit || !params.Status.Valid || params.Status.String == prev.Status {
+		return nil
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, prev.ProjectID)
+	if err != nil || def == nil {
+		return err
+	}
+	return issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String)
 }
 
 // createHandoffError is a handoff handler the caller may not use, found while
