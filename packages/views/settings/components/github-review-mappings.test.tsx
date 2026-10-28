@@ -72,6 +72,42 @@ describe("GitHubReviewMappings", () => {
     );
   });
 
+  it("adds a reviewer mapping with the trimmed GitHub user ID", async () => {
+    renderMappings();
+    await userEvent.type(screen.getByLabelText("GitHub user ID"), " 4242 ");
+    await userEvent.click(screen.getByRole("combobox", { name: "Member" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Mina" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+    await waitFor(() =>
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        github_review_members: { "4242": "user-1" },
+      }),
+    );
+  });
+
+  it("adds a pull request author mapping with a lowercased key", async () => {
+    workspaceRef.current.settings = { github_review_authors: { "acme/app#7": "agent-1" } };
+    renderMappings();
+    await userEvent.type(screen.getByLabelText("Pull request"), "Acme/App#9");
+    await userEvent.click(screen.getByRole("combobox", { name: "Agent" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Builder" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "Add" })[1]!);
+    await waitFor(() =>
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        github_review_authors: { "acme/app#7": "agent-1", "acme/app#9": "agent-1" },
+      }),
+    );
+  });
+
+  it("keeps Add disabled until both the key and the value are set", async () => {
+    renderMappings();
+    const add = screen.getAllByRole("button", { name: "Add" })[0]!;
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(screen.getByLabelText("GitHub user ID"), "4242");
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+  });
+
   it("offers no controls to a member who cannot edit", () => {
     workspaceRef.current.settings = { github_review_members: { "4242": "user-1" } };
     renderMappings(false);

@@ -78,3 +78,18 @@ func TestEdgesGitHubReviewOfOldHeadIsIgnored(t *testing.T) {
 		t.Fatalf("review of an old head moved the issue to %s", got)
 	}
 }
+
+// A later comment-only review on the same head supersedes an earlier decision,
+// so the stale decision cannot fire a guard.
+func TestEdgesGitHubLaterCommentClearsEarlierDecision(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture, c := newReviewEdgeCase(t)
+	fixture.review(t, 77, "changes_requested")
+	fixture.review(t, 78, "commented")
+	tickEdges(t)
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("changes_requested then commented on the same head moved the issue to %s", got)
+	}
+}

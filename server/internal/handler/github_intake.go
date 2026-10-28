@@ -266,13 +266,14 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 	return pullID, "denied", "no_linked_issue", nil
 }
 
-// recordGitHubReviewDecision stores an admitted approve or request-changes
-// review on its PR, where the pr.review_* edge guards read it. Admitted means
+// recordGitHubReviewDecision stores the latest admitted approve,
+// request-changes or comment review on its PR, where the pr.review_* edge
+// guards read it. A later comment supersedes an earlier decision. Admitted means
 // intake already checked the author: a mapped member of this workspace, on a
 // same-repository PR linked to one of its issues.
 func recordGitHubReviewDecision(ctx context.Context, queries *db.Queries, event string, payload githubIntakePayload, object githubIntakeObject, pullID pgtype.UUID, reason string) error {
 	if event != "pull_request_review" || payload.Action != "submitted" || reason != "awaiting_admission" ||
-		(object.State != "approved" && object.State != "changes_requested") {
+		(object.State != "approved" && object.State != "changes_requested" && object.State != "commented") {
 		return nil
 	}
 	submitted := githubIntakeTimestamp(object.SubmittedAt)
