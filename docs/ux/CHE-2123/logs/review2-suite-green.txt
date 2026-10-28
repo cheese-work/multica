@@ -1,0 +1,489 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > does not resolve any media when issue read returns 401 10ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > does not resolve any media when issue read returns 403 2ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > does not resolve any media when issue read returns 404 2ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > requires the source chat's read permission before loading messages 1ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > does not resolve a source from a different workspace 1ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > returns only the chosen mermaid, including on a second load 40ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > returns only the chosen table, including on a second load 22ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > returns only the chosen html, including on a second load 23ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > finds a comment's media but never follows a forged attachment ID 4ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > does not substitute a new item when the old content was edited 4ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > resolves an attached file only by its opaque identity within the allowed source 2ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > resolves chat media only from the allowed session 1ms
+ ✓ media/resolve-media.test.ts > permission-checked media source resolution > uses CommonMark fences and table extraction without upgrading an open fence 4ms
+ ✓ editor/utils/preprocess-channel-media.test.ts > preprocessMarkdown channel-media provenance > keeps the image visible while hiding its merge marker 7ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > shows an always-visible title bar with the fence title and kind
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > names the block after its kind when the fence has no title
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > renders the HTML in a scripts-only sandbox with the theme, bridge and fragment shim
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > switches to source in the same frame and keeps the preview mounted
+An update to CompositeList inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > switches to source in the same frame and keeps the preview mounted
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > shows an always-visible title bar with the fence title and kind 427ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > renders the HTML in a scripts-only sandbox with the theme, bridge and fragment shim 67ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > names the block after its kind when the fence has no title 77ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > defaults to preview view: renders an iframe with sandbox='allow-scripts' and keeps the <pre> mounted (hidden) 142ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — height > shows a loading skeleton until the document reports, then takes its height
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — height > never goes below the minimum body height
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — frame > switches to source in the same frame and keeps the preview mounted 166ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — height > shows a loading skeleton until the document reports, then takes its height 64ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — height > ignores messages that do not come from its own frame
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — height > starts from the height this HTML had earlier in the session
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — errors > explains a script error in place and offers the source
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — height > never goes below the minimum body height 60ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — height > starts from the height this HTML had earlier in the session 123ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — height > ignores messages that do not come from its own frame 54ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > toggles to source view without unloading the preview or editor content 210ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > opens the current HTML in a larger sandboxed preview without replacing editor content 375ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > does not show the toggle or an iframe for a non-html language 19ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer closing > closes via the explicit X button 627ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer closing > closes on Escape after the canvas has been clicked and focused 319ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads only the requested frame and restarts height measurement after a script error
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads only the requested frame and restarts height measurement after a script error
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — errors > explains a script error in place and offers the source 144ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > hides media links for unsaved HTML editor content inside a persisted source 82ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > waits for the reloaded document before restarting the missing-bridge timeout
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads only the requested frame and restarts height measurement after a script error 196ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer closing > keeps the diagram inside an empty sandbox, so it can never steal focus or run scripts 169ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > reloads inline and enlarged HTML while preserving the editor and surface 233ms
+ ✓ editor/extensions/code-block-view.test.tsx > CodeBlockView — html language toggle > defers source edits until the retained preview is visible 243ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders an <img> centered in the modal for image content types 255ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > falls back to durable media URLs when a full attachment has no download_url 39ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders an <img> from a URL-only source for image filenames 35ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer closing > returns focus to the element that opened it 312ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders a PDF iframe pointing at the signed download URL 85ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders a <video> for video/* content types 33ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders an <audio> for audio/* content types 23ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads inside the same enlarged surface and retains source selection on close
+An update to CompositeList inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads inside the same enlarged surface and retains source selection on close
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > waits for the reloaded document before restarting the missing-bridge timeout 128ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > fetches text and hands it to ReadonlyContent for Markdown 80ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders an iframe with srcdoc + sandbox='allow-scripts' for HTML 121ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > enlarges the loaded iframe without creating another document
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — reload > reloads inside the same enlarged surface and retains source selection on close 384ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer closing > locks background scroll while open and restores it on close 294ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > ignores enlarged viewport measurements and restores the inline height
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > enlarges the loaded iframe without creating another document 239ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > opens fitted to the viewport rather than squashed to a fixed size 210ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > reveals the loaded preview from source and restores source on close
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > ignores enlarged viewport measurements and restores the inline height 262ms
+ ✓ media/media-context.test.tsx > media viewer actions > opens a source-scoped browser tab without putting media bytes in the URL 374ms
+ ✓ media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for mermaid 46ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > zooms in and out from the toolbar 399ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > loads the HTML at the address typed into its address bar 127ms
+ ✓ media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for table 32ms
+ ✓ media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for html 26ms
+ ✓ media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for image 31ms
+ ✓ media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for attachment 35ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > keeps the HTML's address across the source view 711ms
+ ✓ media/media-context.test.tsx > media viewer actions > copies the public media URL, including the current query and fragment 41ms
+ ✓ media/media-context.test.tsx > media viewer actions > keeps phone More actions as focusable buttons and returns focus on Escape 45ms
+ ✓ media/media-context.test.tsx > media viewer actions > lets Escape on the closed More summary reach the document without preventing default 13ms
+stderr | editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > keeps expanded source mounted and selected while enlarging the preview
+An update to HtmlBlockBody inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > reveals the loaded preview from source and restores source on close 274ms
+ ✓ editor/html-block-preview.test.tsx > HtmlBlockPreview — fullscreen > keeps expanded source mounted and selected while enlarging the preview 311ms
+ ✓ media/media-context.test.tsx > media viewer actions > reports native-window failures instead of silently falling back to an external browser 71ms
+ ✓ media/media-context.test.tsx > media viewer actions > restores More focus even when a nested action consumes Escape 27ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > jumps to natural size with Actual size 227ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > drops an unsubmitted address on Escape without closing the viewer 250ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > renders a code block with lowlight for source files 50ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — dispatch > shows unsupported fallback when no PreviewKind matches 19ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > prefixes the configured API base for image previews when download_url is server-relative 26ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > waits for the re-sign before loading an auth-gated image 69ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > prefixes the configured API base for PDF previews when download_url is server-relative 33ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > keeps a same-origin relative URL untouched when the configured base is empty (web) 24ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > trims a trailing slash on the configured base when joining a relative URL 21ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > Download button invokes useDownloadAttachment with the attachment id 50ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — error states > shows the unsupported fallback on PreviewUnsupportedError (server/client drift) 40ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — server-relative download_url resolution (MUL-2976) > passes an already-absolute CloudFront/presigned download_url through unchanged 28ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > describes the file by type and size instead of its MIME type 35ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — error states > shows the generic failed fallback on a transport error 38ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > hides the desktop window buttons while open and restores them on close 41ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — error states > shows the too-large fallback on PreviewTooLargeError 41ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > ESC closes the modal 34ms
+ ✓ media/media-page.test.tsx > media route permission > matches the normal not-found page with a 404, description and recovery link 349ms
+ ✓ media/media-page.test.tsx > media route permission > retains this view's last loaded copy on an offline error, not cached data on a fresh denied route 54ms
+ ✓ media/media-page.test.tsx > media route permission > no access (401) means no media bytes, even with a cached source 20ms
+ ✓ media/media-page.test.tsx > media route permission > offers retry after a load error without exposing media 28ms
+ ✓ media/media-page.test.tsx > media route permission > no access (403) means no media bytes, even with a cached source 15ms
+ ✓ media/media-page.test.tsx > media route permission > no access (404) means no media bytes, even with a cached source 12ms
+ ✓ media/media-page.test.tsx > media route permission > removes media after a later permission revocation 45ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > restores the fitted view with Fit to view after panning away 308ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > clicking the backdrop closes the modal 33ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — controls > keeps the dialog mounted for its exit and then removes it 78ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — copy image (MUL-7759) > copies the image on screen from the desktop shell 54ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — copy image (MUL-7759) > says so when the copy fails 53ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — copy image (MUL-7759) > offers no copy button on web, where the storage CDN can't be read from script 33ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > stops at 400% and disables Zoom in at the ceiling 655ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — copy image (MUL-7759) > offers no copy button for files that aren't images 40ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — URL-only source > renders a PDF iframe from the URL when no attachment record is available 25ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — URL-only source > renders <video> from the URL when no attachment record is available 13ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — URL-only source > falls back to unsupported when a text kind is forced through a URL source 15ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — URL-only source > renders an <img> for a caller-declared image whose filename is a caption (MUL-7518) 20ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — URL-only source > Download button opens the raw URL externally when no attachment id is available 48ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > renders the open-in-new-tab button in the header for HTML attachments 71ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > invokes navigation.openInNewTab with the preview path and closes the modal (desktop) 53ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens the new tab at the address the HTML is at 93ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > re-fits on reopen instead of inheriting the previous session's zoom 424ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > falls back to window.open against the shareable URL and closes the modal (web) 70ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens manual.pdf in a new tab too — the page shows every kind 36ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens shot.png in a new tab too — the page shows every kind 32ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens clip.mp4 in a new tab too — the page shows every kind 25ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens report.csv in a new tab too — the page shows every kind 29ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens data.json in a new tab too — the page shows every kind 42ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > opens server.log in a new tab too — the page shows every kind 30ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > does not render the new-tab button for a file the viewer cannot show 31ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > does not render the new-tab button for a URL-only source — the page loads by id 30ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — open-in-new-tab > does not render the new-tab button when there is no workspace slug 48ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > accepts a full attachment for a media kind 3ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > accepts a URL source for a media kind 1ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > rejects a URL source for a text kind — /content proxy needs an id 1ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > accepts a URL source whose kind the caller declares, extension or not (MUL-7518) 1ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > still rejects a declared text kind from a URL source — the id gate wins 1ms
+ ✓ editor/attachment-preview-modal.test.tsx > useAttachmentPreview — tryOpen gate > rejects a source whose filename isn't a previewable type 1ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > fits an oversized image to the canvas on open 50ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > opens a small image at 100% instead of magnifying it 39ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > shows a long screenshot in full, below the 25% floor 51ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > zooms in and out from the toolbar 105ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > reopens showing the diagram even if it was left on the source view 357ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > jumps to natural size and back to fit 104ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > zooms on wheel without scrolling the page behind the modal 87ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer zoom controls > stops at 25% and disables Zoom out at the floor 535ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > pans with a mouse drag 159ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > pans on drag 117ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > toggles between fit and 100% on double-click 79ms
+stderr | rich-content/rich-table.test.tsx > RichTable > gives an overflowing table capped content widths without saving them
+`NaN` is an invalid value for the `left` css style property.
+
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > ignores right-button drags so context-menu clicks do not shift the diagram 126ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > focuses the canvas on open so the keyboard controls work without a click first 69ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > keeps the focus ring off for the focus it places itself 65ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > zooms on wheel, anchored so the point under the cursor stays put 139ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > keeps the browser's layout until a column is resized 336ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > gives an overflowing table capped content widths without saving them 92ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > re-fits on reopen instead of restoring the previous zoom 137ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > letterboxes an image with no intrinsic size and hides the zoom controls 33ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > keeps a pan that ends over the backdrop from closing the modal 55ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — image zoom > shows no zoom controls for non-image kinds 35ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — text views > numbers the lines of a code file and leaves them unwrapped 48ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > resizes a column from the keyboard, persists it, and resets 172ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > keeps a handle's height after a click, so a double-click lands 58ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > zooms out on the opposite wheel direction 141ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > copies the table as the author wrote it 72ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > copies code, explicit links and quoted tables unchanged 61ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — text views > wraps a log by default and lets the reader turn it off 63ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — text views > keeps the reader's wrap choice when the viewer moves to another file 55ms
+stderr | media/media-dialog-close.test.tsx > phone source-dialog Close > keeps mermaid Close outside More and usable without opening it
+An update to TooltipTrigger inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to TooltipRoot inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > pinch-zooms with two touch pointers 174ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > zooms with the +/- keys and refits with 0 188ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > pans with the arrow keys 141ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer canvas interaction > never lets the diagram be panned entirely out of view 150ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer source and export > copies the Mermaid source 145ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — html viewports > shows the source with line numbers, and holds the viewport while it does 137ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — structured data > shows JSON as a tree, with the source one switch away 125ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — structured data > falls back to the source, and says why, when the file does not parse 67ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — html viewports > fills the stage by default and switches to a device width without reloading 142ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — structured data > parses YAML into the same tree 46ms
+ ✓ editor/attachment-preview-modal.test.tsx > AttachmentPreviewModal — tables > shows a CSV as a table 47ms
+stderr | media/media-dialog-close.test.tsx > phone source-dialog Close > keeps table Close outside More and usable without opening it
+An update to TooltipTrigger inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to TooltipRoot inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | media/media-dialog-close.test.tsx > phone source-dialog Close > keeps image Close outside More and usable without opening it
+An update to TooltipTrigger inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to TooltipRoot inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ media/media-dialog-close.test.tsx > phone source-dialog Close > keeps mermaid Close outside More and usable without opening it 700ms
+ ✓ media/media-dialog-close.test.tsx > phone source-dialog Close > keeps image Close outside More and usable without opening it 111ms
+ ✓ media/media-dialog-close.test.tsx > phone source-dialog Close > keeps table Close outside More and usable without opening it 306ms
+ ✓ media/media-dialog-close.test.tsx > phone source-dialog Close > keeps html Close outside More and usable without opening it 65ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > route permission: removes cached media when read access is denied 93ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer source and export > toggles to the source view and back, because Issue/Comment is where agent output gets audited 245ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > expands into a sortable, filterable view of the same cells 1184ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > shows the viewer's bar and stage — without a close button, since the tab is the frame 497ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > injects the scroll bridge under the desktop adapter and keys the iframe on contentKey 75ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > does NOT inject the bridge or register a source on web (adapter without registerExternalSource) 61ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer source and export > offers PNG, SVG and .mmd exports 313ms
+ ✓ editor/mermaid-viewer.test.tsx > MermaidViewer source and export > downloads an .mmd file containing the original source 417ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > opens an HTML file at the route's address 112ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > keeps Open in new tab for a saved description block 681ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > comes back to the address kept in the tab's view state, and keeps it there 146ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > shows an image 32ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > shows a CSV as a table 66ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > titles the tab from the URL's name until the record lands 8ms
+ ✓ attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > says the preview failed when the record cannot be loaded 10ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action for an unsaved description block 169ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > hides the action immediately after an edit and restores it after undo 267ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action in a composer even when its text matches saved description media 158ms
+
+ Test Files  12 passed (12)
+      Tests  184 passed (184)
+   Start at  23:30:49
+   Duration  13.74s (transform 32.92s, setup 2.44s, import 72.26s, tests 23.52s, environment 16.39s)

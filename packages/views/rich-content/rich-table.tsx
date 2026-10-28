@@ -35,6 +35,7 @@ import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
+import { useStandaloneMedia } from "../media/media-context";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
 import { cachedOverflowWidths, headerCells, measureColumns } from "./rich-table-fit";
@@ -476,10 +477,12 @@ type RichTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 
 /** react-markdown's `table` override. */
 export function RichTable({ children, node }: RichTableProps) {
+  const standalone = useStandaloneMedia();
   const { source, rendered } = useContext(RichTableSourceContext);
   const model = useMemo(() => readTableModel(children), [children]);
   const getMarkdown = () =>
     tableMarkdownFromSource(source, rendered, node?.position?.start.offset, node?.position?.end.offset);
+  if (standalone) return <RichTableDialog model={model} open onOpenChange={() => {}} getMarkdown={getMarkdown} standalone />;
   return (
     <RichTableFrame model={model} getMarkdown={getMarkdown}>
       <TableContent>{children}</TableContent>

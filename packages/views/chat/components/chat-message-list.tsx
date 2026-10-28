@@ -30,6 +30,7 @@ import {
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RichContent } from "../../rich-content";
+import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { AttachmentList } from "../../issues/components/comment-card";
@@ -609,6 +610,7 @@ export function ChatMessageList({
   );
 
   return (
+    <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
     <div
       ref={setScrollContainerRef}
@@ -718,6 +720,7 @@ export function ChatMessageList({
       )}
     </div>
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 }
 
