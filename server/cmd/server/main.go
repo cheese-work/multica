@@ -790,6 +790,13 @@ func main() {
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
+	// CHE-2301: relink same-repository PRs the old fork-flag check rejected.
+	go func() {
+		if _, err := h.RepairUnverifiedHeadPullRequests(sweepCtx); err != nil {
+			slog.Warn("github repair: unverified head sweep incomplete", "error", err)
+		}
+	}()
+	go h.RunGitHubIntakeReconciler(sweepCtx)
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
 	// installation and drives each channel.Channel. It is channel-agnostic,

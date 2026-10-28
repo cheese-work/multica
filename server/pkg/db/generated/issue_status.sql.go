@@ -457,11 +457,21 @@ const updateIssueStatusEntry = `-- name: UpdateIssueStatusEntry :one
 UPDATE issue_status SET
     name = COALESCE($1, name),
     description = COALESCE($2, description),
-    color = COALESCE($3, color),
-    icon = COALESCE($4, icon),
-    position = COALESCE($5, position),
+    category = COALESCE($3, category),
+    color = COALESCE($4, color),
+    icon = COALESCE($5, icon),
+    position = COALESCE(
+        $6,
+        CASE WHEN $3::text IS NOT NULL AND $3::text <> category
+            THEN COALESCE(
+                (SELECT MAX(s.position) + 1 FROM issue_status s
+                 WHERE s.workspace_id = $7::uuid
+                   AND s.category = $3::text),
+                0)
+            ELSE position
+        END),
     updated_at = now()
-WHERE id = $6::uuid
+WHERE id = $8::uuid
   AND workspace_id = $7::uuid
   AND is_system = FALSE
   AND archived_at IS NULL
@@ -471,25 +481,30 @@ RETURNING id, workspace_id, key, name, description, category, color, is_system, 
 type UpdateIssueStatusEntryParams struct {
 	Name        pgtype.Text   `json:"name"`
 	Description pgtype.Text   `json:"description"`
+	Category    pgtype.Text   `json:"category"`
 	Color       pgtype.Text   `json:"color"`
 	Icon        pgtype.Text   `json:"icon"`
 	Position    pgtype.Float8 `json:"position"`
-	ID          pgtype.UUID   `json:"id"`
 	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	ID          pgtype.UUID   `json:"id"`
 }
 
-// key and category are absent on purpose: both are immutable after create.
+// key is absent on purpose: it is immutable after create. category changes
+// only when the handler passes it, after the owner/admin and confirmation
+// checks; a moved status lands last in its new category unless the caller
+// supplies a position.
 // The is_system guard is what enforces "built-in name and color are locked" at
 // the storage layer, so a handler bug cannot rename a built-in.
 func (q *Queries) UpdateIssueStatusEntry(ctx context.Context, arg UpdateIssueStatusEntryParams) (IssueStatus, error) {
 	row := q.db.QueryRow(ctx, updateIssueStatusEntry,
 		arg.Name,
 		arg.Description,
+		arg.Category,
 		arg.Color,
 		arg.Icon,
 		arg.Position,
-		arg.ID,
 		arg.WorkspaceID,
+		arg.ID,
 	)
 	var i IssueStatus
 	err := row.Scan(

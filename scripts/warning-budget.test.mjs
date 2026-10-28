@@ -87,6 +87,27 @@ test("eslint warnings follow file and rule rather than line numbers", () => {
   assert.deepEqual(warningCounts([coreRule]), { "frontend-build: packages/views/first.tsx: curly": 1 })
 })
 
+test("an eslint annotation GitHub files under .github counts once with its log line", () => {
+  const log = "2026-10-27T05:00:00Z /home/runner/work/multica/multica/packages/core/platform/core-provider.tsx\n2026-10-27T05:00:00Z ##[warning]  169:5  warning  React Hook useMemo has missing dependencies: 'apiBaseUrl'. Either include them or remove the dependency array  react-hooks/exhaustive-deps"
+  const message = "React Hook useMemo has missing dependencies: 'apiBaseUrl'. Either include them or remove the dependency array"
+  const withLog = warningCounts([{ name: "frontend-build", log, annotations: [] }])
+  const withBoth = warningCounts([{ name: "frontend-build", log, annotations: [{ annotation_level: "warning", path: ".github", start_line: 169, message }] }])
+  assert.deepEqual(withBoth, withLog)
+  assert.deepEqual(warningRegressions(withLog, withBoth), [])
+})
+
+test("the same eslint message in two files stays collision-safe when annotation retention changes", () => {
+  const detail = "Unexpected any. Specify a different type."
+  const log = ["first.ts", "second.ts"].map((file) => `2026-10-27T05:00:00Z /home/runner/work/multica/multica/packages/${file}\n2026-10-27T05:00:00Z ##[warning]  1:1  warning  ${detail}  @typescript-eslint/no-explicit-any`).join("\n")
+  const annotation = { annotation_level: "warning", path: ".github", start_line: 1, message: detail }
+  const job = (annotations) => ({ name: "frontend-build", log, annotations })
+  const baseline = warningCounts([job([annotation])])
+  const current = warningCounts([job([annotation, annotation])])
+  assert.deepEqual(current, baseline)
+  assert.deepEqual(warningRegressions(baseline, current), [])
+  assert.deepEqual(baseline, { "frontend-build: packages/first.ts: @typescript-eslint/no-explicit-any": 1, "frontend-build: packages/second.ts: @typescript-eslint/no-explicit-any": 1 })
+})
+
 test("lowercase npm warn diagnostics are counted", () => {
   assert.deepEqual(warningCounts([{ name: "install", log: "npm warn deprecated fixture@1.0.0: use the maintained API", annotations: [] }]), {
     "install: npm warn deprecated fixture@1.0.0: use the maintained API": 1,

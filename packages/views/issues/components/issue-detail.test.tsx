@@ -27,6 +27,13 @@ import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
+const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
+vi.mock("../../projects/components/local-directory-hint", () => ({
+  LocalDirectoryHint: (props: unknown) => {
+    mockLocalDirectoryHint(props);
+    return null;
+  },
+}));
 
 // Counts MockContentEditor mounts. This pins the description to exactly one
 // eager editor per issue and catches stale editor reuse across issue switches.
@@ -161,7 +168,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
   }),
   agentListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "agents"],
-    queryFn: () => Promise.resolve([]),
+    queryFn: () => mockApiObj.listAgents(),
   }),
   squadListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "squads"],
@@ -904,6 +911,36 @@ describe("IssueDetail (shared)", () => {
     // Reset project mock — individual tests override per case. Default fixture
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
+  });
+
+  it("passes the issue's agent assignment to the local-directory hint", async () => {
+    const agent = { id: "agent-vue", name: "Vue developer", runtime_id: "runtime-vue" };
+    mockApiObj.getIssue.mockResolvedValue({
+      ...mockIssue,
+      project_id: "proj-1",
+      assignee_type: "agent",
+      assignee_id: agent.id,
+    });
+    mockApiObj.getProject.mockResolvedValue({ id: "proj-1", name: "Demo" });
+    mockApiObj.listAgents.mockResolvedValue([agent]);
+
+    renderIssueDetail();
+
+    await waitFor(() => expect(mockLocalDirectoryHint).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      assignedAgent: agent,
+    }));
+  });
+
+  it("bounds the add-property popover to the available viewport", async () => {
+    renderIssueDetail();
+    await screen.findByText(mockIssue.title);
+    fireEvent.click(screen.getByText("Add property"));
+    expect(await screen.findByTestId("add-property-popover")).toHaveClass(
+      "max-h-(--available-height)",
+      "overflow-y-auto",
+      "overscroll-contain",
+    );
   });
 
   it("counts comment files as deliverables, a re-upload once as v2, never the description's (MUL-7649)", async () => {
@@ -3264,6 +3301,27 @@ describe("IssueDetail (shared)", () => {
     // Reopening replaces the status row, so the unmarked row says where it went.
     expect(screen.getByText(/and moved it to Todo/i)).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "MUL-9" })).toHaveLength(2);
+  });
+
+  // CHE-2309: a refused review run names the superseded run whose runner is
+  // not confirmed stopped; the raw action key must never reach the timeline.
+  it("renders a stop_not_confirmed activity as readable text", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "act-stop-not-confirmed",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "stop_not_confirmed",
+        details: { task_id: "run-123", message: "stop not confirmed for run run-123" },
+        created_at: "2026-01-18T02:00:00Z",
+      },
+    ] as unknown as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(await screen.findByText(/stop not confirmed for run run-123/i)).toBeInTheDocument();
+    expect(screen.queryByText("stop_not_confirmed")).not.toBeInTheDocument();
   });
 
   // MUL-7429: an automatic status change says why, and the per-issue switch

@@ -99,7 +99,10 @@ export function useUpdateIssueStatus() {
     onMutate: async ({ id, ...data }) => {
       await qc.cancelQueries({ queryKey: listKey });
       const previous = qc.getQueryData<ListIssueStatusesResponse>(listKey);
-      patchEntry(id, data);
+      // A category change waits for the server's confirmation and lands in a
+      // new position, so the realtime refetch shows it rather than a guess.
+      const { category: _category, confirm_category_change: _confirm, ...patch } = data;
+      patchEntry(id, patch);
       return { previous };
     },
     // Nothing on success. The optimistic patch already shows the change, the
