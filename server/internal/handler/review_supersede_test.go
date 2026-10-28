@@ -260,3 +260,37 @@ func TestReviewSupersede_StaleVerdictRefusedAfterCleanupUnconfirmedRewrite(t *te
 		t.Fatalf("issue status after refused verdict = %q, want in_review", status)
 	}
 }
+
+// Two linked PRs can share a head SHA. The replacement keeps the identity of the
+// PR it replaces, so a later push to that PR still supersedes it.
+func TestReviewSupersede_ReplacementKeepsItsPRWhenASiblingSharesTheHead(t *testing.T) {
+	f := reviewIssue(t)
+	siblingID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
+		"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "sibling PR on the same head", "state": "open", "html_url": "https://example.test/sibling-pr",
+		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"), "head_sha": reviewHeadB,
+	})
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, f.issueID, siblingID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, siblingID)
+	})
+
+	pushHead(t, f.prID, reviewHeadB)
+	dbfx.Exec(t, `UPDATE github_pull_request SET pr_updated_at = now() + interval '1 second' WHERE id = $1`, siblingID) // newest PR on head B
+	daemonAck(t, f.review)
+
+	q := queuedRuns(t, f.issueID)
+	if len(q) != 1 {
+		t.Fatalf("queued after ack = %+v, want one replacement", q)
+	}
+	var boundPR string
+	dbfx.QueryRow(t, `SELECT pull_request_id::text FROM agent_task_queue WHERE id = $1`, q[0].id).Scan(&boundPR)
+	if boundPR != f.prID {
+		t.Fatalf("replacement bound to PR %s, want %s", boundPR, f.prID)
+	}
+
+	pushHead(t, f.prID, reviewHeadC)
+	if got := taskStatus(t, q[0].id); got != "cancelled" {
+		t.Fatalf("replacement status after the PR advanced again = %q, want cancelled", got)
+	}
+}

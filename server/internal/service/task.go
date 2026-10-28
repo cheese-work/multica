@@ -1433,6 +1433,12 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 
 type reviewPRKey struct{}
 
+// reviewPRPin is the PR WithReviewPR pinned on ctx, or the zero (invalid) UUID.
+func reviewPRPin(ctx context.Context) pgtype.UUID {
+	prID, _ := ctx.Value(reviewPRKey{}).(pgtype.UUID)
+	return prID
+}
+
 // WithReviewPR pins the review head every enqueue under ctx resolves to the
 // head of one linked PR, instead of the issue's most recently updated one. A
 // replacement review of a superseded run uses it to stay on its own PR
@@ -1445,7 +1451,7 @@ func WithReviewPR(ctx context.Context, prID pgtype.UUID) context.Context {
 // The enqueue's dedup key and the run budget's review gate both resolve the head
 // here, so a pinned replacement is admitted and stamped against one head.
 func issueReviewHead(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
-	if prID, ok := ctx.Value(reviewPRKey{}).(pgtype.UUID); ok {
+	if prID := reviewPRPin(ctx); prID.Valid {
 		pr, err := q.GetGitHubPullRequestByID(ctx, prID)
 		return pr.HeadSha, err
 	}
@@ -1553,6 +1559,8 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		// A pinned replacement keeps the identity of its PR, not just its head.
+		PullRequestID: reviewPRPin(ctx),
 	}
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
