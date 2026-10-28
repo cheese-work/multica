@@ -1,0 +1,5 @@
+SOURCE before 1440 table
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+SOURCE PASS: before; 1 kinds; widths 1440; Escape dismissal

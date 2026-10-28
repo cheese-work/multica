@@ -408,7 +408,8 @@ describe("ChatMessageList auto-scroll", () => {
 
     expect(view.container.contains(scroll.el)).toBe(true);
     expect(followsAtBottom()).toBe("false");
-    expect(observedTargets()).toHaveLength(observedBefore - 1);
+    // The list's own observer and the next-mention button's both go.
+    expect(observedTargets()).toHaveLength(observedBefore - 2);
     scroll.grow(120);
     scroll.shrinkViewport(72);
     scroll.browserScrollsListUp(100);
