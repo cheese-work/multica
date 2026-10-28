@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgtype"
 	"net/http"
 	"strings"
 	"testing"
@@ -174,5 +175,54 @@ func TestReviewSupersede_AuthorRunIsNotCancelled(t *testing.T) {
 	}
 	if got := taskStatus(t, f.review); got != "cancelled" {
 		t.Fatalf("review run status = %q, want cancelled", got)
+	}
+}
+
+// An author's run is queued while the issue is in progress, so it is never a
+// review. A normal handoff to in_review advances its workflow step but must not
+// make it cancellable by a new head.
+func TestReviewSupersede_AuthorQueuedInProgressSurvivesHandoffAndNewHead(t *testing.T) {
+	f := reviewIssue(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, f.review)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issueID)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(f.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := testHandler.TaskService.EnqueueTaskForIssueWithHandoff(context.Background(), issue, "", pgtype.UUID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := uuidToString(task.ID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', dispatched_at = now(), started_at = now() WHERE id = $1`, author)
+
+	agentUpdateIssue(t, f.issueID, f.agentID, author, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+	pushHead(t, f.prID, reviewHeadB)
+
+	if got := taskStatus(t, author); got != "running" {
+		t.Fatalf("author run status after handoff and new head = %q, want running", got)
+	}
+}
+
+// The replacement reviews the PR its group belongs to, not whichever linked PR
+// was updated last.
+func TestReviewSupersede_ReplacementStaysBoundToItsPR(t *testing.T) {
+	f := reviewIssue(t)
+	pushHead(t, f.prID, reviewHeadB)
+	siblingID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
+		"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "newer sibling PR", "state": "open", "html_url": "https://example.test/sibling-pr",
+		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now() + interval '1 second'"), "head_sha": reviewHeadC,
+	})
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, f.issueID, siblingID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, siblingID)
+	})
+
+	daemonAck(t, f.review)
+
+	q := queuedRuns(t, f.issueID)
+	if len(q) != 1 || q[0].head != reviewHeadB {
+		t.Fatalf("replacement = %+v, want one run for the superseded PR's head %s", q, reviewHeadB)
 	}
 }

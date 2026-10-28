@@ -2733,10 +2733,13 @@ SELECT
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     (SELECT i.status FROM issue i WHERE i.id = $3),
     -- The PR whose head the review is stamped with, so a later head can find
-    -- and supersede this run (CHE-2307).
+    -- and supersede this run (CHE-2307). Only a run queued while the issue is
+    -- in a review step is bound: an author's run is queued at another step, and
+    -- its step advancing to in_review later does not make it a review.
     (SELECT pr.id FROM github_pull_request pr
        JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
       WHERE ipr.issue_id = $3
+        AND (SELECT i.status FROM issue i WHERE i.id = $3) IN ('in_review', 'agent_review')
         AND COALESCE($12::text, '') <> ''
         AND pr.head_sha = $12::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1),

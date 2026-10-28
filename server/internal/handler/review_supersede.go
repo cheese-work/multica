@@ -80,7 +80,7 @@ func (h *Handler) releaseSupersededReviewReplacement(ctx context.Context, issueI
 		}
 		released[key] = true
 		// A closed PR has no head to review: settle the group without a run.
-		if h.prAwaitsReview(ctx, g.PullRequestID) && !h.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
+		if h.prAwaitsReview(ctx, g.PullRequestID) && !h.dispatchIssueRun(service.WithReviewPR(ctx, g.PullRequestID), issue, service.IssueRunTrigger{
 			IssueID: issue.ID, AgentID: issue.AssigneeID, AssigneeType: issue.AssigneeType.String,
 		}, "agent", uuidToString(g.AgentID), "") {
 			continue // not enqueued: stays unreleased for the next trigger
