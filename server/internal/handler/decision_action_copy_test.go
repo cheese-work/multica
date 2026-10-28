@@ -132,3 +132,16 @@ func TestApproveAgentCopyRefusesWhenTheSourcePermissionsDrifted(test *testing.T)
 		test.Fatal("a copy carried permissions the approver never saw")
 	}
 }
+
+func TestApproveAgentCopyRefusesWhenTheSourceInvocationTargetsDrifted(test *testing.T) {
+	action := newPendingCopy(test, "che2233 copy retargeted", nil)
+	dbfx.Exec(test, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	dbfx.Exec(test, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, action.agentID)
+	body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusConflict)
+	if !strings.Contains(body, "precondition_drift") {
+		test.Fatalf("body %q lacks precondition_drift", body)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent WHERE name = 'che2233 copy retargeted'`); n != 0 {
+		test.Fatal("a copy carried invocation targets the approver never saw")
+	}
+}
