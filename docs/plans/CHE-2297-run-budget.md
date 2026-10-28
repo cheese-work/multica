@@ -53,7 +53,7 @@ L1 does not open a decision request. Decision requests stay task-only (fact 4); 
 | First entry to a status in this window | +6 runs / 15M tokens | `step:<window_id>:<status_key>` | yes |
 | PR head SHA never seen on this issue | +6 runs / 15M tokens | `head:<pr_id>:<sha>` | yes |
 | CHE-2295 step 4 option C stale-PR return | +6 runs / 15M tokens | `stale_pr:<pr_id>:<sha>:<cause>` | yes |
-| CHE-2298 refund of a review the server cancelled because the head changed | +1 run, 0 tokens | `refund:<task_id>` | no |
+| Refund of a review the server cancelled with reason `superseded_head` (CHE-2298 stop gate; D1 below) | +1 run, 0 tokens | `refund:<task_id>` | no |
 
 The top-up endpoint accepts member sessions only; a `task_token` caller gets 403. Empty or cosmetic commits are not detected: the server has no diff data. They are bounded by the 3-grant cap, not prevented.
 
@@ -86,7 +86,7 @@ All steps: test-first server PRs in `cheese-work/multica`, stacked in this order
 | L1b | Budget line in the run prompt (runs left, tokens used, unreported runs) | 1.5 h | 1 |
 | L2a | Ledger table and migration, initial entry from today's window, locked admission and run debit, named-origin fix for agent mentions and agent wakeups | 2 h | 2 |
 | L2b | Token reservation and usage debit, token notices at usage report; needs E | 2 h | 3 |
-| L2c | Window credit, 3 progress grants with cap, CHE-2298 refund, step 4 C grant entry | 2 h | 3 |
+| L2c | Window credit, 3 progress grants with cap, `superseded_head` refund, step 4 C grant entry | 2 h | 3 |
 | L2d | Member top-up endpoint and CLI | 1.5 h | 3 |
 | L3 | Recovery reserve: claim, turn and time limits, 403 restrictions | 2 h | 4 |
 
@@ -106,7 +106,7 @@ Total 13 h of authoring, up from 8 h, plus one verification per step.
 
 Both consumers write only through one service function, `service.RecordRunBudgetEntry(ctx, q, issueID, kind, eventKey, runsDelta, tokensDelta)`, which takes the issue lock and applies the unique key and, for progress kinds, the cap.
 
-- CHE-2298 D1 option B: its "reserve 1 slot on admission" is the L2a `run:<task_id>` debit; its refund is kind `refund`, key `refund:<task_id>`, +1 run, 0 tokens, only when the server cancelled a review because the head changed. Tokens are never refunded.
+- CHE-2298 (plan revision 2 moved D1 here): every admitted run is debited at admission (`run:<task_id>`). When the CHE-2298 stop gate cancels a review with reason `superseded_head`, it calls this function with kind `refund`, key `refund:<task_id>`, +1 run, 0 tokens. Tokens are never refunded. CHE-2298 adds no grant of its own.
 - CHE-2295 step 4 option C: its "run grant for the PR fix" is kind `progress`, key `stale_pr:<pr_id>:<sha>:<cause>`, inside the 3-grant cap, so a stale-PR loop cannot grant more than 3 times per window.
 
 ## Risks (1 low - 5 high)
@@ -133,6 +133,7 @@ Both consumers write only through one service function, `service.RecordRunBudget
 2. Close the bypass for agent @mentions and agent wakeups (recommended; needed for any budget to hold)?
 3. Weighted tokens with cache reads at 0.1, and the 15M grant counted in weighted tokens?
 4. Start L1 while L2b waits for the measured per-run reservation E?
+5. D1 (moved from CHE-2298): **B** (recommended) debit every run at admission and refund 1 run, never tokens, only for a review cancelled with `superseded_head`; or **A** count only completed runs, which lets a crashing run loop for free.
 
 ```mermaid
 stateDiagram-v2
