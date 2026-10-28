@@ -10,7 +10,7 @@ export {
 } from "./queries";
 export { compareIssueStatusEntries } from "./queries";
 export { issueStatusArchiveConflictCount, createIssueStatusListStore } from "./archive";
-export { issueStatusCategoryChangeConflictCount } from "./category-change";
+export { parseIssueStatusCategoryChangeConflict, type IssueStatusCategoryChangeConflict } from "./category-change";
 export { useIssueStatuses } from "./hooks";
 export {
   useCreateIssueStatus,

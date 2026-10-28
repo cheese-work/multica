@@ -38,7 +38,8 @@ import { derivePRMergeStatus } from "@multica/core/github";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import {
   issueStatusArchiveConflictCount,
-  issueStatusCategoryChangeConflictCount,
+  parseIssueStatusCategoryChangeConflict,
+  type IssueStatusCategoryChangeConflict,
   createIssueStatusListStore,
 } from "@multica/core/issue-statuses";
 import { baselineFromQuery } from "@multica/core/issue-views/baseline";
@@ -632,7 +633,7 @@ function StatusEditorDialog({
   const [draft, setDraft] = useState<StatusDraft>(EMPTY_DRAFT);
   const [iconChanged, setIconChanged] = useState(false);
   // Set when the server asks the admin to confirm a category change.
-  const [pendingCategoryChange, setPendingCategoryChange] = useState<{ issueCount: number } | null>(null);
+  const [pendingCategoryChange, setPendingCategoryChange] = useState<IssueStatusCategoryChangeConflict | null>(null);
 
   const categoryItems = ALL_STATUSES.map((c) => ({
     value: c,
@@ -663,9 +664,9 @@ function StatusEditorDialog({
     const name = draft.name.trim();
     if (!name || create.isPending || update.isPending) return;
     const onError = (error: unknown) => {
-      const issueCount = issueStatusCategoryChangeConflictCount(error);
-      if (issueCount !== null) {
-        setPendingCategoryChange({ issueCount });
+      const conflict = parseIssueStatusCategoryChangeConflict(error);
+      if (conflict) {
+        setPendingCategoryChange(conflict);
         return;
       }
       toast.error(
@@ -900,8 +901,10 @@ function StatusEditorDialog({
           <AlertDialogDescription>
             {t(($) => $.issue_statuses.category_change_dialog.description, {
               count: pendingCategoryChange?.issueCount ?? 0,
-              from: currentCategory ? t(($) => $.issue_statuses.category_labels[currentCategory]) : "",
-              to: t(($) => $.issue_statuses.category_labels[draft.category]),
+              // The server's categories, not the editor snapshot: another admin
+              // may have moved this status since the dialog opened.
+              from: pendingCategoryChange ? t(($) => $.issue_statuses.category_labels[pendingCategoryChange.from]) : "",
+              to: pendingCategoryChange ? t(($) => $.issue_statuses.category_labels[pendingCategoryChange.to]) : "",
             })}
           </AlertDialogDescription>
         </AlertDialogHeader>
