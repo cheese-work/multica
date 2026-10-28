@@ -129,5 +129,8 @@
   },
   "navigation": {
     "open_in_new_tab": "新しいタブで開く"
+  },
+  "next_self_mention": {
+    "label": "自分への次のメンション"
   }
 }

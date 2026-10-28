@@ -12,6 +12,8 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { contentMentionsViewer, useNextSelfMention } from "../../rich-content/next-self-mention";
+import { NextSelfMentionButton } from "../../rich-content/next-self-mention-button";
 import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
@@ -2329,6 +2331,28 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       rowRange.set({ start: startIndex, end: endIndex }),
     [rowRange],
   );
+  // Rows whose content mentions the viewer, in list order. Replies of a folded
+  // thread have no row, so they are not counted either.
+  const selfMentionRows = useMemo(() => {
+    const replyContent = new Map<string, string | undefined>();
+    for (const replies of timelineView.threadReplies.values()) {
+      for (const reply of replies) replyContent.set(reply.id, reply.content);
+    }
+    return items.map((item) => {
+      if (item.kind === "comment" || item.kind === "run") return contentMentionsViewer(item.entry?.content, user?.id);
+      if (item.kind === "thread-row" && item.row.kind === "reply") {
+        return contentMentionsViewer(replyContent.get(item.row.id), user?.id);
+      }
+      return false;
+    });
+  }, [items, timelineView.threadReplies, user?.id]);
+  const nextSelfMention = useNextSelfMention({
+    container: scrollContainerEl,
+    flags: selfMentionRows,
+    range: rowRange,
+    bottomInset: stickyComposer ? () => composerRef.current?.getBoundingClientRect().height ?? 0 : undefined,
+    scrollToIndex: (index) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+  });
   const mountedRows = useMemo<MountedRows>(
     () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
     [items, rowRange],
@@ -4720,6 +4744,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
           </div>
 
+          {!stickyComposer && (
+            <div className="pointer-events-none sticky bottom-4 z-10 h-0">
+              <div className="absolute inset-x-0 bottom-0 flex justify-center">
+                <NextSelfMentionButton
+                  count={nextSelfMention.count}
+                  onJump={nextSelfMention.jump}
+                  className="pointer-events-auto"
+                />
+              </div>
+            </div>
+          )}
           {/* Bottom comment input — no avatar, full width. Direct child of
               the content column (not the Activity section): a sticky box
               can't leave its containing block, and the Activity div only
@@ -4741,6 +4776,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 "sticky bottom-0 z-10 -mb-4 bg-background pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-4 before:bg-gradient-to-t before:from-background before:to-transparent",
             )}
           >
+            {stickyComposer && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-full flex justify-center pb-6">
+                <NextSelfMentionButton
+                  count={nextSelfMention.count}
+                  onJump={nextSelfMention.jump}
+                  className="pointer-events-auto"
+                />
+              </div>
+            )}
             {/* key={id}: web's /issues/[id] route doesn't remount on
                 issueId change, so without an explicit key the editor
                 keeps the previous issue's in-memory content and the

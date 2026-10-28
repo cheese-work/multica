@@ -129,5 +129,8 @@
   },
   "navigation": {
     "open_in_new_tab": "Open in new tab"
+  },
+  "next_self_mention": {
+    "label": "Next mention of me"
   }
 }

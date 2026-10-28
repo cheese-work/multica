@@ -129,5 +129,8 @@
   },
   "navigation": {
     "open_in_new_tab": "Ouvrir dans un nouvel onglet"
+  },
+  "next_self_mention": {
+    "label": "Ma prochaine mention"
   }
 }

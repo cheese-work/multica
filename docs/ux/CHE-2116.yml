@@ -1,0 +1,15 @@
+issue: CHE-2116
+scope: "Floating next-mention-of-me button in long DMs (chat list) and long issue threads. No design record: the issue names the control and its rules. The label ships through i18n in English (Next mention of me); the issue's Vietnamese wording has no locale to live in yet. Captures: DM list only, in a throwaway Vite harness around the real ChatMessageList (web 1440 and 390 px, light and dark). The issue-thread view is not captured."
+pages:
+  - id: chat-page
+    url: /<workspace-slug>/chat
+    keep: [assistant-message-copy, chat-send-button]
+    change:
+      - next-self-mention-button: "new floating pill at the bottom of the message list; shows the count when two or more mentions are below the viewport; hides when none remain; native button, Tab reachable"
+    remove: []
+  - id: issue-detail
+    url: /<workspace-slug>/issues/<issue-id>
+    keep: [comment-composer]
+    change:
+      - next-self-mention-button: "same pill; floats above the sticky composer, or at the bottom of the thread; not captured"
+    remove: []

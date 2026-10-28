@@ -129,5 +129,8 @@
   },
   "navigation": {
     "open_in_new_tab": "새 탭에서 열기"
+  },
+  "next_self_mention": {
+    "label": "다음 내 멘션"
   }
 }

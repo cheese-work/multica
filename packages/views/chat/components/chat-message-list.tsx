@@ -32,6 +32,9 @@ import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/que
 import { RichContent } from "../../rich-content";
 import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { contentMentionsViewer, useNextSelfMention, useViewerId } from "../../rich-content/next-self-mention";
+import { NextSelfMentionButton } from "../../rich-content/next-self-mention-button";
+import { createRowRangeSource } from "../../issues/components/thread-minimap";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { AttachmentList } from "../../issues/components/comment-card";
 import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
@@ -548,6 +551,33 @@ export function ChatMessageList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flashId, scrollContainerEl]);
 
+  // Replies that mention the viewer, per row. Virtuoso reports absolute indexes,
+  // which start at `firstIndex`.
+  const viewerId = useViewerId();
+  const selfMentionRows = useMemo(
+    () =>
+      renderItems.map(
+        (item) =>
+          item.kind === "message" &&
+          item.message.role === "assistant" &&
+          contentMentionsViewer(item.message.content, viewerId),
+      ),
+    [renderItems, viewerId],
+  );
+  const [rowRange] = useState(createRowRangeSource);
+  const nextSelfMention = useNextSelfMention({
+    enabled: active,
+    container: scrollContainerEl,
+    flags: selfMentionRows,
+    range: rowRange,
+    indexOffset: firstItemIndex,
+    // Leave the live-end follow first, or it pulls the list back to the newest reply.
+    scrollToIndex: (index) => {
+      disengage();
+      virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
+    },
+  });
+
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
   const firstItem = renderItems[0];
@@ -642,6 +672,7 @@ export function ChatMessageList({
         customScrollParent={scrollContainerEl}
         data={renderItems}
         firstItemIndex={firstIndex}
+        rangeChanged={({ startIndex, endIndex }) => rowRange.set({ start: startIndex, end: endIndex })}
         // Open pinned to the newest message. The list is remounted per session
         // (`key={activeSessionId}` upstream), so this initial position is
         // re-applied on every session switch. Without it a fresh Virtuoso
@@ -718,6 +749,15 @@ export function ChatMessageList({
       />
       </RichContentScrollRootProvider>
       )}
+      <div className="pointer-events-none sticky bottom-3 z-10 h-0">
+        <div className="absolute inset-x-0 bottom-0 flex justify-center">
+          <NextSelfMentionButton
+            count={nextSelfMention.count}
+            onJump={nextSelfMention.jump}
+            className="pointer-events-auto"
+          />
+        </div>
+      </div>
     </div>
     </PreviewSequenceProvider>
     </MediaSourceProvider>

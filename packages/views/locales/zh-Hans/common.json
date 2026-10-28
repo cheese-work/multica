@@ -129,5 +129,8 @@
   },
   "navigation": {
     "open_in_new_tab": "在新标签页打开"
+  },
+  "next_self_mention": {
+    "label": "下一个提到我的"
   }
 }
