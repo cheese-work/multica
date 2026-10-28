@@ -1,6 +1,8 @@
 package decisiontx
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,11 +15,7 @@ const excerptRunes = 100
 
 var (
 	// commentLink matches a Markdown link to a comment in any path form.
-	commentLink = regexp.MustCompile(`\[[^\]\n]*\]\([^)\s]*#comment-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)`)
-	// Excerpts hold no newline and no closing quote, so identity can strip them.
-	askedByLine = regexp.MustCompile(`\*\*Asked by\*\* [^\n]*\n\n`)
-	// Only the suffix right after a comment link is ours; other quoted text is the caller's.
-	excerptSuffix     = regexp.MustCompile(`(\[[^\]\n]*\]\([^)\s]*#comment-[0-9a-fA-F-]{36}\)) \(“[^”\n]*”\)`)
+	commentLink       = regexp.MustCompile(`\[[^\]\n]*\]\([^)\s]*#comment-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)`)
 	mentionOrLink     = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
 	htmlTag           = regexp.MustCompile(`<[^>\n]*>`)
 	leadingMarkers    = regexp.MustCompile(`^[#>\-\s]+`)
@@ -83,12 +81,10 @@ func mapStrings(items []string, fn func(string) string) []string {
 	return out
 }
 
-// SameAsk reports whether an incoming (not yet enriched) ask repeats a stored
-// one. Only the stored side can carry server additions, so only it is stripped;
-// the caller's own quotes stay in the incoming text. A stored ask whose
-// excerpt was never added (empty comment, over the cap) matches unstripped.
-func SameAsk(stored, incoming string) bool {
-	incoming = WithoutSourceTail(incoming)
-	plain := askedByLine.ReplaceAllString(WithoutSourceTail(stored), "")
-	return plain == incoming || excerptSuffix.ReplaceAllString(plain, "$1") == incoming
+// Identity names the caller's ask as written, before the server adds the
+// asking agent or comment excerpts. It is stored with the request, so a re-ask
+// compares what the caller sent and never has to guess what the server added.
+func Identity(ask string) string {
+	digest := sha256.Sum256([]byte(WithoutSourceTail(ask)))
+	return hex.EncodeToString(digest[:])
 }

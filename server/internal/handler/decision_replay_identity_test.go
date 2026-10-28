@@ -320,3 +320,59 @@ func TestDecisionReaskWithLinkedCommentAndCallerQuote(test *testing.T) {
 	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusConflict)
 }
+
+// A later task repeats the same ask. The earlier request keeps one link with an
+// excerpt and one link to an empty comment, and the caller's own quote after
+// the second link. The caller's identity decides, not the stored text.
+func TestDecisionReaskMixedExcerptLinks(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, true)
+	first := fixture.comment(test, testWorkspaceID, fixture.issueID, "Visible excerpt")
+	second := fixture.comment(test, testWorkspaceID, fixture.issueID, "")
+	ask := askWithContext(fixture, "Read "+commentLink("first", fixture.issueID, first)+" and "+commentLink("second", fixture.issueID, second)+" (“mine”) first.")
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusConflict)
+}
+
+// Dropping a caller quote after an empty-comment link makes a different ask.
+func TestDecisionCallerQuoteOmissionIsADifferentAsk(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, true)
+	linked := fixture.comment(test, testWorkspaceID, fixture.issueID, "")
+	ask := askWithContext(fixture, "Read "+commentLink("notes", fixture.issueID, linked)+" (“canary”) first.")
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+	ask.ContextELI10 = "Read " + commentLink("notes", fixture.issueID, linked) + " first."
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+}
+
+// A caller suffix after a source-comment link on the lane path still counts as a re-ask.
+func TestDecisionLaneReaskWithCallerSuffix(test *testing.T) {
+	fixture := newSingleCallFixture(test)
+	lane := fixture.newDMLane(test, "discussed here")
+	fixture.discussIn(test, lane)
+	body := fixture.body()
+	body["session_id"] = lane
+	ask := fixture.details
+	ask.Decision = "Deploy " + commentLink("c", fixture.issueID, fixture.sourceID) + " (“canary”)?"
+	body["ask"] = ask
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	fixture.taskID = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusConflict)
+}
+
+// The enriched ask can pass the length limit the caller's ask met: refuse and keep nothing.
+func TestDecisionEnrichedLengthRefusalRollsBack(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, false)
+	ask := fixture.structuredAsk()
+	ask.AskedBy = ""
+	ask.ContextELI10 += strings.Repeat("x", maxCommentContentBytes-len(ask.Content(handlerTestWorkspaceSlug)))
+	response := testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, false)).Want(http.StatusBadRequest)
+	if !strings.Contains(response.Text(), "ask is too long") {
+		test.Fatalf("unexpected refusal: %s", response.Text())
+	}
+	fixture.assertCounts(test, 0)
+}

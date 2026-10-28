@@ -47,41 +47,24 @@ func TestWithExcerptsCapsAtFiveAndSkipsEmpty(test *testing.T) {
 	}
 }
 
-func TestSameAskRestoresCallerText(test *testing.T) {
+func TestIdentityIgnoresSourceTailOnly(test *testing.T) {
 	ask := decodedAsk(test)
-	base := ask.Content("ws")
-	ask.AskedBy = "x99 agent"
-	ask.Decision += " [c](/issue/i#comment-00000000-0000-0000-0000-000000000001)"
-	plain := ask
-	plain.AskedBy = ""
-	enriched, _ := ask.WithExcerpts(func(string) (string, error) { return "hello", nil })
-	if !strings.Contains(enriched.Content("ws"), "**Asked by** x99 agent\n\n**Agent did**") {
-		test.Fatal("Asked by must be the first line of the Details block")
+	if Identity("Q?\n\nInvestigate in issue: [a](/b)") != Identity("Q?\n\nInvestigate in issue: [c](/d)") {
+		test.Fatal("source tail leaked into identity")
 	}
-	if !SameAsk(enriched.Content("ws"), plain.Content("ws")) {
-		test.Fatal("enrichment leaked into identity")
-	}
-	if !SameAsk(base, decodedAsk(test).Content("ws")) {
-		test.Fatal("unenriched identity drifted")
+	other := ask
+	other.Decision += " (“mine”)"
+	if Identity(ask.Content("ws")) == Identity(other.Content("ws")) {
+		test.Fatal("caller quote ignored by identity")
 	}
 }
 
-func TestSameAskComparesStoredEnrichmentOnly(test *testing.T) {
-	link := "[c](/issue/i#comment-00000000-0000-0000-0000-000000000001)"
-	cases := []struct {
-		name, stored, incoming string
-		want                   bool
-	}{
-		{"excerpt added, no caller quote", link + " (“hello”) ok", link + " ok", true},
-		{"excerpt added before caller quote", link + " (“hello”) (“mine”) ok", link + " (“mine”) ok", true},
-		{"no excerpt added, caller quote", link + " (“mine”) ok", link + " (“mine”) ok", true},
-		{"asked by line is ours", "**Asked by** a\n\n" + link + " ok", link + " ok", true},
-		{"different caller quote", link + " (“hello”) (“mine”) ok", link + " (“other”) ok", false},
-		{"different text", link + " (“hello”) ok", link + " nope", false},
-	}
-	for _, c := range cases {
-		if got := SameAsk(c.stored, c.incoming); got != c.want {
-			test.Errorf("%s: SameAsk(%q, %q) = %v, want %v", c.name, c.stored, c.incoming, got, c.want)
-		}
+func TestEnrichmentPutsAskedByFirstInDetails(test *testing.T) {
+	ask := decodedAsk(test)
+	ask.AskedBy = "x99 agent"
+	ask.Decision += " [c](/issue/i#comment-00000000-0000-0000-0000-000000000001)"
+	enriched, _ := ask.WithExcerpts(func(string) (string, error) { return "hello", nil })
+	if !strings.Contains(enriched.Content("ws"), "**Asked by** x99 agent\n\n**Agent did**") {
+		test.Fatal("Asked by must be the first line of the Details block")
 	}
 }
