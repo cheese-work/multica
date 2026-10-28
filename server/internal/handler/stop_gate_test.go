@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -63,6 +64,15 @@ func cancelAckedAt(t *testing.T, taskID string) (at time.Time, set bool) {
 	return *ts, true
 }
 
+// daemonAck is the ack the real daemon sends: the owner credential plus the
+// proof it received in the claim response for this task and runtime.
+func daemonAck(t *testing.T, taskID string) {
+	t.Helper()
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent_task_queue WHERE id = $1`, taskID).Scan(&runtimeID)
+	ackCancelled(t, taskID, map[string]any{"cancel_ack_proof": auth.CancelAckProof(taskID, runtimeID)})
+}
+
 func TestStopGate_AckSetsCancelAckedAtAndOpensGate(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -76,7 +86,7 @@ func TestStopGate_AckSetsCancelAckedAtAndOpensGate(t *testing.T) {
 		t.Fatal("cancel_acked_at set before any ack")
 	}
 
-	ackCancelled(t, run, map[string]any{})
+	daemonAck(t, run)
 
 	if _, ok := cancelAckedAt(t, run); !ok {
 		t.Fatal("ack did not set cancel_acked_at")
@@ -119,7 +129,7 @@ func TestStopGate_PartitionedDaemonReconnectsAcksOpensGate(t *testing.T) {
 	// The partition lasts: still closed, still the same run.
 	stopGateClosedFor(t, issueID, run)
 
-	ackCancelled(t, run, map[string]any{})
+	daemonAck(t, run)
 
 	stopGateOpen(t, issueID)
 }
@@ -132,12 +142,12 @@ func TestStopGate_ReplayedAckIsIdempotent(t *testing.T) {
 	issueID := dbfx.Issue(t, "stop gate replay", testutil.Cols{"status": "todo"})
 	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
 
-	ackCancelled(t, run, map[string]any{})
+	daemonAck(t, run)
 	first, ok := cancelAckedAt(t, run)
 	if !ok {
 		t.Fatal("first ack did not set cancel_acked_at")
 	}
-	ackCancelled(t, run, map[string]any{})
+	daemonAck(t, run)
 	second, _ := cancelAckedAt(t, run)
 	if !second.Equal(first) {
 		t.Fatalf("replayed ack moved cancel_acked_at from %s to %s", first, second)
@@ -157,7 +167,7 @@ func TestStopGate_AckIgnoredOnNonCancelledRow(t *testing.T) {
 		"started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"),
 	})
 
-	ackCancelled(t, completed, map[string]any{})
+	daemonAck(t, completed)
 
 	if _, ok := cancelAckedAt(t, completed); ok {
 		t.Fatal("ack stamped cancel_acked_at on a completed row")
@@ -249,5 +259,32 @@ func TestStopGate_StatusMoveIntoStepRefusedWithActivity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The runtime owner authenticates with the same PAT/JWT as the daemon, so the
+// credential alone proves nothing about the runner. An ack without the claim
+// proof, or with a proof minted for another run, must leave the gate closed.
+func TestStopGate_AckWithoutValidProofDoesNotOpenGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := mul8188Agent(t)
+	issueID := dbfx.Issue(t, "stop gate no proof", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+	other := supersededRun(t, agentID, runtimeID, dbfx.Issue(t, "stop gate other run", testutil.Cols{"status": "todo"}), "todo")
+
+	bodies := map[string]map[string]any{
+		"empty body":          {},
+		"empty proof":         {"cancel_ack_proof": ""},
+		"garbage proof":       {"cancel_ack_proof": "not-a-proof"},
+		"proof for other run": {"cancel_ack_proof": auth.CancelAckProof(other, runtimeID)},
+	}
+	for name, body := range bodies {
+		ackCancelled(t, run, body)
+		if _, ok := cancelAckedAt(t, run); ok {
+			t.Fatalf("%s: ack without a valid proof set cancel_acked_at", name)
+		}
+		stopGateClosedFor(t, issueID, run)
 	}
 }

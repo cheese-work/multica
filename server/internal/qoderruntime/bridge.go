@@ -342,7 +342,7 @@ func (b *Bridge) stepRun(ctx context.Context, r *run) error {
 			b.cleanup(ctx)
 		}
 		if status.Status == "cancelled" {
-			if err := b.taskCall(ctx, r, "/cancel-ack", map[string]any{}, nil); err != nil {
+			if err := b.taskCall(ctx, r, "/cancel-ack", map[string]any{"cancel_ack_proof": r.CancelAckProof}, nil); err != nil {
 				return err
 			}
 		}

@@ -99,7 +99,7 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	// second runner next to one that is not proven stopped.
 	if issueID.Valid {
 		if err := StopGate(ctx, q, issueID); err != nil {
-			return err
+			return ReviewGate{}, err
 		}
 	}
 	if origin == OriginNamed || !issueID.Valid {
