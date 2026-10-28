@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/passkey/passkeytest"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 var sixDigits = regexp.MustCompile(`\b\d{6}\b`)
@@ -355,4 +357,31 @@ func TestEnrollmentStartLimits(test *testing.T) {
 		_, err := f.service.StartEnrollment(context.Background(), f.user, testEmail)
 		f.wantRefusal(err, 429, "enroll_rate_limited")
 	})
+}
+
+func TestEnrollCeremonyExpiryIsReadAtVerificationTimeNotTransactionStart(test *testing.T) {
+	pool := testPool(test)
+	ctx := context.Background()
+	user := newUser(test, pool)
+	test.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM passkey_enroll_ceremony WHERE user_id = $1`, user)
+	})
+	var id pgtype.UUID
+	err := pool.QueryRow(ctx, `INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, expires_at) VALUES ($1, decode(repeat('ab', 32), 'hex'), '{}', clock_timestamp() + interval '300 milliseconds') RETURNING id`, user).Scan(&id)
+	if err != nil {
+		test.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	time.Sleep(600 * time.Millisecond)
+	row, err := db.New(tx).LockPasskeyEnrollCeremonyNowait(ctx, id)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !row.Expired {
+		test.Fatal("a ceremony that expired before the lock read it must read as expired")
+	}
 }

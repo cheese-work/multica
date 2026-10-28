@@ -375,7 +375,7 @@ func (q *Queries) LockAgentRuntimeNowait(ctx context.Context, arg LockAgentRunti
 }
 
 const lockDecisionActionMemberNowait = `-- name: LockDecisionActionMemberNowait :one
-SELECT id FROM member
+SELECT id, workspace_id, user_id, role, created_at FROM member
 WHERE workspace_id = $1 AND user_id = $2
 FOR SHARE NOWAIT
 `
@@ -385,11 +385,17 @@ type LockDecisionActionMemberNowaitParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 }
 
-func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDecisionActionMemberNowaitParams) (pgtype.UUID, error) {
+func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDecisionActionMemberNowaitParams) (Member, error) {
 	row := q.db.QueryRow(ctx, lockDecisionActionMemberNowait, arg.WorkspaceID, arg.UserID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i Member
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const lockDecisionActionNowait = `-- name: LockDecisionActionNowait :one

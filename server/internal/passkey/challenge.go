@@ -58,6 +58,11 @@ func IssueChallenge(ctx context.Context, pool Beginner, userID pgtype.UUID, purp
 	}
 	defer tx.Rollback(ctx)
 	queries := db.New(tx)
+	if free, err := queries.TryLockPasskeyChallengeIssue(ctx, userID); err != nil {
+		return Challenge{}, err
+	} else if !free {
+		return Challenge{}, ErrBusy
+	}
 	open, err := queries.LockOpenPasskeyChallenge(ctx, userID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
