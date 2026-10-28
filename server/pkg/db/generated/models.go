@@ -201,6 +201,12 @@ type AgentTaskQueue struct {
 	CompactTriggerTokens      pgtype.Int8 `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
 	ClaimedModel              pgtype.Text `json:"claimed_model"`
+	PresetName                pgtype.Text `json:"preset_name"`
+	PresetSource              pgtype.Text `json:"preset_source"`
+	PresetSkips               []byte      `json:"preset_skips"`
+	ClaimedThinkingLevel      pgtype.Text `json:"claimed_thinking_level"`
+	ClaimedServiceTier        pgtype.Text `json:"claimed_service_tier"`
+	ClaimedContextArgs        []byte      `json:"claimed_context_args"`
 }
 
 type AgentToLabel struct {

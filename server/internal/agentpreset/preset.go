@@ -309,3 +309,55 @@ func stepPreset(h *StepHandler, t Task) string {
 	}
 	return ""
 }
+
+// MergeContextArgs returns the agent's custom args with the allow-listed
+// context-window args removed and ctx appended. ctx nil means the preset sets
+// none: custom is returned as is. Every other arg keeps its bytes and order.
+func MergeContextArgs(provider string, custom, ctx []string) []string {
+	if ctx == nil {
+		return custom
+	}
+	out := make([]string, 0, len(custom)+len(ctx))
+	for i := 0; i < len(custom); i++ {
+		if n := contextArgLen(provider, custom[i:]); n > 0 {
+			i += n - 1
+			continue
+		}
+		out = append(out, custom[i])
+	}
+	return append(out, ctx...)
+}
+
+// ContextArgsOf returns the allow-listed context-window args in args, in
+// order. It is never nil: no such arg is an empty slice.
+func ContextArgsOf(provider string, args []string) []string {
+	out := []string{}
+	for i := 0; i < len(args); i++ {
+		if n := contextArgLen(provider, args[i:]); n > 0 {
+			out = append(out, args[i:i+n]...)
+			i += n - 1
+		}
+	}
+	return out
+}
+
+// contextArgLen is how many leading args of rest form one context-window arg
+// for the provider, or 0 when rest does not start with one.
+func contextArgLen(provider string, rest []string) int {
+	switch provider {
+	case "claude":
+		if rest[0] == "--autocompact" && len(rest) > 1 {
+			return 2
+		}
+		if strings.HasPrefix(rest[0], "--autocompact=") {
+			return 1
+		}
+	case "codex":
+		if rest[0] == "-c" && len(rest) > 1 {
+			if key, _, _ := strings.Cut(rest[1], "="); codexContextKeys[key] {
+				return 2
+			}
+		}
+	}
+	return 0
+}
