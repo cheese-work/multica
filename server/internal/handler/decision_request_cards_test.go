@@ -16,12 +16,15 @@ func TestDecisionRequestCardsFollowStateAndPreserveAsk(test *testing.T) {
 		test.Run(state, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			wantedState := "open"
+			var recordCommentID string
 			dbfx.Exec(test, `UPDATE decision_request SET source_comment_id = $1 WHERE id = $2`, fixture.tagID, fixture.decision.ID)
 			switch state {
 			case "answered":
-				if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+				result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+				if err != nil {
 					test.Fatal(err)
 				}
+				recordCommentID = uuidToString(result.Comment.ID)
 				wantedState = "answered"
 			case "withdrawn":
 				if _, err := testHandler.withdrawDecisionRequestTx(fixture.request(), fixture.decision, "Superseded by the new scope."); err != nil {
@@ -73,6 +76,13 @@ func TestDecisionRequestCardsFollowStateAndPreserveAsk(test *testing.T) {
 					}
 				} else if card["source_comment_id"] != fixture.tagID {
 					test.Fatalf("original source link missing: %v", card)
+				}
+				if state == "answered" {
+					if card["record_comment_id"] != recordCommentID {
+						test.Fatalf("answered card does not link its record comment: %v", card)
+					}
+				} else if card["record_comment_id"] != nil {
+					test.Fatalf("unanswered card exposes a record comment: %v", card)
 				}
 				if state == "withdrawn" && (card["reason"] != "Superseded by the new scope." || card["withdrawn_at"] == nil) {
 					test.Fatalf("withdrawal lost reason or time: %v", card)

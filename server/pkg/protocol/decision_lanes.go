@@ -5,6 +5,10 @@ type DecisionLane struct {
 	Title         string                 `json:"title"`
 	UpdatedAt     string                 `json:"updated_at"`
 	IssueMentions []DecisionIssueMention `json:"issue_mentions"`
+	// Eligible is true when the DM names the requested issue; only eligible
+	// DMs accept a decision request for it. ReferencedAt is the newest time it did.
+	Eligible     bool   `json:"eligible"`
+	ReferencedAt string `json:"referenced_at,omitempty"`
 }
 
 type DecisionIssueMention struct {
