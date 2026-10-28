@@ -269,6 +269,23 @@ export interface ChatMessagesPage {
   has_newer?: boolean;
 }
 
+/** One DM search hit (`GET /api/chat/search`). `message_id` is null for a title hit. */
+export interface ChatSearchHit {
+  session_id: string;
+  title: string;
+  agent_id: string;
+  message_id: string | null;
+  /** Plain-text window that starts about 40 characters before the first match. */
+  snippet: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+export interface ChatSearchPage {
+  results: ChatSearchHit[];
+  next_cursor: string | null;
+}
+
 export interface SendChatMessageResponse {
   message_id: string;
   task_id: string;

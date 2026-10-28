@@ -102,6 +102,14 @@ describe("keyboard shortcut definitions", () => {
     expect(SHORTCUT_ACTION_BY_ID.archiveInboxItem.allowInEditable).toBe(false);
   });
 
+  it("binds a bare slash to DM search and keeps it out of editable controls", () => {
+    const action = SHORTCUT_ACTION_BY_ID.searchChat;
+    expect(action.defaultShortcut).toEqual(createShortcutChord("/"));
+    expect(action.allowInEditable).toBe(false);
+    expect(shortcutMatchesEvent(action.defaultShortcut, keyEvent("/"))).toBe(true);
+    expect(shortcutMatchesEvent(action.defaultShortcut, keyEvent("/", { ctrlKey: true }))).toBe(false);
+  });
+
   it("strictly distinguishes Command and Control on macOS", () => {
     const commandF = createShortcutChord("F", { primary: true });
     const controlF = createShortcutChord("F", { control: true });
