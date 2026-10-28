@@ -77,15 +77,17 @@ func TestDecisionQuoteTimelineCarriesCardFields(test *testing.T) {
 	fixture := newRecordedCardFixture(test)
 	owner := fixture.timelineAs(test, fixture.humanID)
 	for key, wanted := range map[string]string{
-		"decision_comment_kind":      "quote",
-		"decision_answer_id":         fixture.answerID,
-		"decision_human_user_id":     fixture.humanID,
-		"decision_recorder_agent_id": fixture.agentID,
-		"decision_class":             "reversible",
-		"decision_state":             "pending",
-		"decision_source_session_id": fixture.sessionID,
-		"decision_source_message_id": fixture.messageID,
-		"decision_issue_comment_id":  fixture.commentID,
+		"decision_comment_kind":       "quote",
+		"decision_answer_id":          fixture.answerID,
+		"decision_human_user_id":      fixture.humanID,
+		"decision_recorder_agent_id":  fixture.agentID,
+		"decision_class":              "reversible",
+		"decision_state":              "pending",
+		"decision_source_session_id":  fixture.sessionID,
+		"decision_source_message_id":  fixture.messageID,
+		"decision_request_session_id": fixture.sessionID,
+		"decision_request_message_id": uuidToString(fixture.decision.PingMessageID),
+		"decision_issue_comment_id":   fixture.commentID,
 	} {
 		if owner[key] != wanted {
 			test.Errorf("owner %s = %v, want %q", key, owner[key], wanted)
@@ -99,10 +101,22 @@ func TestDecisionQuoteTimelineCarriesCardFields(test *testing.T) {
 	if other["decision_state"] != "pending" || other["decision_human_user_id"] != fixture.humanID {
 		test.Errorf("non-owner lost the public card fields: %v", other)
 	}
-	for _, hidden := range []string{"decision_source_session_id", "decision_source_message_id"} {
+	for _, hidden := range []string{"decision_source_session_id", "decision_source_message_id", "decision_request_session_id", "decision_request_message_id"} {
 		if _, leaked := other[hidden]; leaked {
 			test.Errorf("non-owner can see private DM pointer %s", hidden)
 		}
+	}
+}
+
+// A continued DM answers in a newer session than the one that asked, so each
+// pointer must name its own session.
+func TestDecisionQuoteRequestPointerKeepsItsOwnSession(test *testing.T) {
+	fixture := newRecordedCardFixture(test)
+	_, continuedID, _, _ := setupDirectChatSession(test, context.Background(), "Continued DM")
+	dbfx.Exec(test, `UPDATE decision_answer SET source_chat_session_id = $1 WHERE id = $2`, continuedID, fixture.answerID)
+	owner := fixture.timelineAs(test, fixture.humanID)
+	if owner["decision_source_session_id"] != continuedID || owner["decision_request_session_id"] != fixture.sessionID {
+		test.Fatalf("pointers lost their own sessions: %v", owner)
 	}
 }
 
@@ -237,7 +251,7 @@ func TestResolveAndUnresolveKeepDecisionCardFields(test *testing.T) {
 		if response["decision_state"] != "pending" || response["decision_class"] != "reversible" || response["decision_human_user_id"] != fixture.humanID {
 			test.Errorf("%s snapshot lost the card fields: %v", step, response)
 		}
-		for _, private := range []string{"decision_source_session_id", "decision_source_message_id"} {
+		for _, private := range []string{"decision_source_session_id", "decision_source_message_id", "decision_request_session_id", "decision_request_message_id"} {
 			if _, leaked := response[private]; leaked {
 				test.Errorf("%s snapshot is broadcast and must not carry %s", step, private)
 			}

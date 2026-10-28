@@ -513,6 +513,10 @@ deleted_squad_members AS (
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
 ),
+deleted_github_route_grants AS (
+    DELETE FROM github_route_grant
+    WHERE project_id IN (SELECT id FROM project WHERE workspace_id = $1)
+),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
@@ -703,7 +707,13 @@ WHERE autopilot_rule_version.workspace_id = $1;
 DELETE FROM autopilot WHERE autopilot.workspace_id = $1;
 
 -- name: DeleteWorkspacePullRequests :exec
-WITH deleted_github_prs AS (
+WITH deleted_github_webhook_dispatches AS (
+    DELETE FROM github_webhook_dispatch
+    WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_webhook_revisions AS (
+    DELETE FROM github_webhook_revision
+    WHERE github_webhook_revision.workspace_id = $1
+), deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
 )

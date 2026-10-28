@@ -1,0 +1,1759 @@
+
+> @multica/web@0.7.0 dev /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/web
+> sh -c 'next dev --webpack --port "${FRONTEND_PORT:-3000}"'
+
+▲ Next.js 16.3.8 (webpack)
+- Local:         http://localhost:31953
+- Network:       http://10.10.30.2:31953
+✓ Ready in 680ms
+◇ injected env (0) from ../../.env // tip: ⌘ enable debugging { debug: true }
+✓ Running next.config.ts took 128ms
+[MDX] updated map file in 67.69882600000005ms
+[MDX] started dev server
+- Experiments (use with caution):
+  · cpus: 2
+  ✓ webpackBuildWorker
+  ✓ webpackMemoryOptimizations
+
+○ Compiling proxy ...
+○ Compiling /[workspaceSlug]/issues/[id] ...
+ GET /capture/issues/CAP-1 200 in 37.7s (next.js: 34.7s, proxy.ts: 314ms, application-code: 2.7s)
+[browser] 16:47:54.194 [ws] ws: disconnected, reconnecting in 1108ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:47:54.273 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:56.393 [ws] ws: disconnected, reconnecting in 2221ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:47:56.924 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.307 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.308 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.308 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.309 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.309 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.310 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.310 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:58.311 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:47:59.418 [ws] ws: disconnected, reconnecting in 3765ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:01.331 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:03.187 [ws] ws: disconnected, reconnecting in 7339ms (attempt 4) (../../packages/core/logger.ts:33:39)
+○ Compiling /[workspaceSlug]/media/[type]/[sourceId]/[kind]/[mediaId] ...
+[browser] 16:48:06.988 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:10.532 [ws] ws: disconnected, reconnecting in 15151ms (attempt 5) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8 200 in 15.8s (next.js: 11.5s, proxy.ts: 174ms, application-code: 4.2s)
+[browser] 16:48:20.336 [ws] ws: disconnected, reconnecting in 1164ms (attempt 1) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 2.3s (next.js: 747ms, proxy.ts: 27ms, application-code: 1560ms)
+[browser] 16:48:21.809 [ws] ws: disconnected, reconnecting in 1618ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 478ms (next.js: 309ms, proxy.ts: 17ms, application-code: 153ms)
+[browser] 16:48:27.460 [ws] ws: disconnected, reconnecting in 1082ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:27.526 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:28.280 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.439 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.439 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.440 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.440 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.441 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.443 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.443 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:29.443 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:30.488 [ws] ws: disconnected, reconnecting in 2296ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/table/7afd8e2ff9ce83ddc0f943c1f8359533f8978f3e3a3c23aa338b1a8cc8f25ced 200 in 432ms (next.js: 261ms, proxy.ts: 16ms, application-code: 155ms)
+[browser] 16:48:32.791 [ws] ws: disconnected, reconnecting in 4608ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:34.078 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:35.159 [ws] ws: disconnected, reconnecting in 960ms (attempt 1) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 445ms (next.js: 296ms, proxy.ts: 10ms, application-code: 139ms)
+[browser] 16:48:37.950 [ws] ws: disconnected, reconnecting in 951ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:37.979 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:38.905 [ws] ws: disconnected, reconnecting in 1687ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:40.568 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.608 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.608 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.622 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.622 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.623 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.624 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.625 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.625 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.992 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:41.992 [ws] ws: disconnected, reconnecting in 3385ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled (../../packages/views/editor/attachment-preview-modal.tsx:429:5)
+ GET /capture/media/issues/issue-1/image/3134a356a795e463e099b5c177e8bd3d7b2ff3b845c6ceafb48b77f691ad4b82 200 in 528ms (next.js: 363ms, proxy.ts: 17ms, application-code: 148ms)
+[browser] 16:48:45.380 [ws] ws: disconnected, reconnecting in 7825ms (attempt 4) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:47.203 [ws] ws: disconnected, reconnecting in 1177ms (attempt 1) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 448ms (next.js: 323ms, proxy.ts: 8ms, application-code: 117ms)
+[browser] 16:48:53.790 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.685 [ws] ws: disconnected, reconnecting in 859ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:48:54.765 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.765 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.766 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.766 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.767 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.768 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.769 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:54.769 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:55.651 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:48:56.121 [ws] ws: disconnected, reconnecting in 2123ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb 200 in 453ms (next.js: 287ms, proxy.ts: 8ms, application-code: 158ms)
+[browser] 16:48:58.248 [ws] ws: disconnected, reconnecting in 4258ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:00.645 [ws] ws: disconnected, reconnecting in 827ms (attempt 1) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 366ms (next.js: 234ms, proxy.ts: 6ms, application-code: 125ms)
+[browser] 16:49:05.315 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.537 [ws] ws: disconnected, reconnecting in 929ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:06.781 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.782 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.784 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.791 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.792 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.796 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.796 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:06.797 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:07.527 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:08.030 [ws] ws: disconnected, reconnecting in 2278ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:10.311 [ws] ws: disconnected, reconnecting in 3296ms (attempt 3) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8 200 in 439ms (next.js: 274ms, proxy.ts: 23ms, application-code: 143ms)
+[browser] 16:49:13.373 [ws] ws: disconnected, reconnecting in 1090ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:13.611 [ws] ws: disconnected, reconnecting in 6658ms (attempt 4) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:14.877 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/issues/CAP-1 200 in 487ms (next.js: 337ms, proxy.ts: 7ms, application-code: 143ms)
+[browser] 16:49:18.209 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.067 [ws] ws: disconnected, reconnecting in 890ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:19.171 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.171 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.172 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.172 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.175 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.177 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.177 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:19.178 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:20.114 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:20.685 [ws] ws: disconnected, reconnecting in 2188ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb 200 in 444ms (next.js: 292ms, proxy.ts: 8ms, application-code: 144ms)
+[browser] 16:49:22.876 [ws] ws: disconnected, reconnecting in 4658ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:25.150 [ws] ws: disconnected, reconnecting in 903ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:24.884 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:27.267 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/issues/CAP-1 200 in 374ms (next.js: 245ms, proxy.ts: 9ms, application-code: 120ms)
+[browser] 16:49:30.410 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.279 [ws] ws: disconnected, reconnecting in 1048ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:31.374 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.374 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.380 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.380 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.382 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.384 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.384 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.384 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:31.819 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:32.725 [ws] ws: disconnected, reconnecting in 1833ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 464ms (next.js: 305ms, proxy.ts: 11ms, application-code: 147ms)
+[browser] 16:49:37.094 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.224 [ws] ws: disconnected, reconnecting in 1026ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:38.554 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.554 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.555 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.555 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.556 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.559 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.560 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:38.560 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:39.025 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:39.385 [ws] ws: disconnected, reconnecting in 1609ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:41.017 [ws] ws: disconnected, reconnecting in 4385ms (attempt 3) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 678ms (next.js: 503ms, proxy.ts: 13ms, application-code: 163ms)
+[browser] 16:49:44.830 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.034 [ws] ws: disconnected, reconnecting in 1090ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:46.274 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.275 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.277 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.277 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.278 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.284 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.285 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.286 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:46.884 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:47.336 [ws] ws: disconnected, reconnecting in 1794ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled (../../packages/views/editor/attachment-preview-modal.tsx:429:5)
+[browser] 16:49:49.134 [ws] ws: disconnected, reconnecting in 4271ms (attempt 3) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 389ms (next.js: 268ms, proxy.ts: 7ms, application-code: 114ms)
+[browser] 16:49:52.797 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.753 [ws] ws: disconnected, reconnecting in 1108ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:53.846 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.847 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.847 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.848 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.848 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.850 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.851 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:53.851 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:54.363 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:49:54.907 [ws] ws: disconnected, reconnecting in 2128ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:49:57.038 [ws] ws: disconnected, reconnecting in 4158ms (attempt 3) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 459ms (next.js: 325ms, proxy.ts: 11ms, application-code: 122ms)
+[browser] 16:50:00.228 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.357 [ws] ws: disconnected, reconnecting in 1124ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:01.464 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.465 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.470 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.555 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.556 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.558 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.558 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.558 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:01.971 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:02.562 [ws] ws: disconnected, reconnecting in 2121ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8 200 in 410ms (next.js: 270ms, proxy.ts: 8ms, application-code: 133ms)
+[browser] 16:50:04.687 [ws] ws: disconnected, reconnecting in 4149ms (attempt 3) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:05.664 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:07.453 [ws] ws: disconnected, reconnecting in 1088ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:08.840 [ws] ws: disconnected, reconnecting in 7759ms (attempt 4) (../../packages/core/logger.ts:33:39)
+ GET /capture/issues/CAP-1 200 in 383ms (next.js: 240ms, proxy.ts: 7ms, application-code: 136ms)
+[browser] 16:50:11.413 [ws] ws: disconnected, reconnecting in 1101ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:11.464 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:12.581 [ws] ws: disconnected, reconnecting in 2138ms (attempt 2) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:13.301 [api-schema] API response failed schema validation: GET /api/issue-statuses {
+  endpoint: 'GET /api/issue-statuses',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.265 [api-schema] API response failed schema validation: GET /api/labels {
+  endpoint: 'GET /api/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.266 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.266 [api-schema] API response failed schema validation: GET /api/issues/:id/duplicates {
+  endpoint: 'GET /api/issues/:id/duplicates',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.267 [api-schema] API response failed schema validation: GET /api/quick-actions {
+  endpoint: 'GET /api/quick-actions',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.267 [api-schema] API response failed schema validation: GET /api/issues/:id/pull-requests {
+  endpoint: 'GET /api/issues/:id/pull-requests',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.269 [api-schema] API response failed schema validation: GET /api/issues/:id/children {
+  endpoint: 'GET /api/issues/:id/children',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.269 [api-schema] API response failed schema validation: GET /api/issues/{id}/labels {
+  endpoint: 'GET /api/issues/{id}/labels',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.270 [api-schema] API response failed schema validation: GET /api/properties {
+  endpoint: 'GET /api/properties',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:14.722 [ws] ws: disconnected, reconnecting in 4434ms (attempt 3) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb 200 in 361ms (next.js: 212ms, proxy.ts: 7ms, application-code: 142ms)
+[browser] 16:50:17.642 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:19.159 [ws] ws: disconnected, reconnecting in 8633ms (attempt 4) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:19.470 [ws] ws: disconnected, reconnecting in 961ms (attempt 1) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8 200 in 518ms (next.js: 353ms, proxy.ts: 13ms, application-code: 153ms)
+[browser] 16:50:24.811 [ws] ws: disconnected, reconnecting in 1193ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:24.912 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8 200 in 376ms (next.js: 232ms, proxy.ts: 7ms, application-code: 137ms)
+[browser] 16:50:28.215 [ws] ws: disconnected, reconnecting in 912ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:28.496 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:29.174 [ws] ws: disconnected, reconnecting in 1927ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/table/7afd8e2ff9ce83ddc0f943c1f8359533f8978f3e3a3c23aa338b1a8cc8f25ced 200 in 372ms (next.js: 241ms, proxy.ts: 10ms, application-code: 121ms)
+[browser] 16:50:32.433 [ws] ws: disconnected, reconnecting in 1034ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:32.586 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/media/issues/issue-1/table/7afd8e2ff9ce83ddc0f943c1f8359533f8978f3e3a3c23aa338b1a8cc8f25ced 200 in 387ms (next.js: 247ms, proxy.ts: 12ms, application-code: 129ms)
+[browser] 16:50:35.264 [ws] ws: disconnected, reconnecting in 847ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:35.385 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/media/issues/issue-1/image/3134a356a795e463e099b5c177e8bd3d7b2ff3b845c6ceafb48b77f691ad4b82 200 in 386ms (next.js: 242ms, proxy.ts: 11ms, application-code: 134ms)
+[browser] 16:50:37.990 [ws] ws: disconnected, reconnecting in 1014ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:38.130 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/media/issues/issue-1/image/3134a356a795e463e099b5c177e8bd3d7b2ff3b845c6ceafb48b77f691ad4b82 200 in 370ms (next.js: 231ms, proxy.ts: 7ms, application-code: 133ms)
+[browser] 16:50:40.905 [ws] ws: disconnected, reconnecting in 966ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:41.040 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:41.875 [ws] ws: disconnected, reconnecting in 2111ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb 200 in 517ms (next.js: 324ms, proxy.ts: 10ms, application-code: 183ms)
+[browser] 16:50:44.512 [ws] ws: disconnected, reconnecting in 846ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:44.575 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+ GET /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb 200 in 383ms (next.js: 242ms, proxy.ts: 10ms, application-code: 131ms)
+[browser] 16:50:47.286 [ws] ws: disconnected, reconnecting in 1009ms (attempt 1) (../../packages/core/logger.ts:33:39)
+[browser] 16:50:47.579 [api-schema] API response failed schema validation: GET /api/search-index/manifest {
+  endpoint: 'GET /api/search-index/manifest',
+  issues: [
+    {
+      code: 'invalid_type',
+      expected: 'object',
+      message: 'Invalid input: expected object, received array',
+      path: []
+    }
+  ],
+  received: []
+} (../../packages/core/logger.ts:31:39)
+[browser] 16:50:48.299 [ws] ws: disconnected, reconnecting in 1861ms (attempt 2) (../../packages/core/logger.ts:33:39)
+ GET /capture/media/issues/issue-1/image/3134a356a795e463e099b5c177e8bd3d7b2ff3b845c6ceafb48b77f691ad4b82 200 in 405ms (next.js: 260ms, proxy.ts: 10ms, application-code: 135ms)
+[browser] 16:50:50.431 [api] ← 404 /api/issues/issue-1 { duration: '19ms', error: 'not found', rid: 'f3ac7941' } (../../packages/core/logger.ts:31:39)
+[browser] 16:50:50.432 [ws] ws: disconnected, reconnecting in 1179ms (attempt 1) (../../packages/core/logger.ts:33:39)
