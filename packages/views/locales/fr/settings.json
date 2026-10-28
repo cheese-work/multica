@@ -33,7 +33,7 @@
       "key_hint": "Désigné par {{key}} dans l'API et la CLI.",
       "created": "Statut créé. L'API et le CLI le désignent par {{key}}.",
       "category": "Catégorie",
-      "category_locked": "La catégorie ne peut plus être modifiée après la création du statut.",
+      "category_change_hint": "Changer la catégorie modifie le comportement de chaque ticket ayant ce statut. Une confirmation sera demandée avant l’enregistrement.",
       "description": "Description",
       "description_placeholder": "Ce que cet état signifie pour votre équipe",
       "color": "Couleur",
@@ -52,6 +52,13 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "save_failed": "L'état n'a pas pu être enregistré."
+    },
+    "category_change_dialog": {
+      "title": "Changer la catégorie ?",
+      "description_one": "{{count}} ticket de ce statut passera de {{from}} à {{to}}.",
+      "description_other": "{{count}} tickets de ce statut passeront de {{from}} à {{to}}.",
+      "cancel": "Annuler",
+      "confirm": "Changer la catégorie"
     },
     "archive_dialog": {
       "retry": "Réessayer l'archivage",
