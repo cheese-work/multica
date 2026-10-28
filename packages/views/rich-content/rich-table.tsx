@@ -35,8 +35,10 @@ import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
+import { useStandaloneMedia } from "../media/media-context";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
+import { cachedOverflowWidths, headerCells, measureColumns } from "./rich-table-fit";
 import {
   columnWidthKey,
   readColumnWidths,
@@ -79,56 +81,6 @@ function sum(widths: number[]): number {
 
 function sameWidths(a: number[] | null, b: number[] | null): boolean {
   return a === b || (!!a && !!b && a.length === b.length && a.every((w, i) => w === b[i]));
-}
-
-// The editor keeps its header row in <tbody>, so the first row stands for the
-// columns in both renderers.
-function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
-  return Array.from(table.rows[0]?.cells ?? []);
-}
-
-// Each column's min-content and max-content width, read with the table's own
-// sizing lifted and restored within the same task, so the browser paints only
-// the restored layout. Only the <table> and its <col>s are touched: in the
-// editor, a style written to a cell would reach ProseMirror as an edit.
-function measureColumns(table: HTMLTableElement): { min: number[]; max: number[] } {
-  const { style } = table;
-  const saved = { layout: style.tableLayout, width: style.width, minWidth: style.minWidth };
-  const fixed = table.hasAttribute("data-column-widths");
-  const cols = Array.from(table.querySelectorAll<HTMLElement>("colgroup > col"));
-  const colWidths = cols.map((col) => col.style.width);
-  const read = () => headerCells(table).map((cell) => Math.ceil(cell.getBoundingClientRect().width));
-
-  if (fixed) table.removeAttribute("data-column-widths");
-  for (const col of cols) col.style.width = "";
-  style.tableLayout = "auto";
-  style.minWidth = "0";
-  style.width = "max-content";
-  const max = read();
-  style.width = "min-content";
-  const min = read();
-
-  style.tableLayout = saved.layout;
-  style.width = saved.width;
-  style.minWidth = saved.minWidth;
-  cols.forEach((col, i) => {
-    col.style.width = colWidths[i] ?? "";
-  });
-  if (fixed) table.setAttribute("data-column-widths", "");
-  return { min, max };
-}
-
-// The browser's automatic layout reads well while the columns' minimums fit.
-// Once they do not, it shrinks every column to its minimum, which leaves a
-// prose column a few characters wide beside a column of unbreakable paths.
-// Past that point each column gets its content width, capped so one long cell
-// cannot claim the table, and the table scrolls.
-const PREFERRED_MAX_COLUMN_WIDTH = 320;
-
-function overflowWidths(table: HTMLTableElement, available: number): number[] | null {
-  const { min, max } = measureColumns(table);
-  if (min.length === 0 || sum(min) <= available) return null;
-  return min.map((least, i) => Math.max(least, Math.min(max[i] ?? least, PREFERRED_MAX_COLUMN_WIDTH)));
 }
 
 interface ColumnEdges {
@@ -220,6 +172,23 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     setWidths(stored ?? carried);
   }, [storageKey, columnCount]);
 
+  // One observer serves the auto-fit, the handle positions and the scroll
+  // shadows: each listener decides for itself whether the change concerns it.
+  const resizeListeners = useRef(new Set<() => void>());
+  const onResize = useCallback((listener: () => void) => {
+    resizeListeners.current.add(listener);
+    return () => {
+      resizeListeners.current.delete(listener);
+    };
+  }, []);
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => resizeListeners.current.forEach((listener) => listener()));
+    if (wrapperRef.current) observer.observe(wrapperRef.current);
+    if (tableRef.current) observer.observe(tableRef.current);
+    return () => observer.disconnect();
+  }, []);
+
   const [autoWidths, setAutoWidths] = useState<number[] | null>(null);
   useLayoutEffect(() => {
     const wrapper = wrapperRef.current;
@@ -227,26 +196,28 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     if (!wrapper || !table || widths) return;
     let measuredAt = -1;
     let active = true;
-    const fit = () => {
+    const fit = (remeasure = false) => {
       const available = wrapper.clientWidth;
       if (!active || available === measuredAt) return;
       measuredAt = available;
-      const next = overflowWidths(table, available);
+      const next = cachedOverflowWidths(storageKey, table, available, remeasure);
       setAutoWidths((prev) => (sameWidths(prev, next) ? prev : next));
     };
     fit();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
-    observer?.observe(wrapper);
-    // Content widths change when a web font replaces its fallback.
-    void document.fonts?.ready.then(() => {
-      measuredAt = -1;
-      fit();
-    });
+    const unsubscribe = onResize(fit);
+    // Content widths change when a web font replaces its fallback. Fonts that
+    // are already loaded cannot change them, so a remount keeps its cached fit.
+    if (document.fonts?.status === "loading") {
+      void document.fonts.ready.then(() => {
+        measuredAt = -1;
+        fit(true);
+      });
+    }
     return () => {
       active = false;
-      observer?.disconnect();
+      unsubscribe();
     };
-  }, [widths, model]);
+  }, [widths, model, storageKey, onResize]);
 
   const userWidths = widths?.length === columnCount ? widths : null;
   const resized = userWidths !== null;
@@ -261,13 +232,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     setEdges((prev) => (sameEdges(prev, next) ? prev : next));
   }, []);
   useLayoutEffect(syncEdges, [syncEdges, columnWidths, model]);
-  useEffect(() => {
-    const table = tableRef.current;
-    if (!table || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(syncEdges);
-    observer.observe(table);
-    return () => observer.disconnect();
-  }, [syncEdges]);
+  useEffect(() => onResize(syncEdges), [onResize, syncEdges]);
 
   const [overflow, setOverflow] = useState({ start: false, end: false });
   useEffect(() => {
@@ -280,14 +245,12 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     };
     sync();
     wrapper.addEventListener("scroll", sync, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
-    observer?.observe(wrapper);
-    if (tableRef.current) observer?.observe(tableRef.current);
+    const unsubscribe = onResize(sync);
     return () => {
       wrapper.removeEventListener("scroll", sync);
-      observer?.disconnect();
+      unsubscribe();
     };
-  }, []);
+  }, [onResize]);
 
   const resize = useMemo(() => {
     const renderedWidths = (): number[] => {
@@ -514,10 +477,12 @@ type RichTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 
 /** react-markdown's `table` override. */
 export function RichTable({ children, node }: RichTableProps) {
+  const standalone = useStandaloneMedia();
   const { source, rendered } = useContext(RichTableSourceContext);
   const model = useMemo(() => readTableModel(children), [children]);
   const getMarkdown = () =>
     tableMarkdownFromSource(source, rendered, node?.position?.start.offset, node?.position?.end.offset);
+  if (standalone) return <RichTableDialog model={model} open onOpenChange={() => {}} getMarkdown={getMarkdown} standalone />;
   return (
     <RichTableFrame model={model} getMarkdown={getMarkdown}>
       <TableContent>{children}</TableContent>

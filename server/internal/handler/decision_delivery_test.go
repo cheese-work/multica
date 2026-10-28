@@ -135,7 +135,7 @@ func readyDecisionDeliveryGroup(test *testing.T) decisionDeliveryGroupFixture {
 	group := decisionDeliveryGroupFixture{core: core}
 	for _, humanID := range []string{core.humanID, testUserID} {
 		person := core
-		person.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": humanID, "title": "Concurrent group answer"})
+		person.sessionID = laneNamingIssue(test, core.issueID, core.agentID, humanID, "Concurrent group answer")
 		request, err := testHandler.createDecisionRequest(person.request(), core.issue, person.input())
 		if err != nil {
 			test.Fatal(err)
@@ -286,7 +286,7 @@ func TestDecisionDeliveryCompleteGroupAndReanswer(test *testing.T) {
 	var members []askedRecordFixture
 	for _, humanID := range []string{fixture.humanID, testUserID} {
 		person := fixture
-		person.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": humanID, "title": "Group answer"})
+		person.sessionID = laneNamingIssue(test, fixture.issueID, fixture.agentID, humanID, "Group answer")
 		request, err := testHandler.createDecisionRequest(person.request(), fixture.issue, person.input())
 		if err != nil {
 			test.Fatal(err)
@@ -447,6 +447,10 @@ func awaitDecisionDeliveryEvent(test *testing.T, events <-chan decisionDeliveryT
 	}
 }
 
+// waitForDecisionWaiterBlockedBy polls until waiterPID waits on a lock held by
+// blockerPID. waiterPID 0 matches any backend: use it when the handler under
+// test opens other transactions through the same TxStarter first (the started
+// event then names one of those, not the one that takes the lock).
 func waitForDecisionWaiterBlockedBy(test *testing.T, waiterPID, blockerPID int, timeout time.Duration) bool {
 	test.Helper()
 	deadline := time.Now().Add(timeout)
@@ -456,7 +460,7 @@ func waitForDecisionWaiterBlockedBy(test *testing.T, waiterPID, blockerPID int, 
 			SELECT EXISTS (
 				SELECT 1 FROM pg_stat_activity
 				WHERE datname = current_database()
-				  AND pid = $1
+				  AND ($1::int = 0 OR pid = $1)
 				  AND state = 'active'
 				  AND wait_event_type = 'Lock'
 				  AND wait_event IN ('transactionid', 'tuple', 'advisory')
@@ -667,7 +671,7 @@ func TestDecisionDeliveryCrossDMMemberLockOrderConcurrent(test *testing.T) {
 	secondPerson := core
 	secondPerson.taskID, secondPerson.intentID, secondPerson.tagID = secondTaskID, secondIntentID, secondTagComment.ID
 	secondPerson.humanID = testUserID
-	secondPerson.sessionID = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": core.agentID, "creator_id": testUserID, "title": "Second decision DM"})
+	secondPerson.sessionID = laneNamingIssue(test, core.issueID, core.agentID, testUserID, "Second decision DM")
 	secondRequestContext := laneRequest(core.intentFixture, "")
 	secondRequestContext.Header.Set("X-Task-ID", secondTaskID)
 	secondRequest, err := testHandler.createDecisionRequest(secondRequestContext, core.issue, secondPerson.input())

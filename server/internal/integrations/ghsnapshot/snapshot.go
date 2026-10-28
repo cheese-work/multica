@@ -30,6 +30,9 @@ type CheckContext struct {
 // API returned — no incremental inference from webhook events.
 type PRSnapshot struct {
 	HeadSHA string
+	// BaseSHA is the base branch tip the mergeability verdict was computed
+	// against; it moves when the base branch advances while the head stays.
+	BaseSHA string
 	// BaseRef is the base branch the mergeability verdict was computed against.
 	BaseRef          string
 	Mergeable        string // MERGEABLE / CONFLICTING / UNKNOWN (raw enum)
@@ -75,6 +78,7 @@ type restPullRequest struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
@@ -186,6 +190,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		return nil, errors.New("ghsnapshot: pull request head changed during fetch")
 	}
 	snap.BaseRef = latest.Base.Ref
+	snap.BaseSHA = latest.Base.SHA
 	snap.Mergeable = "UNKNOWN"
 	if latest.Mergeable != nil {
 		if *latest.Mergeable {
@@ -320,4 +325,18 @@ func normalizeStatusState(s string) (status, conclusion string) {
 	default: // EXPECTED and any unknown state
 		return "queued", ""
 	}
+}
+
+// FetchPullRequest returns the raw REST pull request. Its shape matches the
+// webhook pull_request object, so a caller can replay it as an event.
+func (c *Client) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
+	if !c.Enabled() {
+		return nil, errors.New("ghsnapshot: client not configured")
+	}
+	return c.restGet(ctx, installationID, fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number))
+}
+
+// FetchPullRequest is Client.FetchPullRequest on the manager's client.
+func (manager *Manager) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
+	return manager.client.FetchPullRequest(ctx, installationID, owner, repo, number)
 }

@@ -72,10 +72,21 @@ vi.mock("@multica/core/issue-statuses/mutations", () => ({
 vi.mock("../../issues/utils/status-label", () => ({
   useStatusLabel: () => (key: string) => key,
 }));
+// Resolves `key` to `key_one` / `key_other` the way the real i18n layer does.
+function withPlurals<T extends object>(node: T, count: unknown): T {
+  return new Proxy(node, {
+    get(target, prop) {
+      if (typeof prop !== "string") return Reflect.get(target, prop);
+      const record = target as Record<string, unknown>;
+      const value = record[prop] ?? (typeof count === "number" ? record[`${prop}_${count === 1 ? "one" : "other"}`] : undefined);
+      return value !== null && typeof value === "object" ? withPlurals(value, count) : value;
+    },
+  });
+}
 vi.mock("../../i18n", () => ({
   useT: () => ({
     t: (accessor: (dict: unknown) => string, params?: Record<string, unknown>) => {
-      const template = accessor(en);
+      const template = accessor(withPlurals(en, params?.count) as typeof en);
       if (!params) return template;
       return template.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ""));
     },
@@ -302,6 +313,52 @@ describe("IssueStatusesTab", () => {
     expect(updateMutate.mock.calls[0]![0]).toMatchObject({ id: "qa", name: "Renamed QA" });
     expect(updateMutate.mock.calls[0]![0]).not.toHaveProperty("icon");
   });
+  it("asks for confirmation with the issue count before a category change, then resends with intent", async () => {
+    catalog = [entry({ key: "qa", name: "QA", category: "done" })];
+    updateMutate.mockImplementationOnce((_data, options) => options.onError(new ApiError("confirm", 409, "Conflict", {
+      code: "category_change_requires_confirmation", issue_count: 3, from_category: "done", to_category: "started",
+    })));
+    render(<IssueStatusesTab />);
+    fireEvent.click(screen.getByLabelText(en.issue_statuses.actions.open.replace("{{name}}", "QA")));
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.issue_statuses.actions.edit }));
+    const dialog = await screen.findByRole("dialog");
+    const category = within(dialog).getByRole("combobox");
+    expect(category).toBeEnabled();
+    const user = userEvent.setup();
+    await user.click(category);
+    await user.click(await screen.findByRole("option", { name: en.issue_statuses.category_labels.started }));
+    await user.click(within(dialog).getByRole("button", { name: en.issue_statuses.editor.save }));
+
+    expect(updateMutate.mock.calls[0]![0]).toMatchObject({ id: "qa", category: "started", confirm_category_change: false });
+    const alert = await screen.findByRole("alertdialog");
+    const { done, started } = en.issue_statuses.category_labels;
+    expect(within(alert).getByText(`3 issues on this status will change from ${done} to ${started}.`)).toBeInTheDocument();
+
+    await user.click(within(alert).getByRole("button", { name: en.issue_statuses.category_change_dialog.confirm }));
+    expect(updateMutate).toHaveBeenCalledTimes(2);
+    expect(updateMutate.mock.calls[1]![0]).toMatchObject({ id: "qa", category: "started", confirm_category_change: true });
+  });
+
+  it("confirms with the server's source category when the editor snapshot is stale", async () => {
+    // Another admin already moved QA from done to closed; this tab still shows done.
+    catalog = [entry({ key: "qa", name: "QA", category: "done" })];
+    updateMutate.mockImplementationOnce((_data, options) => options.onError(new ApiError("confirm", 409, "Conflict", {
+      code: "category_change_requires_confirmation", issue_count: 4, from_category: "closed", to_category: "started",
+    })));
+    render(<IssueStatusesTab />);
+    fireEvent.click(screen.getByLabelText(en.issue_statuses.actions.open.replace("{{name}}", "QA")));
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.issue_statuses.actions.edit }));
+    const dialog = await screen.findByRole("dialog");
+    const user = userEvent.setup();
+    await user.click(within(dialog).getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: en.issue_statuses.category_labels.started }));
+    await user.click(within(dialog).getByRole("button", { name: en.issue_statuses.editor.save }));
+
+    const alert = await screen.findByRole("alertdialog");
+    const { closed, started } = en.issue_statuses.category_labels;
+    expect(within(alert).getByText(`4 issues on this status will change from ${closed} to ${started}.`)).toBeInTheDocument();
+  });
+
   it("keeps the create dialog concise and category choices text-only", async () => {
     catalog = [BUILT_IN_IN_REVIEW];
     render(<IssueStatusesTab />);

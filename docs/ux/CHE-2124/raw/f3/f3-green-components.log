@@ -1,0 +1,9 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/packages/views
+
+
+ Test Files  3 passed (3)
+      Tests  301 passed (301)
+   Start at  17:36:41
+   Duration  19.31s (transform 6.56s, setup 546ms, import 18.78s, tests 7.61s, environment 4.94s)
+

@@ -1,0 +1,13 @@
+
+==> Destroying multica-954
+    ✓ api stopped (pid 3585127)
+    web was not running
+    daemon skipped (no usable binary and no live profile pid)
+    desktop was not running
+    ✓ dropped database multica_multica_954
+    ✓ removed CLI profile dev-multica-954
+    ✓ removed daemon workspaces /home/congvc/multica_workspaces_dev-multica-954
+    ✓ removed Desktop userData /home/congvc/.config/Multica Canary multica-954
+    ✓ released slot 954
+
+✓ multica-954 destroyed.

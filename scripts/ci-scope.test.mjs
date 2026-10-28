@@ -38,6 +38,8 @@ for (const [name, files, selected] of [
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
   ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
+  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts"]],
+  ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
@@ -99,7 +101,7 @@ test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive 
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m);
+    assert.match(jobs[job], /^    runs-on: ubuntu-24\.04$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
@@ -154,8 +156,8 @@ function productionNeeds(gate, outputs, headRef = "") {
 test("merge groups filter the complete candidate against the queue base", () => {
   assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
   assert.match(jobs.changes, /if: github\.event_name == 'pull_request' \|\| github\.event_name == 'push' \|\| github\.event_name == 'merge_group'/);
-  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| github\.base_ref\) \}\}/);
-  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| github\.sha \}\}/);
+  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| ''\) \}\}/);
+  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| \(github\.event_name == 'push' && github\.sha \|\| ''\) \}\}/);
 });
 
 test("a merge-group migration failure cannot pass the backend gate", () => {
@@ -247,7 +249,7 @@ for (const gate of ["frontend", "backend"]) {
 // assertion together with the matrix entry when a macOS runner exists.
 test("the backend gate owns the Linux-only installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /- ubuntu-latest/);
+  assert.match(jobs.installer, /- ubuntu-24\.04/);
   assert.doesNotMatch(jobs.installer, /- macos-/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });

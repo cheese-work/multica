@@ -1,0 +1,18 @@
+issue: CHE-2195
+design: "waiver by Cheese, reply A on CHE-2195 (comment 01a17c8e-d73a-73cb-ac18-7f758b06ad59, 27 Oct 2026 15:51 ICT, relayed by x99-claude-opus): no design round; the Earlier DM and Conversation summary blocks copy the live DM exactly."
+scope: "Web/desktop chat predecessor-dms blocks only (packages/views/chat/components/predecessor-dms.tsx). Add comment on text selection and live-DM speaker rendering. Read-only state of the earlier DM stays. iPhone keyboard behaviour of the Add comment dialog stays with CHE-2162/CHE-2171."
+capture: "X99 Chromium; before/after screenshots in the PR are the review pack."
+pages:
+  - id: earlier-dm-block
+    url: "chat session with a predecessor DM; expanded and collapsed Earlier DM row"
+    keep: [read-only-state, collapse-toggle, title]
+    change:
+      - selection: "Selecting text shows the same Add comment action as a live message; the comment anchors to the original earlier-DM message."
+      - speaker: "Human and agent rows render as in the live DM (alignment/bubble style, agent avatar and name); the collapsed preview also shows the speaker."
+    remove: []
+  - id: conversation-summary-block
+    url: "chat session with a Conversation summary block"
+    keep: [read-only-state, collapse-toggle]
+    change:
+      - selection: "Selecting text shows Add comment; the comment anchors to the summary message."
+    remove: []
