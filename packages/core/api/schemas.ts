@@ -982,6 +982,8 @@ const decisionCommentShape = {
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   decision_source_session_id: z.string().optional().catch(undefined),
   decision_source_message_id: z.string().optional().catch(undefined),
+  decision_request_session_id: z.string().optional().catch(undefined),
+  decision_request_message_id: z.string().optional().catch(undefined),
 };
 
 const DecisionCardSchema = z.object({
@@ -1007,6 +1009,7 @@ const DecisionRequestCardSchema = z.object({
   created_at: z.string(),
   withdrawn_at: z.string().nullish().catch(undefined),
   reason: z.string().optional().catch(undefined),
+  record_comment_id: z.string().nullish().catch(undefined),
 }).loose();
 
 export const ChatMessageSchema = z.object({
