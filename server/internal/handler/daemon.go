@@ -2825,6 +2825,7 @@ func credentialExecutionBindingForClaim(task db.AgentTaskQueue, runtime db.Agent
 func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, issueSnapshot []byte, agentSkillCount, builtinSkillCount int, failure *claimBuildFailure) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
+	resp.CancelAckProof = auth.CancelAckProof(resp.ID, resp.RuntimeID)
 	if err := (&service.IssueWakeupService{Tasks: h.TaskService}).CheckClaim(r.Context(), *task); err != nil {
 		if !errors.Is(err, service.ErrWakeupForbidden) {
 			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, err, "wakeup", resp.WakeupID)
@@ -6171,6 +6172,10 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 // transcript (#5219); idempotent when nothing was deferred.
 // TaskCancelAckRequest is the body of the daemon's cancel acknowledgement.
 type TaskCancelAckRequest struct {
+	// CancelAckProof is the value the claim response carried. Only a valid
+	// proof (or ) opens the stop gate;
+	// an ack without one still delivers the work pointers below.
+	CancelAckProof string `json:"cancel_ack_proof,omitempty"`
 	// Absent on older daemons: a pending Pi cleanup cannot be assumed clean.
 	ProcessCleanupConfirmed *bool `json:"process_cleanup_confirmed,omitempty"`
 	// BranchName: a cancelled worktree task has already committed whatever the
@@ -6226,6 +6231,35 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// nothing for the daemon to retry — and the rebroadcast below is guarded
 	// by the same status check inside RebroadcastCancelledTask.
 	delivered := false
+	// An ack carrying the claim-time proof shows the runner stopped; it opens
+	// the stop gate. The owner's PAT/JWT is also what the real daemon uses, so
+	// the credential alone proves nothing — without the proof the ack still
+	// delivers the work pointers below but leaves the gate closed. An ack that
+	// reports the cleanup unconfirmed is not a stop either, proof or not: the
+	// gate stays closed. First write wins, so a replay changes nothing.
+	// Fails loud like the writes below: a dropped write keeps the gate closed
+	// until the daemon retries.
+	var cancellationResult map[string]any
+	_ = json.Unmarshal(task.Result, &cancellationResult)
+	needsConfirmation, _ := cancellationResult["process_cleanup_pending"].(bool)
+	// A run already reported unconfirmed (stop_unconfirmed_at) is settled only by
+	// an ack that states the cleanup is confirmed; silence is not confirmation.
+	needsConfirmation = needsConfirmation || task.StopUnconfirmedAt.Valid
+	cleanupUnconfirmed := req.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() ||
+		(needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed))
+	switch {
+	case cleanupUnconfirmed:
+		// The FailTask below rewrites the row; the agent_task_keep_stop_unconfirmed
+		// trigger keeps an armed run in the gate.
+	case auth.VerifyCancelAckProof(taskID, uuidToString(task.RuntimeID), req.CancelAckProof):
+		if err := h.Queries.MarkAgentTaskCancelAcked(r.Context(), task.ID); err != nil {
+			slog.Error("cancel ack: record cancel_acked_at failed", "task_id", taskID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to record cancel ack")
+			return
+		}
+	default:
+		slog.Warn("cancel ack without a valid proof; stop gate stays closed", "task_id", taskID)
+	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
 			ID:             task.ID,
@@ -6275,10 +6309,7 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var cancellationResult map[string]any
-	_ = json.Unmarshal(task.Result, &cancellationResult)
-	needsConfirmation, _ := cancellationResult["process_cleanup_pending"].(bool)
-	if req.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() || (needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed)) {
+	if cleanupUnconfirmed {
 		msg := strings.TrimSpace(req.ErrorMessage)
 		if msg == "" {
 			msg = "Process cleanup is unconfirmed; background processes may still be running. Check them before manually rerunning the task."
