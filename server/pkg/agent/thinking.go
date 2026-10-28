@@ -676,9 +676,10 @@ func catalogLoader(ctx context.Context, providerType string, cmd Command) func()
 // daemon's pre-execution guard and the server's UpdateAgent gate can
 // share the same source of truth.
 //
-// An explicit Claude model absent from both the selectable and unavailable
-// lists is also unknown: list_models is a picker, not an exhaustive list of
-// accepted --model values. Its saved effort passes through with a lookup error.
+// An explicit Codex model omitted from discovery is also unknown. Claude models
+// absent from both the selectable and unavailable lists are unknown too: these
+// catalogs are pickers, not exhaustive lists of accepted --model values.
+// Saved effort passes through with a lookup error.
 func ValidateThinkingLevel(ctx context.Context, providerType string, cmd Command, model, value string) (bool, error) {
 	return ValidateThinkingLevelWith(catalogLoader(ctx, providerType, cmd), providerType, model, value)
 }
