@@ -874,8 +874,9 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // Chat Messages
 
 type SendChatMessageRequest struct {
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
+	Content           string   `json:"content"`
+	AttachmentIDs     []string `json:"attachment_ids"`
+	DecisionRequestID string   `json:"decision_request_id"`
 }
 
 type SendChatMessageResponse struct {
@@ -925,6 +926,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
 		return
+	}
+	var decisionRequestID pgtype.UUID
+	if req.DecisionRequestID != "" {
+		decisionRequestID, ok = parseUUIDOrBadRequest(w, req.DecisionRequestID, "decision_request_id")
+		if !ok {
+			return
+		}
 	}
 
 	// Load chat session and re-check the private-agent gate on every send.
@@ -981,8 +989,19 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator and the run's originator —
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+	var sent *service.DirectChatSendResult
+	var err error
+	if decisionRequestID.Valid {
+		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs)
+	} else {
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+	}
 	if err != nil {
+		var refusal decisionIntentRefusal
+		if errors.As(err, &refusal) {
+			writeDecisionError(w, err, "decision reply")
+			return
+		}
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")

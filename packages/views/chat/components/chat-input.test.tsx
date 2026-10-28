@@ -1887,6 +1887,31 @@ describe("ChatInput DM comments", () => {
     expect(onSend.mock.calls[0]![0]).not.toContain("---");
   });
 
+  it("sends ordered plain-text notes with the selected request id", async () => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1, "C. CHE-2162"), sourceCommentId: "decision-request:request-2", note: "1" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2, "D. Start one at a time."), sourceCommentId: "decision-request:request-2", note: "done" });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("> C. CHE-2162\n\n1\n\n&nbsp;\n\n> D. Start one at a time.\n\ndone");
+    expect(onSend.mock.calls[0]![4]).toBe("request-2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("&#46;");
+  });
+
+  it.each(["decision-request:request-1", "m1"])("keeps the draft and refuses a mixed request/source %s", async (sourceCommentId) => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1), sourceCommentId: "decision-request:request-2" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2), sourceCommentId });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => {});
+    expect(onSend).not.toHaveBeenCalled();
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
   it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
     const rejected = vi.fn().mockResolvedValue(false);
     const { unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
