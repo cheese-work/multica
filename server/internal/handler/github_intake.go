@@ -212,13 +212,6 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 		return pullID, "", "", err
 	}
-	headRepo := payload.PullRequest.Head.Repo
-	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
-		return pullID, "deferred", "missing_pull_request_metadata", nil
-	}
-	if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
-		return pullID, "denied", "fork_pull_request", nil
-	}
 	pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
 		WorkspaceID: workspaceID, RepoOwner: payload.Repository.Owner.Login, RepoName: payload.Repository.Name, PrNumber: number,
 	})
@@ -230,6 +223,22 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 	}
 	if pull.InstallationID != payload.Installation.ID {
 		return pullID, "denied", "installation_mismatch", nil
+	}
+	headRepo := payload.PullRequest.Head.Repo
+	if headRepo == nil {
+		if !pull.HeadRepoSame || payload.Issue.Number != number || len(payload.Issue.PullRequest) == 0 {
+			return pullID, "deferred", "missing_pull_request_metadata", nil
+		}
+	} else {
+		if headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
+			return pullID, "deferred", "missing_pull_request_metadata", nil
+		}
+		if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
+			return pullID, "denied", "fork_pull_request", nil
+		}
+		if !pull.HeadRepoSame {
+			return pullID, "denied", "fork_or_unverified_head_repository", nil
+		}
 	}
 	pullID = pull.ID
 	issues, err := queries.ListIssueIDsForPullRequest(ctx, pullID)

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -86,21 +85,21 @@ func TestGitHubForkGateAutoLinkAndManualLink(t *testing.T) {
 	}
 }
 
-func TestGitHubForkGateReviewWake(t *testing.T) {
+func TestGitHubForkGateReviewProjection(t *testing.T) {
 	for _, candidate := range githubForkGateCases() {
 		t.Run(candidate.name, func(t *testing.T) {
-			fixture := newGitHubReviewFixture(t)
+			fixture, _ := newGitHubProjectionFixture(t)
 			fixture.payload["repository"].(map[string]any)["id"] = 10
 			fixture.payload["pull_request"] = githubForkGatePR(t, fixture, candidate.head)
-			body, err := json.Marshal(fixture.payload)
-			if err != nil {
+			if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-"+candidate.name); response.Code != http.StatusAccepted {
+				t.Fatalf("review: %d %s", response.Code, response.Body.String())
+			}
+			assertGitHubIntakeNoEffects(t, fixture)
+			if _, err := projectionWorker(fixture).runOnce(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
-				t.Fatal(err)
-			}
-			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != candidate.want {
-				t.Errorf("task-key resolved runs = %d, want %d", count, candidate.want)
+			if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+				t.Errorf("notify-only intake started %d runs", count)
 			}
 			if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != candidate.want {
 				t.Errorf("review comments = %d, want %d", count, candidate.want)
@@ -110,17 +109,18 @@ func TestGitHubForkGateReviewWake(t *testing.T) {
 }
 
 func TestGitHubForkGateExplicitAuthorBinding(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+	fixture, _ := newGitHubProjectionFixture(t)
 	fixture.payload["repository"].(map[string]any)["id"] = 10
 	fixture.payload["pull_request"] = githubForkGatePR(t, fixture, map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true})
 	dbfx.Exec(t, `UPDATE workspace SET settings=jsonb_set(settings,'{github_review_authors}',jsonb_build_object('acme/widget#2019',$1::text)) WHERE id=$2`, fixture.author, testWorkspaceID)
-	body, err := json.Marshal(fixture.payload)
-	if err != nil {
+	delivery := fixture.issueID + "-fork-explicit-author"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		t.Fatalf("review: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := projectionWorker(fixture).runOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
-		t.Fatal(err)
-	}
+	assertIntakeWorkerState(t, delivery, "denied")
 	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
 		t.Fatalf("explicit author binding bypassed fork gate: %d runs", count)
 	}

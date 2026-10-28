@@ -7,7 +7,6 @@ CREATE TABLE github_webhook_dispatch (
     object_kind TEXT NOT NULL CHECK (object_kind IN ('review', 'review_comment', 'issue_comment')),
     object_id BIGINT NOT NULL CHECK (object_id > 0),
     body_hash TEXT NOT NULL CHECK (body_hash ~ '^[0-9a-f]{64}$'),
-    source_delivery_guid TEXT NOT NULL CHECK (source_delivery_guid <> ''),
     issue_id UUID NOT NULL,
     comment_id UUID NOT NULL,
     task_id UUID NOT NULL,

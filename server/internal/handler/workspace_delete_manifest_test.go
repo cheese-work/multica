@@ -94,6 +94,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"feedback":                           workspaceDeleteDetach,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
+	"github_route_grant":                 workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,

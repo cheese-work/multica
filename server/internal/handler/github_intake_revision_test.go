@@ -163,7 +163,7 @@ func TestGitHubIntakeWorkerSupersessionScope(test *testing.T) {
 		if _, err := transaction.Exec(ctx, `CREATE TEMP TABLE revision_scope_copy ON COMMIT DROP AS SELECT * FROM github_webhook_revision WHERE source_delivery_guid=$1`, initial); err != nil {
 			test.Fatal(err)
 		}
-		if _, err := transaction.Exec(ctx, `UPDATE revision_scope_copy SET `+alternate.field+`=`+alternate.value+`, source_delivery_guid=source_delivery_guid||'-copy'`); err != nil {
+		if _, err := transaction.Exec(ctx, `UPDATE revision_scope_copy SET id=gen_random_uuid(), `+alternate.field+`=`+alternate.value+`, source_delivery_guid=source_delivery_guid||'-copy'`); err != nil {
 			test.Fatal(err)
 		}
 		if _, err := transaction.Exec(ctx, `INSERT INTO github_webhook_revision SELECT * FROM revision_scope_copy`); err != nil {
