@@ -333,3 +333,18 @@ func TestSubWorkflowStepValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSubWorkflowSurvivesStorage(t *testing.T) {
+	in := []Step{{StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, SubWorkflow: &SubWorkflow{WorkflowID: "11111111-1111-4111-8111-111111111111", Stage: 3}}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].SubWorkflow == nil || *out[0].SubWorkflow != *in[0].SubWorkflow {
+		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
+	}
+}

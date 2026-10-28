@@ -221,13 +221,14 @@ func (s Step) HandsOff() bool {
 // storedStep is a step as the workflow row stores it; a step without a
 // handoff is just its status key.
 type storedStep struct {
-	StatusKey     string   `json:"status_key"`
-	Handler       *Handler `json:"handler,omitempty"`
-	Instructions  string   `json:"instructions,omitempty"`
-	NextStatusKey string   `json:"next_status_key,omitempty"`
-	BackStatusKey string   `json:"back_status_key,omitempty"`
-	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
-	Edges         []Edge   `json:"edges,omitempty"`
+	StatusKey     string       `json:"status_key"`
+	Handler       *Handler     `json:"handler,omitempty"`
+	Instructions  string       `json:"instructions,omitempty"`
+	NextStatusKey string       `json:"next_status_key,omitempty"`
+	BackStatusKey string       `json:"back_status_key,omitempty"`
+	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge       `json:"edges,omitempty"`
+	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -267,6 +268,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 
 			AdvanceOnCIGreen: s.AdvanceOnCI,
 			Edges:            s.Edges,
+			SubWorkflow:      s.SubWorkflow,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -288,7 +290,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
