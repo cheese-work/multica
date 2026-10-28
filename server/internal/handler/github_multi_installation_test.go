@@ -167,10 +167,11 @@ func TestGitHubMultipleInstallationsRemainIndependent(t *testing.T) {
 				"merged":     false,
 				"created_at": "2026-09-07T00:00:00Z",
 				"updated_at": "2026-09-07T00:00:00Z",
-				"head":       map[string]any{"ref": "feature", "sha": fmt.Sprintf("sha-%d", number)},
+				"head":       map[string]any{"ref": "feature", "sha": fmt.Sprintf("sha-%d", number), "repo": githubRepositoryForTest("che-268", repository)},
 				"user":       map[string]any{"login": "octocat", "avatar_url": ""},
 			},
 			"repository": map[string]any{
+				"id":    424242,
 				"name":  repository,
 				"owner": map[string]any{"login": "che-268"},
 			},
