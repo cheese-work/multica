@@ -12,6 +12,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -4367,6 +4368,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   ref={descEditorRef}
                   key={id}
                   value={issue.description ?? ""}
+                  persistedMediaMarkdown={issue.description ?? ""}
                   placeholder={t(($) => $.detail.desc_placeholder)}
                   onUpdate={(md, baseMarkdown) => {
                     // Bind any pending uploads still referenced in the markdown
@@ -4795,6 +4797,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // open into one sequence. The versions provider lets each comment's file
   // cards mark a re-uploaded file `v2`.
   const withPreview = (layout: ReactNode) => (
+    <MediaSourceProvider source={{ type: "issues", id: issue.id }}>
     <PreviewSequenceProvider
       items={previewSequence}
       describeItem={describeDeliverable}
@@ -4811,6 +4814,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onLocate={locateOrigin}
       />
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 
   // The peek has no room for the properties sidebar: its core properties are

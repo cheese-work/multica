@@ -48,6 +48,8 @@ import {
   readHtmlBlockTheme,
 } from "./utils/html-block-document";
 import { hashSource } from "./utils/source-hash";
+import { useStandaloneMedia } from "../media/media-context";
+import { HtmlViewer } from "./html-viewer";
 
 const HEIGHT_CACHE_PREFIX = "multica:html-block:height:";
 
@@ -110,6 +112,7 @@ interface HtmlBlockPreviewProps {
 }
 
 export function HtmlBlockPreview({ html, title }: HtmlBlockPreviewProps) {
+  const standalone = useStandaloneMedia();
   const { t } = useT("editor");
   const hostRef = useRef<HTMLDivElement>(null);
   const themeVersion = useThemeVersion();
@@ -137,6 +140,8 @@ export function HtmlBlockPreview({ html, title }: HtmlBlockPreviewProps) {
     setError(null);
     setSrcDoc(buildHtmlBlockDocument(html, readHtmlBlockTheme(getComputedStyle(host))));
   }, [html, themeVersion]);
+
+  if (standalone) return <div ref={hostRef} className="flex h-full min-h-0 flex-col"><HtmlViewer html={html} document={srcDoc} title={title ?? frameTitle} onReload={reload} /></div>;
 
   return (
     <div ref={hostRef} className="contents">
@@ -281,6 +286,7 @@ function HtmlBlockBody({
 
   return (
     <HtmlPreviewSurface
+      mediaContent={html}
       open={fullscreen}
       // While enlarged, the wrapper holds the block's in-place footprint. A
       // collapsed body keeps showing its clamp there — reserving the full

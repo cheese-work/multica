@@ -145,6 +145,13 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"738_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
+	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
+	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
+	"728_github_revision_identity":                              "idx_github_webhook_revision_identity",
+	"740_github_webhook_dispatch_key":                           "idx_github_webhook_dispatch_key",
+	"741_github_webhook_worker_due":                             "idx_github_webhook_worker_due",
+	"723_github_webhook_delivery_unique_index":                  "idx_github_webhook_delivery_guid",
+	"724_github_webhook_revision_unique_index":                  "idx_github_webhook_revision_key",
 	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
 	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
 	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
@@ -539,6 +546,8 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"751_github_dispatch_drop_body_key":                     "idx_github_webhook_dispatch_key",
+	"729_github_revision_body_key":                          "idx_github_webhook_revision_key",
 	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",

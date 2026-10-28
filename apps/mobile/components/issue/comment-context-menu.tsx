@@ -160,7 +160,7 @@ export function useCommentLongPress(
             return;
           case "copyLink": {
             if (!canCopyLink) return;
-            const url = `${webUrl}/${wsSlug}/issue/${issueIdentifier}#comment-${entry.id}`;
+            const url = `${webUrl}/${wsSlug}/issues/${issueIdentifier}#comment-${entry.id}`;
             Clipboard.setStringAsync(url);
             Haptics.notificationAsync(
               Haptics.NotificationFeedbackType.Success,

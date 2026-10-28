@@ -70,9 +70,17 @@ func TestDecisionRequestAPIRoundTrip(test *testing.T) {
 		}
 	})
 	testutil.Call(test, testHandler.RequestDecision, fixture.apiRequest()).Want(http.StatusCreated).JSON(&created)
+	workspace, err := testHandler.Queries.GetWorkspace(context.Background(), fixture.issue.WorkspaceID)
+	if err != nil {
+		test.Fatal(err)
+	}
 	requestID, ok := created["id"].(string)
-	if !ok || created["ask"] != fixture.structuredAsk().Content() || created["status"] != "open" || created["human_user_id"] != fixture.humanID || created["ping_notified_at"] == nil {
+	if !ok || created["ask"] != fixture.structuredAsk().Content(workspace.Slug) || created["status"] != "open" || created["human_user_id"] != fixture.humanID || created["ping_notified_at"] == nil {
 		test.Fatalf("wrong request response: %+v", created)
+	}
+	wantCommentLink := "[Comment](" + "/" + workspace.Slug + "/issues/" + fixture.issueID + "#comment-" + fixture.tagID + ")"
+	if !strings.Contains(created["ask"].(string), wantCommentLink) {
+		test.Fatalf("decision request ask has wrong comment link: %s", created["ask"])
 	}
 	fixture.assertCounts(test, 1)
 	var updated time.Time
@@ -111,7 +119,11 @@ func TestDecisionRequestAPIAskContentLimit(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			dbfx.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID)
 			ask := fixture.structuredAsk()
-			ask.Decision = strings.Repeat("a", size-len(ask.Content())+len(ask.Decision))
+			workspace, err := testHandler.Queries.GetWorkspace(context.Background(), fixture.issue.WorkspaceID)
+			if err != nil {
+				test.Fatal(err)
+			}
+			ask.Decision = strings.Repeat("a", size-len(ask.Content(workspace.Slug))+len(ask.Decision))
 			body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "reversible"}
 			request := newRequest(http.MethodPost, "/api/decisions", body)
 			request.Header.Set("X-Actor-Source", "task_token")

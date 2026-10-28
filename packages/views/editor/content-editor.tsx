@@ -73,6 +73,7 @@ import { EditorBubbleMenu } from "./bubble-menu";
 import { posFromAnchor, type TextAnchor } from "./text-anchor";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
+import { PersistedEditorMediaProvider } from "../media/media-context";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 
@@ -126,6 +127,7 @@ function isInNodeViewChrome(target: HTMLElement): boolean {
 // Types
 
 interface ContentEditorBaseProps {
+  persistedMediaMarkdown?: string;
   /**
    * `baseMarkdown` is the last authoritative controlled value this editor
    * actually adopted before producing `markdown`. A dirty-editor realtime
@@ -368,6 +370,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     {
       defaultValue,
       value,
+      persistedMediaMarkdown,
       onUpdate,
       placeholder: placeholderText = "",
       className,
@@ -1082,17 +1085,19 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
 
     return (
       <AttachmentDownloadProvider attachments={providerAttachments}>
-        <div
-          ref={wrapperRef}
-          className="relative flex flex-1 min-h-full flex-col"
-          onMouseDown={handleContainerMouseDown}
-        >
-          <EditorContent className="flex flex-1 flex-col" editor={editor} />
-          {showBubbleMenu && (
-            <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
-          )}
-          <LinkHoverCard {...hover} />
-        </div>
+        <PersistedEditorMediaProvider value={persistedMediaMarkdown}>
+          <div
+            ref={wrapperRef}
+            className="relative flex flex-1 min-h-full flex-col"
+            onMouseDown={handleContainerMouseDown}
+          >
+            <EditorContent className="flex flex-1 flex-col" editor={editor} />
+            {showBubbleMenu && (
+              <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
+            )}
+            <LinkHoverCard {...hover} />
+          </div>
+        </PersistedEditorMediaProvider>
       </AttachmentDownloadProvider>
     );
   },
