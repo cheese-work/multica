@@ -9,11 +9,11 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -28,6 +28,7 @@ type githubIntakeActor struct {
 
 type githubIntakeObject struct {
 	ID          int64             `json:"id"`
+	NodeID      string            `json:"node_id"`
 	Body        string            `json:"body"`
 	User        githubIntakeActor `json:"user"`
 	State       string            `json:"state"`
@@ -50,12 +51,8 @@ type githubIntakePayload struct {
 	PullRequest struct {
 		Number int32 `json:"number"`
 		Head   struct {
-			SHA  string `json:"sha"`
-			Repo *struct {
-				ID       int64  `json:"id"`
-				FullName string `json:"full_name"`
-				Fork     bool   `json:"fork"`
-			} `json:"repo"`
+			SHA  string              `json:"sha"`
+			Repo *ghPRHeadRepository `json:"repo"`
 		} `json:"head"`
 	} `json:"pull_request"`
 	Issue struct {
@@ -68,20 +65,21 @@ type githubIntakePayload struct {
 }
 
 func (payload githubIntakePayload) revision(event string) (githubIntakeObject, string, int32, string) {
-	object, kind, number := payload.Comment, "review_comment", payload.PullRequest.Number
+	kind, revisionKind := ghsnapshot.ReviewEventKind(event, payload.Action)
+	object, number := payload.Comment, payload.PullRequest.Number
+	if kind == "" {
+		return object, kind, number, "unsupported_event"
+	}
+	if revisionKind == "" {
+		return object, kind, number, "unsupported_action"
+	}
 	switch event {
 	case "pull_request_review":
-		object, kind = payload.Review, "review"
-		if payload.Action != "submitted" && payload.Action != "edited" && payload.Action != "dismissed" {
-			return object, kind, number, "unsupported_action"
-		}
+		object = payload.Review
 		if payload.Action != "dismissed" && object.State != "approved" && object.State != "commented" && object.State != "changes_requested" {
 			return object, kind, number, "unsupported_review_state"
 		}
 	case "pull_request_review_comment", "issue_comment":
-		if payload.Action != "created" && payload.Action != "edited" && payload.Action != "deleted" {
-			return object, kind, number, "unsupported_action"
-		}
 		if event == "issue_comment" {
 			kind, number = "issue_comment", payload.Issue.Number
 			if len(payload.Issue.PullRequest) == 0 || bytes.Equal(payload.Issue.PullRequest, []byte("null")) {
@@ -139,6 +137,15 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 				state, reason = "denied", "unknown_installation"
 			}
 			for _, installation := range installations {
+				_, revisionKind := ghsnapshot.ReviewEventKind(event, payload.Action)
+				if revisionKind == "withdrawal" {
+					if err := queries.DenyPendingGitHubWebhookRevisions(ctx, db.DenyPendingGitHubWebhookRevisionsParams{
+						WorkspaceID: installation.WorkspaceID, InstallationID: payload.Installation.ID,
+						RepositoryID: payload.Repository.ID, ObjectKind: kind, ObjectID: object.ID, Reason: payload.Action,
+					}); err != nil {
+						return err
+					}
+				}
 				pullID, revisionState, revisionReason, err := classifyGitHubIntake(ctx, queries, installation.WorkspaceID, payload, object, number)
 				if err != nil {
 					return err
@@ -176,6 +183,9 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 
 func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, payload githubIntakePayload, object githubIntakeObject, number int32) (pgtype.UUID, string, string, error) {
 	var pullID pgtype.UUID
+	if payload.Action == "dismissed" || payload.Action == "deleted" {
+		return pullID, "denied", payload.Action, nil
+	}
 	if object.User.Type != "User" || payload.Sender.Type != "User" {
 		return pullID, "denied", "bot_author", nil
 	}
@@ -203,10 +213,10 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		return pullID, "", "", err
 	}
 	headRepo := payload.PullRequest.Head.Repo
-	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" {
+	if headRepo == nil || headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
 		return pullID, "deferred", "missing_pull_request_metadata", nil
 	}
-	if headRepo.Fork || headRepo.ID != payload.Repository.ID || !strings.EqualFold(headRepo.FullName, payload.Repository.Owner.Login+"/"+payload.Repository.Name) {
+	if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
 		return pullID, "denied", "fork_pull_request", nil
 	}
 	pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
@@ -235,6 +245,9 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 			return pullID, "", "", err
 		}
 		if issue.WorkspaceID == workspaceID {
+			if payload.Sender.ID != object.User.ID {
+				return pullID, "quarantined", "foreign_editor", nil
+			}
 			return pullID, "deferred", "awaiting_admission", nil
 		}
 	}
