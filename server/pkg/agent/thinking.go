@@ -789,18 +789,18 @@ func CheckThinkingLevelWith(loadCatalog func() (Catalog, error), providerType, m
 		}
 		return ThinkingLevelCheck{Reason: fmt.Sprintf("model %q does not support this thinking level", target)}, nil
 	}
-	// Claude's picker lists selected family versions, not every model --model
-	// accepts. An omitted explicit model therefore has unknown capabilities.
+	// Codex and Claude catalogs can omit models accepted by the runtime.
+	// An omitted explicit model therefore has unknown capabilities.
 	// Keep malformed context modifiers rejected rather than treating them as
 	// independent model IDs, and never bypass an explicit unavailable row.
-	if providerType == "claude" && model != "" && !strings.ContainsAny(target, "[]") {
-		return ThinkingLevelCheck{}, fmt.Errorf("%w for model %q; cannot validate claude thinking level %q", errUnverifiedCatalog, model, value)
+	if model != "" && (providerType == "codex" || (providerType == "claude" && !strings.ContainsAny(target, "[]"))) {
+		return ThinkingLevelCheck{}, fmt.Errorf("%w for model %q; cannot validate %s thinking level %q", errUnverifiedCatalog, model, providerType, value)
 	}
 	return ThinkingLevelCheck{Reason: fmt.Sprintf("model %q was not found in the runtime catalog", target)}, nil
 }
 
 // errUnverifiedCatalog means the catalog cannot establish the capability,
-// either because discovery failed or because Claude's picker omitted the
+// either because discovery failed or because the runtime catalog omitted the
 // explicit model. The daemon passes the saved value through on this error.
 var errUnverifiedCatalog = errors.New("model discovery could not verify the capability")
 
