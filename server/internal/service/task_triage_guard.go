@@ -86,6 +86,13 @@ func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
 		return err
 	}
+	// Before the OriginNamed exit: a person naming an agent does not start a
+	// second runner next to one that is not proven stopped.
+	if issueID.Valid {
+		if err := StopGate(ctx, q, issueID); err != nil {
+			return err
+		}
+	}
 	if origin == OriginNamed || !issueID.Valid {
 		return nil
 	}

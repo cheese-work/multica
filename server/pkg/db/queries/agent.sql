@@ -1604,6 +1604,29 @@ UPDATE agent_task_queue
 SET retired_session_id = COALESCE(retired_session_id, sqlc.arg('retired_session_id'))
 WHERE id = sqlc.arg('id') AND status = 'cancelled';
 
+-- name: MarkAgentTaskCancelAcked :exec
+-- Records the daemon's cancel-ack as proof the runner stopped. Same status CAS
+-- as the other cancel-ack writes (a late ack from a stale run must not stamp a
+-- completed/failed row); the first ack wins, so a replay is a no-op.
+UPDATE agent_task_queue
+SET cancel_acked_at = now()
+WHERE id = sqlc.arg('id') AND status = 'cancelled' AND cancel_acked_at IS NULL;
+
+-- name: GetUnackedSupersededRun :one
+-- The newest run of the issue cancelled as superseded whose runner is not yet
+-- proven stopped, at the step the issue is in now. A run that never reached a
+-- daemon (dispatched_at NULL) has no runner to wait for.
+SELECT t.id FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE t.issue_id = sqlc.arg('issue_id')
+  AND t.status = 'cancelled'
+  AND t.failure_reason = 'superseded_head'
+  AND t.dispatched_at IS NOT NULL
+  AND t.cancel_acked_at IS NULL
+  AND t.workflow_step = i.status
+ORDER BY t.created_at DESC
+LIMIT 1;
+
 -- name: SetAgentTaskErrorIfEmpty :exec
 -- Companion to SetAgentTaskBranchName for the cancel-ack path. A cancelled
 -- worktree task whose Finalize ABORTED has no branch to deliver — the error

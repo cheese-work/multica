@@ -6141,6 +6141,14 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// nothing for the daemon to retry — and the rebroadcast below is guarded
 	// by the same status check inside RebroadcastCancelledTask.
 	delivered := false
+	// The ack is the proof the runner stopped; it opens the stop gate. First
+	// write wins, so a replay changes nothing. Fails loud like the writes
+	// below: a dropped write keeps the gate closed until the daemon retries.
+	if err := h.Queries.MarkAgentTaskCancelAcked(r.Context(), task.ID); err != nil {
+		slog.Error("cancel ack: record cancel_acked_at failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record cancel ack")
+		return
+	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
 			ID:             task.ID,
