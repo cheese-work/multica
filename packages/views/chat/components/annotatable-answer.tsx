@@ -12,14 +12,14 @@ import { useChatAnnotationScope } from "./chat-annotation-context";
  * without the selection attributes, so the answer node keeps its identity at
  * the live to settled handoff.
  */
-export function AnnotatableAnswer({ messageId, children }: { messageId?: string; children: ReactNode }) {
+export function AnnotatableAnswer({ messageId, children, readOnly = false }: { messageId?: string; children: ReactNode; readOnly?: boolean }) {
   const { t } = useT("chat");
   const { enabled, agentName } = useChatAnnotationScope();
   if (!enabled) return <>{children}</>;
   return (
     <div data-annotation-overlay-host>
       <div
-        data-comment-content={messageId}
+        data-comment-content={readOnly ? undefined : messageId}
         tabIndex={messageId ? 0 : undefined}
         role={messageId ? "group" : undefined}
         aria-label={messageId ? t(($) => $.annotations.source_label, { name: agentName ?? "" }) : undefined}
