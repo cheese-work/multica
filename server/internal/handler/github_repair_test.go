@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 )
 
 // legacyUnverifiedPR returns the fixture PR as the pre-fix check left it: head
@@ -129,7 +131,10 @@ func TestGitHubRepairFetchesEachPullRequestAddressOnce(t *testing.T) {
 	legacyUnverifiedPR(t, fixture)
 	var otherWorkspaceID string
 	dbfx.QueryRow(t, `INSERT INTO workspace (name, slug, description, issue_prefix) VALUES ('Repair Mirror', 'che2301-repair-mirror', '', 'RPM') RETURNING id`).Scan(&otherWorkspaceID)
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM github_pull_request WHERE workspace_id=$1`, otherWorkspaceID); dbfx.Exec(t, `DELETE FROM workspace WHERE id=$1`, otherWorkspaceID) })
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM github_pull_request WHERE workspace_id=$1`, otherWorkspaceID)
+		dbfx.Exec(t, `DELETE FROM workspace WHERE id=$1`, otherWorkspaceID)
+	})
 	dbfx.Exec(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha, head_repo_same)
 		SELECT $2, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at + interval '1 hour', head_sha, false
 		FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID, otherWorkspaceID)
@@ -144,5 +149,46 @@ func TestGitHubRepairFetchesEachPullRequestAddressOnce(t *testing.T) {
 	}
 	if fetches != 1 {
 		t.Errorf("fetches = %d, want 1", fetches)
+	}
+}
+
+// An installation GitHub no longer knows fails every call alike; the sweep skips
+// its remaining rows (one warning) and still reads the other installations.
+func TestGitHubRepairSkipsGoneInstallation(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	legacyUnverifiedPR(t, fixture)
+	dbfx.Exec(t, `UPDATE github_pull_request SET pr_updated_at = pr_updated_at + interval '2 hours' WHERE pr_number=2019 AND workspace_id=$1`, testWorkspaceID)
+	for _, row := range []struct {
+		installation, number int
+		age                  string
+	}{{2019001, 2020, "1 hour"}, {2019002, 3000, "0 hours"}} {
+		dbfx.Exec(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha, head_repo_same)
+			SELECT workspace_id, $2, repo_owner, repo_name, $3, title, state, html_url, pr_created_at, pr_updated_at - $4::interval, head_sha, false
+			FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID, row.installation, row.number, row.age)
+	}
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND pr_number IN (2020, 3000)`, testWorkspaceID)
+	})
+	var fetched []int32
+	handler := *fixture.handler
+	handler.fetchPullRequestJSON = func(_ context.Context, installationID int64, _, _ string, number int32) (json.RawMessage, error) {
+		fetched = append(fetched, number)
+		if installationID == 2019001 {
+			return nil, &ghsnapshot.InstallationGoneError{InstallationID: installationID}
+		}
+		return nil, nil
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	if _, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); err == nil {
+		t.Error("sweep reported no error for the unavailable installation")
+	}
+	if len(fetched) != 2 || fetched[0] != 2019 || fetched[1] != 3000 {
+		t.Errorf("fetched = %v, want [2019 3000]", fetched)
+	}
+	if n := strings.Count(logs.String(), "installation unavailable"); n != 1 {
+		t.Errorf("installation warnings = %d, want 1, logs: %q", n, logs.String())
 	}
 }
