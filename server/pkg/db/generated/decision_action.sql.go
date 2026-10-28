@@ -96,6 +96,50 @@ func (q *Queries) DecisionActionExpired(ctx context.Context, arg DecisionActionE
 	return column_1, err
 }
 
+const endDecisionAction = `-- name: EndDecisionAction :one
+UPDATE decision_action SET state = $1, updated_at = now()
+WHERE id = $2 AND workspace_id = $3 AND state = 'pending'
+  AND $1 IN ('expired', 'cancelled')
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+`
+
+type EndDecisionActionParams struct {
+	State       string      `json:"state"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) EndDecisionAction(ctx context.Context, arg EndDecisionActionParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, endDecisionAction, arg.State, arg.ID, arg.WorkspaceID)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const finishDecisionActionRow = `-- name: FinishDecisionActionRow :one
 UPDATE decision_action SET
     state = $1, approved_by_user_id = $2,
@@ -578,6 +622,50 @@ func (q *Queries) LockDecisionSessionNowait(ctx context.Context, arg LockDecisio
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockPendingDecisionAction = `-- name: LockPendingDecisionAction :one
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action
+WHERE workspace_id = $1 AND decision_request_id = $2 AND state = 'pending'
+FOR UPDATE
+`
+
+type LockPendingDecisionActionParams struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	DecisionRequestID pgtype.UUID `json:"decision_request_id"`
+}
+
+// Cancel, withdraw and expiry end the action after their own last lock. This
+// one waits: approve never does, so no cycle can form through it.
+func (q *Queries) LockPendingDecisionAction(ctx context.Context, arg LockPendingDecisionActionParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, lockPendingDecisionAction, arg.WorkspaceID, arg.DecisionRequestID)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const lockWorkspaceKeyShareNowait = `-- name: LockWorkspaceKeyShareNowait :one
