@@ -26,6 +26,7 @@ func (h *Handler) RepairUnverifiedHeadPullRequests(ctx context.Context) (replaye
 		fetch = h.PRRefresh.FetchPullRequest
 	}
 	if fetch == nil {
+		slog.Warn("github repair: unverified head sweep skipped, GitHub App API client not configured")
 		return 0, nil
 	}
 	rows, err := h.Queries.ListGitHubPRsWithUnverifiedHead(ctx)
@@ -33,11 +34,23 @@ func (h *Handler) RepairUnverifiedHeadPullRequests(ctx context.Context) (replaye
 		return 0, fmt.Errorf("github repair: list rows: %w", err)
 	}
 	var errs []error
+	gone := map[int64]bool{}
 	for _, row := range rows {
+		if gone[row.InstallationID] {
+			continue
+		}
 		raw, err := fetch(ctx, row.InstallationID, row.RepoOwner, row.RepoName, row.PrNumber)
 		var rateLimit *ghsnapshot.RateLimitError
 		if errors.As(err, &rateLimit) {
 			return replayed, errors.Join(append(errs, err)...)
+		}
+		var installationGone *ghsnapshot.InstallationGoneError
+		if errors.As(err, &installationGone) {
+			// Every row of this installation fails the same way and burns the rate-limit budget.
+			slog.Warn("github repair: installation unavailable, skipping its remaining rows", "installation_id", row.InstallationID, "err", err)
+			gone[row.InstallationID] = true
+			errs = append(errs, err)
+			continue
 		}
 		if err != nil {
 			slog.Warn("github repair: fetch pull request failed", "repo", row.RepoOwner+"/"+row.RepoName, "pr_number", row.PrNumber, "err", err)

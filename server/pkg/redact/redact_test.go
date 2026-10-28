@@ -196,6 +196,43 @@ func TestRedactGenericCredentials(t *testing.T) {
 	}
 }
 
+func TestGenericCredentialValues(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("testdata/generic-credentials.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name  string
+		Input string
+		Want  string
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			if got := Text(testCase.Input); got != testCase.Want {
+				t.Fatalf("got %q, want %q", got, testCase.Want)
+			}
+		})
+	}
+}
+
+func TestGenericCredentialProviderLiterals(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{
+		"TOKEN=" + asm("ghp_", strings.Repeat("A", 36)),
+		"API_KEY=" + asm("sk-", strings.Repeat("a", 24)),
+		"TOKEN=$(echo " + asm("ghp_", strings.Repeat("A", 36)) + ")",
+	} {
+		got := Text(input)
+		if strings.Contains(got, strings.Repeat("A", 36)) || strings.Contains(got, strings.Repeat("a", 24)) {
+			t.Fatalf("provider literal survived redaction: %q", got)
+		}
+	}
+}
+
 func TestNoFalsePositivesOnNormalText(t *testing.T) {
 	t.Parallel()
 	inputs := []string{
