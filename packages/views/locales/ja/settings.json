@@ -1579,6 +1579,20 @@
     "status_loading": "確認中...",
     "status_unknown": "状態を取得できません"
   },
+  "github_review": {
+    "section_title": "GitHub レビュー",
+    "members_label": "レビュアー",
+    "members_description": "GitHub ユーザー ID を、レビューが有効になるワークスペースメンバーに対応付けます。",
+    "members_key": "GitHub ユーザー ID",
+    "members_value": "メンバー",
+    "authors_label": "プルリクエストの作成者",
+    "authors_description": "プルリクエストを作成したエージェントに固定します。固定しない場合はブランチ名で判断します。",
+    "authors_key": "プルリクエスト",
+    "authors_value": "エージェント",
+    "add": "追加",
+    "remove": "削除",
+    "toast_failed": "対応付けを保存できませんでした"
+  },
   "pr_merge_status": {
     "label": "PR マージ後のタスクのステータス",
     "description": "紐づいた PR がすべてマージされたときに適用され、今後のマージにのみ影響します。",

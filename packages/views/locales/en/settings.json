@@ -1590,6 +1590,20 @@
     "status_loading": "Checking...",
     "status_unknown": "Status unavailable"
   },
+  "github_review": {
+    "section_title": "GitHub reviews",
+    "members_label": "Reviewers",
+    "members_description": "Maps a GitHub user ID to the workspace member whose review counts.",
+    "members_key": "GitHub user ID",
+    "members_value": "Member",
+    "authors_label": "Pull request authors",
+    "authors_description": "Pins a pull request to the agent that wrote it. Without a pin, the branch name decides.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Add",
+    "remove": "Remove",
+    "toast_failed": "Failed to save the mapping"
+  },
   "pr_merge_status": {
     "label": "After PRs merge, move the issue to",
     "description": "Applies once every PR linked to an issue has merged, and only to merges from now on.",
