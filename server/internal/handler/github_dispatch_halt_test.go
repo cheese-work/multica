@@ -317,17 +317,23 @@ func TestGitHubDispatchHaltDropsPRReviewWakeup(t *testing.T) {
 		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.author)
 	}
 
+	// The webhook route now defers reviews to durable intake; the legacy helper is
+	// the only path that still wakes the author, so the halt check is driven there.
+	body, err := json.Marshal(fixture.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
 	setHalt(t, "acme", true, false)
-	if response := fixture.post("pull_request_review", fixture.secret, "halted-review"); response.Code != http.StatusAccepted {
-		t.Fatalf("halted review: %d %s", response.Code, response.Body.String())
+	if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
+		t.Fatalf("halted review: %v", err)
 	}
 	if got := authorRuns(); got != 0 {
 		t.Fatalf("halted review woke the author %d times, want 0", got)
 	}
 
 	setHalt(t, "acme", false, false)
-	if response := fixture.post("pull_request_review", fixture.secret, "resumed-review"); response.Code != http.StatusAccepted {
-		t.Fatalf("resumed review: %d %s", response.Code, response.Body.String())
+	if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
+		t.Fatalf("resumed review: %v", err)
 	}
 	if got := authorRuns(); got != 1 {
 		t.Fatalf("review after the resume woke the author %d times, want 1", got)
