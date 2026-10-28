@@ -199,5 +199,8 @@
     "clear_filter": "Effacer le filtre",
     "no_matches": "Aucune ligne correspondante",
     "close": "Fermer"
+  },
+  "next_self_mention": {
+    "label": "Ma prochaine mention"
   }
 }

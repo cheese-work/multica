@@ -796,6 +796,7 @@ func main() {
 			slog.Warn("github repair: unverified head sweep incomplete", "error", err)
 		}
 	}()
+	go h.RunGitHubIntakeReconciler(sweepCtx)
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
 	// installation and drives each channel.Channel. It is channel-agnostic,

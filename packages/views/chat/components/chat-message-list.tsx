@@ -32,6 +32,7 @@ import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/que
 import { RichContent } from "../../rich-content";
 import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { AttachmentList } from "../../issues/components/comment-card";
 import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
@@ -577,6 +578,17 @@ export function ChatMessageList({
     [hasOlderMessages, sessions, continuedFromSessionId],
   );
 
+  // Per row, from the data: Virtuoso mounts only the visible window.
+  const mentionsViewer = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () => renderItems.map((item) => item.kind === "message" && mentionsViewer(item.message.content)),
+    [renderItems, mentionsViewer],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
+  );
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
@@ -612,6 +624,7 @@ export function ChatMessageList({
   return (
     <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
+    <div className="relative flex min-h-0 flex-1 flex-col">
     <div
       ref={setScrollContainerRef}
       data-tab-scroll-root
@@ -718,6 +731,15 @@ export function ChatMessageList({
       />
       </RichContentScrollRootProvider>
       )}
+    </div>
+    <NextSelfMention
+      scrollEl={scrollContainerEl}
+      enabled={active}
+      flags={selfMentionFlags}
+      firstItemIndex={firstIndex}
+      onJump={jumpToSelfMention}
+      positionClassName="absolute bottom-4 right-6 z-20"
+    />
     </div>
     </PreviewSequenceProvider>
     </MediaSourceProvider>
