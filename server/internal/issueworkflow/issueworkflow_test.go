@@ -426,3 +426,76 @@ func TestAdvanceOnCIGreenRoundTripsAndValidates(t *testing.T) {
 		}
 	}
 }
+
+// deliveryExits is the Default workflow's v5 shape for the three steps whose
+// board-order hint was wrong (CHE-2320).
+func deliveryExits() Definition {
+	keys := []string{"backlog", "todo", "in_progress", "agent_review", "need_decision", "in_review", "merged", "approved", "agent_accepted", "blocked"}
+	def := Definition{Name: "Default", Steps: stepsFor(ArrangeKeys(keys))}
+	return withHandoffs(def, []Step{
+		{StatusKey: "agent_review", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
+			{To: "in_review", Guard: "agent_verdict(PASS)"}, {To: "in_progress", Guard: "agent_verdict(CHANGES)"},
+			{To: "need_decision", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
+		}},
+		{StatusKey: "merged", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
+			{To: "done", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
+		}},
+		{StatusKey: "approved", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
+			{To: "done", Guard: "agent_done"}, {To: "in_progress", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
+		}},
+	})
+}
+
+func TestStepDoneHintIsTheFirstAgentDoneMove(t *testing.T) {
+	def := deliveryExits()
+	for step, want := range map[string]string{"approved": "done", "merged": "done", "agent_review": "need_decision"} {
+		if got := def.NextStatus(step); got != want {
+			t.Errorf("%s next = %q, want %q", step, got, want)
+		}
+		brief := Brief(BriefInput{Workflow: def, StatusKey: step, IssueIdentifier: "CHE-9"})
+		if line := "Step done      → multica issue status CHE-9 " + want + "\n"; !strings.Contains(brief, line) {
+			t.Errorf("%s brief lacks %q:\n%s", step, line, brief)
+		}
+	}
+}
+
+func TestCheckAgentMoveRefusesAMoveTheStepDoesNotAllow(t *testing.T) {
+	def := deliveryExits()
+	for _, to := range []string{"done", "in_progress", "blocked"} {
+		if err := CheckAgentMove(def, "approved", to); err != nil {
+			t.Errorf("approved → %s refused: %v", to, err)
+		}
+	}
+	err := CheckAgentMove(def, "approved", "agent_accepted")
+	if err == nil || !strings.Contains(err.Error(), "done, in_progress, blocked") {
+		t.Fatalf("approved → agent_accepted = %v, want a refusal listing the allowed moves", err)
+	}
+	// A verdict edge is an allowed move too.
+	if err := CheckAgentMove(def, "agent_review", "in_review"); err != nil {
+		t.Errorf("agent_review → in_review refused: %v", err)
+	}
+	// Closing as a duplicate or cancelling stays open to an agent, and a step
+	// without agent exits restricts nothing.
+	if err := CheckAgentMove(def, "approved", "cancelled"); err != nil {
+		t.Errorf("approved → cancelled refused: %v", err)
+	}
+	if err := CheckAgentMove(def, "todo", "in_progress"); err != nil {
+		t.Errorf("todo → in_progress refused: %v", err)
+	}
+}
+
+// A step that waits on a PR fact still has exits: an agent cannot skip past
+// the gate (CHE-2320 review, P1).
+func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
+	def := withHandoffs(deliveryExits(), []Step{
+		{StatusKey: "in_review", Edges: []Edge{{To: "merged", Guard: "pr.merged", Timeout: "72h"}}},
+	})
+	for _, to := range []string{"done", "merged", "approved"} {
+		if err := CheckAgentMove(def, "in_review", to); err == nil {
+			t.Errorf("in_review → %s allowed for an agent", to)
+		}
+	}
+	if err := CheckAgentMove(def, "in_review", "cancelled"); err != nil {
+		t.Errorf("in_review → cancelled refused: %v", err)
+	}
+}
