@@ -254,15 +254,17 @@ func (q *Queries) InsertPasskeyChallenge(ctx context.Context, arg InsertPasskeyC
 }
 
 const insertPasskeyEnrollCeremony = `-- name: InsertPasskeyEnrollCeremony :one
-INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, expires_at)
-VALUES ($1, $2, $3, now() + interval '10 minutes')
+INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, purpose, target_passkey_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
 RETURNING id, expires_at
 `
 
 type InsertPasskeyEnrollCeremonyParams struct {
-	UserID      pgtype.UUID `json:"user_id"`
-	CodeHmac    []byte      `json:"code_hmac"`
-	SessionData []byte      `json:"session_data"`
+	UserID          pgtype.UUID `json:"user_id"`
+	CodeHmac        []byte      `json:"code_hmac"`
+	SessionData     []byte      `json:"session_data"`
+	Purpose         string      `json:"purpose"`
+	TargetPasskeyID pgtype.UUID `json:"target_passkey_id"`
 }
 
 type InsertPasskeyEnrollCeremonyRow struct {
@@ -271,7 +273,13 @@ type InsertPasskeyEnrollCeremonyRow struct {
 }
 
 func (q *Queries) InsertPasskeyEnrollCeremony(ctx context.Context, arg InsertPasskeyEnrollCeremonyParams) (InsertPasskeyEnrollCeremonyRow, error) {
-	row := q.db.QueryRow(ctx, insertPasskeyEnrollCeremony, arg.UserID, arg.CodeHmac, arg.SessionData)
+	row := q.db.QueryRow(ctx, insertPasskeyEnrollCeremony,
+		arg.UserID,
+		arg.CodeHmac,
+		arg.SessionData,
+		arg.Purpose,
+		arg.TargetPasskeyID,
+	)
 	var i InsertPasskeyEnrollCeremonyRow
 	err := row.Scan(&i.ID, &i.ExpiresAt)
 	return i, err
@@ -422,21 +430,23 @@ func (q *Queries) LockPasskeyChallengeNowait(ctx context.Context, id pgtype.UUID
 }
 
 const lockPasskeyEnrollCeremonyNowait = `-- name: LockPasskeyEnrollCeremonyNowait :one
-SELECT ceremony.id, ceremony.user_id, ceremony.code_hmac, ceremony.session_data, ceremony.expires_at, ceremony.attempts, ceremony.consumed_at, ceremony.failed_at, ceremony.created_at, (ceremony.expires_at <= clock_timestamp())::bool AS expired
+SELECT ceremony.id, ceremony.user_id, ceremony.code_hmac, ceremony.session_data, ceremony.expires_at, ceremony.attempts, ceremony.consumed_at, ceremony.failed_at, ceremony.created_at, ceremony.purpose, ceremony.target_passkey_id, (ceremony.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_enroll_ceremony ceremony WHERE ceremony.id = $1 FOR UPDATE NOWAIT
 `
 
 type LockPasskeyEnrollCeremonyNowaitRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	UserID      pgtype.UUID        `json:"user_id"`
-	CodeHmac    []byte             `json:"code_hmac"`
-	SessionData []byte             `json:"session_data"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	Attempts    int32              `json:"attempts"`
-	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
-	FailedAt    pgtype.Timestamptz `json:"failed_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	Expired     bool               `json:"expired"`
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	CodeHmac        []byte             `json:"code_hmac"`
+	SessionData     []byte             `json:"session_data"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	Attempts        int32              `json:"attempts"`
+	ConsumedAt      pgtype.Timestamptz `json:"consumed_at"`
+	FailedAt        pgtype.Timestamptz `json:"failed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Purpose         string             `json:"purpose"`
+	TargetPasskeyID pgtype.UUID        `json:"target_passkey_id"`
+	Expired         bool               `json:"expired"`
 }
 
 func (q *Queries) LockPasskeyEnrollCeremonyNowait(ctx context.Context, id pgtype.UUID) (LockPasskeyEnrollCeremonyNowaitRow, error) {
@@ -452,6 +462,8 @@ func (q *Queries) LockPasskeyEnrollCeremonyNowait(ctx context.Context, id pgtype
 		&i.ConsumedAt,
 		&i.FailedAt,
 		&i.CreatedAt,
+		&i.Purpose,
+		&i.TargetPasskeyID,
 		&i.Expired,
 	)
 	return i, err

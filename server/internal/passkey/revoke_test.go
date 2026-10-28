@@ -102,10 +102,23 @@ func TestRevokedPasskeyCanNoLongerApprove(test *testing.T) {
 	}
 }
 
-func TestRevokeMayBeSignedByTheTargetWhenAnotherUsableKeyRemains(test *testing.T) {
+// The key being removed is left out of the allowed list, so it cannot vouch for
+// its own removal: a stolen key must not be able to retire the genuine one.
+func TestRevokeIsNeverSignedByTheTarget(test *testing.T) {
 	f := newRevokeFixture(test)
 	issued, challenge := f.issueRevocation(f.key)
-	if err := f.revoke(f.key, f.signAs(f.device, issued, challenge, startCount+1, nil)); err != nil {
+	err := f.revoke(f.key, f.signAs(f.device, issued, challenge, startCount+1, nil))
+	f.wantRefusal(err, http.StatusForbidden, "assertion_rejected")
+	if f.revoked(f.key) || f.revoked(f.secondKey) {
+		test.Error("a credential was revoked on the target's own signature")
+	}
+}
+
+func TestRevokeIssuesOnlyForTheOtherKeys(test *testing.T) {
+	f := newRevokeFixture(test)
+	issued, challenge := f.issueRevocation(f.key)
+	// The other key signs; the target's own key is not in the allowed list.
+	if err := f.revoke(f.key, f.signAs(f.second, issued, challenge, startCount+1, nil)); err != nil {
 		test.Fatal(err)
 	}
 	if !f.revoked(f.key) || f.revoked(f.secondKey) {
@@ -113,7 +126,7 @@ func TestRevokeMayBeSignedByTheTargetWhenAnotherUsableKeyRemains(test *testing.T
 	}
 }
 
-func TestRevokeRefusesTheLastUsablePasskey(test *testing.T) {
+func TestRevokeWithoutAnotherUsableKeyPointsToTheMailedCode(test *testing.T) {
 	cases := map[string]func(f *revokeFixture){
 		"only key": func(f *revokeFixture) {
 			f.mustExec(`UPDATE user_passkey SET revoked_at = now() WHERE id = $1`, f.secondKey)
@@ -127,24 +140,23 @@ func TestRevokeRefusesTheLastUsablePasskey(test *testing.T) {
 			f := newRevokeFixture(test)
 			setup(f)
 			_, err := f.service.IssueRevocation(context.Background(), f.user, f.key)
-			f.wantRefusal(err, http.StatusConflict, "last_passkey")
+			f.wantRefusal(err, http.StatusConflict, "no_other_passkey")
 			if f.revoked(f.key) {
-				test.Error("the last usable passkey was revoked")
+				test.Error("the passkey was revoked without a signer")
 			}
 		})
 	}
 }
 
-// The library refuses a session whose allowed list is no longer all usable, so
-// a key that dies after issue closes the window before the last-key check.
-func TestRevokeRefusesWhenTheOtherKeyDiesBeforeTheTargetSigns(test *testing.T) {
+// The library refuses a session whose allowed list is no longer all usable.
+func TestRevokeRefusesWhenTheSignerDiesBeforeSigning(test *testing.T) {
 	f := newRevokeFixture(test)
 	issued, challenge := f.issueRevocation(f.key)
 	f.mustExec(`UPDATE user_passkey SET suspect_at = now() WHERE id = $1`, f.secondKey)
-	err := f.revoke(f.key, f.signAs(f.device, issued, challenge, startCount+1, nil))
+	err := f.revoke(f.key, f.signAs(f.second, issued, challenge, startCount+1, nil))
 	f.wantRefusal(err, http.StatusForbidden, "assertion_rejected")
 	if f.revoked(f.key) {
-		test.Error("the last usable passkey was revoked")
+		test.Error("the passkey was revoked on a dead signer")
 	}
 }
 

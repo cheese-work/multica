@@ -32,7 +32,7 @@ func newTwoPasskeys(test *testing.T) twoPasskeys {
 	dbfx.Cleanup(test, `DELETE FROM passkey_event WHERE user_id = $1`, action.humanID)
 	handler := passkeyHandler(test)
 	mailer := &codeMailbox{}
-	handler.Passkeys.Mail = mailer
+	handler.Passkeys.Mail, handler.Passkeys.CodeKey = mailer, []byte("0123456789abcdef0123456789abcdef")
 	return twoPasskeys{pendingAction: action, first: first, second: second, firstID: firstID, secondID: secondID, handler: handler, mailer: mailer}
 }
 
@@ -147,8 +147,8 @@ func TestPasskeyRevocationRefusals(test *testing.T) {
 	if body := p.challengeFor(test, p.secondID, http.StatusConflict); !strings.Contains(body, "already_revoked") {
 		test.Errorf("already revoked: %q", body)
 	}
-	if body := p.challengeFor(test, p.firstID, http.StatusConflict); !strings.Contains(body, "last_passkey") {
-		test.Errorf("last passkey: %q", body)
+	if body := p.challengeFor(test, p.firstID, http.StatusConflict); !strings.Contains(body, "no_other_passkey") {
+		test.Errorf("no other passkey: %q", body)
 	}
 	if p.revoked(test, p.firstID) || p.revoked(test, stranger) {
 		test.Error("a credential was revoked")
@@ -217,5 +217,52 @@ func TestClonedAuthenticatorOnAnOpenRevocationIsRefusedAndMarked(test *testing.T
 	}
 	if p.revoked(test, p.secondID) {
 		test.Error("the target was revoked on a regressed counter")
+	}
+}
+
+func (p twoPasskeys) startCode(test *testing.T, target string, status int) string {
+	test.Helper()
+	return testutil.Call(test, p.handler.StartPasskeyRevocationByCode, p.request("/revoke/code", target, p.humanID, "interactive_jwt", nil)).Want(status).Text()
+}
+
+func (p twoPasskeys) confirmCode(test *testing.T, target, ceremony, code string, status int) string {
+	test.Helper()
+	request := p.request("/revoke/confirm", target, p.humanID, "interactive_jwt", map[string]any{"ceremony_id": ceremony, "code": code})
+	return testutil.Call(test, p.handler.ConfirmPasskeyRevocationByCode, request).Want(status).Text()
+}
+
+func TestPasskeyRevocationByMailedCodeRemovesTheLastUsablePasskey(test *testing.T) {
+	p := newTwoPasskeys(test)
+	dbfx.Exec(test, `UPDATE user_passkey SET revoked_at = now() WHERE id = $1`, p.secondID)
+	p.challengeFor(test, p.firstID, http.StatusConflict)
+
+	var started struct {
+		CeremonyID string `json:"ceremony_id"`
+	}
+	decodeJSON(test, p.startCode(test, p.firstID, http.StatusOK), &started)
+	p.confirmCode(test, p.firstID, started.CeremonyID, "000000", http.StatusForbidden)
+	if p.revoked(test, p.firstID) {
+		test.Fatal("revoked on a wrong code")
+	}
+	p.confirmCode(test, p.firstID, started.CeremonyID, p.mailer.code(test), http.StatusOK)
+	if !p.revoked(test, p.firstID) {
+		test.Error("the passkey was not revoked")
+	}
+}
+
+func TestPasskeyRevocationByMailedCodeRefusals(test *testing.T) {
+	p := newTwoPasskeys(test)
+	for _, source := range []string{"cli_jwt", "pat", "task_token", "cloud_pat", ""} {
+		testutil.Call(test, p.handler.StartPasskeyRevocationByCode, p.request("/revoke/code", p.secondID, p.humanID, source, nil)).Want(http.StatusForbidden)
+		testutil.Call(test, p.handler.ConfirmPasskeyRevocationByCode, p.request("/revoke/confirm", p.secondID, p.humanID, source, map[string]any{})).Want(http.StatusForbidden)
+	}
+	if body := p.startCode(test, strangerPasskey(test), http.StatusForbidden); !strings.Contains(body, "credential_not_yours") {
+		test.Errorf("another user's credential: %q", body)
+	}
+	p.confirmCode(test, p.secondID, "not-a-uuid", "000000", http.StatusBadRequest)
+
+	p.handler.Passkeys.Mail = nil
+	if body := p.startCode(test, p.secondID, http.StatusServiceUnavailable); !strings.Contains(body, "stepup_delivery_unavailable") {
+		test.Errorf("no mail provider: %q", body)
 	}
 }
