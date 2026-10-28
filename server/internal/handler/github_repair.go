@@ -26,6 +26,7 @@ func (h *Handler) RepairUnverifiedHeadPullRequests(ctx context.Context) (replaye
 		fetch = h.PRRefresh.FetchPullRequest
 	}
 	if fetch == nil {
+		slog.Warn("github repair: unverified head sweep skipped, GitHub App API client not configured")
 		return 0, nil
 	}
 	rows, err := h.Queries.ListGitHubPRsWithUnverifiedHead(ctx)

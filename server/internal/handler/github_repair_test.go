@@ -83,3 +83,19 @@ func TestGitHubRepairKeepsExclusion(t *testing.T) {
 		t.Errorf("head_repo_same not repaired")
 	}
 }
+
+// Rows older than the head_repo_same column carry its false default and were
+// never judged by the fork check, so the sweep must not spend API calls on them.
+func TestGitHubRepairSkipsRowsFromBeforeTheForkCheck(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	prID := legacyUnverifiedPR(t, fixture)
+	dbfx.Exec(t, `UPDATE github_pull_request SET updated_at = '2026-10-01T00:00:00Z' WHERE id=$1`, prID)
+	handler := *fixture.handler
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) {
+		t.Error("fetched a row from before the fork check")
+		return nil, nil
+	}
+	if replayed, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); err != nil || replayed != 0 {
+		t.Fatalf("replayed=%d err=%v, want 0 nil", replayed, err)
+	}
+}

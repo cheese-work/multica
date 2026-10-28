@@ -585,22 +585,26 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 }
 
 const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
-SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
+SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number, pr_updated_at
 FROM github_pull_request
-WHERE NOT head_repo_same
-ORDER BY installation_id, repo_owner, repo_name, pr_number
+WHERE NOT head_repo_same AND updated_at >= '2026-10-27T12:00:00Z'
+ORDER BY pr_updated_at DESC, installation_id, repo_owner, repo_name, pr_number
 `
 
 type ListGitHubPRsWithUnverifiedHeadRow struct {
-	InstallationID int64  `json:"installation_id"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoName       string `json:"repo_name"`
-	PrNumber       int32  `json:"pr_number"`
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	PrUpdatedAt    pgtype.Timestamptz `json:"pr_updated_at"`
 }
 
 // CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
 // repository id, so a repair must read GitHub to tell a real fork PR from a
-// same-repository PR that the old fork-flag check rejected.
+// same-repository PR that the old fork-flag check rejected. Rows last written
+// before the fork check shipped (CHE-2210, 2026-10-27) hold the column default
+// and were never judged; updated_at only moves on webhook writes, so it skips
+// them. Newest first, so a rate limit cuts off the oldest rows.
 func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGitHubPRsWithUnverifiedHeadRow, error) {
 	rows, err := q.db.Query(ctx, listGitHubPRsWithUnverifiedHead)
 	if err != nil {
@@ -615,6 +619,7 @@ func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGi
 			&i.RepoOwner,
 			&i.RepoName,
 			&i.PrNumber,
+			&i.PrUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
