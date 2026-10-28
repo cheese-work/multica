@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS task_pr_event_capability_task_uidx;
