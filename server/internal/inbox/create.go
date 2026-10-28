@@ -68,5 +68,7 @@ func isDecision(details []byte) bool {
 		Kind       string        `json:"kind"`
 		RequestIDs []pgtype.UUID `json:"decision_request_ids"`
 	}
-	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
+	// A run_budget item is the one signal that work stopped (CHE-2297 L1a), so
+	// it ignores notification preferences like a decision does.
+	return json.Unmarshal(details, &decision) == nil && (decision.RequestID.Valid || decision.Kind == "run_budget" || (decision.Kind == "decision_expiry_digest" && len(decision.RequestIDs) > 0))
 }

@@ -27,25 +27,48 @@ import (
 // run_budget_exhausted; background callers log it and drop the trigger.
 var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget, so nothing derived from it runs")
 
-// RunBudgetExhausted describes the refusal that fired the hook: how many runs
-// the issue has and the cap it hit.
-type RunBudgetExhausted struct {
+// Run-budget notice kinds (CHE-2297 L1a). They are also the kind half of the
+// notice claim key.
+const (
+	RunBudgetKindWarn80    = "warn80"
+	RunBudgetKindExhausted = "exhausted"
+)
+
+// RunBudgetEvent describes the admission or refusal that fired the hook: the
+// notice kind, how many runs the issue has and the cap, and the start of the
+// budget window the event belongs to.
+type RunBudgetEvent struct {
 	IssueID pgtype.UUID
+	Kind    string
 	Runs    int64
 	Max     int
+	Since   time.Time
 }
 
-var onRunBudgetExhausted atomic.Pointer[func(context.Context, RunBudgetExhausted)]
+var onRunBudgetEvent atomic.Pointer[func(context.Context, RunBudgetEvent)]
 
-// SetOnRunBudgetExhausted registers the function that blocks an issue once its
-// budget is spent (nil clears it). The handler registers it; the service has
-// no business writing issue statuses.
-func SetOnRunBudgetExhausted(fn func(context.Context, RunBudgetExhausted)) {
+// SetOnRunBudgetEvent registers the function that writes the notices and blocks
+// an issue once its budget is spent (nil clears it). The handler registers it;
+// the service has no business writing issue statuses or inbox items.
+func SetOnRunBudgetEvent(fn func(context.Context, RunBudgetEvent)) {
 	if fn == nil {
-		onRunBudgetExhausted.Store(nil)
+		onRunBudgetEvent.Store(nil)
 		return
 	}
-	onRunBudgetExhausted.Store(&fn)
+	onRunBudgetEvent.Store(&fn)
+}
+
+// runBudgetWarnAt is the run count that triggers the 80% warning.
+func runBudgetWarnAt(max int) int64 {
+	return int64((max*4 + 4) / 5)
+}
+
+func fireRunBudgetEvent(ctx context.Context, e RunBudgetEvent) {
+	if hook := onRunBudgetEvent.Load(); hook != nil {
+		// The guard runs inside the enqueue transaction; the hook writes on its
+		// own connection after the caller is done with it.
+		go (*hook)(context.WithoutCancel(ctx), e)
+	}
 }
 
 // RunBudgetStart is when an issue's budget window opens: the later of the
@@ -95,12 +118,13 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 	}
 	max := def.EffectiveMaxRuns()
 	if runs < int64(max) {
+		// ponytail: exact match, so a named run that skips the count can skip the
+		// warning; the exhaustion notice still fires.
+		if runs+1 == runBudgetWarnAt(max) {
+			fireRunBudgetEvent(ctx, RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: runs + 1, Max: max, Since: since})
+		}
 		return nil
 	}
-	if hook := onRunBudgetExhausted.Load(); hook != nil {
-		// The guard runs inside the enqueue transaction; the hook writes the
-		// issue on its own connection after the caller is done with it.
-		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{IssueID: issue.ID, Runs: runs, Max: max})
-	}
+	fireRunBudgetEvent(ctx, RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindExhausted, Runs: runs, Max: max, Since: since})
 	return ErrRunBudgetExhausted
 }

@@ -205,23 +205,33 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 	return out, nil
 }
 
-// onRunBudgetExhausted blocks an issue whose workflow run budget is spent, so
+// blockExhaustedIssue blocks an issue whose workflow run budget is spent, so
 // a person sees why nothing more runs. It leaves an issue that is already
 // blocked alone (something else parked it), and one whose workflow has no
 // blocked status, where the refusal alone holds the line.
-func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
-	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
-	if err != nil || issue.Status == issuestatus.Blocked {
-		return
-	}
-	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
-		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
-		return
-	}
+func (h *Handler) blockExhaustedIssue(ctx context.Context, e service.RunBudgetEvent) {
 	details := map[string]any{"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs}
-	if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); !moved {
-		return
+	var issue db.Issue
+	// The move is revision-checked, and any comment on the issue (the 80%
+	// notice, an agent's reply) bumps the revision between the read and the
+	// write: reload and try again.
+	for attempt := 0; ; attempt++ {
+		var err error
+		issue, err = h.Queries.GetIssue(ctx, e.IssueID)
+		if err != nil || issue.Status == issuestatus.Blocked {
+			return
+		}
+		def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+		if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
+			slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
+			return
+		}
+		if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); moved {
+			break
+		}
+		if attempt == 2 {
+			return
+		}
 	}
 	reason, _ := json.Marshal(issueworkflow.BlockedReasonRunBudget)
 	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {

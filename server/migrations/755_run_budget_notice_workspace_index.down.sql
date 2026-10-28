@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_run_budget_notice_workspace_id;
