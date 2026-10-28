@@ -501,3 +501,12 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	}
 	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
 }
+
+// decisionActionPermitted re-checks, under the member lock, the authority the
+// action would have had if its approver had made the change directly.
+func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
+	if actionType == "agent.env.patch" {
+		return canManageAgentEnv(target, approver)
+	}
+	return true
+}
