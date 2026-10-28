@@ -1,4 +1,5 @@
 export interface NavigationAdapter {
+  openMediaWindow?: (path: string, title: string) => void | Promise<void>;
   push(path: string): void;
   replace(path: string): void;
   back(): void;

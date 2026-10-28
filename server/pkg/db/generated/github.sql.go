@@ -11,6 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearGitHubPRReview = `-- name: ClearGitHubPRReview :exec
+UPDATE github_pull_request
+SET review_state = '', review_head_sha = '', review_id = 0
+WHERE workspace_id = $1
+  AND installation_id = $2
+  AND repo_owner = $3
+  AND repo_name = $4
+  AND pr_number = $5
+  AND review_id = $6::bigint
+`
+
+type ClearGitHubPRReviewParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	PrNumber       int32       `json:"pr_number"`
+	ReviewID       int64       `json:"review_id"`
+}
+
+// Withdraws the stored review when GitHub dismisses that exact review. A
+// dismissal of any other review leaves it alone. review_at stays as the
+// ordering watermark, so an older review delivered late is still dropped.
+func (q *Queries) ClearGitHubPRReview(ctx context.Context, arg ClearGitHubPRReviewParams) error {
+	_, err := q.db.Exec(ctx, clearGitHubPRReview,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+		arg.ReviewID,
+	)
+	return err
+}
+
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
     workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
@@ -116,7 +151,7 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 }
 
 const findGitHubPullRequestByURL = `-- name: FindGitHubPullRequestByURL :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower($2::text)
 ORDER BY pr_updated_at DESC
@@ -164,6 +199,11 @@ func (q *Queries) FindGitHubPullRequestByURL(ctx context.Context, arg FindGitHub
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
 		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
 	)
 	return i, err
 }
@@ -191,7 +231,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -241,12 +281,17 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
 		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
 	)
 	return i, err
 }
 
 const getGitHubPullRequestInWorkspace = `-- name: GetGitHubPullRequestInWorkspace :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -289,6 +334,11 @@ func (q *Queries) GetGitHubPullRequestInWorkspace(ctx context.Context, arg GetGi
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
 		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
 	)
 	return i, err
 }
@@ -523,6 +573,54 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
+GROUP BY installation_id, repo_owner, repo_name, pr_number
+ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number
+`
+
+type ListGitHubPRsWithUnverifiedHeadRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
+// repository id, so a repair must read GitHub to tell a real fork PR from a
+// same-repository PR that the old fork-flag check rejected. Rows whose PR was
+// last updated before the fork check shipped (CHE-2210, 2026-10-27) hold the
+// column default and were never judged. pr_updated_at only moves on webhook
+// writes; updated_at also moves on snapshot refresh, so it can't tell. One row
+// per PR address (workspaces mirror it), newest first, so a rate limit cuts off
+// the oldest.
+func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGitHubPRsWithUnverifiedHeadRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRsWithUnverifiedHead)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubPRsWithUnverifiedHeadRow{}
+	for rows.Next() {
+		var i ListGitHubPRsWithUnverifiedHeadRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}
@@ -772,6 +870,36 @@ func (q *Queries) MarkGitHubReviewWakeup(ctx context.Context, arg MarkGitHubRevi
 	return err
 }
 
+const recordGitHubPRReview = `-- name: RecordGitHubPRReview :exec
+UPDATE github_pull_request
+SET review_state = $1::text,
+    review_head_sha = $2::text,
+    review_id = $3::bigint,
+    review_at = $4::timestamptz
+WHERE id = $5 AND (review_at IS NULL OR review_at <= $4::timestamptz)
+`
+
+type RecordGitHubPRReviewParams struct {
+	ReviewState string             `json:"review_state"`
+	HeadSha     string             `json:"head_sha"`
+	ReviewID    int64              `json:"review_id"`
+	SubmittedAt pgtype.Timestamptz `json:"submitted_at"`
+	ID          pgtype.UUID        `json:"id"`
+}
+
+// Keeps the latest approved, changes_requested or commented review of a PR; a
+// review that was submitted before the stored one is dropped.
+func (q *Queries) RecordGitHubPRReview(ctx context.Context, arg RecordGitHubPRReviewParams) error {
+	_, err := q.db.Exec(ctx, recordGitHubPRReview,
+		arg.ReviewState,
+		arg.HeadSha,
+		arg.ReviewID,
+		arg.SubmittedAt,
+		arg.ID,
+	)
+	return err
+}
+
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :execrows
 DELETE FROM issue_pull_request
 WHERE issue_id = $1 AND pull_request_id = $2
@@ -851,13 +979,13 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state,
+    head_sha, mergeable_state, head_repo_same,
     additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $15, $16, $17,
     $18, $19, $9, $10,
-    $11, $20,
+    $11, $20, $21,
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
@@ -893,7 +1021,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($21::boolean, FALSE)
+                 NOT COALESCE($22::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -905,6 +1033,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     END,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
+    head_repo_same = EXCLUDED.head_repo_same,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
     merged_at = CASE
@@ -914,7 +1043,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($21::boolean, FALSE)
+                 NOT COALESCE($22::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -928,7 +1057,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN github_pull_request.state = 'closed'
              AND EXCLUDED.state <> 'merged'
              AND (
-                 NOT COALESCE($21::boolean, FALSE)
+                 NOT COALESCE($22::boolean, FALSE)
                  OR (
                      EXCLUDED.closed_at IS NOT NULL
                      AND github_pull_request.closed_at IS NOT NULL
@@ -941,7 +1070,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($22::boolean, FALSE) THEN NULL
+        WHEN COALESCE($23::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
@@ -950,7 +1079,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     changed_files = EXCLUDED.changed_files,
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -974,6 +1103,7 @@ type UpsertGitHubPullRequestParams struct {
 	MergedAt            pgtype.Timestamptz `json:"merged_at"`
 	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
 	MergeableState      pgtype.Text        `json:"mergeable_state"`
+	HeadRepoSame        bool               `json:"head_repo_same"`
 	IsReopen            bool               `json:"is_reopen"`
 	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
 }
@@ -1043,6 +1173,7 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.MergedAt,
 		arg.ClosedAt,
 		arg.MergeableState,
+		arg.HeadRepoSame,
 		arg.IsReopen,
 		arg.ClearMergeableState,
 	)
@@ -1078,6 +1209,11 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
 		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
 	)
 	return i, err
 }

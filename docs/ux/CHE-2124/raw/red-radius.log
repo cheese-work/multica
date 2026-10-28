@@ -1,0 +1,4 @@
+Un-tokenized product radius utilities (1)
+  packages/views/editor/plan-revision-viewer.tsx:102:25  rounded
+
+Use a named `rounded-*` token. Add a narrowly scoped allowlist only for genuine data-visualization micro-geometry.

@@ -72,6 +72,7 @@
     "continuation_summary": "Conversation summary",
     "earlier_dm": "Earlier DM",
     "quote_message": "Quote",
+    "speaker_you": "You",
     "load_older_messages": "Load older messages",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
@@ -290,6 +291,7 @@
     "unpin": "Unpin chat"
   },
   "annotations": {
+    "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",
     "add": "Add comment",
     "confirm_add": "Add",
@@ -360,6 +362,8 @@
     "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
+    "withdrawn_in": "Withdrawn in {{issue}}",
+    "recorded_on": "Recorded on {{issue}}",
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"

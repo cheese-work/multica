@@ -69,6 +69,7 @@
     "continuation_summary": "对话摘要",
     "earlier_dm": "较早的私信",
     "quote_message": "引用",
+    "speaker_you": "你",
     "load_older_messages": "加载更早的消息",
     "show_details": "查看详情",
     "replied_in": "{{elapsed}} 内回复",
@@ -285,6 +286,7 @@
     "unpin": "取消置顶会话"
   },
   "annotations": {
+    "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",
     "add": "添加评论",
     "confirm_add": "添加",
@@ -352,6 +354,8 @@
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
+    "withdrawn_in": "已在 {{issue}} 撤回",
+    "recorded_on": "已记录到 {{issue}}",
     "from_original_dm": "来自原始私信",
     "inherited": "继承",
     "message_unavailable": "该消息已不可用"

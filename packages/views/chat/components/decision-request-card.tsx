@@ -5,6 +5,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
+import { AnnotatableAnswer } from "./annotatable-answer";
+import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const { t } = useT("chat");
@@ -49,12 +51,25 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
             {t(($) => $.decision.source_comment)}
           </AppLink>
         )}
+        {card.state === "answered" && card.record_comment_id && (
+          <AppLink
+            href={`${issueHref}#comment-${card.record_comment_id}`}
+            className="inline-flex min-h-9 items-center hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+            data-testid="decision-request-record"
+          >
+            {t(($) => $.decision.recorded_on, { issue: card.issue_identifier || card.issue_id })}
+          </AppLink>
+        )}
       </div>
       <div className="min-w-0 space-y-3 break-words px-3 py-3">
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
         )}
-        <RichContent content={card.ask} density="compact" phase="settled" />
+        <div data-testid="decision-request-ask">
+          <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
+            <RichContent content={card.ask} density="compact" phase="settled" />
+          </AnnotatableAnswer>
+        </div>
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">
             {new Intl.DateTimeFormat("en-GB", {
