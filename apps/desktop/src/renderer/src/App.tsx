@@ -61,7 +61,7 @@ const HTML_LANG: Record<SupportedLocale, string> = {
 function useCmdWCloseTab() {
   useEffect(() => {
     return window.desktopAPI.onCloseActiveTab(() => {
-      if (window.desktopAPI.windowContext?.kind === "issue") {
+      if (window.desktopAPI.windowContext && window.desktopAPI.windowContext.kind !== "main") {
         window.desktopAPI.closeWindow();
         return;
       }
@@ -90,7 +90,7 @@ function IssueWindowContent() {
   const authStatus = useAuthStore((state) => state.status);
   const context = window.desktopAPI.windowContext ?? { kind: "main" as const };
 
-  if (context.kind !== "issue") return null;
+  if (context.kind === "main") return null;
   if (authStatus === "recovering") return <DesktopAuthRecoveryPage />;
   if (isLoading) {
     return (
@@ -475,7 +475,7 @@ export default function App() {
               apiUrl={runtimeConfigResult.config.apiUrl}
             />
           )}
-          {windowContext.kind === "issue" ? (
+          {windowContext.kind !== "main" ? (
             <IssueWindowContent />
           ) : (
             <AppContent />

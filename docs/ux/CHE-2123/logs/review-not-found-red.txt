@@ -1,0 +1,50 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media/media-page.test.tsx -t 'normal not-found'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ❯ media/media-page.test.tsx (7 tests | 1 failed | 6 skipped) 279ms
+     × matches the normal not-found page with a 404, description and recovery link 272ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  media/media-page.test.tsx > media route permission > matches the normal not-found page with a 404, description and recovery link
+TestingLibraryElementError: Unable to find an element with the text: 404. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"flex h-full w-full items-center justify-center"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mPage not found[0m
+      [36m</h1>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ Object.getElementError ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ media/media-page.test.tsx:34:19
+     32|     renderPage();
+     33|     expect(await screen.findByRole("heading", { name: "Page not found"…
+     34|     expect(screen.getByText("404")).toBeInTheDocument();
+       |                   ^
+     35|     expect(screen.getByText("The page you are looking for doesn't exis…
+     36|     expect(screen.getByRole("link", { name: "Back to Multica" })).toHa…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 skipped (7)
+   Start at  20:26:29
+   Duration  40.15s (transform 35.31s, setup 140ms, import 37.51s, tests 279ms, environment 1.62s)
+
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @multica/views@0.0.0 test: `vitest run media/media-page.test.tsx -t 'normal not-found'`
+Exit status 1
