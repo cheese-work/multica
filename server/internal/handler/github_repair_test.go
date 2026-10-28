@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +100,23 @@ func TestGitHubRepairSkipsRowsFromBeforeTheForkCheck(t *testing.T) {
 	}
 	if replayed, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); err != nil || replayed != 0 {
 		t.Fatalf("replayed=%d err=%v, want 0 nil", replayed, err)
+	}
+}
+
+// A sweep that cannot read GitHub must say so; a silent skip hid a dead sweep.
+func TestGitHubRepairWarnsWhenAPIClientMissing(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	handler := *fixture.handler
+	handler.PRRefresh = nil
+	handler.fetchPullRequestJSON = nil
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	if replayed, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); err != nil || replayed != 0 {
+		t.Fatalf("replayed=%d err=%v, want 0 nil", replayed, err)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "unverified head sweep skipped") {
+		t.Errorf("no skip warning, logs: %q", out)
 	}
 }
