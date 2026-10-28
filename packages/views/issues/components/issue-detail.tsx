@@ -3603,7 +3603,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     (text-caption, muted icons) and each option leads with the
                     icon the resulting picker uses, so the dropdown reads
                     as a preview of what will show up below. */}
-                <PopoverContent align="start" className="w-44 p-1">
+                <PopoverContent
+                  align="start"
+                  data-testid="add-property-popover"
+                  className="max-h-(--available-height) w-max min-w-44 max-w-[min(388px,var(--available-width))] overflow-y-auto overscroll-contain p-1"
+                >
                   {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k) && (k !== "stage" || issue.parent_issue_id != null)).map((k) => (
                     <button
                       key={k}
@@ -4670,7 +4674,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </div>
 
-            <LocalDirectoryHint projectId={issue?.project_id} />
+            <LocalDirectoryHint
+              projectId={issue?.project_id}
+              assignedAgent={issue?.assignee_type === "agent"
+                ? agents.find((agent) => agent.id === issue.assignee_id) ?? null
+                : undefined}
+            />
 
             {/* The "agent is working" live signal now lives in the header
                 (IssueAgentHeaderChip) so it stays in one fixed place and
