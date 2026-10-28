@@ -432,3 +432,36 @@ func TestRunBudgetWarningSurvivesDelayedDirectInsert(t *testing.T) {
 		t.Fatalf("notices after a delayed direct insert = %d comments, %d inbox items, want 1 and 1", comments, inbox)
 	}
 }
+
+// A named wakeup is a counted run too. The one that lifts the issue to 80% of
+// the ceiling writes the warning, even though no direct enqueue follows it.
+func TestRunBudgetWarningCoversNamedWakeupAdmission(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2310013, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	ctx := context.Background()
+	svc := service.IssueWakeupService{Tasks: testHandler.TaskService}
+	wakeup, err := svc.Create(ctx, parseUUID(c.issueID), parseUUID(testUserID), pgtype.UUID{}, service.WakeupInput{
+		AgentID: c.agentID, Kind: "at", AfterSeconds: 600, Instruction: "check again",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id = $1`, wakeup.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_wakeup WHERE issue_id = $1`, c.issueID)
+	})
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE id = $1`, wakeup.ID)
+	if err := svc.TickWorkspaces(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	runs := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND context->>'wakeup_id' = $2`, c.issueID, uuidToString(wakeup.ID))
+	if runs != 1 {
+		t.Fatalf("runs started by the wakeup = %d, want 1", runs)
+	}
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("notices after a named wakeup at 4 of 5 = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
