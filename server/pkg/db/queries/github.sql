@@ -236,6 +236,29 @@ SELECT EXISTS (
       AND context->>'github_review_key' = sqlc.arg(review_key)::text
 );
 
+-- name: RecordGitHubPRReview :exec
+-- Keeps the latest approved, changes_requested or commented review of a PR; a
+-- review that was submitted before the stored one is dropped.
+UPDATE github_pull_request
+SET review_state = sqlc.arg(review_state)::text,
+    review_head_sha = sqlc.arg(head_sha)::text,
+    review_id = sqlc.arg(review_id)::bigint,
+    review_at = sqlc.arg(submitted_at)::timestamptz
+WHERE id = sqlc.arg(id) AND (review_at IS NULL OR review_at <= sqlc.arg(submitted_at)::timestamptz);
+
+-- name: ClearGitHubPRReview :exec
+-- Withdraws the stored review when GitHub dismisses that exact review. A
+-- dismissal of any other review leaves it alone. review_at stays as the
+-- ordering watermark, so an older review delivered late is still dropped.
+UPDATE github_pull_request
+SET review_state = '', review_head_sha = '', review_id = 0
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND installation_id = sqlc.arg(installation_id)
+  AND repo_owner = sqlc.arg(repo_owner)
+  AND repo_name = sqlc.arg(repo_name)
+  AND pr_number = sqlc.arg(pr_number)
+  AND review_id = sqlc.arg(review_id)::bigint;
+
 -- name: ListGitHubReviewAuthorCandidates :many
 SELECT DISTINCT task.agent_id
 FROM agent_task_queue task

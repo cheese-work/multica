@@ -195,5 +195,8 @@
     "clear_filter": "清除篩選",
     "no_matches": "沒有匹配的行",
     "close": "關閉"
+  },
+  "next_self_mention": {
+    "label": "下一個提到我的"
   }
 }
