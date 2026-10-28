@@ -16,9 +16,14 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// runBudgetCommitWait bounds how long a warning waits for the admission that
-// raised it to commit.
-var runBudgetCommitWait = 10 * time.Second
+var (
+	// runBudgetCommitWait bounds how long a warning waits, after its transaction
+	// has committed, for the committed run count to show the admission.
+	runBudgetCommitWait = 10 * time.Second
+	// runBudgetTxWait is a safety cap on following an admission's open
+	// transaction; a transaction open this long is a leak, not a slow commit.
+	runBudgetTxWait = 10 * time.Minute
+)
 
 // onRunBudgetEvent blocks the issue when the budget is spent, then writes the
 // run-budget notice for the admission or refusal (CHE-2297 L1a).
@@ -34,10 +39,15 @@ func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent
 
 // admissionCommitted reports whether the admission that raised a warning has
 // committed. The guard fires before the task insert and its transaction finish,
-// so the warning waits until the committed run count reaches the admission's
-// own. A rejected or rolled-back admission never gets there: no false notice,
-// and the window's warn80 claim stays free for the real 80% admission.
+// so the warning follows that transaction: it waits while it is open, drops the
+// warning when it aborts, and then waits for the committed run count to reach
+// the admission's own. A rejected or rolled-back admission never gets there: no
+// false notice, and the window's warn80 claim stays free for the real 80%
+// admission.
 func (h *Handler) admissionCommitted(ctx context.Context, e service.RunBudgetEvent) bool {
+	if e.Xid != 0 && !h.admissionTxFinished(ctx, e) {
+		return false
+	}
 	since := pgtype.Timestamptz{Time: e.Since, Valid: true}
 	deadline := time.Now().Add(runBudgetCommitWait)
 	for {
@@ -50,6 +60,27 @@ func (h *Handler) admissionCommitted(ctx context.Context, e service.RunBudgetEve
 			return true
 		}
 		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// admissionTxFinished waits for the admission's transaction to leave "in
+// progress" and reports whether it did not abort.
+func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEvent) bool {
+	deadline := time.Now().Add(runBudgetTxWait)
+	for {
+		status, err := h.Queries.XactStatus(ctx, e.Xid)
+		if err != nil {
+			slog.Warn("run budget: read admission transaction failed", "err", err, "issue_id", uuidToString(e.IssueID))
+			return false
+		}
+		if status != "in progress" {
+			return status != "aborted"
+		}
+		if !time.Now().Before(deadline) {
+			slog.Warn("run budget: admission transaction still open, dropping warning", "issue_id", uuidToString(e.IssueID))
 			return false
 		}
 		time.Sleep(100 * time.Millisecond)

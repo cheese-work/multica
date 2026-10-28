@@ -43,6 +43,9 @@ type RunBudgetEvent struct {
 	Runs    int64
 	Max     int
 	Since   time.Time
+	// Xid is the enqueue transaction that raised a warning (0 when unknown), so
+	// the handler can follow it to commit or rollback.
+	Xid int64
 }
 
 var onRunBudgetEvent atomic.Pointer[func(context.Context, RunBudgetEvent)]
@@ -120,9 +123,11 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 	if runs < int64(max) {
 		// ponytail: exact match, so a named run that skips the count can skip the
 		// warning; the exhaustion notice still fires. The event fires before this
-		// admission's insert commits; the handler waits for the commit.
+		// admission's insert commits; the handler follows its transaction.
 		if runs+1 == runBudgetWarnAt(max) {
-			fireRunBudgetEvent(ctx, RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: runs + 1, Max: max, Since: since})
+			// A failed read leaves Xid 0: the handler then only counts committed runs.
+			xid, _ := q.CurrentXactID(ctx)
+			fireRunBudgetEvent(ctx, RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: runs + 1, Max: max, Since: since, Xid: xid})
 		}
 		return nil
 	}

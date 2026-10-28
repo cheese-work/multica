@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
@@ -303,5 +305,71 @@ func TestRunBudgetWarningSeesLateCommit(t *testing.T) {
 	testHandler.onRunBudgetEvent(context.Background(), ev)
 	if comments, inbox := c.notices(t, service.RunBudgetKindWarn80); comments != 1 || inbox != 1 {
 		t.Fatalf("notices = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
+
+// slowAdmission opens the 4th admission's transaction and returns it unfinished.
+func (c budgetCase) slowAdmission(t *testing.T) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback(ctx) })
+	if _, err := testHandler.TaskService.EnqueueDecisionTaskInTx(ctx, testHandler.Queries.WithTx(tx), issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}
+
+// A transaction that stays open past the commit wait still gets its warning
+// once it commits: the handler follows the admission's transaction, not a timer.
+func TestRunBudgetWarningSurvivesSlowCommit(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	old := runBudgetCommitWait
+	runBudgetCommitWait = 300 * time.Millisecond
+	t.Cleanup(func() { runBudgetCommitWait = old })
+
+	c := newBudgetCase(t, 2310012, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	tx := c.slowAdmission(t)
+	time.Sleep(3 * runBudgetCommitWait)
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("notices after a slow commit = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
+
+// A transaction that rolls back after the wait leaves no warning and keeps the
+// window's claim free.
+func TestRunBudgetWarningDroppedOnSlowRollback(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	old := runBudgetCommitWait
+	runBudgetCommitWait = 300 * time.Millisecond
+	t.Cleanup(func() { runBudgetCommitWait = old })
+
+	c := newBudgetCase(t, 2310013, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	tx := c.slowAdmission(t)
+	time.Sleep(3 * runBudgetCommitWait)
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 0 || inbox != 0 {
+		t.Fatalf("notices after a rollback = %d comments, %d inbox items, want 0 and 0", comments, inbox)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1`, c.issueID); n != 0 {
+		t.Fatalf("claim rows = %d, want 0", n)
 	}
 }
