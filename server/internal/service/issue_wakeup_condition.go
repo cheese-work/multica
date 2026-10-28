@@ -32,7 +32,7 @@ const (
 // stored facts (a field value, sub-issue status, a linked pull request's
 // state); it does not interpret business meaning.
 type WakeupCondition struct {
-	// issue_field | children_done | pull_request | other_issue
+	// issue_field | children_done | pull_request | other_issue | github_run
 	Type string `json:"type"`
 	// issue_field: status | assignee | label | property
 	Field        string          `json:"field,omitempty"`
@@ -54,6 +54,13 @@ type WakeupCondition struct {
 	IssueID    string `json:"issue_id,omitempty"`
 	State      string `json:"state,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
+	// github_run: a lowercased owner/name and one selector, either RunID or
+	// Workflow (a file name under .github/workflows) plus the run's own
+	// HeadSHA. State is completed | waiting.
+	Repo     string `json:"repo,omitempty"`
+	RunID    int64  `json:"run_id,omitempty"`
+	Workflow string `json:"workflow,omitempty"`
+	HeadSHA  string `json:"head_sha,omitempty"`
 }
 
 var errBadCondition = errors.New("invalid condition")
@@ -65,10 +72,15 @@ var (
 	errPRNotLinked            = errors.New("no pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
 	errPRSnapshotPending      = errors.New("PR check snapshot is not available yet; inspect this issue's pull-requests snapshot_available field and ask the server administrator to check snapshot refresh if it persists")
 	errPRConflictsUnsupported = errors.New("Merge conflicts can only be detected on GitHub pull requests; this issue links only self-hosted (Forgejo/Gitea/GitLab) pull requests")
+	errGHRunNoEvents          = errors.New("no GitHub workflow events have been received for this repository; ask the server administrator to check that the GitHub App is subscribed to Workflow run and Workflow job events")
+	errGHRunNoMatch           = errors.New("no matching workflow run has been observed yet; the run may not have started, or its event was not delivered")
+	errGHRunAgedOut           = errors.New("the run is no longer in the 30-day event cache; the rule keeps its memory but cannot fire again")
+	errGHRunStale             = errors.New("the run has shown no event for over 6 hours and is not waiting; its completed delivery may be lost, so redeliver it from the GitHub App's Recent Deliveries or rely on the rule's deadline")
 )
 
 func conditionDiagnostic(err error) bool {
-	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported)
+	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported) ||
+		errors.Is(err, errGHRunNoEvents) || errors.Is(err, errGHRunNoMatch) || errors.Is(err, errGHRunAgedOut) || errors.Is(err, errGHRunStale)
 }
 
 func badCondition(msg string) error {
@@ -211,8 +223,16 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 			return nil, nil, err
 		}
 		out = WakeupCondition{Type: c.Type, IssueID: util.UUIDToString(id), State: c.State, Identifier: identifier}
+	case "github_run":
+		// Polled only: ingest writes no issue event a rule could subscribe to.
+		var err error
+		if out, err = validateGitHubRun(c, func(owner string) (bool, error) {
+			return exists("SELECT 1 FROM github_installation WHERE workspace_id=$1 AND lower(account_login)=$2", ws, owner)
+		}); err != nil {
+			return nil, nil, err
+		}
 	default:
-		return nil, nil, badCondition("type must be issue_field, children_done, pull_request or other_issue")
+		return nil, nil, badCondition("type must be issue_field, children_done, pull_request, other_issue or github_run")
 	}
 	normalized, _ := json.Marshal(out)
 	return normalized, events, nil
@@ -267,7 +287,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// GitHub reports UNKNOWN while it recomputes mergeability (after any
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
-		previous := prConditionKeys(w.ConditionState)
+		previous := conditionKeys(w.ConditionState)
 		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
@@ -392,6 +412,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		}
 		sort.Strings(keys)
 		return len(keys) > 0, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": prs}, nil
+	case "github_run":
+		return evaluateGitHubRun(ctx, tx, q, w, c)
 	case "other_issue":
 		var status string
 		var number int32
@@ -489,13 +511,14 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	// condition_state dedups a satisfied predicate; each new satisfaction
 	// gets its own receipt key.
 	state := w.ConditionState
+	var condition WakeupCondition
+	if err := json.Unmarshal(w.Condition, &condition); err != nil {
+		return w.NextFireAt, err
+	}
+	isRun := condition.Type == "github_run"
 	if met {
 		newlyMet := fingerprint != state
-		var condition WakeupCondition
-		if err := json.Unmarshal(w.Condition, &condition); err != nil {
-			return w.NextFireAt, err
-		}
-		if condition.Type == "pull_request" && condition.Event == "conflicts" {
+		if isRun || (condition.Type == "pull_request" && condition.Event == "conflicts") {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
 		if newlyMet {
@@ -504,36 +527,43 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 			}
 		}
 		state = fingerprint
-	} else if !met {
+		if isRun {
+			state = mergeGitHubRunKeys(w.ConditionState, fingerprint)
+		}
+	} else if !isRun {
 		state = ""
 	}
 	next := pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}
 	return next, q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: state, NextFireAt: next})
 }
 
-// prConditionKeys counts the per-PR keys of a linked-PR fingerprint. Checks
-// and merged keys carry only the PR number, so two satisfying PRs from
-// different repositories can share a key; the count keeps both.
-func prConditionKeys(fingerprint string) map[string]int {
+// conditionKeys counts the keys of a keyed fingerprint ("pr:" linked PRs,
+// "gh:" workflow runs). Checks and merged keys carry only the PR number, so two
+// satisfying PRs from different repositories can share a key; the count keeps
+// both.
+func conditionKeys(fingerprint string) map[string]int {
 	keys := map[string]int{}
-	if rest, ok := strings.CutPrefix(fingerprint, "pr:"); ok && rest != "" {
-		for _, key := range strings.Split(rest, ",") {
-			keys[key]++
+	for _, prefix := range []string{"pr:", "gh:"} {
+		if rest, ok := strings.CutPrefix(fingerprint, prefix); ok && rest != "" {
+			for _, key := range strings.Split(rest, ",") {
+				keys[key]++
+			}
 		}
 	}
 	return keys
 }
 
 // conditionNewlyMet reports whether a satisfied predicate is news to the rule.
-// A linked-PR fingerprint holds one key per satisfying PR, and only a key that
-// occurs more often than the rule has seen is news: one PR leaving the set
-// (resolved, closed, unlinked) must not wake the agent again for the others.
+// A keyed fingerprint holds one key per satisfying PR or run episode, and only
+// a key that occurs more often than the rule has seen is news: one PR leaving
+// the set (resolved, closed, unlinked) must not wake the agent again for the
+// others.
 func conditionNewlyMet(previous, current string) bool {
-	if !strings.HasPrefix(current, "pr:") {
+	if !strings.HasPrefix(current, "pr:") && !strings.HasPrefix(current, "gh:") {
 		return current != previous
 	}
-	seen := prConditionKeys(previous)
-	for key, n := range prConditionKeys(current) {
+	seen := conditionKeys(previous)
+	for key, n := range conditionKeys(current) {
 		if n > seen[key] {
 			return true
 		}
