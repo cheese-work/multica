@@ -16,13 +16,44 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// runBudgetCommitWait bounds how long a warning waits for the admission that
+// raised it to commit.
+var runBudgetCommitWait = 10 * time.Second
+
 // onRunBudgetEvent blocks the issue when the budget is spent, then writes the
 // run-budget notice for the admission or refusal (CHE-2297 L1a).
 func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent) {
 	if e.Kind == service.RunBudgetKindExhausted {
 		h.blockExhaustedIssue(ctx, e)
 	}
+	if e.Kind == service.RunBudgetKindWarn80 && !h.admissionCommitted(ctx, e) {
+		return
+	}
 	h.writeRunBudgetNotice(ctx, e)
+}
+
+// admissionCommitted reports whether the admission that raised a warning has
+// committed. The guard fires before the task insert and its transaction finish,
+// so the warning waits until the committed run count reaches the admission's
+// own. A rejected or rolled-back admission never gets there: no false notice,
+// and the window's warn80 claim stays free for the real 80% admission.
+func (h *Handler) admissionCommitted(ctx context.Context, e service.RunBudgetEvent) bool {
+	since := pgtype.Timestamptz{Time: e.Since, Valid: true}
+	deadline := time.Now().Add(runBudgetCommitWait)
+	for {
+		runs, err := h.Queries.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: e.IssueID, Since: since})
+		if err != nil {
+			slog.Warn("run budget: count committed runs failed", "err", err, "issue_id", uuidToString(e.IssueID))
+			return false
+		}
+		if runs >= e.Runs {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // writeRunBudgetNotice writes one system comment and one inbox item per

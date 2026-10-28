@@ -119,7 +119,8 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) err
 	max := def.EffectiveMaxRuns()
 	if runs < int64(max) {
 		// ponytail: exact match, so a named run that skips the count can skip the
-		// warning; the exhaustion notice still fires.
+		// warning; the exhaustion notice still fires. The event fires before this
+		// admission's insert commits; the handler waits for the commit.
 		if runs+1 == runBudgetWarnAt(max) {
 			fireRunBudgetEvent(ctx, RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: runs + 1, Max: max, Since: since})
 		}

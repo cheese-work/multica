@@ -249,3 +249,59 @@ func TestRunBudgetWarningAtEightyPercentOfAdmission(t *testing.T) {
 		t.Fatalf("comments after the 5th run = %d, want still 1", comments)
 	}
 }
+
+// warnEvent is what guardRunBudget fires when an admission would make the 4th
+// of 5 runs, before that admission's insert has committed.
+func (c budgetCase) warnEvent(t *testing.T) service.RunBudgetEvent {
+	t.Helper()
+	var since time.Time
+	if err := testPool.QueryRow(context.Background(), `SELECT run_budget_since FROM issue_workflow WHERE id=$1`, c.workflowID).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	return service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindWarn80, Runs: 4, Max: 5, Since: since}
+}
+
+// A warning event for an admission that never committed (duplicate-pending
+// rejection, rolled-back transaction) writes nothing and keeps the window's
+// claim free for the real 80% admission.
+func TestRunBudgetWarningWaitsForCommittedAdmission(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	old := runBudgetCommitWait
+	runBudgetCommitWait = 300 * time.Millisecond
+	t.Cleanup(func() { runBudgetCommitWait = old })
+
+	c := newBudgetCase(t, 2310010, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	testHandler.onRunBudgetEvent(context.Background(), c.warnEvent(t))
+	if comments, inbox := c.notices(t, service.RunBudgetKindWarn80); comments != 0 || inbox != 0 {
+		t.Fatalf("notices for an uncommitted admission = %d comments, %d inbox items, want 0 and 0", comments, inbox)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1`, c.issueID); n != 0 {
+		t.Fatalf("claim rows = %d, want 0: the false event must not consume the window's warn80 claim", n)
+	}
+	// The real 4th admission still writes its own warning.
+	c.spend(t, 1)
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("notices after the real 4th run = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
+
+// The insert may commit a moment after the guard fires: the warning waits for it.
+func TestRunBudgetWarningSeesLateCommit(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2310011, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	ev := c.warnEvent(t)
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		c.admit(t)
+	}()
+	testHandler.onRunBudgetEvent(context.Background(), ev)
+	if comments, inbox := c.notices(t, service.RunBudgetKindWarn80); comments != 1 || inbox != 1 {
+		t.Fatalf("notices = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
