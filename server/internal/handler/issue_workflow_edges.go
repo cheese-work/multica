@@ -71,6 +71,8 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			// No retry can fix this: the join finds no child, so the step's
 			// deadline edge, if it has one, still moves the issue.
 			slog.Warn("workflow edge: sub-workflow is not in this workspace", "issue_id", uuidToString(issue.ID), "workflow_id", sub.WorkflowID)
+		case errors.Is(err, errSubWorkflowRefused):
+			slog.Warn("workflow edge: sub-workflow child refused", "issue_id", uuidToString(issue.ID), "workflow_id", sub.WorkflowID, "error", err)
 		case err != nil:
 			h.watchAgainIn(ctx, w, edgeRetryDelay)
 			return err

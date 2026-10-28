@@ -19,6 +19,45 @@ import (
 // errSubWorkflowMissing: the step names a workflow this workspace does not have.
 var errSubWorkflowMissing = errors.New("sub-workflow not found in this workspace")
 
+// errSubWorkflowRefused: the child cannot be made as the workflow stands, and
+// a retry would not change that (its start-step handler fails the assignee
+// check). The watch logs it and stops asking.
+var errSubWorkflowRefused = errors.New("sub-workflow child refused")
+
+// subWorkflowHandoffResolver resolves the child's start-step handler with the
+// admission a new issue gets (createHandoffResolver): the same handler rules,
+// then the same assignee gate. No request exists on the edge path, so the invoke
+// gate judges the human the parent acts for: its requester, else its creator
+// when that is a member. A handler that person may not use refuses the spawn.
+func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHandoffResolver {
+	originator := ""
+	switch {
+	case parent.RequestedByID.Valid:
+		originator = uuidToString(parent.RequestedByID)
+	case parent.CreatorType == "member":
+		originator = uuidToString(parent.CreatorID)
+	}
+	workspaceID := uuidToString(parent.WorkspaceID)
+	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
+		humans, err := h.workflowHumans(ctx, step, project, project.WorkspaceID, parent.RequestedByID)
+		if err != nil {
+			return pgtype.Text{}, pgtype.UUID{}, err
+		}
+		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, parent.CreatorType, parent.CreatorID, humans)
+		if !ok {
+			return pgtype.Text{}, pgtype.UUID{}, nil
+		}
+		assignee := pgtype.Text{String: assigneeType, Valid: true}
+		status, msg := h.validateAssignee(ctx, workspaceID, assignee, assigneeID, func(agent db.Agent) bool {
+			return h.canInvokeAgent(ctx, agent, "system", "", originator, workspaceID)
+		})
+		if status != 0 {
+			return pgtype.Text{}, pgtype.UUID{}, fmt.Errorf("%w: %s", errSubWorkflowRefused, msg)
+		}
+		return assignee, assigneeID, nil
+	}
+}
+
 // subWorkflowTargetsMessage checks every sub-workflow step of a definition
 // being saved: its workflow must exist in the workspace. It returns the 400
 // message, or "" when the steps are fine.
@@ -44,8 +83,8 @@ func (h *Handler) subWorkflowTargetsMessage(ctx context.Context, qtx *db.Queries
 // spawnSubWorkflowChild gives the issue the child its sub-workflow step starts:
 // one child of the issue on the target workflow in the step's stage. A child
 // already there (an earlier pass, a re-entry, one made by hand) is the child,
-// so a second pass makes none. The child starts unassigned at the workflow's
-// start status.
+// so a second pass makes none. The child starts at the workflow's start status
+// with that step's handler, admitted like any new issue.
 func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, sub issueworkflow.SubWorkflow) error {
 	targetID, err := parseUUIDString(sub.WorkflowID)
 	if err != nil {
@@ -87,6 +126,7 @@ func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, su
 		WorkflowID:     targetID,
 		Stage:          pgtype.Int4{Int32: int32(sub.Stage), Valid: true},
 		AllowDuplicate: true,
+		HandoffResolver: h.subWorkflowHandoffResolver(parent),
 	}, service.IssueCreateOpts{
 		ActorID: uuidToString(parent.CreatorID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, _ []db.IssueLabel) map[string]any {
