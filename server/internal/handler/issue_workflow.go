@@ -612,6 +612,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+		return
+	}
 	if status, msg := h.validateHandoffHandlers(ctx, r, workspaceID, steps, nil); status != 0 {
 		writeErrorCode(w, status, "invalid_handoff", msg)
 		return
@@ -827,6 +834,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, current.IsDefault, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, current.ID, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	if status, msg := h.validateHandoffHandlers(ctx, r, workspaceID, steps, currentSteps); status != 0 {

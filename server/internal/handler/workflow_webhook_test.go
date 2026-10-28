@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/internal/webhookguard"
@@ -81,12 +82,21 @@ func newWebhookFixture(t *testing.T, ratePerMin int) whFixture {
 	}
 	seedTestCatalog(t)
 	useWebhookBox(t)
-	wf := createTestWorkflowSteps(t, "Hook "+workflowTestSuffix(), whSteps)
-	issueID, identifier := whIssue(t, wf.ID)
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		t.Fatal(err)
 	}
+	workflowID, endpointID := guardedWorkflow(t, secret, ratePerMin)
+	issueID, identifier := whIssue(t, workflowID)
+	return whFixture{endpointID: endpointID, workflowID: workflowID, issueID: issueID, identifier: identifier, secret: secret}
+}
+
+// guardedWorkflow stores a workflow whose in_progress step waits on
+// webhook(ci). A webhook edge saves only once its endpoint exists, so the
+// guarded steps go on after the endpoint.
+func guardedWorkflow(t *testing.T, secret []byte, ratePerMin int) (workflowID, endpointID string) {
+	t.Helper()
+	wf := createTestWorkflowSteps(t, "Hook "+workflowTestSuffix(), statusSteps("backlog", "todo", "in_progress", "in_review", "blocked"))
 	sealed, err := testHandler.VCSSecretBox.Seal(secret)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +115,8 @@ func newWebhookFixture(t *testing.T, ratePerMin int) whFixture {
 		}
 		testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, id)
 	})
-	return whFixture{endpointID: id, workflowID: wf.ID, issueID: issueID, identifier: identifier, secret: secret}
+	patchWorkflow(t, wf.ID, map[string]any{"steps": whSteps}).Want(http.StatusOK)
+	return wf.ID, id
 }
 
 // whReq is one signed call. Fields can be changed before http() builds it.
@@ -379,8 +390,8 @@ func TestWorkflowWebhookOnlyMovesIssuesOnItsOwnWorkflowAndStep(t *testing.T) {
 	f := newWebhookFixture(t, 60)
 
 	t.Run("same workspace, different workflow", func(t *testing.T) {
-		other := createTestWorkflowSteps(t, "Hook other "+workflowTestSuffix(), whSteps)
-		otherIssue, otherIdentifier := whIssue(t, other.ID)
+		otherWorkflow, _ := guardedWorkflow(t, bytes.Repeat([]byte{3}, 32), 60)
+		otherIssue, otherIdentifier := whIssue(t, otherWorkflow)
 		c := f.call("success")
 		c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"success"}`, otherIdentifier))
 		rec := serveWebhook(c)
@@ -575,4 +586,55 @@ func TestWorkflowWebhookEventBeforeStepEntryDoesNotFireGuard(t *testing.T) {
 	if got := f.status(t); got != "in_progress" {
 		t.Fatalf("stale event moved the issue to %s", got)
 	}
+}
+
+// Case 15: a webhook(name) edge saves only while an enabled endpoint of that
+// name exists on the workflow. A new workflow has no endpoint yet, so it
+// cannot carry the edge.
+func TestWorkflowWebhookSaveNeedsAnEnabledEndpoint(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	useWebhookBox(t)
+	body := func(steps []map[string]any) map[string]any {
+		return map[string]any{"name": "Hook " + workflowTestSuffix(), "steps": steps}
+	}
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
+
+	testutil.Call(t, testHandler.CreateIssueWorkflow, workflowRequest("POST", "/api/issue-workflows", body(whSteps))).
+		Want(http.StatusBadRequest)
+
+	plain := createTestWorkflowSteps(t, "Hook "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"}, {"status_key": "in_progress"}, {"status_key": "in_review"},
+	})
+	save := func() *testutil.Response {
+		return patchWorkflow(t, plain.ID, map[string]any{"steps": whSteps})
+	}
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	save().Want(http.StatusBadRequest).JSON(&refusal)
+	if !strings.Contains(refusal.Error, `"ci"`) {
+		t.Fatalf("message %q does not name the endpoint", refusal.Error)
+	}
+
+	sealed, err := testHandler.VCSSecretBox.Seal(bytes.Repeat([]byte{5}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := testHandler.Queries.CreateWorkflowWebhookEndpoint(context.Background(), db.CreateWorkflowWebhookEndpointParams{
+		WorkspaceID: parseUUID(testWorkspaceID), WorkflowID: parseUUID(plain.ID), Name: "ci",
+		SecretSealed: sealed, RatePerMin: 60, CreatedBy: parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID)) })
+	save().Want(http.StatusOK)
+
+	if _, err := testHandler.Queries.DisableWorkflowWebhookEndpoint(context.Background(), ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	save().Want(http.StatusBadRequest)
 }
