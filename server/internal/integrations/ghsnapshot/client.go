@@ -105,19 +105,19 @@ func NewClientFromEnv() (*Client, error) {
 }
 
 // Enabled reports whether the App API is configured. A nil client is disabled.
-func (c *Client) Enabled() bool { return c != nil && c.privateKey != nil }
+func (client *Client) Enabled() bool { return client != nil && client.privateKey != nil }
 
 // signAppJWT mints the short-lived RS256 JWT GitHub requires for
 // App-authenticated calls. iat is back-dated 60s to absorb clock skew and exp
 // is capped at 9 minutes (GitHub's ceiling is 10).
-func (c *Client) signAppJWT(now time.Time) (string, error) {
+func (client *Client) signAppJWT(now time.Time) (string, error) {
 	claims := jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(),
 		"exp": now.Add(9 * time.Minute).Unix(),
-		"iss": c.appID,
+		"iss": client.appID,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	signed, err := tok.SignedString(c.privateKey)
+	signed, err := tok.SignedString(client.privateKey)
 	if err != nil {
 		return "", errors.New("sign App JWT failed")
 	}
@@ -128,16 +128,16 @@ func (c *Client) signAppJWT(now time.Time) (string, error) {
 // one via POST /app/installations/{id}/access_tokens when the cache is empty or
 // within the renew skew of expiry. Concurrent callers for the same installation
 // are collapsed by singleflight, so a cold cache under N workers mints once.
-func (c *Client) installationToken(ctx context.Context, installationID int64) (string, error) {
-	if tok, ok := c.cachedToken(installationID); ok {
+func (client *Client) installationToken(ctx context.Context, installationID int64) (string, error) {
+	if tok, ok := client.cachedToken(installationID); ok {
 		return tok, nil
 	}
-	v, err, _ := c.sf.Do(strconv.FormatInt(installationID, 10), func() (any, error) {
+	v, err, _ := client.sf.Do(strconv.FormatInt(installationID, 10), func() (any, error) {
 		// A concurrent caller may have minted while we waited for the flight.
-		if tok, ok := c.cachedToken(installationID); ok {
+		if tok, ok := client.cachedToken(installationID); ok {
 			return tok, nil
 		}
-		return c.mintInstallationToken(ctx, installationID)
+		return client.mintInstallationToken(ctx, installationID)
 	})
 	if err != nil {
 		return "", err
@@ -146,11 +146,11 @@ func (c *Client) installationToken(ctx context.Context, installationID int64) (s
 }
 
 // cachedToken returns a cached token that is still outside the renew skew.
-func (c *Client) cachedToken(installationID int64) (string, bool) {
-	now := c.now()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if t, ok := c.tokens[installationID]; ok && now.Add(tokenRenewSkew).Before(t.expiry) {
+func (client *Client) cachedToken(installationID int64) (string, bool) {
+	now := client.now()
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if t, ok := client.tokens[installationID]; ok && now.Add(tokenRenewSkew).Before(t.expiry) {
 		return t.token, true
 	}
 	return "", false
@@ -158,13 +158,13 @@ func (c *Client) cachedToken(installationID int64) (string, bool) {
 
 // mintInstallationToken exchanges the App JWT for a fresh installation token and
 // caches it. Called under singleflight, so only one runs per installation.
-func (c *Client) mintInstallationToken(ctx context.Context, installationID int64) (string, error) {
-	now := c.now()
-	appJWT, err := c.signAppJWT(now)
+func (client *Client) mintInstallationToken(ctx context.Context, installationID int64) (string, error) {
+	now := client.now()
+	appJWT, err := client.signAppJWT(now)
 	if err != nil {
 		return "", err
 	}
-	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", strings.TrimRight(c.apiBase, "/"), installationID)
+	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", strings.TrimRight(client.apiBase, "/"), installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return "", err
@@ -172,14 +172,14 @@ func (c *Client) mintInstallationToken(ctx context.Context, installationID int64
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if isRateLimited(resp, body) {
-		return "", rateLimitFromResponse(resp, c.now())
+		return "", rateLimitFromResponse(resp, client.now())
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		// Never echo the body — a token-mint failure body can contain sensitive
@@ -202,20 +202,20 @@ func (c *Client) mintInstallationToken(ctx context.Context, installationID int64
 			expiry = t
 		}
 	}
-	c.mu.Lock()
-	c.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
-	c.mu.Unlock()
+	client.mu.Lock()
+	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
+	client.mu.Unlock()
 	return parsed.Token, nil
 }
 
 // restGet authenticates against a fixed API path. Response bodies and tokens
 // never appear in errors; permission failures must not pause an installation.
-func (c *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
-	token, err := c.installationToken(ctx, installationID)
+func (client *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
+	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}
-	endpoint := strings.TrimRight(c.apiBase, "/") + path
+	endpoint := strings.TrimRight(client.apiBase, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -223,7 +223,7 @@ func (c *Client) restGet(ctx context.Context, installationID int64, path string)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func (c *Client) restGet(ctx context.Context, installationID int64, path string)
 		return nil, errors.New("github REST: failed to read response")
 	}
 	if isRateLimited(resp, body) {
-		return nil, rateLimitFromResponse(resp, c.now())
+		return nil, rateLimitFromResponse(resp, client.now())
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github REST: unexpected status %d", resp.StatusCode)

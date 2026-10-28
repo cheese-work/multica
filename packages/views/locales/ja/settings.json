@@ -33,7 +33,7 @@
       "key_hint": "API と CLI では {{key}} として参照されます。",
       "created": "ステータスを作成しました。API と CLI では {{key}} として参照されます。",
       "category": "カテゴリ",
-      "category_locked": "ステータスの作成後はカテゴリを変更できません。",
+      "category_change_hint": "カテゴリを変更すると、このステータスのすべてのタスクの動作が変わります。保存前に確認があります。",
       "description": "説明",
       "description_placeholder": "チームにとってこのステータスが意味すること",
       "color": "色",
@@ -52,6 +52,12 @@
       "save": "保存",
       "saving": "保存中…",
       "save_failed": "ステータスを保存できませんでした。"
+    },
+    "category_change_dialog": {
+      "title": "カテゴリを変更しますか？",
+      "description_other": "このステータスの {{count}} 件のタスクが「{{from}}」から「{{to}}」に変わります。",
+      "cancel": "キャンセル",
+      "confirm": "カテゴリを変更"
     },
     "archive_dialog": {
       "retry": "アーカイブを再試行",

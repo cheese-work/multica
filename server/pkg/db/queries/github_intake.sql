@@ -36,6 +36,43 @@ WHERE installation_id = $1 AND repository_id = $2
 ORDER BY workspace_id
 FOR UPDATE;
 
+-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.* FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND (
+        (pending.object_kind = 'review' AND (
+          pending.action = 'submitted'
+          OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+        ))
+        OR (pending.object_kind <> 'review' AND newer.object_updated_at IS NOT NULL AND (
+          newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_created_at)
+          OR (newer.object_updated_at = COALESCE(pending.object_updated_at, pending.object_created_at) AND (
+            pending.action = 'created'
+            OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+          ))
+        ))
+      )
+  );
+
 -- name: SetGitHubWebhookRevisionState :exec
 UPDATE github_webhook_revision SET state = $3, reason = $4, updated_at = now()
 WHERE workspace_id = $1 AND id = $2;
@@ -55,6 +92,10 @@ ORDER BY received_at LIMIT $1;
 
 -- name: GetGitHubWebhookDispatch :one
 SELECT * FROM github_webhook_dispatch WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3;
+
+-- name: HasGitHubWebhookRevisionDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND revision_id = $2 AND state = 'dispatched');
 
 -- name: RecordGitHubWebhookDispatch :execrows
 INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id, revision_id, state, reason)
