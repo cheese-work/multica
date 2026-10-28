@@ -38,8 +38,14 @@ describe("summarizeChatSessionUsage", () => {
     );
     expect(s.costUsd).toBeCloseTo(0.4, 6);
     expect(s.partial).toBe(false);
+    expect(s.tokenKinds).toEqual({ input: 1000, output: 500, cache_read: 0, cache_write: 0 });
     expect(s.models).toEqual([
-      { model: "claude-opus-4-7", tokens: 1500, costUsd: 0.4 },
+      {
+        model: "claude-opus-4-7",
+        tokens: 1500,
+        tokenKinds: { input: 1000, output: 500, cache_read: 0, cache_write: 0 },
+        costUsd: 0.4,
+      },
     ]);
   });
 
