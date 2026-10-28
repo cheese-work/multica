@@ -193,20 +193,25 @@ func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, err
 			}
 			digest := sha256.Sum256([]byte(object.Body))
 			bodyHash := hex.EncodeToString(digest[:])
-			// Only the newest revision counts: an object edited back to an earlier body is a new revision.
-			latest, err := queries.GetLatestGitHubWebhookRevisionBodyHash(ctx, db.GetLatestGitHubWebhookRevisionBodyHashParams{
+			// Only the newest stored revision counts: an object edited back to an earlier body is a new revision.
+			action := "reconciled"
+			latest, err := queries.GetLatestGitHubWebhookRevision(ctx, db.GetLatestGitHubWebhookRevisionParams{
 				WorkspaceID: pull.WorkspaceID, InstallationID: pull.InstallationID, RepositoryID: listed.RepositoryID,
 				ObjectKind: object.Kind, ObjectID: object.ID,
 			})
-			if err == nil && latest == bodyHash {
+			switch {
+			case err == nil && revisionMatchesObject(latest, object, bodyHash):
 				continue
-			} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			case err == nil:
+				// The identity index rejects metadata equal to an older reconciled row; naming the superseded revision keeps it distinct.
+				action += ":" + uuidToString(latest.ID)
+			case !errors.Is(err, pgx.ErrNoRows):
 				return recorded, err
 			}
 			inserted, err := queries.InsertGitHubWebhookRevision(ctx, db.InsertGitHubWebhookRevisionParams{
 				WorkspaceID: pull.WorkspaceID, InstallationID: pull.InstallationID, RepositoryID: listed.RepositoryID,
 				PullRequestID: pull.ID, PrNumber: pull.PrNumber, ObjectKind: object.Kind, ObjectID: object.ID, BodyHash: bodyHash,
-				Event: githubIntakeEvents[object.Kind], Action: "reconciled", SenderID: object.AuthorID, AuthorID: object.AuthorID,
+				Event: githubIntakeEvents[object.Kind], Action: action, SenderID: object.AuthorID, AuthorID: object.AuthorID,
 				AuthorLogin: object.AuthorLogin, AuthorType: object.AuthorType, HeadSha: listed.HeadSHA, ReviewState: object.ReviewState,
 				ObjectCreatedAt: githubIntakeTimestamp(object.CreatedAt), ObjectUpdatedAt: githubIntakeTimestamp(object.UpdatedAt),
 				ObjectSubmittedAt: githubIntakeTimestamp(object.SubmittedAt), State: "unsigned", Reason: "no_signed_event",
@@ -222,6 +227,19 @@ func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, err
 		}
 	}
 	return recorded, nil
+}
+
+// revisionMatchesObject compares the REST object with a stored revision. A
+// timestamp missing on either side is not compared, and times compare at
+// database (microsecond) precision, since signed payloads and
+// the REST API do not carry the same set for every object kind.
+func revisionMatchesObject(revision db.GithubWebhookRevision, object ghsnapshot.PullObject, bodyHash string) bool {
+	same := func(stored pgtype.Timestamptz, current *time.Time) bool {
+		return !stored.Valid || current == nil || stored.Time.Equal(current.Truncate(time.Microsecond))
+	}
+	return revision.BodyHash == bodyHash && revision.ReviewState == object.ReviewState &&
+		same(revision.ObjectCreatedAt, object.CreatedAt) && same(revision.ObjectUpdatedAt, object.UpdatedAt) &&
+		same(revision.ObjectSubmittedAt, object.SubmittedAt)
 }
 
 func latestObjectTime(object ghsnapshot.PullObject) time.Time {

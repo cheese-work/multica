@@ -150,8 +150,8 @@ JOIN github_installation installation ON installation.workspace_id = pull.worksp
 WHERE pull.state = 'open' AND pull.head_repo_same
 ORDER BY pull.id;
 
--- name: GetLatestGitHubWebhookRevisionBodyHash :one
-SELECT body_hash FROM github_webhook_revision
+-- name: GetLatestGitHubWebhookRevision :one
+SELECT * FROM github_webhook_revision
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
   AND object_kind = $4 AND object_id = $5
 ORDER BY created_at DESC, id DESC

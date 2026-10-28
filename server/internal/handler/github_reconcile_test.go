@@ -113,12 +113,13 @@ func TestGitHubReconcileT12bRedeliversUnstoredFailures(t *testing.T) {
 
 func unsignedObjects(fixture githubReviewFixture) ghsnapshot.PullObjects {
 	old := time.Now().Add(-2 * time.Hour)
+	signedSubmission := time.Date(2026, 10, 26, 8, 1, 0, 0, time.UTC) // the fixture's signed review 77
 	recent := time.Now().Add(-time.Minute)
 	return ghsnapshot.PullObjects{RepositoryID: 9001, HeadSHA: "review-head", Open: true, SameRepo: true, Objects: []ghsnapshot.PullObject{
 		{Kind: "issue_comment", ID: 9001, Body: "missed comment", AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", CreatedAt: &old, UpdatedAt: &old},
 		{Kind: "issue_comment", ID: 9002, Body: "bot comment", AuthorID: 77, AuthorLogin: "ci[bot]", AuthorType: "Bot", CreatedAt: &old, UpdatedAt: &old},
 		{Kind: "issue_comment", ID: 9003, Body: "just posted", AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", CreatedAt: &recent, UpdatedAt: &recent},
-		{Kind: "review", ID: 77, Body: "Please fix the error path.", AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", ReviewState: "changes_requested", SubmittedAt: &old},
+		{Kind: "review", ID: 77, Body: "Please fix the error path.", AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", ReviewState: "changes_requested", SubmittedAt: &signedSubmission},
 		{Kind: "review", ID: 78, Body: "edited without a signed event", AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", ReviewState: "commented", SubmittedAt: &old},
 	}}
 }
@@ -234,8 +235,9 @@ func TestGitHubReconcileSkipsDeliveriesOutsideTheWindow(t *testing.T) {
 
 func TestGitHubReconcileRecordsCommentEditedBackToAnEarlierBody(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
+	now := time.Now()
 	comment := func(body string, edited time.Duration) ghsnapshot.PullObjects {
-		created, updated := time.Now().Add(-4*time.Hour), time.Now().Add(-edited)
+		created, updated := now.Add(-4*time.Hour), now.Add(-edited)
 		return ghsnapshot.PullObjects{RepositoryID: 9001, HeadSHA: "review-head", Open: true, SameRepo: true, Objects: []ghsnapshot.PullObject{
 			{Kind: "issue_comment", ID: 9100, Body: body, AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", CreatedAt: &created, UpdatedAt: &updated},
 		}}
@@ -246,8 +248,26 @@ func TestGitHubReconcileRecordsCommentEditedBackToAnEarlierBody(t *testing.T) {
 		body   string
 		edited time.Duration
 		n      int
-	}{{"A", 3 * time.Hour, 1}, {"B", 2 * time.Hour, 1}, {"A", 90 * time.Minute, 1}, {"A", 90 * time.Minute, 0}} {
+	}{{"A", 3 * time.Hour, 1}, {"B", 2 * time.Hour, 1}, {"A", 90 * time.Minute, 1}, {"A", 90 * time.Minute, 0}, {"A", 80 * time.Minute, 1}, {"A", 80 * time.Minute, 0}} {
 		api.objects = comment(want.body, want.edited)
+		if n, err := reconciler.recordUnsigned(context.Background()); err != nil || n != want.n {
+			t.Fatalf("step %d (%s): recorded %d (err=%v), want %d", step, want.body, n, err, want.n)
+		}
+	}
+}
+
+func TestGitHubReconcileRecordsReviewEditedBackWithIdenticalMetadata(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	submitted := time.Now().Add(-3 * time.Hour)
+	api := &fakeReconcileAPI{}
+	reconciler := reconcilerForTest(fixture, api)
+	for step, want := range []struct {
+		body string
+		n    int
+	}{{"A", 1}, {"B", 1}, {"A", 1}, {"A", 0}, {"B", 1}} {
+		api.objects = ghsnapshot.PullObjects{RepositoryID: 9001, HeadSHA: "review-head", Open: true, SameRepo: true, Objects: []ghsnapshot.PullObject{
+			{Kind: "review", ID: 9200, Body: want.body, AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", ReviewState: "commented", SubmittedAt: &submitted},
+		}}
 		if n, err := reconciler.recordUnsigned(context.Background()); err != nil || n != want.n {
 			t.Fatalf("step %d (%s): recorded %d (err=%v), want %d", step, want.body, n, err, want.n)
 		}

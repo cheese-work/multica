@@ -61,17 +61,17 @@ func (client *Client) ListHookDeliveries(ctx context.Context, cursor string) (at
 	if cursor != "" {
 		query += "&cursor=" + url.QueryEscape(cursor)
 	}
-	response, body, err := client.appRequest(ctx, http.MethodGet, "/app/hook/deliveries?"+query)
+	status, header, body, err := client.appRequest(ctx, http.MethodGet, "/app/hook/deliveries?"+query)
 	if err != nil {
 		return nil, "", err
 	}
-	if response.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("github hook deliveries: unexpected status %d", response.StatusCode)
+	if status != http.StatusOK {
+		return nil, "", fmt.Errorf("github hook deliveries: unexpected status %d", status)
 	}
 	if json.Unmarshal(body, &attempts) != nil || attempts == nil {
 		return nil, "", errors.New("github hook deliveries: malformed response")
 	}
-	if match := nextCursor.FindStringSubmatch(response.Header.Get("Link")); match != nil {
+	if match := nextCursor.FindStringSubmatch(header.Get("Link")); match != nil {
 		next = match[1]
 	}
 	return attempts, next, nil
@@ -80,44 +80,45 @@ func (client *Client) ListHookDeliveries(ctx context.Context, cursor string) (at
 // RedeliverHook asks GitHub to send a recorded delivery again. The redelivered
 // payload is signed by GitHub and reaches the normal webhook path.
 func (client *Client) RedeliverHook(ctx context.Context, deliveryID int64) error {
-	response, _, err := client.appRequest(ctx, http.MethodPost, fmt.Sprintf("/app/hook/deliveries/%d/attempts", deliveryID))
+	status, _, _, err := client.appRequest(ctx, http.MethodPost, fmt.Sprintf("/app/hook/deliveries/%d/attempts", deliveryID))
 	if err != nil {
 		return err
 	}
-	if response.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("github hook redelivery: unexpected status %d", response.StatusCode)
+	if status != http.StatusAccepted {
+		return fmt.Errorf("github hook redelivery: unexpected status %d", status)
 	}
 	return nil
 }
 
-func (client *Client) appRequest(ctx context.Context, method, path string) (*http.Response, []byte, error) {
+// appRequest returns the status, headers and body so no caller holds a closed response.
+func (client *Client) appRequest(ctx context.Context, method, path string) (int, http.Header, []byte, error) {
 	if !client.Enabled() {
-		return nil, nil, errors.New("github: App API is not configured")
+		return 0, nil, nil, errors.New("github: App API is not configured")
 	}
 	appJWT, err := client.signAppJWT(client.now())
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(client.apiBase, "/")+path, nil)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, nil, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("Authorization", "Bearer "+appJWT)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, nil, err
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
-		return nil, nil, errors.New("github: failed to read response")
+		return 0, nil, nil, errors.New("github: failed to read response")
 	}
 	if isRateLimited(response, body) {
-		return nil, nil, rateLimitFromResponse(response, client.now())
+		return 0, nil, nil, rateLimitFromResponse(response, client.now())
 	}
-	return response, body, nil
+	return response.StatusCode, response.Header, body, nil
 }
 
 // ListPullObjects reads a pull request and its reviews, inline comments and

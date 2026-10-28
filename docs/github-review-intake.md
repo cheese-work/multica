@@ -200,9 +200,9 @@ stateless: GitHub's delivery log caps attempts and rate-limits redelivery.
 - **R3** reads open, same-repo pull requests through the REST API and records
   each review, inline comment or PR comment with no stored signed event as an
   `unsigned` revision. The body is hashed, never stored. Only the newest stored revision
-  of the object is compared, so an edit back to an earlier body is recorded.
-  Insert is idempotent on the revision identity index; a review edited back to
-  identical metadata after a reconciled row stays unrecorded. `unsigned` is never dispatched automatically.
+  of the object is compared (body, review state and timestamps), so an edit back
+  to an earlier body or a same-body edit is recorded. Insert is idempotent on
+  the revision identity index; a repeat pass records nothing. `unsigned` is never dispatched automatically.
   Off unless `GITHUB_INTAKE_UNSIGNED=1`.
 - A revision with no `source_delivery_guid` settles as `unsigned`
   (`no_signed_delivery`), not as a retrying error.

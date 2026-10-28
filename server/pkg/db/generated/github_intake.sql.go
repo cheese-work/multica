@@ -242,15 +242,15 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 	return i, err
 }
 
-const getLatestGitHubWebhookRevisionBodyHash = `-- name: GetLatestGitHubWebhookRevisionBodyHash :one
-SELECT body_hash FROM github_webhook_revision
+const getLatestGitHubWebhookRevision = `-- name: GetLatestGitHubWebhookRevision :one
+SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at, id FROM github_webhook_revision
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
   AND object_kind = $4 AND object_id = $5
 ORDER BY created_at DESC, id DESC
 LIMIT 1
 `
 
-type GetLatestGitHubWebhookRevisionBodyHashParams struct {
+type GetLatestGitHubWebhookRevisionParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	InstallationID int64       `json:"installation_id"`
 	RepositoryID   int64       `json:"repository_id"`
@@ -258,17 +258,43 @@ type GetLatestGitHubWebhookRevisionBodyHashParams struct {
 	ObjectID       int64       `json:"object_id"`
 }
 
-func (q *Queries) GetLatestGitHubWebhookRevisionBodyHash(ctx context.Context, arg GetLatestGitHubWebhookRevisionBodyHashParams) (string, error) {
-	row := q.db.QueryRow(ctx, getLatestGitHubWebhookRevisionBodyHash,
+func (q *Queries) GetLatestGitHubWebhookRevision(ctx context.Context, arg GetLatestGitHubWebhookRevisionParams) (GithubWebhookRevision, error) {
+	row := q.db.QueryRow(ctx, getLatestGitHubWebhookRevision,
 		arg.WorkspaceID,
 		arg.InstallationID,
 		arg.RepositoryID,
 		arg.ObjectKind,
 		arg.ObjectID,
 	)
-	var body_hash string
-	err := row.Scan(&body_hash)
-	return body_hash, err
+	var i GithubWebhookRevision
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepositoryID,
+		&i.PullRequestID,
+		&i.PrNumber,
+		&i.ObjectKind,
+		&i.ObjectID,
+		&i.BodyHash,
+		&i.SourceDeliveryGuid,
+		&i.Event,
+		&i.Action,
+		&i.SenderID,
+		&i.AuthorID,
+		&i.AuthorLogin,
+		&i.AuthorType,
+		&i.HeadSha,
+		&i.ReviewState,
+		&i.ObjectCreatedAt,
+		&i.ObjectUpdatedAt,
+		&i.ObjectSubmittedAt,
+		&i.State,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ID,
+	)
+	return i, err
 }
 
 const hasGitHubWebhookRevisionDispatch = `-- name: HasGitHubWebhookRevisionDispatch :one
