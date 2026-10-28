@@ -1025,6 +1025,30 @@ func TestAgentStatusChangeRefusedAfterIssueMoved(t *testing.T) {
 	agentUpdateIssue(t, issueID, agentID, fresh, map[string]any{"status": "in_review"}).Want(http.StatusOK)
 }
 
+// A run moves the issue only along its step's exits (CHE-2320): the refusal
+// lists the allowed moves, and the issue stays where it was.
+func TestAgentStatusChangeRefusedWhenStepHasNoSuchExit(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	projectID := createWorkflowTestProject(t, "Workflow exits project")
+	setColumnHandoff(t, projectID, "in_progress", map[string]any{
+		"handler": map[string]any{"type": "agent", "id": agentID}, "instructions": "Implement it.", "next_status_key": "in_review",
+	}).Want(http.StatusOK)
+	issueID := dbfx.Issue(t, "exits", testutil.Cols{"project_id": projectID, "status": "todo"})
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	var taskID string
+	dbfx.QueryRow(t, `SELECT id::text FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID).Scan(&taskID)
+
+	body := agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "done"}).Want(http.StatusBadRequest).Map()
+	if body["code"] != "status_move_not_allowed" || !strings.Contains(body["error"].(string), "in_review") {
+		t.Fatalf("refusal = %v", body)
+	}
+	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_progress" {
+		t.Fatalf("status = %q, the refused move must not apply", status)
+	}
+	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+}
+
 // A project on Default with no handoffs keeps the pre-workflow behavior: a run
 // may still change the status after someone else moved the issue.
 func TestAgentStatusChangeOnDefaultIgnoresStep(t *testing.T) {

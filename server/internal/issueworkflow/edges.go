@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -333,4 +334,41 @@ func hasGuard(edges []Edge, kind string) bool {
 		}
 	}
 	return false
+}
+
+// MoveNotAllowedError refuses an agent's status write the current step has no
+// exit for. Its message lists the allowed moves because agents read it verbatim.
+type MoveNotAllowedError struct {
+	From, To string
+	Allowed  []string
+}
+
+func (e *MoveNotAllowedError) Error() string {
+	return fmt.Sprintf("status %q is not an allowed move from %q; use one of: %s",
+		e.To, e.From, strings.Join(e.Allowed, ", "))
+}
+
+// AgentMoves lists the statuses an agent may move an issue to from a step: the
+// targets of its agent_done and agent_verdict exits, in list order.
+func (d Definition) AgentMoves(key string) []string {
+	var moves []string
+	for _, e := range d.EdgesOf(key) {
+		g, err := ParseGuard(e.Guard)
+		if err != nil || g.readsFacts() || slices.Contains(moves, e.To) {
+			continue
+		}
+		moves = append(moves, e.To)
+	}
+	return moves
+}
+
+// CheckAgentMove refuses an agent's move off a step to a status the step has
+// no agent exit for. A step without agent exits restricts nothing, and
+// cancelling stays open so an agent can still close a duplicate.
+func CheckAgentMove(def Definition, from, to string) error {
+	moves := def.AgentMoves(from)
+	if len(moves) == 0 || to == issuestatus.Cancelled || slices.Contains(moves, to) {
+		return nil
+	}
+	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
 }

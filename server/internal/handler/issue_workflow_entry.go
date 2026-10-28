@@ -73,6 +73,14 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
+	// A run decides its step's exits: a move the step has no agent exit for was
+	// not decided by the workflow.
+	if run != nil && run.WorkflowStep.Valid && run.WorkflowStep.String == prev.Status &&
+		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+		if err := issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String); err != nil {
+			return nil, err
+		}
+	}
 	if assigneeTouched || prev.TriageState.Valid {
 		return nil, nil
 	}
@@ -189,6 +197,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":             "status_not_in_workflow",
 			"workflow_name":    notIn.WorkflowName,
 			"allowed_statuses": notIn.Allowed,
+		})
+		return true
+	}
+	var notAllowed *issueworkflow.MoveNotAllowedError
+	if errors.As(err, &notAllowed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":         notAllowed.Error(),
+			"code":          "status_move_not_allowed",
+			"from":          notAllowed.From,
+			"allowed_moves": notAllowed.Allowed,
 		})
 		return true
 	}
