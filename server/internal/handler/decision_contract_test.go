@@ -94,7 +94,7 @@ func TestDecisionStructuredAskConcurrentRetry(test *testing.T) {
 				dbfx.Exec(test, `UPDATE decision_intent SET closed_at = clock_timestamp(), close_reason = 'superseded', sealed_at = clock_timestamp() WHERE id = $1`, fixture.intentID)
 			}
 			input := fixture.input()
-			input.SourceCommentID, input.Ask = parseUUID(fixture.tagID), fixture.structuredAsk().Content()
+			input.SourceCommentID, input.Ask = parseUUID(fixture.tagID), fixture.structuredAsk().Content(handlerTestWorkspaceSlug)
 			if singleCall {
 				input.HumanUserID = parseUUID(fixture.humanID)
 			}

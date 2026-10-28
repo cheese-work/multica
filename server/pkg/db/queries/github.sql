@@ -236,6 +236,29 @@ SELECT EXISTS (
       AND context->>'github_review_key' = sqlc.arg(review_key)::text
 );
 
+-- name: RecordGitHubPRReview :exec
+-- Keeps the latest approved, changes_requested or commented review of a PR; a
+-- review that was submitted before the stored one is dropped.
+UPDATE github_pull_request
+SET review_state = sqlc.arg(review_state)::text,
+    review_head_sha = sqlc.arg(head_sha)::text,
+    review_id = sqlc.arg(review_id)::bigint,
+    review_at = sqlc.arg(submitted_at)::timestamptz
+WHERE id = sqlc.arg(id) AND (review_at IS NULL OR review_at <= sqlc.arg(submitted_at)::timestamptz);
+
+-- name: ClearGitHubPRReview :exec
+-- Withdraws the stored review when GitHub dismisses that exact review. A
+-- dismissal of any other review leaves it alone. review_at stays as the
+-- ordering watermark, so an older review delivered late is still dropped.
+UPDATE github_pull_request
+SET review_state = '', review_head_sha = '', review_id = 0
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND installation_id = sqlc.arg(installation_id)
+  AND repo_owner = sqlc.arg(repo_owner)
+  AND repo_name = sqlc.arg(repo_name)
+  AND pr_number = sqlc.arg(pr_number)
+  AND review_id = sqlc.arg(review_id)::bigint;
+
 -- name: ListGitHubReviewAuthorCandidates :many
 SELECT DISTINCT task.agent_id
 FROM agent_task_queue task
@@ -403,3 +426,18 @@ WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower(sqlc.arg('html_url')::text)
 ORDER BY pr_updated_at DESC
 LIMIT 1;
+
+-- name: ListGitHubPRsWithUnverifiedHead :many
+-- CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
+-- repository id, so a repair must read GitHub to tell a real fork PR from a
+-- same-repository PR that the old fork-flag check rejected. Rows whose PR was
+-- last updated before the fork check shipped (CHE-2210, 2026-10-27) hold the
+-- column default and were never judged. pr_updated_at only moves on webhook
+-- writes; updated_at also moves on snapshot refresh, so it can't tell. One row
+-- per PR address (workspaces mirror it), newest first, so a rate limit cuts off
+-- the oldest.
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
+GROUP BY installation_id, repo_owner, repo_name, pr_number
+ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number;

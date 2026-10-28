@@ -45,6 +45,7 @@ import { VCSConnectionRows } from "./code-vcs";
 import { HostMark, HostStatus } from "./code-host";
 import { RepositoriesSection } from "./repositories-section";
 import { PRMergeStatusRow } from "./pr-merge-status-row";
+import { GitHubReviewMappings } from "./github-review-mappings";
 
 type GitHubSettingsKey =
   | "github_enabled"
@@ -318,6 +319,8 @@ export function CodeTab() {
           <PRMergeStatusRow canManage={isManager} />
         </SettingsCard>
       </SettingsSection>
+
+      {connected ? <GitHubReviewMappings canEdit={isManager} /> : null}
 
       <AlertDialog
         open={!!disconnectTarget}

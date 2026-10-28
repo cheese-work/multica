@@ -4,8 +4,12 @@ import { join } from "path";
 import { pathToFileURL } from "url";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import fixPath from "fix-path";
-import { setupAutoUpdater } from "./updater";
-import { setupDaemonManager } from "./daemon-manager";
+import { createElectronBusyInstallPrompt, setupAutoUpdater } from "./updater";
+import {
+  prepareDaemonForUpdateInstall,
+  resumeDaemonAfterAbortedUpdateInstall,
+  setupDaemonManager,
+} from "./daemon-manager";
 import { setupLocalDirectory } from "./local-directory";
 import { configureLinuxFileDialogs } from "./linux-file-dialog";
 import { openExternalSafely, downloadURLSafely } from "./external-url";
@@ -44,8 +48,11 @@ import {
 } from "./window-state";
 import {
   encodeIssueWindowArgument,
+  encodeMediaWindowArgument,
   parseIssueWindowRequest,
+  parseMediaWindowRequest,
   type IssueWindowContext,
+  type MediaWindowContext,
 } from "../shared/issue-window";
 import {
   AUTH_SESSION_STATE_CHANNEL,
@@ -466,7 +473,7 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function createIssueWindow(context: IssueWindowContext): void {
+function createIssueWindow(context: IssueWindowContext | MediaWindowContext): void {
   const systemLocale = getSystemLocale();
   lastKnownSystemLocale = systemLocale;
 
@@ -486,7 +493,7 @@ function createIssueWindow(context: IssueWindowContext): void {
     webPreferences: createRendererWebPreferences(
       join(__dirname, "../preload/index.js"),
       systemLocale,
-      [encodeIssueWindowArgument(context)],
+      [context.kind === "media" ? encodeMediaWindowArgument(context) : encodeIssueWindowArgument(context)],
     ),
   });
 
@@ -683,6 +690,14 @@ if (!gotTheLock) {
       return { ok: true } as const;
     });
 
+    ipcMain.handle("window:open-media", (event, request: unknown) => {
+      if (!BrowserWindow.fromWebContents(event.sender)) return { ok: false, reason: "invalid_request" } as const;
+      const context = parseMediaWindowRequest(request);
+      if (!context) return { ok: false, reason: "invalid_request" } as const;
+      createIssueWindow(context);
+      return { ok: true } as const;
+    });
+
     ipcMain.handle("file:download-url", (event, url: string) => {
       const sourceWindow = BrowserWindow.fromWebContents(event.sender);
       if (!sourceWindow) {
@@ -842,7 +857,20 @@ if (!gotTheLock) {
     desktopInitialized = true;
     createWindow();
 
-    setupAutoUpdater(() => mainWindow);
+    // Register first so the update quit gate can block daemon autoStop.
+    setupAutoUpdater(() => mainWindow, {
+      // Windows only (the updater ignores it elsewhere): stop the bundled
+      // daemon before the installer runs so multica.exe is replaced. #8823
+      daemonGate: {
+        prepare: prepareDaemonForUpdateInstall,
+        resumeAfterAbortedInstall: resumeDaemonAfterAbortedUpdateInstall,
+        confirmInstallWhileBusy: createElectronBusyInstallPrompt((options) =>
+          mainWindow && !mainWindow.isDestroyed()
+            ? dialog.showMessageBox(mainWindow, options)
+            : dialog.showMessageBox(options),
+        ),
+      },
+    });
     setupDaemonManager(() => mainWindow);
     setupLocalDirectory(() => mainWindow);
 
