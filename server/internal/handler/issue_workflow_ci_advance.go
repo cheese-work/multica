@@ -92,7 +92,7 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 		ProjectID:        issue.ProjectID,
 		Stage:            issue.Stage,
 	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, nil)
+	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
 	if err != nil {
 		slog.Warn("workflow edge: workflow refused the move", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 		return false, false

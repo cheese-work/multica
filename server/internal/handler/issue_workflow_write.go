@@ -55,7 +55,7 @@ type workflowWrite struct {
 	pre, got                                 db.UpdateIssueParams
 	handoff                                  *workflowHandoff
 	statusExplicit, assigneeTouched, enterOn bool
-	run                                      *db.AgentTaskQueue
+	caller                                   workflowCaller
 	// preview is what the person confirmed, when the client sent it.
 	preview *HandoffPreviewBinding
 	// stopPrevious is the caller's request to stop the previous assignee's runs.
@@ -71,9 +71,9 @@ type workflowWrite struct {
 // applyIssueWorkflow, and returns what the write transaction needs to verify
 // the decision. An issue that lands in no project still gets a write: it
 // checks that no one moved the issue into a project in the meantime.
-func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, *workflowWrite, error) {
-	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, run: run}
-	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, run)
+func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
+	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, caller: caller}
+	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
 	if err != nil {
 		return handoff, nil, err
 	}
@@ -135,7 +135,7 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 		return errWorkflowChanged
 	}
 	params := w.pre
-	handoff, err := h.applyIssueWorkflow(ctx, q, locked, &params, w.statusExplicit, w.assigneeTouched, w.enterOn, w.run)
+	handoff, err := h.applyIssueWorkflow(ctx, q, locked, &params, w.statusExplicit, w.assigneeTouched, w.enterOn, w.caller)
 	if err != nil {
 		return err
 	}
