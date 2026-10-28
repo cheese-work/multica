@@ -6,7 +6,9 @@
 //     job summary and fails a feat/fix/perf PR without a valid Changelog line.
 //   Local preview:  node scripts/fork-changelog.mjs --fixture <file> --out <path>
 //     (or `pnpm changelog:preview`) writes the entries for a fixture, with no
-//     credentials and no network. The default output is git-ignored.
+//     credentials and no network. The default output is git-ignored. Add
+//     --backfill scripts/fork-changelog-backfill.json to include the hand-written
+//     entries for PRs merged before the live rule (CHE-2196).
 // Optional flags/env: --start / FORK_CHANGELOG_START (YYYY-MM-DD, 00:00 ICT) and
 // --sync-prefix / FORK_CHANGELOG_SYNC_PREFIX.
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -219,6 +221,10 @@ export function formatCheck(evaluation) {
   };
 }
 
+// Hand-written entries for PRs merged before the live rule (default: next to this script).
+export const loadBackfill = (path = new URL("./fork-changelog-backfill.json", import.meta.url)) =>
+  JSON.parse(readFileSync(path, "utf8")).entries;
+
 const startMs = (startDate) => {
   const ms = Date.parse(`${startDate}T00:00:00+07:00`);
   if (Number.isNaN(ms)) throw new Error(`Invalid start date: ${startDate}`);
@@ -262,6 +268,9 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
       text: evaluation.text,
     });
   }
+  // Backfill entries (CHE-2196) predate the live rule; a live PR entry of the same number wins.
+  const live = new Set(entries.map((e) => e.number));
+  entries.push(...(options.backfill ?? []).filter((e) => !live.has(e.number)));
   entries.sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt) || b.number - a.number);
 
   const byReason = {};
@@ -339,6 +348,7 @@ export function main(argv, env) {
     const options = { ...optionsFromEnv(env) };
     if (args.start) options.startDate = args.start;
     if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
+    if (args.backfill) options.backfill = loadBackfill(args.backfill);
     if (args.event) return runCheck(args.event, options, env);
     if (args.fixture && args.out) return runPreview(args.fixture, args.out, options);
     throw new Error("Use --event <file> or --fixture <file> --out <path>");

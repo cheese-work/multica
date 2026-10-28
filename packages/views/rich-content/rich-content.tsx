@@ -241,10 +241,14 @@ function subscribeToAuth(onChange: () => void) {
   return useAuthStore.subscribe?.(onChange) ?? (() => {});
 }
 
-function MemberMention({ memberId, children }: { memberId: string; children?: ReactNode }) {
+// `memberId` omitted = `@all`, which counts as a mention of every signed-in viewer.
+function SelfAwareMention({ memberId, children }: { memberId?: string; children?: ReactNode }) {
   const isSelf = useSyncExternalStore(
     subscribeToAuth,
-    () => useAuthStore.getState?.().user?.id === memberId,
+    () => {
+      const viewerId = useAuthStore.getState?.().user?.id;
+      return memberId === undefined ? Boolean(viewerId) : viewerId === memberId;
+    },
     () => false,
   );
   return (
@@ -305,7 +309,10 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
     if (match?.[1] === "member" && match[2]) {
-      return <MemberMention memberId={match[2]}>{children}</MemberMention>;
+      return <SelfAwareMention memberId={match[2]}>{children}</SelfAwareMention>;
+    }
+    if (match?.[1] === "all") {
+      return <SelfAwareMention>{children}</SelfAwareMention>;
     }
     return <span className="mention">{children}</span>;
   }
