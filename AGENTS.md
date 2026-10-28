@@ -33,14 +33,14 @@ Use `Makefile`, workspace `package.json` files, and `pnpm-workspace.yaml` for cu
 - Use the checkout's managed environment: `make up`, `make status`, `make down`. `make down` preserves data; `make destroy` removes the environment and its data.
 - Worktrees share PostgreSQL but have isolated databases/ports. Use the environment scripts and `.env.worktree`; do not copy the main checkout's `.env` or manually create a database through an assumed PostgreSQL instance.
 - Regenerate sqlc with `make sqlc` after SQL changes.
-- Run the narrowest useful checks while iterating, then broaden when risk warrants it. Report what actually ran and any skipped checks.
+- Run the narrowest useful checks while iterating, then broaden when risk warrants it. Report what actually ran and any skipped checks. Go: build a binary once with `go build -o` and reuse it, not repeated `go run`; locally run `go test ./<pkg>/... -run <Name>` and leave the full suite to CI unless the issue asks for a local full run.
 
 Run these from the repository root:
 
 | Scope | Checks |
 | --- | --- |
 | Frontend excluding mobile | `pnpm typecheck`, `pnpm lint`, `pnpm test` |
-| Go backend | `make test` |
+| Go backend | `make test` (CI; locally use targeted `go test`, see above) |
 | End-to-end | `pnpm exec playwright test` |
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |
