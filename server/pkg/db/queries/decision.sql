@@ -15,7 +15,7 @@ UPDATE comment SET decision_intent_id = sqlc.arg('decision_intent_id')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id');
 
 -- name: AttachDecisionAskToComment :one
-UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask'
+UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask', content = sqlc.arg('content')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id')
 RETURNING *;
 

@@ -12,6 +12,9 @@ func TestExcerpt(test *testing.T) {
 		"mentions and links":  {"> [@Sol](mention://agent/1) see [doc](https://x.io/a) `now`", "@Sol see doc now"},
 		"curly quotes":        {"say “hi”", `say "hi"`},
 		"only markup":         {"***\n", ""},
+		"html tags":           {"<b>Important choice</b> <i>now</i>", "Important choice now"},
+		"stray angle":         {"x > y", "x y"},
+		"image":               {"![diagram](https://x.io/a.png) shown", "diagram shown"},
 		"cap":                 {strings.Repeat("a", 101), strings.Repeat("a", 100) + "…"},
 		"exactly 100":         {strings.Repeat("é", 100), strings.Repeat("é", 100)},
 	} {
@@ -60,5 +63,16 @@ func TestWithoutEnrichmentRestoresCallerText(test *testing.T) {
 	}
 	if WithoutEnrichment(base) != WithoutEnrichment(decodedAsk(test).Content("ws")) {
 		test.Fatal("unenriched identity drifted")
+	}
+}
+
+func TestWithoutEnrichmentKeepsCallerQuotes(test *testing.T) {
+	first, second := "Deploy (“canary”)?", "Deploy (“production”)?"
+	if WithoutEnrichment(first) != first || WithoutEnrichment(first) == WithoutEnrichment(second) {
+		test.Fatalf("caller quotes were stripped: %q", WithoutEnrichment(first))
+	}
+	link := "[c](/issue/i#comment-00000000-0000-0000-0000-000000000001)"
+	if got := WithoutEnrichment(link + " (“hello”) and (“kept”)"); got != link+" and (“kept”)" {
+		test.Fatalf("excerpt after a comment link must go, other quotes stay: %q", got)
 	}
 }

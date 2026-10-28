@@ -15,24 +15,26 @@ var (
 	// commentLink matches a Markdown link to a comment in any path form.
 	commentLink = regexp.MustCompile(`\[[^\]\n]*\]\([^)\s]*#comment-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)`)
 	// Excerpts hold no newline and no closing quote, so identity can strip them.
-	askedByLine       = regexp.MustCompile(`\*\*Asked by\*\* [^\n]*\n\n`)
-	excerptSuffix     = regexp.MustCompile(` \(“[^”\n]*”\)`)
-	mentionOrLink     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	askedByLine = regexp.MustCompile(`\*\*Asked by\*\* [^\n]*\n\n`)
+	// Only the suffix right after a comment link is ours; other quoted text is the caller's.
+	excerptSuffix     = regexp.MustCompile(`(\[[^\]\n]*\]\([^)\s]*#comment-[0-9a-fA-F-]{36}\)) \(“[^”\n]*”\)`)
+	mentionOrLink     = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	htmlTag           = regexp.MustCompile(`<[^>\n]*>`)
 	leadingMarkers    = regexp.MustCompile(`^[#>\-\s]+`)
-	markdownPunctuate = strings.NewReplacer("*", "", "`", "", "~", "", "[", "", "]", "", "“", `"`, "”", `"`)
+	markdownPunctuate = strings.NewReplacer("*", "", "`", "", "~", "", "[", "", "]", "", "“", `"`, "”", `"`, "<", "", ">", "")
 )
 
 // WithoutEnrichment drops what the server adds after the caller wrote the
 // ask (source tail, asking agent, comment excerpts), so a re-ask compares equal.
 func WithoutEnrichment(content string) string {
-	return excerptSuffix.ReplaceAllString(askedByLine.ReplaceAllString(WithoutSourceTail(content), ""), "")
+	return excerptSuffix.ReplaceAllString(askedByLine.ReplaceAllString(WithoutSourceTail(content), ""), "$1")
 }
 
 // Excerpt reduces a comment to its first nonblank line as plain text, at most
 // excerptRunes characters plus an ellipsis. It returns "" when nothing is left.
 func Excerpt(content string) string {
 	for _, line := range strings.Split(content, "\n") {
-		line = mentionOrLink.ReplaceAllString(line, "$1")
+		line = htmlTag.ReplaceAllString(mentionOrLink.ReplaceAllString(line, "$1"), "")
 		line = strings.Join(strings.Fields(markdownPunctuate.Replace(leadingMarkers.ReplaceAllString(strings.TrimSpace(line), ""))), " ")
 		if line == "" {
 			continue

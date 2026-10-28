@@ -278,3 +278,32 @@ func TestLegacyFingerprintIsPinned(test *testing.T) {
 		test.Fatalf("handler legacy key = %s (%v), want the pinned bytes", got, err)
 	}
 }
+
+// A caller's own curly-quoted text is not an excerpt: two different decisions
+// that differ only inside it are two requests, not a re-ask.
+func TestDecisionDistinctQuotedDecisionIsNotBlocked(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, true)
+	ask := fixture.structuredAsk()
+	ask.Decision = "Deploy (“canary”)?"
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+	ask.Decision = "Deploy (“production”)?"
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, true)).Want(http.StatusCreated)
+}
+
+// A two-step ask that matches the intent comment reuses that comment; the
+// reused comment must carry the same enriched snapshot as the request.
+func TestDecisionReusedIntentCommentIsEnriched(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	fixture.prepare(test, false)
+	ask := fixture.structuredAsk()
+	ask.AskedBy = ""
+	dbfx.Exec(test, `UPDATE comment SET content = $1 WHERE id = $2`, ask.Content(handlerTestWorkspaceSlug), fixture.tagID)
+	var created db.DecisionRequest
+	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, false)).Want(http.StatusCreated).JSON(&created)
+	var content string
+	dbfx.QueryRow(test, `SELECT content FROM comment WHERE id = $1`, created.IssueCommentID).Scan(&content)
+	if created.IssueCommentID != parseUUID(fixture.tagID) || content != created.Ask {
+		test.Fatalf("reused=%v comment differs from the request ask:\n%s", created.IssueCommentID == parseUUID(fixture.tagID), content)
+	}
+}
