@@ -111,6 +111,23 @@ export function ChatPage() {
     replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
   };
 
+  const showsMessageList =
+    c.hasMessages ||
+    !!c.currentSession?.continued_from_session_id ||
+    !!c.currentSession?.continued_into_session_id ||
+    !!c.currentSession?.forked_from_session_id;
+  // The list reports a missing target; an empty chat never mounts it, so the
+  // jump settles here once the chat has loaded and has nothing to scroll to.
+  const emptyChatLoaded = !!c.currentSession && !c.showSkeleton && !showsMessageList;
+  const jumpTargetsEmptyChat = !!urlMessage && urlSession === c.activeSessionId && emptyChatLoaded;
+  const settledEmptyJump = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpTargetsEmptyChat || settledEmptyJump.current === urlMessage) return;
+    settledEmptyJump.current = urlMessage;
+    settleJump("missing");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target
+  }, [jumpTargetsEmptyChat, urlMessage]);
+
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
   // A change to the URL the user is already on records nothing, so the intent
@@ -385,7 +402,7 @@ export function ChatPage() {
       )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id || c.currentSession?.forked_from_session_id ? (
+      ) : showsMessageList ? (
         <ChatMessageList
           key={c.activeSessionId}
           onQuoteMessage={quote}

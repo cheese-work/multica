@@ -196,7 +196,9 @@ vi.mock("./components/use-chat-controller", async () => {
         ? { id: "session-9", continued_into_session_id: "session-10" }
         : activeSession === "session-compacting"
           ? { id: "session-compacting", compacting: true }
-          : null,
+          : activeSession === "session-empty"
+            ? { id: "session-empty" }
+            : null,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -338,6 +340,27 @@ describe("ChatPage URL synchronization", () => {
     fireEvent.click(screen.getByText("settle-missing"));
     expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
     expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("toasts and drops ?message= when the chat has no messages left to show", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty&message=gone");
+    expect(screen.getByText("chat-empty-state")).toBeInTheDocument();
+    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-empty");
+  });
+
+  it("settles an empty chat's missing message once under StrictMode", () => {
+    seedSession("session-empty");
+    renderPage("session=session-empty&message=gone", { strict: true });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a session with no ?message= alone when it is empty", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("passes no jump target without ?message=", () => {
