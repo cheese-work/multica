@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -42,6 +43,7 @@ func init() {
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id")
+	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -81,6 +83,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	class, _ := command.Flags().GetString("class")
 	askPath, _ := command.Flags().GetString("ask-file")
 	footerPath, _ := command.Flags().GetString("footer-file")
+	actionPath, _ := command.Flags().GetString("action-file")
 	parentID, _ := command.Flags().GetString("parent")
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
@@ -102,6 +105,12 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	var action json.RawMessage
+	if actionPath != "" {
+		if action, err = readDecisionAction(actionPath); err != nil {
+			return err
+		}
+	}
 	client, err := newAPIClient(command)
 	if err != nil {
 		return err
@@ -115,10 +124,14 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if !strings.EqualFold(ask.SourceIssueID, issue.ID) {
 		return fmt.Errorf("ask.source_issue_id must match --issue")
 	}
-	var result map[string]any
-	if err := client.PostJSON(ctx, "/api/decisions", map[string]any{
+	body := map[string]any{
 		"issue_id": issue.ID, "session_id": sessionID, "new_dm": newDM, "for": humanID, "ask": ask, "footer": footer, "parent_id": parentID, "escalation_class": class,
-	}, &result); err != nil {
+	}
+	if action != nil {
+		body["action"] = action
+	}
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}
 	printAskHints(command, decisiontx.LintAsk(ask), result)
@@ -146,6 +159,32 @@ func printAskHints(command *cobra.Command, local []string, result map[string]any
 	}
 }
 
+// readDecisionAction loads --action-file. It checks only the envelope the
+// server's wire type accepts, so a typo such as "secrets" fails here instead
+// of being dropped; the allowlist and params are the server's to validate.
+func readDecisionAction(path string) (json.RawMessage, error) {
+	text, err := readDecisionText(path, "action")
+	if err != nil {
+		return nil, err
+	}
+	var action struct {
+		Type             string          `json:"type"`
+		Version          int             `json:"version"`
+		Params           json.RawMessage `json:"params,omitempty"`
+		SecretSlots      json.RawMessage `json:"secret_slots,omitempty"`
+		ExpiresInSeconds int64           `json:"expires_in_seconds,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&action); err != nil || decoder.More() {
+		return nil, fmt.Errorf("action file must contain exactly one JSON object with only type, version, params, secret_slots and expires_in_seconds")
+	}
+	if action.Type == "" || action.Version < 1 {
+		return nil, fmt.Errorf("action file needs a type and a version of 1 or more")
+	}
+	return json.Marshal(action)
+}
+
 func readDecisionText(path, label string) (string, error) {
 	text, err := os.ReadFile(path)
 	if err != nil {
@@ -154,8 +193,8 @@ func readDecisionText(path, label string) (string, error) {
 	if !utf8.Valid(text) {
 		return "", fmt.Errorf("%s file must contain valid UTF-8", label)
 	}
-	if label == "ask" && strings.TrimSpace(string(text)) == "" {
-		return "", fmt.Errorf("ask file must not be empty")
+	if (label == "ask" || label == "action") && strings.TrimSpace(string(text)) == "" {
+		return "", fmt.Errorf("%s file must not be empty", label)
 	}
 	return string(text), nil
 }
