@@ -203,10 +203,14 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if err != nil {
 		return empty, err
 	}
-	if _, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID}); errors.Is(err, pgx.ErrNoRows) {
+	approver, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID})
+	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, errNotTheHuman
 	} else if err != nil {
 		return empty, err
+	}
+	if !decisionActionPermitted(action.ActionType, targetAgent, approver) {
+		return empty, errNotPermitted
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
@@ -485,4 +489,13 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		return err
 	}
 	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
+}
+
+// decisionActionPermitted re-checks, under the member lock, the authority the
+// action would have had if its approver had made the change directly.
+func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
+	if actionType == "agent.env.patch" {
+		return canManageAgentEnv(target, approver)
+	}
+	return true
 }
