@@ -10,6 +10,8 @@ export interface DecisionRequestCard {
   created_at: string;
   withdrawn_at?: string | null;
   reason?: string;
+  /** The issue comment that recorded the answer, set once the request is answered. */
+  record_comment_id?: string | null;
 }
 
 export type DecisionCommentKind = "ask" | "quote" | "disclaim" | "delivery" | "cancel" | "veto";
@@ -47,4 +49,7 @@ export interface DecisionCommentFields {
   disclaimed_at?: string | null;
   decision_source_session_id?: string;
   decision_source_message_id?: string;
+  /** The DM message that asked, in the request's own session (a continued DM can differ from the answer's). */
+  decision_request_session_id?: string;
+  decision_request_message_id?: string;
 }
