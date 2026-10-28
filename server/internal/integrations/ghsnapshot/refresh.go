@@ -480,6 +480,10 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 	defer tx.Rollback(ctx)
 	q := manager.queries.WithTx(tx)
 
+	prev, err := q.GetGitHubPRSnapshotState(ctx, prID)
+	if err != nil {
+		return false, err
+	}
 	rollup := pgtype.Text{}
 	if snap.HasChecks {
 		rollup = textOrNull(snap.RollupState)
@@ -515,6 +519,12 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
 		}); err != nil {
+			return false, err
+		}
+	}
+	for _, event := range snapshotPREvents(prev, snap, manager.now()) {
+		event.PRID = prID
+		if _, err := CapturePREvent(ctx, q, event); err != nil {
 			return false, err
 		}
 	}

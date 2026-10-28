@@ -1,0 +1,11 @@
+services:
+  backend-blue: &flags_backend
+    environment:
+      MULTICA_FEATURE_FLAGS_FILE: /app/feature-flags.yaml
+    volumes:
+      - type: bind
+        source: ${MULTICA_FEATURE_FLAGS_FILE:-${MULTICA_JEV_FLAGS_FILE:?set the absolute path of the feature-flag file}}
+        target: /app/feature-flags.yaml
+        read_only: true
+
+  backend-green: *flags_backend
