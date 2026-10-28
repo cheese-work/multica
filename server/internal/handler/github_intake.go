@@ -150,6 +150,9 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 				if err != nil {
 					return err
 				}
+				if err := recordGitHubReviewDecision(ctx, queries, event, payload, object, pullID, revisionReason); err != nil {
+					return err
+				}
 				digest := sha256.Sum256([]byte(object.Body))
 				revision := db.InsertGitHubWebhookRevisionParams{
 					WorkspaceID: installation.WorkspaceID, InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
@@ -261,6 +264,24 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 		}
 	}
 	return pullID, "denied", "no_linked_issue", nil
+}
+
+// recordGitHubReviewDecision stores an admitted approve or request-changes
+// review on its PR, where the pr.review_* edge guards read it. Admitted means
+// intake already checked the author: a mapped member of this workspace, on a
+// same-repository PR linked to one of its issues.
+func recordGitHubReviewDecision(ctx context.Context, queries *db.Queries, event string, payload githubIntakePayload, object githubIntakeObject, pullID pgtype.UUID, reason string) error {
+	if event != "pull_request_review" || payload.Action != "submitted" || reason != "awaiting_admission" ||
+		(object.State != "approved" && object.State != "changes_requested") {
+		return nil
+	}
+	submitted := githubIntakeTimestamp(object.SubmittedAt)
+	if !submitted.Valid {
+		submitted = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	return queries.RecordGitHubPRReview(ctx, db.RecordGitHubPRReviewParams{
+		ID: pullID, ReviewState: object.State, HeadSha: payload.PullRequest.Head.SHA, SubmittedAt: submitted,
+	})
 }
 
 func githubIntakeTimestamp(value *time.Time) pgtype.Timestamptz {

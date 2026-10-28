@@ -236,6 +236,15 @@ SELECT EXISTS (
       AND context->>'github_review_key' = sqlc.arg(review_key)::text
 );
 
+-- name: RecordGitHubPRReview :exec
+-- Keeps the latest approved or changes_requested review of a PR; a review that
+-- was submitted before the stored one is dropped.
+UPDATE github_pull_request
+SET review_state = sqlc.arg(review_state)::text,
+    review_head_sha = sqlc.arg(head_sha)::text,
+    review_at = sqlc.arg(submitted_at)::timestamptz
+WHERE id = sqlc.arg(id) AND (review_at IS NULL OR review_at <= sqlc.arg(submitted_at)::timestamptz);
+
 -- name: ListGitHubReviewAuthorCandidates :many
 SELECT DISTINCT task.agent_id
 FROM agent_task_queue task

@@ -163,7 +163,7 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 		return facts, err
 	}
 	for _, p := range prs {
-		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha})
+		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
 	facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges)
 	return facts, err
