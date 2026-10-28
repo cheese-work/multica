@@ -548,6 +548,7 @@
     "squad_leader_no_action_reason": "評価完了: 必要なアクションはありません（{{reason}}）",
     "squad_leader_failed": "評価に失敗しました",
     "squad_leader_failed_reason": "評価に失敗しました: {{reason}}",
+    "stop_not_confirmed": "実行 {{taskId}} の停止が未確認です",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "アクティビティ {{count}} 件",
     "show_more_activities_other": "アクティビティをさらに {{count}} 件表示",

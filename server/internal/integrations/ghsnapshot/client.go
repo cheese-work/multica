@@ -43,6 +43,15 @@ const (
 	tokenRenewSkew = 5 * time.Minute
 )
 
+// InstallationGoneError means GitHub no longer knows the installation: minting
+// its token returned 404. Every call for that installation fails the same way
+// until the App is reinstalled.
+type InstallationGoneError struct{ InstallationID int64 }
+
+func (e *InstallationGoneError) Error() string {
+	return "github installation token: unexpected status 404"
+}
+
 // RateLimitError signals that GitHub asked us to back off. RetryAfter is how
 // long to wait before retrying; it is derived from the Retry-After header, or
 // the X-RateLimit-Reset header, or a conservative default.
@@ -182,6 +191,9 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 		return "", rateLimitFromResponse(resp, client.now())
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return "", &InstallationGoneError{InstallationID: installationID}
+		}
 		// Never echo the body — a token-mint failure body can contain sensitive
 		// hints; the status code is enough to diagnose.
 		return "", fmt.Errorf("github installation token: unexpected status %d", resp.StatusCode)

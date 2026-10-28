@@ -3303,6 +3303,27 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getAllByRole("link", { name: "MUL-9" })).toHaveLength(2);
   });
 
+  // CHE-2309: a refused review run names the superseded run whose runner is
+  // not confirmed stopped; the raw action key must never reach the timeline.
+  it("renders a stop_not_confirmed activity as readable text", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "act-stop-not-confirmed",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "stop_not_confirmed",
+        details: { task_id: "run-123", message: "stop not confirmed for run run-123" },
+        created_at: "2026-01-18T02:00:00Z",
+      },
+    ] as unknown as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(await screen.findByText(/stop not confirmed for run run-123/i)).toBeInTheDocument();
+    expect(screen.queryByText("stop_not_confirmed")).not.toBeInTheDocument();
+  });
+
   // MUL-7429: an automatic status change says why, and the per-issue switch
   // shows on the timeline.
   it("explains PR merge automation activity", async () => {
