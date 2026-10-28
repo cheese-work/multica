@@ -29,6 +29,11 @@ export async function GET(
     .replaceAll('"', "&quot;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+  const suggestions = `${origin}/api/search/suggestions?workspace_slug=${workspaceSlug}&q={searchTerms}`
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 
   return new Response(
     `<?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +42,7 @@ export async function GET(
   <Description>Search issues, projects and agents in Multica.</Description>
   <InputEncoding>UTF-8</InputEncoding>
   <Url type="text/html" template="${template}" />
+  <Url type="application/x-suggestions+json" template="${suggestions}" />
 </OpenSearchDescription>`,
     {
       headers: {

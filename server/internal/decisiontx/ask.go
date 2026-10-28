@@ -232,7 +232,7 @@ func (ask Ask) Validate() error {
 	return ask.validateHumanSteps()
 }
 
-func (ask Ask) Content() string {
+func (ask Ask) Content(workspaceSlug string) string {
 	var options strings.Builder
 	for _, option := range ask.Options {
 		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
@@ -244,8 +244,8 @@ func (ask Ask) Content() string {
 		}
 		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](/issue/%s#comment-%s)",
-		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.AgentDid, ask.SourceIssueID, ask.SourceIssueID, ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }
 
 // askSourceTail is the per-run provenance link that ends Content().

@@ -78,7 +78,7 @@ func decodedAsk(test *testing.T) Ask {
 }
 
 func TestAskContentRenderOrder(test *testing.T) {
-	content := decodedAsk(test).Content()
+	content := decodedAsk(test).Content("acme")
 	last := -1
 	for _, marker := range []string{"**Context**", "**Decision**", "**What is at stake**", "**Options**", "**Recommendation**", "**Default if no reply**", "<details>", "<summary>Details</summary>", "Ran all requested checks.", "</details>", "Investigate in issue"} {
 		at := strings.Index(content, marker)
@@ -90,7 +90,7 @@ func TestAskContentRenderOrder(test *testing.T) {
 	if strings.Count(content, "Investigate in issue") != 1 || strings.Contains(content, "**Agent did**\nRan all requested checks.\n\n**Decision**") {
 		test.Fatalf("investigate link must appear once, after details: %q", content)
 	}
-	for _, link := range []string{"mention://issue/" + testIssueID, "/issue/" + testIssueID + "#comment-" + testCommentID} {
+	for _, link := range []string{"mention://issue/" + testIssueID, "/acme/issues/" + testIssueID + "#comment-" + testCommentID} {
 		if strings.Count(content, link) != 1 || strings.Index(content, link) < strings.Index(content, "</details>") {
 			test.Fatalf("link %q must appear once, after details: %q", link, content)
 		}
@@ -108,7 +108,7 @@ func TestAskContentKeepsOptionFields(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	content := ask.Content()
+	content := ask.Content("acme")
 	options := content[strings.Index(content, "**Options**"):strings.Index(content, "**Recommendation**")]
 	want := "**Options**\n" +
 		"- **NOW**: Ships today.\n  - Pro: Users get it today\n  - Pro: No backlog\n  - Con: Less testing\n  - Cost or time: Ready in 1 hour\n" +
@@ -143,14 +143,14 @@ func TestWithoutSourceTailIgnoresTheSourceComment(test *testing.T) {
 	first := decodedAsk(test)
 	second := first
 	second.SourceCommentID = "33333333-3333-4333-8333-333333333333"
-	if first.Content() == second.Content() {
+	if first.Content("acme") == second.Content("acme") {
 		test.Fatal("fixture must differ in the source comment")
 	}
-	if WithoutSourceTail(first.Content()) != WithoutSourceTail(second.Content()) {
-		test.Fatalf("source comment must not change the identity:\n%q\n%q", WithoutSourceTail(first.Content()), WithoutSourceTail(second.Content()))
+	if WithoutSourceTail(first.Content("acme")) != WithoutSourceTail(second.Content("acme")) {
+		test.Fatalf("source comment must not change the identity:\n%q\n%q", WithoutSourceTail(first.Content("acme")), WithoutSourceTail(second.Content("acme")))
 	}
 	second.Decision = "A different decision?"
-	if WithoutSourceTail(first.Content()) == WithoutSourceTail(second.Content()) {
+	if WithoutSourceTail(first.Content("acme")) == WithoutSourceTail(second.Content("acme")) {
 		test.Fatal("a different decision must keep a different identity")
 	}
 }

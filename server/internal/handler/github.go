@@ -1470,6 +1470,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	sigHeader := r.Header.Get("X-Hub-Signature-256")
 	if !verifyWebhookSignature(secret, sigHeader, body) {
+		slog.Warn("github: delivery denied", "delivery_guid", r.Header.Get("X-GitHub-Delivery"), "reason", "invalid_signature")
 		writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -1482,10 +1483,20 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
-	case "pull_request_review":
-		if err := h.handlePullRequestReviewEvent(ctx, body); err != nil {
-			slog.Error("github: pull_request_review event failed", "err", err, "delivery_guid", deliveryGUID)
-			writeError(w, http.StatusInternalServerError, "failed to process pull_request_review event")
+	case "pull_request_review", "pull_request_review_comment", "issue_comment":
+		if strings.TrimSpace(deliveryGUID) == "" {
+			slog.Warn("github: intake denied", "event", event, "reason", "missing_delivery_guid")
+			writeError(w, http.StatusBadRequest, "missing delivery GUID")
+			return
+		}
+		if err := h.handleGitHubWebhookIntake(ctx, event, deliveryGUID, sigHeader, body); err != nil {
+			if errors.Is(err, errGitHubDeliveryConflict) {
+				slog.Warn("github: intake denied", "delivery_guid", deliveryGUID, "reason", "delivery_guid_conflict")
+				writeError(w, http.StatusConflict, "delivery GUID conflicts with stored delivery")
+				return
+			}
+			slog.Error("github: durable intake failed", "err", err, "delivery_guid", deliveryGUID, "reason", "database_error")
+			writeError(w, http.StatusInternalServerError, "failed to persist GitHub delivery")
 			return
 		}
 	case "pull_request":
@@ -1493,6 +1504,18 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+			return
+		}
+	case "workflow_run":
+		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_run event")
+			return
+		}
+	case "workflow_job":
+		if err := h.handleWorkflowJobEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_job event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_job event")
 			return
 		}
 	case "check_suite", "check_run", "status":
@@ -1636,9 +1659,13 @@ type ghPRHeadRepository struct {
 	Fork     *bool  `json:"fork"`
 }
 
+// sameRepository compares head and base by repository id and full name only.
+// GitHub's `fork` flag describes the repository, not the PR: a same-repo PR in
+// a repository that is itself a fork (cheese-work/multica) carries fork=true.
+// The flag must be present, so a truncated payload still defers.
 func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
 	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
-		repo.Fork != nil && !*repo.Fork && strings.EqualFold(repo.FullName, owner+"/"+name)
+		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
 }
 
 type ghPullRequestPayload struct {

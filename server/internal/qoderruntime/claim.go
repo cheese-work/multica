@@ -12,6 +12,7 @@ type claimedTask struct {
 	ChatSessionID         string            `json:"chat_session_id,omitempty"`
 	IsLeaderTask          bool              `json:"is_leader_task,omitempty"`
 	AuthToken             string            `json:"auth_token,omitempty"`
+	CancelAckProof        string            `json:"cancel_ack_proof,omitempty"`
 	RemoteMCPConnections  []json.RawMessage `json:"remote_mcp_connections,omitempty"`
 	ConnectedApps         []json.RawMessage `json:"connected_apps,omitempty"`
 	PluginHookTools       []json.RawMessage `json:"plugin_hook_tools,omitempty"`

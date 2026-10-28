@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: cd-qualification-build-${{ github.ref }}
-  cancel-in-progress: true
+  # One running + one pending run per group: a newer push replaces only the
+  # pending run, never a build already in progress.
+  cancel-in-progress: false
 
 jobs:
   fork-changelog:

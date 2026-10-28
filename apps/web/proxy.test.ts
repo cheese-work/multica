@@ -83,6 +83,23 @@ describe("proxy legacy workspace route redirects", () => {
     ).toBe("https://app.multica.test/acme/squads/squad-123?view=members");
   });
 
+  it("redirects singular UUID issue links and preserves query strings and fragments", () => {
+    expect(
+      redirectLocation(
+        "/issue/11111111-1111-4111-8111-111111111111?view=comments#comment-22222222-2222-4222-8222-222222222222",
+        sessionCookies,
+      ),
+    ).toBe(
+      "https://app.multica.test/acme/issues/11111111-1111-4111-8111-111111111111?view=comments#comment-22222222-2222-4222-8222-222222222222",
+    );
+  });
+
+  it("redirects plural issue-key links to the workspace issue route", () => {
+    expect(redirectLocation("/issues/CHE-123?tab=activity", sessionCookies)).toBe(
+      "https://app.multica.test/acme/issues/CHE-123?tab=activity",
+    );
+  });
+
   it("sends logged-out legacy URLs to login", () => {
     expect(redirectLocation("/usage?tab=billing")).toBe(
       "https://app.multica.test/login?tab=billing",
@@ -148,6 +165,28 @@ describe("proxy runtime upstream rewrites", () => {
         res.headers.get(`x-middleware-request-${MULTICA_LOCALE_HEADER}`),
       ).toBe("en");
     });
+  });
+
+  it.each([
+    "/api/search/suggestions?q=typed-text",
+    "/api/issues/search?q=typed-text",
+    "/api/projects/search?q=typed-text",
+  ])("leaves locally handled search API requests on the web server: %s", (path) => {
+    const previous = process.env.REMOTE_API_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    try {
+      const response = proxy(makeRequest(path));
+
+      expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    } finally {
+      restoreEnv("REMOTE_API_URL", previous);
+    }
+  });
+
+  it("sets an origin referrer policy on workspace search responses", () => {
+    const response = proxy(makeRequest("/che1593-preview/search?q=SEARCH_PAGE_QUERY_MARKER_1593"));
+
+    expect(response.headers.get("referrer-policy")).toBe("origin");
   });
 
   it("does not rewrite Plugin API requests when no runtime API origin is configured", () => {
