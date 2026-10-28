@@ -26,6 +26,8 @@ const (
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
+	GuardPRReviewChanges  = "pr.review_changes_requested"
+	GuardPRReviewApproved = "pr.review_approved"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
 )
@@ -47,7 +49,7 @@ type Guard struct {
 
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
-	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 }
 
 // ParseGuard parses "kind" or "kind(arg, ...)".
@@ -174,6 +176,9 @@ type PRFact struct {
 	HeadFresh    bool
 	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
 	HeadSHA string
+	// Review is the latest human review decision on the PR's current head:
+	// approved, changes_requested, or empty.
+	Review string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -211,6 +216,12 @@ func (f Facts) holds(g Guard) bool {
 		return f.anyPR(func(p PRFact) bool { return p.State == "merged" }) && !f.anyPR(PRFact.open)
 	case GuardPRClosedUnmerged:
 		return f.anyPR(func(p PRFact) bool { return p.State == "closed" }) && !f.anyPR(func(p PRFact) bool { return p.open() || p.State == "merged" })
+	case GuardPRReviewChanges:
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
+	case GuardPRReviewApproved:
+		// One PR asking for changes outweighs another PR's approval.
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "approved" }) &&
+			!f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
 	case GuardChildrenDone:
 		return f.ChildrenDone
 	case GuardIssueStatus:

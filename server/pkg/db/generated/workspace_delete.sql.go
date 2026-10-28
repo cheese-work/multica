@@ -375,6 +375,12 @@ deleted_governed_vote_records AS (
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
 ),
+deleted_github_workflow_runs AS (
+    DELETE FROM github_workflow_run WHERE workspace_id = $1
+),
+deleted_github_workflow_jobs AS (
+    DELETE FROM github_workflow_job WHERE workspace_id = $1
+),
 deleted_governance_receipts AS (
     DELETE FROM governance_receipt WHERE workspace_id = $1
 ),
@@ -472,6 +478,9 @@ deleted_issue_pr_automation AS (
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
+deleted_issue_review_admissions AS (
+    DELETE FROM issue_review_admission WHERE workspace_id = $1
+),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
@@ -495,6 +504,10 @@ deleted_squad_members AS (
 ),
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
+),
+deleted_github_route_grants AS (
+    DELETE FROM github_route_grant
+    WHERE project_id IN (SELECT id FROM project WHERE workspace_id = $1)
 ),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
@@ -609,6 +622,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
+// CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
+// with no dependents and no FK.
 // CHE-685 Jev governance routing receipts: workspace-owned observation
 // history, same leaf shape as issue_checkpoint above (no dependents, no FK).
 // CHE-714 Jev provider credentials are workspace-owned encrypted material.
@@ -684,7 +699,13 @@ func (q *Queries) DeleteWorkspacePluginData(ctx context.Context, workspaceID pgt
 }
 
 const deleteWorkspacePullRequests = `-- name: DeleteWorkspacePullRequests :exec
-WITH deleted_github_prs AS (
+WITH deleted_github_webhook_dispatches AS (
+    DELETE FROM github_webhook_dispatch
+    WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_webhook_revisions AS (
+    DELETE FROM github_webhook_revision
+    WHERE github_webhook_revision.workspace_id = $1
+), deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
 )

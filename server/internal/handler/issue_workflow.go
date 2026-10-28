@@ -645,7 +645,7 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(createdStatuses) > 0 {
-		h.publishIssueStatusChanged(workspaceID, member, "created")
+		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "created")
 	h.writeIssueWorkflow(w, r, http.StatusCreated, row)
@@ -918,7 +918,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	h.publishIssueSnapshots(ctx, changed, "member", uuidToString(member.UserID))
 	h.broadcastCancelledWakeups(ctx, wsUUID, cancelledWakeups)
 	if len(createdStatuses) > 0 {
-		h.publishIssueStatusChanged(workspaceID, member, "created")
+		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
 	h.writeIssueWorkflow(w, r, http.StatusOK, row)

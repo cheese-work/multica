@@ -33,7 +33,7 @@
       "key_hint": "Désigné par {{key}} dans l'API et la CLI.",
       "created": "Statut créé. L'API et le CLI le désignent par {{key}}.",
       "category": "Catégorie",
-      "category_locked": "La catégorie ne peut plus être modifiée après la création du statut.",
+      "category_change_hint": "Changer la catégorie modifie le comportement de chaque ticket ayant ce statut. Une confirmation sera demandée avant l’enregistrement.",
       "description": "Description",
       "description_placeholder": "Ce que cet état signifie pour votre équipe",
       "color": "Couleur",
@@ -52,6 +52,13 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "save_failed": "L'état n'a pas pu être enregistré."
+    },
+    "category_change_dialog": {
+      "title": "Changer la catégorie ?",
+      "description_one": "{{count}} ticket de ce statut passera de {{from}} à {{to}}.",
+      "description_other": "{{count}} tickets de ce statut passeront de {{from}} à {{to}}.",
+      "cancel": "Annuler",
+      "confirm": "Changer la catégorie"
     },
     "archive_dialog": {
       "retry": "Réessayer l'archivage",
@@ -307,7 +314,8 @@
     "language": {
       "title": "Langue",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -1589,6 +1597,20 @@
     "status_not_connected": "Non connecté",
     "status_loading": "Vérification...",
     "status_unknown": "État indisponible"
+  },
+  "github_review": {
+    "section_title": "Revues GitHub",
+    "members_label": "Relecteurs",
+    "members_description": "Associe un ID utilisateur GitHub au membre de l’espace de travail dont la revue compte.",
+    "members_key": "ID utilisateur GitHub",
+    "members_value": "Membre",
+    "authors_label": "Auteurs des pull requests",
+    "authors_description": "Associe une pull request à l’agent qui l’a écrite. Sans association, le nom de la branche décide.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Ajouter",
+    "remove": "Retirer",
+    "toast_failed": "Échec de l’enregistrement de l’association"
   },
   "pr_merge_status": {
     "label": "Après la fusion des PR, passer la tâche à",

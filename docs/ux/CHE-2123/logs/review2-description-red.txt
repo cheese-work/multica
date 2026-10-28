@@ -1,0 +1,447 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ × editor/content-editor-media.test.tsx > persisted description media in ContentEditor > keeps Open in new tab for a saved description block 1023ms
+   → Unable to find an accessible element with the role "button" and name "Open in new tab"
+
+Here are the accessible roles:
+
+  button:
+
+  Name "Reload":
+  [36m<button[39m
+    [33maria-label[39m=[32m"Reload"[39m
+    [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+    [33mdata-slot[39m=[32m"button"[39m
+    [33mtabindex[39m=[32m"0"[39m
+    [33mtitle[39m=[32m"Reload"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  Name "Close":
+  [36m<button[39m
+    [33maria-label[39m=[32m"Close"[39m
+    [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+    [33mdata-slot[39m=[32m"button"[39m
+    [33mtabindex[39m=[32m"0"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<dialog[39m
+  [33maria-labelledby[39m=[32m"_r_0_"[39m
+  [33mclass[39m=[32m"relative m-0 block max-h-none w-full max-w-none border-0 bg-transparent p-0 text-inherit open:fixed open:inset-0 open:m-auto open:h-[min(90dvh,calc(100dvh-2rem))] open:w-[min(72rem,calc(100vw-2rem))] open:overflow-hidden open:rounded-xl open:bg-surface-raised open:shadow-[var(--floating-shadow)] open:ring-1 open:ring-surface-border backdrop:bg-black/10 backdrop:backdrop-blur-xs"[39m
+  [33mopen[39m=[32m""[39m
+  [33mrole[39m=[32m"dialog"[39m
+[36m>[39m
+  [36m<iframe[39m
+    [33mclass[39m=[32m"w-full border-border bg-background h-full rounded-none border-0"[39m
+    [33msandbox[39m=[32m"allow-scripts"[39m
+    [33msrcdoc[39m=[32m"<p>Saved description</p>"[39m
+    [33mtitle[39m=[32m"HTML preview"[39m
+  [36m/>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"sr-only"[39m
+    [33mid[39m=[32m"_r_0_"[39m
+  [36m>[39m
+    [0mHTML preview[0m
+  [36m</span>[39m
+  [36m<div[39m
+    [33mclass[39m=[32m"absolute top-2 right-2 flex gap-1"[39m
+  [36m>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"ml-auto flex items-center gap-0.5"[39m
+    [36m>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Reload"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtitle[39m=[32m"Reload"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-rotate-cw"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 3v5h-5"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Close"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-x"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M18 6 6 18"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"m6 6 12 12"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</dialog>[39m
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action for an unsaved description block 271ms
+ × editor/content-editor-media.test.tsx > persisted description media in ContentEditor > hides the action immediately after an edit and restores it after undo 151ms
+   → Unable to find an element by: [data-testid="media-link-action"]
+
+Ignored nodes: comments, script, style
+[36m<dialog[39m
+  [33maria-labelledby[39m=[32m"_r_m_"[39m
+  [33mclass[39m=[32m"relative m-0 block max-h-none w-full max-w-none border-0 bg-transparent p-0 text-inherit open:fixed open:inset-0 open:m-auto open:h-[min(90dvh,calc(100dvh-2rem))] open:w-[min(72rem,calc(100vw-2rem))] open:overflow-hidden open:rounded-xl open:bg-surface-raised open:shadow-[var(--floating-shadow)] open:ring-1 open:ring-surface-border backdrop:bg-black/10 backdrop:backdrop-blur-xs"[39m
+  [33mopen[39m=[32m""[39m
+  [33mrole[39m=[32m"dialog"[39m
+[36m>[39m
+  [36m<iframe[39m
+    [33mclass[39m=[32m"w-full border-border bg-background h-full rounded-none border-0"[39m
+    [33msandbox[39m=[32m"allow-scripts"[39m
+    [33msrcdoc[39m=[32m"<p>Saved description</p>"[39m
+    [33mtitle[39m=[32m"HTML preview"[39m
+  [36m/>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"sr-only"[39m
+    [33mid[39m=[32m"_r_m_"[39m
+  [36m>[39m
+    [0mHTML preview[0m
+  [36m</span>[39m
+  [36m<div[39m
+    [33mclass[39m=[32m"absolute top-2 right-2 flex gap-1"[39m
+  [36m>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"ml-auto flex items-center gap-0.5"[39m
+    [36m>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Reload"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtitle[39m=[32m"Reload"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-rotate-cw"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 3v5h-5"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Close"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-x"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M18 6 6 18"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"m6 6 12 12"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</dialog>[39m
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action in a composer even when its text matches saved description media 132ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  editor/content-editor-media.test.tsx > persisted description media in ContentEditor > keeps Open in new tab for a saved description block
+TestingLibraryElementError: Unable to find an accessible element with the role "button" and name "Open in new tab"
+
+Here are the accessible roles:
+
+  button:
+
+  Name "Reload":
+  [36m<button[39m
+    [33maria-label[39m=[32m"Reload"[39m
+    [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+    [33mdata-slot[39m=[32m"button"[39m
+    [33mtabindex[39m=[32m"0"[39m
+    [33mtitle[39m=[32m"Reload"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  Name "Close":
+  [36m<button[39m
+    [33maria-label[39m=[32m"Close"[39m
+    [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+    [33mdata-slot[39m=[32m"button"[39m
+    [33mtabindex[39m=[32m"0"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<dialog[39m
+  [33maria-labelledby[39m=[32m"_r_0_"[39m
+  [33mclass[39m=[32m"relative m-0 block max-h-none w-full max-w-none border-0 bg-transparent p-0 text-inherit open:fixed open:inset-0 open:m-auto open:h-[min(90dvh,calc(100dvh-2rem))] open:w-[min(72rem,calc(100vw-2rem))] open:overflow-hidden open:rounded-xl open:bg-surface-raised open:shadow-[var(--floating-shadow)] open:ring-1 open:ring-surface-border backdrop:bg-black/10 backdrop:backdrop-blur-xs"[39m
+  [33mopen[39m=[32m""[39m
+  [33mrole[39m=[32m"dialog"[39m
+[36m>[39m
+  [36m<iframe[39m
+    [33mclass[39m=[32m"w-full border-border bg-background h-full rounded-none border-0"[39m
+    [33msandbox[39m=[32m"allow-scripts"[39m
+    [33msrcdoc[39m=[32m"<p>Saved description</p>"[39m
+    [33mtitle[39m=[32m"HTML preview"[39m
+  [36m/>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"sr-only"[39m
+    [33mid[39m=[32m"_r_0_"[39m
+  [36m>[39m
+    [0mHTML preview[0m
+  [36m</span>[39m
+  [36m<div[39m
+    [33mclass[39m=[32m"absolute top-2 right-2 flex gap-1"[39m
+  [36m>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"ml-auto flex items-center gap-0.5"[39m
+    [36m>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Reload"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtitle[39m=[32m"Reload"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-rotate-cw"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 3v5h-5"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Close"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-x"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M18 6 6 18"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"m6 6 12 12"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</dialog>[39m
+ ❯ Object.getElementError ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ editor/content-editor-media.test.tsx:50:55
+     48|     renderEditor(SAVED);
+     49|     fireEvent.click(await screen.findByRole("button", { name: "Fullscr…
+     50|     const action = within(screen.getByRole("dialog")).getByRole("butto…
+       |                                                       ^
+     51|     await waitFor(() => expect(action).toBeEnabled());
+     52|     fireEvent.click(action);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  editor/content-editor-media.test.tsx > persisted description media in ContentEditor > hides the action immediately after an edit and restores it after undo
+TestingLibraryElementError: Unable to find an element by: [data-testid="media-link-action"]
+
+Ignored nodes: comments, script, style
+[36m<dialog[39m
+  [33maria-labelledby[39m=[32m"_r_m_"[39m
+  [33mclass[39m=[32m"relative m-0 block max-h-none w-full max-w-none border-0 bg-transparent p-0 text-inherit open:fixed open:inset-0 open:m-auto open:h-[min(90dvh,calc(100dvh-2rem))] open:w-[min(72rem,calc(100vw-2rem))] open:overflow-hidden open:rounded-xl open:bg-surface-raised open:shadow-[var(--floating-shadow)] open:ring-1 open:ring-surface-border backdrop:bg-black/10 backdrop:backdrop-blur-xs"[39m
+  [33mopen[39m=[32m""[39m
+  [33mrole[39m=[32m"dialog"[39m
+[36m>[39m
+  [36m<iframe[39m
+    [33mclass[39m=[32m"w-full border-border bg-background h-full rounded-none border-0"[39m
+    [33msandbox[39m=[32m"allow-scripts"[39m
+    [33msrcdoc[39m=[32m"<p>Saved description</p>"[39m
+    [33mtitle[39m=[32m"HTML preview"[39m
+  [36m/>[39m
+  [36m<span[39m
+    [33mclass[39m=[32m"sr-only"[39m
+    [33mid[39m=[32m"_r_m_"[39m
+  [36m>[39m
+    [0mHTML preview[0m
+  [36m</span>[39m
+  [36m<div[39m
+    [33mclass[39m=[32m"absolute top-2 right-2 flex gap-1"[39m
+  [36m>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"ml-auto flex items-center gap-0.5"[39m
+    [36m>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Reload"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtitle[39m=[32m"Reload"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-rotate-cw"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M21 3v5h-5"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+      [36m<button[39m
+        [33maria-label[39m=[32m"Close"[39m
+        [33mclass[39m=[32m"group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"[39m
+        [33mdata-slot[39m=[32m"button"[39m
+        [33mtabindex[39m=[32m"0"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [36m<svg[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"lucide lucide-x"[39m
+          [33mfill[39m=[32m"none"[39m
+          [33mheight[39m=[32m"24"[39m
+          [33mstroke[39m=[32m"currentColor"[39m
+          [33mstroke-linecap[39m=[32m"round"[39m
+          [33mstroke-linejoin[39m=[32m"round"[39m
+          [33mstroke-width[39m=[32m"2"[39m
+          [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [33mwidth[39m=[32m"24"[39m
+          [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+        [36m>[39m
+          [36m<path[39m
+            [33md[39m=[32m"M18 6 6 18"[39m
+          [36m/>[39m
+          [36m<path[39m
+            [33md[39m=[32m"m6 6 12 12"[39m
+          [36m/>[39m
+        [36m</svg>[39m
+      [36m</button>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</dialog>[39m
+ ❯ Object.getElementError ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ editor/content-editor-media.test.tsx:66:27
+     64|     fireEvent.click(await screen.findByRole("button", { name: "Fullscr…
+     65|     const dialog = screen.getByRole("dialog");
+     66|     expect(within(dialog).getByTestId("media-link-action")).toBeTruthy…
+       |                           ^
+     67|     act(() => ref.current?.adoptContent(DRAFT));
+     68|     expect(within(dialog).queryByTestId("media-link-action")).toBeNull…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  23:22:47
+   Duration  58.89s (transform 32.26s, setup 129ms, import 55.67s, tests 1.58s, environment 1.19s)
+
+undefined
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run editor/content-editor-media.test.tsx --reporter=verbose

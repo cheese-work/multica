@@ -15,31 +15,32 @@ import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { ModalRegistry } from "@multica/views/modals/registry";
 import { WorkspacePresencePrefetch } from "@multica/views/layout";
 import { DragStrip } from "@multica/views/platform";
-import type { IssueWindowContext } from "../../../shared/issue-window";
+import type { IssueWindowContext, MediaWindowContext } from "../../../shared/issue-window";
+import { MediaPageRoute } from "../pages/media-page";
 import { DesktopAuthRecoveryPage } from "../pages/auth-recovery";
 import { IssueDetailPage } from "../pages/issue-detail-page";
 import { IssueWindowNavigationProvider } from "../platform/issue-window-navigation";
 
-export function IssueWindow({ context }: { context: IssueWindowContext }) {
+export function IssueWindow({ context }: { context: IssueWindowContext | MediaWindowContext }) {
   const router = useMemo(
     () =>
       createMemoryRouter(
         [
           {
-            path: ":workspaceSlug/issues/:id",
-            element: <IssueWindowRoute />,
+            path: context.kind === "media" ? ":workspaceSlug/media/:type/:sourceId/:kind/:mediaId" : ":workspaceSlug/issues/:id",
+            element: <IssueWindowRoute media={context.kind === "media"} />,
             errorElement: <IssueWindowRouteError />,
           },
         ],
         { initialEntries: [context.path] },
       ),
-    [context.path],
+    [context.kind, context.path],
   );
 
   return <RouterProvider router={router} />;
 }
 
-function IssueWindowRoute() {
+function IssueWindowRoute({ media = false }: { media?: boolean }) {
   const { workspaceSlug } = useParams<{ workspaceSlug: string }>();
   const user = useAuthStore((state) => state.user);
   const { workspaces, ready, unavailable, isFetching, refetch } =
@@ -82,7 +83,7 @@ function IssueWindowRoute() {
       <IssueWindowNavigationProvider>
         <WorkspacePresencePrefetch />
         <IssueWindowFrame>
-          <IssueDetailPage onDelete={() => window.desktopAPI.closeWindow()} />
+          {media ? <MediaPageRoute /> : <IssueDetailPage onDelete={() => window.desktopAPI.closeWindow()} />}
         </IssueWindowFrame>
         <ModalRegistry />
       </IssueWindowNavigationProvider>
