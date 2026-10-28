@@ -27,6 +27,8 @@ func TestParseGuard(t *testing.T) {
 		{"agent_verdict(CHANGES)", Guard{Kind: "agent_verdict", Args: []string{"CHANGES"}}},
 		{"pr.checks_green", Guard{Kind: "pr.checks_green"}},
 		{"pr.closed_unmerged", Guard{Kind: "pr.closed_unmerged"}},
+		{"pr.review_changes_requested", Guard{Kind: "pr.review_changes_requested"}},
+		{"pr.review_approved", Guard{Kind: "pr.review_approved"}},
 		{"children_done", Guard{Kind: "children_done"}},
 		{" issue_status(CHE-1, done) ", Guard{Kind: "issue_status", Args: []string{"CHE-1", "done"}}},
 	}
@@ -94,6 +96,8 @@ func TestValidateEdges(t *testing.T) {
 		{"no blocked, no default", []Edge{{To: "done", Guard: "pr.merged", Timeout: "1h"}}, func() Definition {
 			return Definition{Steps: stepsFor(ArrangeKeys([]string{"code_review"}))}
 		}, "on_timeout"},
+		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
+		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {
@@ -181,6 +185,12 @@ func TestFirstMatchPRReadyClosedChildrenAndIssueGuards(t *testing.T) {
 		{"pr.closed_unmerged", Facts{PRs: []PRFact{{State: "closed"}}}, true},
 		{"pr.closed_unmerged", Facts{PRs: []PRFact{{State: "closed"}, {State: "open"}}}, false},
 		{"pr.merged", Facts{PRs: []PRFact{{State: "closed"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open", Review: "changes_requested"}}}, true},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open", Review: "approved"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "merged", Review: "changes_requested"}}}, false},
+		{"pr.review_approved", Facts{PRs: []PRFact{{State: "draft", Review: "approved"}}}, true},
+		{"pr.review_approved", Facts{PRs: []PRFact{{State: "open", Review: "approved"}, {State: "open", Review: "changes_requested"}}}, false},
 		{"children_done", Facts{ChildrenDone: true}, true},
 		{"children_done", Facts{}, false},
 		{"issue_status(CHE-9, done)", Facts{IssueStatuses: map[string]string{"CHE-9": "done"}}, true},

@@ -650,3 +650,4 @@ Worktree:
 ```bash
 make check-worktree
 ```
+Address-bar engine setup and live suggestions: [Self-hosting: address-bar suggestions](SELF_HOSTING.md#address-bar-suggestions).

@@ -26,6 +26,7 @@ type ghReviewPayload struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 	Repository struct {
+		ID    int64  `json:"id"`
 		Name  string `json:"name"`
 		Owner struct {
 			Login string `json:"login"`
@@ -33,6 +34,9 @@ type ghReviewPayload struct {
 	} `json:"repository"`
 	PullRequest struct {
 		Number int32 `json:"number"`
+		Head   struct {
+			Repo *ghPRHeadRepository `json:"repo"`
+		} `json:"head"`
 	} `json:"pull_request"`
 	Review struct {
 		ID    int64  `json:"id"`
@@ -57,6 +61,11 @@ func (h *Handler) handlePullRequestReviewEvent(ctx context.Context, body []byte)
 	switch payload.Review.State {
 	case "approved", "commented", "changes_requested":
 	default:
+		return nil
+	}
+	if !payload.PullRequest.Head.Repo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {
+		slog.Info("github: denied pull request review", "reason", "fork_or_unverified_head_repository",
+			"installation_id", payload.Installation.ID, "repo_owner", payload.Repository.Owner.Login, "repo_name", payload.Repository.Name, "pr_number", payload.PullRequest.Number)
 		return nil
 	}
 	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
@@ -112,36 +121,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 		slog.Warn("github dispatch halted: review wakeup dropped", "workspace_id", uuidToString(workspaceID), "repo", pull.RepoOwner+"/"+pull.RepoName)
 		return nil
 	}
-	var authorID pgtype.UUID
-	pullKey := fmt.Sprintf("%s/%s#%d", strings.ToLower(pull.RepoOwner), strings.ToLower(pull.RepoName), pull.PrNumber)
-	if binding, exists := settings.ReviewAuthors[pullKey]; exists {
-		authorID, err = util.ParseUUID(binding)
-		if err != nil {
-			return nil
-		}
-	} else {
-		if !pull.Branch.Valid || pull.Branch.String == "" {
-			return nil
-		}
-		taskKey := ""
-		branch := strings.Split(pull.Branch.String, "/")
-		if len(branch) == 3 && branch[0] == "agent" && branch[1] != "" {
-			if match := githubReviewTaskKeyPattern.FindStringSubmatch(branch[2]); len(match) == 2 {
-				taskKey = match[1]
-			}
-		}
-		candidates, err := h.Queries.ListGitHubReviewAuthorCandidates(ctx, db.ListGitHubReviewAuthorCandidatesParams{
-			PullRequestID: pull.ID, WorkspaceID: workspaceID, TaskKey: taskKey,
-		})
-		if err != nil {
-			return err
-		}
-		if len(candidates) != 1 {
-			return nil
-		}
-		authorID = candidates[0]
-	}
-	author, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: authorID, WorkspaceID: workspaceID})
+	author, err := githubIntakeAuthor(ctx, h.Queries, pull)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

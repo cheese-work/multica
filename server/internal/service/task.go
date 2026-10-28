@@ -1297,7 +1297,7 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 	if issueAssignee && issue.AssigneeID != agentID {
 		return nil, fmt.Errorf("comment trigger agent does not match issue assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin); err != nil {
+	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: "comment", ReviewRun: true}); err != nil {
 		return nil, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
@@ -1469,7 +1469,12 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "assignment or status handoff"
+	if triggerCommentID.Valid {
+		trigger = "comment"
+	}
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid})
+	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 
@@ -1528,6 +1533,7 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 	}
+	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
@@ -1557,7 +1563,7 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			FireAt:               fireAt,
 		})
 	} else {
-		task, err = queries.CreateAgentTask(ctx, createParams)
+		task, err = createAgentTask(ctx, queries, createParams)
 	}
 	if err == nil {
 		notifyTaskEnqueued(ctx, task)
@@ -1613,7 +1619,8 @@ func (s *TaskService) PrepareTaskForMention(ctx context.Context, issue db.Issue,
 }
 
 func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin) (db.AgentTaskQueue, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: "mention", ReviewRun: true})
+	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	agent, err := queries.GetAgent(ctx, params.AgentID)
@@ -1625,7 +1632,8 @@ func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, que
 	}
 	params.RuntimeID = agent.RuntimeID
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
-	return queries.CreateAgentTask(ctx, params)
+	gate.Apply(&params)
+	return createAgentTask(ctx, queries, params)
 }
 
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
@@ -1693,7 +1701,7 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
-	task, err := queries.CreateAgentTask(ctx, params)
+	task, err := createAgentTask(ctx, queries, params)
 	if err == nil {
 		notifyTaskEnqueued(ctx, task)
 	}
@@ -1714,7 +1722,12 @@ func (s *TaskService) prepareMentionTaskWithQueries(ctx context.Context, queries
 }
 
 func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.CreateAgentTaskParams, attribution.Result, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, origin); err != nil {
+	trigger := "mention"
+	if isLeader {
+		trigger = "squad leader callback"
+	}
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true})
+	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 	agent, err := queries.GetAgent(ctx, agentID)
@@ -1746,7 +1759,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	return db.CreateAgentTaskParams{
+	params := db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -1771,7 +1784,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
-	}, attr, nil
+	}
+	gate.Apply(&params)
+	return params, attr, nil
 }
 
 // QuickCreateContext is the JSON payload stored on a quick-create task's
@@ -3358,6 +3373,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				return err
 			}
 			task = cancelled
+			if err := qtx.MarkPiTaskProcessCleanupPending(ctx, task.ID); err != nil {
+				return fmt.Errorf("mark cancelled runtime cleanup pending: %w", err)
+			}
 			// CancelAgentTaskByUser appends the recovery receipt in the same
 			// statement, so the returned row already carries it.
 			if err := SettleTerminalTaskState(ctx, qtx, cancelled); err != nil {
@@ -4771,23 +4789,34 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 	)
 }
 
+// TaskStartCapabilities records the capabilities offered for this exact run.
+// Persist these in the same transaction as running, before cancellation can win.
+type TaskStartCapabilities struct {
+	Supplement     bool
+	ProcessCleanup bool
+}
+
 // StartTask transitions a dispatched task to running.
 // Local agents manage issue status via the CLI; Qoder runs use guarded server transitions.
-func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
-	return s.startTask(ctx, taskID, nil, len(supplementSupport) > 0 && supplementSupport[0])
+func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID, capabilities ...TaskStartCapabilities) (*db.AgentTaskQueue, error) {
+	return s.startTask(ctx, taskID, nil, capabilities...)
 }
 
 // StartTaskForClaim serializes the ownership check and transition with reclaim,
 // cancellation and other start requests. A replay linearizes at the locked read;
 // a cancellation that commits later can still cancel the acknowledged task.
-func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentTaskStartClaimParams, supplementSupport ...bool) (*db.AgentTaskQueue, error) {
+func (s *TaskService) StartTaskForClaim(ctx context.Context, claim db.LockAgentTaskStartClaimParams, capabilities ...TaskStartCapabilities) (*db.AgentTaskQueue, error) {
 	if !claim.ID.Valid || !claim.RuntimeID.Valid || !claim.DispatchedAt.Valid {
 		return nil, fmt.Errorf("start task: incomplete claim")
 	}
-	return s.startTask(ctx, claim.ID, &claim, len(supplementSupport) > 0 && supplementSupport[0])
+	return s.startTask(ctx, claim.ID, &claim, capabilities...)
 }
 
-func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *db.LockAgentTaskStartClaimParams, enableTaskSupplement bool) (*db.AgentTaskQueue, error) {
+func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *db.LockAgentTaskStartClaimParams, capabilities ...TaskStartCapabilities) (*db.AgentTaskQueue, error) {
+	var offered TaskStartCapabilities
+	if len(capabilities) > 0 {
+		offered = capabilities[0]
+	}
 	var task db.AgentTaskQueue
 	var change *qoderIssueChange
 	var replay, refused bool
@@ -4825,7 +4854,8 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 		}
 		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
 			TaskID:               task.ID,
-			EnableTaskSupplement: enableTaskSupplement,
+			EnableTaskSupplement: offered.Supplement,
+			EnableProcessCleanup: offered.ProcessCleanup,
 		})
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
@@ -5611,6 +5641,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			SessionRolloutMissing: sessionRolloutMissing,
 			RetiredSessionID:      pgtype.Text{String: retiredSessionID, Valid: retiredSessionID != ""},
 		})
+		if errors.Is(err, pgx.ErrNoRows) && failureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() {
+			t, err = qtx.FailCancelledTaskProcessCleanup(ctx, db.FailCancelledTaskProcessCleanupParams{ID: taskID, ErrorMessage: errMsg})
+		}
 		if err != nil {
 			return err
 		}
@@ -5711,7 +5744,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -5885,7 +5918,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// platform-authored comment on the source task's issue, routed explicitly to
 	// that task's agent; recoverDelegatedTaskFailure coalesces it with an
 	// existing coordinator run and deduplicates by the failed task id.
-	if retried == nil {
+	if retried == nil && failureReason != taskfailure.ReasonProcessCleanupUnconfirmed.String() && failureReason != taskfailure.ReasonProcessCleanupBlocked.String() {
 		_, recoveryErr := s.recoverDelegatedTaskFailure(ctx, task)
 		if recoveryErr != nil {
 			slog.Warn("delegated task failure recovery failed",
@@ -6304,7 +6337,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
 		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
@@ -7327,8 +7360,21 @@ func canDispatchDelegatedFailureRecovery(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return false, err
 	}
-	return issue.Status != issuestatus.Backlog &&
-		(category == issuestatus.CategoryUnstarted || category == issuestatus.CategoryStarted), nil
+	if issue.Status == issuestatus.Backlog ||
+		(category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted) {
+		return false, nil
+	}
+	// A superseded run whose runner is not confirmed stopped holds the shared
+	// stop gate (CHE-2309). Like a paused lifecycle, this leaves the durable
+	// recovery signal pending: the sweeper replays it once the ack lands.
+	if err := StopGate(ctx, q, issue.ID); err != nil {
+		var notConfirmed *StopNotConfirmedError
+		if errors.As(err, &notConfirmed) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ensureDelegatedFailureRecoveryComment creates one durable recovery signal

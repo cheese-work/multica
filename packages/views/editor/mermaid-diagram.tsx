@@ -49,7 +49,8 @@ import { DYNAMIC_BLOCK_COLLAPSE_AT_PX, DynamicBlockSkeleton } from "./dynamic-bl
 import { useDragToScroll } from "./hooks/use-drag-to-scroll";
 import { useInlineZoom, type InlineZoom } from "./hooks/use-inline-zoom";
 import { useThemeVersion } from "./hooks/use-theme-version";
-import { MermaidViewer } from "./mermaid-viewer";
+import { MermaidViewer, MermaidViewerStandalone } from "./mermaid-viewer";
+import { useStandaloneMedia } from "../media/media-context";
 import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
 
@@ -423,6 +424,7 @@ export function MermaidDiagram({
   const themeVersion = useThemeVersion();
   // One object rather than parallel states: a half-applied re-render (new SVG,
   // old layout) would size the viewer's iframe against the wrong diagram.
+  const standalone = useStandaloneMedia();
   const [rendered, setRendered] = useState<RenderedDiagram | null>(null);
   // Lazy initial value: if we've rendered this exact chart already in the
   // current session, the cached layout lets us reserve correct space on the
@@ -436,10 +438,10 @@ export function MermaidDiagram({
   const viewerOpen = frame ? frame.viewerOpen : ownViewerOpen;
   const setViewerOpen = frame ? frame.onViewerOpenChange : setOwnViewerOpen;
   const viewerDocument = useMemo(
-    () => viewerOpen && rendered
+    () => (viewerOpen || standalone) && rendered
       ? buildViewerMermaidDocument(rendered.svg, containerRef.current, rendered.layout)
       : null,
-    [viewerOpen, rendered],
+    [viewerOpen, standalone, rendered],
   );
   const onErrorChange = frame?.onErrorChange;
   const [copied, setCopied] = useState(false);
@@ -520,6 +522,12 @@ export function MermaidDiagram({
       setTimeout(() => setCopied(false), 2000);
     }
   }, [chart]);
+
+  if (standalone) {
+    return <div ref={containerRef} className="flex h-full min-h-0 w-full flex-col">
+      {error ? <div role="alert" className="p-4">{error}</div> : rendered ? <MermaidViewerStandalone chart={chart} svg={rendered.svg} viewerDocument={viewerDocument} layout={rendered.layout} exportBackground={rendered.exportBackground} exportFontFamily={rendered.exportFontFamily} /> : <div className="p-4">{t(($) => $.mermaid.rendering)}</div>}
+    </div>;
+  }
 
   if (error && frame) {
     // The frame shows the error panel; keep the host so a theme switch can

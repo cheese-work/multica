@@ -1383,7 +1383,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if pr.ApiMergeable.String == "CONFLICTING" {
 		mergeState = "DIRTY"
 	}
-	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; fresh &&
+	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; pr.HeadRepoSame && fresh &&
 		(mergeState == "DIRTY" && (pr.State == "open" || pr.State == "draft") || mergeState == "BEHIND" && pr.State == "open") &&
 		pr.SnapshotBaseRef.Valid && pr.SnapshotBaseRef.String != "" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
@@ -1397,7 +1397,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
 		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
@@ -1412,7 +1412,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
@@ -1475,6 +1475,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	sigHeader := r.Header.Get("X-Hub-Signature-256")
 	if !verifyWebhookSignature(secret, sigHeader, body) {
+		slog.Warn("github: delivery denied", "delivery_guid", r.Header.Get("X-GitHub-Delivery"), "reason", "invalid_signature")
 		writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -1487,10 +1488,20 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
-	case "pull_request_review":
-		if err := h.handlePullRequestReviewEvent(ctx, body); err != nil {
-			slog.Error("github: pull_request_review event failed", "err", err, "delivery_guid", deliveryGUID)
-			writeError(w, http.StatusInternalServerError, "failed to process pull_request_review event")
+	case "pull_request_review", "pull_request_review_comment", "issue_comment":
+		if strings.TrimSpace(deliveryGUID) == "" {
+			slog.Warn("github: intake denied", "event", event, "reason", "missing_delivery_guid")
+			writeError(w, http.StatusBadRequest, "missing delivery GUID")
+			return
+		}
+		if err := h.handleGitHubWebhookIntake(ctx, event, deliveryGUID, sigHeader, body); err != nil {
+			if errors.Is(err, errGitHubDeliveryConflict) {
+				slog.Warn("github: intake denied", "delivery_guid", deliveryGUID, "reason", "delivery_guid_conflict")
+				writeError(w, http.StatusConflict, "delivery GUID conflicts with stored delivery")
+				return
+			}
+			slog.Error("github: durable intake failed", "err", err, "delivery_guid", deliveryGUID, "reason", "database_error")
+			writeError(w, http.StatusInternalServerError, "failed to persist GitHub delivery")
 			return
 		}
 	case "pull_request":
@@ -1498,6 +1509,18 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+			return
+		}
+	case "workflow_run":
+		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_run event")
+			return
+		}
+	case "workflow_job":
+		if err := h.handleWorkflowJobEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_job event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_job event")
 			return
 		}
 	case "check_suite", "check_run", "status":
@@ -1635,6 +1658,21 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 	}
 }
 
+type ghPRHeadRepository struct {
+	ID       int64  `json:"id"`
+	FullName string `json:"full_name"`
+	Fork     *bool  `json:"fork"`
+}
+
+// sameRepository compares head and base by repository id and full name only.
+// GitHub's `fork` flag describes the repository, not the PR: a same-repo PR in
+// a repository that is itself a fork (cheese-work/multica) carries fork=true.
+// The flag must be present, so a truncated payload still defers.
+func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
+	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
+		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
+}
+
 type ghPullRequestPayload struct {
 	Action      string `json:"action"`
 	PullRequest struct {
@@ -1655,8 +1693,9 @@ type ghPullRequestPayload struct {
 		ChangedFiles   int32  `json:"changed_files"`
 		MergeCommitSHA string `json:"merge_commit_sha"`
 		Head           struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+			Ref  string              `json:"ref"`
+			SHA  string              `json:"sha"`
+			Repo *ghPRHeadRepository `json:"repo"`
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
@@ -1797,6 +1836,11 @@ func (c prLinkPolicy) permits(identifier, workspaceID string) bool {
 // resolve it; misjudging "unique" as "ambiguous" costs a link a person can add
 // by hand, while the reverse would move someone else's issue on merge.
 func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInstallation, p *ghPullRequestPayload) prLinkPolicy {
+	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+		slog.Info("github: denied automatic pull request actions", "reason", "fork_or_unverified_head_repository",
+			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
+		return prLinkPolicy{indeterminate: true}
+	}
 	if len(insts) < 2 {
 		return prLinkPolicy{unrestricted: true}
 	}
@@ -2015,6 +2059,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
+		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
 		ChangedFiles: p.PullRequest.ChangedFiles, IsReopen: p.Action == "reopened",
@@ -2029,7 +2074,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	workspaceID := uuidToString(wsID)
 	linkedIssueIDs := make([]string, 0)
 	touched := map[pgtype.UUID]struct{}{}
-	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)
 		if err != nil {
@@ -2060,7 +2105,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
-	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
 			for _, issueID := range issueIDs {
 				touched[issueID] = struct{}{}
@@ -2084,7 +2129,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	case state == "draft" && p.Action == "converted_to_draft":
 		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRAttention, Reason: service.PRAttentionDraft, EventAt: p.PullRequest.UpdatedAt}
 	}
-	if attention.Rule != "" {
+	if attention.Rule != "" && pr.HeadRepoSame {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
