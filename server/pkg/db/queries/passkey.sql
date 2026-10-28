@@ -80,7 +80,7 @@ VALUES ($1, $2, $3, now() + interval '10 minutes')
 RETURNING id, expires_at;
 
 -- name: LockPasskeyEnrollCeremonyNowait :one
-SELECT ceremony.*, (ceremony.expires_at <= now())::bool AS expired
+SELECT ceremony.*, (ceremony.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_enroll_ceremony ceremony WHERE ceremony.id = $1 FOR UPDATE NOWAIT;
 
 -- A wrong code or a rejected attestation costs one attempt. The fifth ends

@@ -386,7 +386,7 @@ func (q *Queries) LockPasskeyChallengeNowait(ctx context.Context, id pgtype.UUID
 }
 
 const lockPasskeyEnrollCeremonyNowait = `-- name: LockPasskeyEnrollCeremonyNowait :one
-SELECT ceremony.id, ceremony.user_id, ceremony.code_hmac, ceremony.session_data, ceremony.expires_at, ceremony.attempts, ceremony.consumed_at, ceremony.failed_at, ceremony.created_at, (ceremony.expires_at <= now())::bool AS expired
+SELECT ceremony.id, ceremony.user_id, ceremony.code_hmac, ceremony.session_data, ceremony.expires_at, ceremony.attempts, ceremony.consumed_at, ceremony.failed_at, ceremony.created_at, (ceremony.expires_at <= clock_timestamp())::bool AS expired
 FROM passkey_enroll_ceremony ceremony WHERE ceremony.id = $1 FOR UPDATE NOWAIT
 `
 
