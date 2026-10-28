@@ -279,6 +279,9 @@ const (
 	// ChatMessageKindMessage is an ordinary user/assistant message.
 	ChatMessageKindMessage             = "message"
 	ChatMessageKindContinuationSummary = "continuation_summary"
+	// ChatMessageKindCompactionSummary is the agent-written summary that opens a
+	// new compaction epoch inside the same DM.
+	ChatMessageKindCompactionSummary = "compaction_summary"
 	// ChatMessageKindCompactNotice is the server-authored note that a DM was (or
 	// failed to be) automatically compacted. It is an assistant row that never
 	// enters a prompt.
