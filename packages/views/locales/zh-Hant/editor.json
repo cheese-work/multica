@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "媒體",
+    "more": "更多",
+    "open_in_new_window": "在新視窗中開啟",
+    "open_failed": "無法開啟媒體頁面",
+    "loading": "正在載入媒體…",
+    "load_failed": "無法載入媒體",
+    "offline": "離線 — 正在顯示上次載入的內容。",
+    "retry": "重試"
+  },
   "bubble_menu": {
     "bold": "加粗",
     "italic": "斜體",
