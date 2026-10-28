@@ -141,3 +141,30 @@ UPDATE github_webhook_revision SET state = 'denied', reason = $6, updated_at = n
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
     AND object_kind = $4 AND object_id = $5
     AND state IN ('deferred', 'quarantined', 'unsigned', 'projected');
+
+-- name: ListGitHubReconcilePullRequests :many
+SELECT DISTINCT pull.id, pull.workspace_id, pull.installation_id, pull.repo_owner, pull.repo_name, pull.pr_number
+FROM github_pull_request pull
+JOIN issue_pull_request link ON link.pull_request_id = pull.id
+JOIN github_installation installation ON installation.workspace_id = pull.workspace_id AND installation.installation_id = pull.installation_id
+WHERE pull.state = 'open' AND pull.head_repo_same
+ORDER BY pull.id;
+
+-- name: GetLatestGitHubWebhookRevision :one
+SELECT * FROM github_webhook_revision
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListStaleGitHubWebhookItems :many
+SELECT 'intake'::text AS item, delivery_guid AS ref, state, reason,
+       EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
+FROM github_webhook_intake
+WHERE state = 'deferred' AND received_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
+UNION ALL
+SELECT 'revision'::text, id::text, state, reason,
+       EXTRACT(EPOCH FROM (now() - created_at))::bigint
+FROM github_webhook_revision
+WHERE state = 'unsigned' AND created_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
+ORDER BY 5 DESC;
