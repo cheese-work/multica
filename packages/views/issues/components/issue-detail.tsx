@@ -454,6 +454,9 @@ function formatActivity(
           return t(($) => $.activity.squad_leader_evaluated);
       }
     }
+    case "stop_not_confirmed":
+      // A review run was refused while a superseded run's stop is unconfirmed.
+      return t(($) => $.activity.stop_not_confirmed, { taskId: details.task_id ?? "" });
     default:
       return entry.action ?? "";
   }
