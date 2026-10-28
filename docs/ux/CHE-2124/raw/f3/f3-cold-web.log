@@ -1,0 +1,39 @@
+F3 red: 27 October 2026 17:26:10 ICT
+Parent: b9e4e6d1fd310a76fea8f2f925ef7cdcdf012022
+Command: make env-exec ARGS=--env-F3_RED-playwright
+◇ injected env (1) from .env // tip: ⌘ enable debugging { debug: true }
+
+Running 1 test using 1 worker
+
+(node:3750852) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3750852) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+  ✘  1 e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths (4.2m)
+
+
+  1) e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+
+    [31mTest timeout of 240000ms exceeded.[39m
+
+    Error: page.goto: net::ERR_ABORTED; maybe frame was detached?
+    Call log:
+    [2m  - navigating to "http://localhost:13954/plan-viewer-1793096813013-0/attachments/01a17ce6-0beb-72cf-a5d9-931c21fce016/preview", waiting until "domcontentloaded"[22m
+
+
+      70 |   async function open(page: Page) {
+      71 |     await page.addInitScript((token) => localStorage.setItem("multica_token", token!), author.getToken());
+    > 72 |     await page.goto(`/${workspace.slug}/attachments/${current.id}/preview`, { waitUntil: "domcontentloaded" });
+         |                ^
+      73 |     await expect(page.getByTestId("revision-document")).toBeVisible({ timeout: 120_000 });
+      74 |   }
+      75 |
+        at open (/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/e2e/plan-revisions.spec.ts:72:16)
+        at /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/e2e/plan-revisions.spec.ts:79:5
+
+  1 failed
+    e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+make: *** [Makefile:177: env-exec] Error 1
+
+Exit: 2
