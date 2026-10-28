@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -128,7 +129,11 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		digest := sha256.Sum256([]byte(source.Instructions))
-		return map[string]any{"source_agent_id": params.SourceAgentID, "instructions_sha256": hex.EncodeToString(digest[:])}, nil
+		settings, err := agentCopySettingsDigest(ctx, queries, source)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"source_agent_id": params.SourceAgentID, "instructions_sha256": hex.EncodeToString(digest[:]), "settings_sha256": settings}, nil
 	}
 	return nil, errors.New("no snapshot for action " + draft.Type)
 }
@@ -194,4 +199,42 @@ func (handler *Handler) replayedDecisionAction(ctx context.Context, issue db.Iss
 		return nil, err
 	}
 	return newDecisionActionResponse(action), nil
+}
+
+// agentCopySettingsDigest hashes every source setting an agent.copy carries
+// over besides the instructions: permission mode, invocation targets and skill
+// assignments. The request snapshots it and the copy re-checks it, so the
+// signed hash covers what the copy executes.
+func agentCopySettingsDigest(ctx context.Context, queries *db.Queries, source db.Agent) (string, error) {
+	targets, err := queries.ListAgentInvocationTargets(ctx, source.ID)
+	if err != nil {
+		return "", err
+	}
+	skills, err := queries.ListAgentSkills(ctx, source.ID)
+	if err != nil {
+		return "", err
+	}
+	return digestAgentCopySettings(source, targets, skills)
+}
+
+func digestAgentCopySettings(source db.Agent, targets []db.AgentInvocationTarget, skills []db.Skill) (string, error) {
+	settings := struct {
+		PermissionMode string   `json:"permission_mode"`
+		Targets        []string `json:"targets"`
+		Skills         []string `json:"skills"`
+	}{PermissionMode: source.PermissionMode, Targets: []string{}, Skills: []string{}}
+	for _, target := range targets {
+		settings.Targets = append(settings.Targets, target.TargetType+":"+uuidToString(target.TargetID))
+	}
+	for _, skill := range skills {
+		settings.Skills = append(settings.Skills, uuidToString(skill.ID))
+	}
+	sort.Strings(settings.Targets)
+	sort.Strings(settings.Skills)
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
