@@ -938,6 +938,7 @@ type GithubPullRequest struct {
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
 	SnapshotBaseRef     pgtype.Text        `json:"snapshot_base_ref"`
 	SnapshotRecheckAt   pgtype.Timestamptz `json:"snapshot_recheck_at"`
+	HeadRepoSame        bool               `json:"head_repo_same"`
 }
 
 type GithubPullRequestCheckRun struct {
