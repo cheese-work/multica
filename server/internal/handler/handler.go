@@ -246,6 +246,9 @@ type Handler struct {
 	SeatCapacityLocker    seatcapacity.WorkspaceLocker
 	SeatCapacityWorker    *seatcapacity.Worker
 	DecisionWorker        *DecisionWorker
+	// ApprovalVerifier proves a human approved a decision action. Nil until
+	// the passkey verifier is wired; approve then fails closed.
+	ApprovalVerifier ApprovalVerifier
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
 	ModelListStore        ModelListStore

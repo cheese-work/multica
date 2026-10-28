@@ -193,19 +193,9 @@ func (handler *Handler) beginActionTx(ctx context.Context, lockTimeout time.Dura
 // 7, 8, 9, 11 — the rows a reject writes or must fence) in one transaction.
 func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decisionActionCaller) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preview, err := handler.Queries.GetDecisionAction(ctx, db.GetDecisionActionParams{ID: caller.actionID, WorkspaceID: caller.workspaceID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return empty, errActionNotFound
-	}
+	_, located, err := handler.locateDecisionAction(ctx, caller)
 	if err != nil {
 		return empty, err
-	}
-	located, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: preview.DecisionRequestID})
-	if err != nil {
-		return empty, err
-	}
-	if located.HumanUserID != caller.userID {
-		return empty, errNotTheHuman
 	}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
@@ -220,6 +210,9 @@ func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decis
 		return empty, err
 	}
 	if _, err := queries.LockDecisionAskingAgent(ctx, db.LockDecisionAskingAgentParams{WorkspaceID: caller.workspaceID, ID: located.AskingAgentID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, err
+	}
+	if err := lockDecisionThreadAndIssue(ctx, queries, caller.workspaceID, located); err != nil {
 		return empty, err
 	}
 	current, err := queries.LockDecisionRequestNowait(ctx, db.LockDecisionRequestNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ID})
@@ -250,23 +243,7 @@ func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decis
 	if err != nil {
 		return empty, err
 	}
-	if _, err := queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
-		return empty, err
-	}
-	if _, err := queries.CreateDecisionCardAnswer(ctx, db.CreateDecisionCardAnswerParams{
-		DecisionRequestID: current.ID, AnsweredByUserID: caller.userID,
-		ContentSnapshot: "Rejected " + action.ActionType, EffectiveAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-	}); err != nil {
-		return empty, err
-	}
-	details, err := json.Marshal(map[string]any{"decision_request_id": uuidToString(current.ID), "decision_action_id": uuidToString(action.ID), "action_type": action.ActionType, "payload_sha256": action.PayloadSha256})
-	if err != nil {
-		return empty, err
-	}
-	if _, err := queries.CreateActivity(ctx, db.CreateActivityParams{
-		WorkspaceID: caller.workspaceID, IssueID: current.IssueID, ActorType: pgtype.Text{String: "member", Valid: true},
-		ActorID: caller.userID, Action: "decision_action_rejected", Details: details,
-	}); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", "Rejected "+action.ActionType+"."); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -318,4 +295,25 @@ func (handler *Handler) readDecisionActionUnderLock(ctx context.Context, workspa
 		return empty, err
 	}
 	return action, nil
+}
+
+// locateDecisionAction reads the action and its request without locks, to
+// pick the rows the deciding transaction must lock, and checks the caller is
+// the request's human.
+func (handler *Handler) locateDecisionAction(ctx context.Context, caller decisionActionCaller) (db.DecisionAction, db.DecisionRequest, error) {
+	preview, err := handler.Queries.GetDecisionAction(ctx, db.GetDecisionActionParams{ID: caller.actionID, WorkspaceID: caller.workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return preview, db.DecisionRequest{}, errActionNotFound
+	}
+	if err != nil {
+		return preview, db.DecisionRequest{}, err
+	}
+	located, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: preview.DecisionRequestID})
+	if err != nil {
+		return preview, located, err
+	}
+	if located.HumanUserID != caller.userID {
+		return preview, located, errNotTheHuman
+	}
+	return preview, located, nil
 }

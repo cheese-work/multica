@@ -181,14 +181,14 @@ func normalizeAgentCopy(raw json.RawMessage, slots []SecretSlot) (json.RawMessag
 	return out, nil, err
 }
 
-type envPatchParams struct {
+type EnvPatchParams struct {
 	AgentID string            `json:"agent_id"`
 	Set     map[string]string `json:"set"`
 	Unset   []string          `json:"unset"`
 }
 
 func normalizeEnvPatch(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
-	var params envPatchParams
+	var params EnvPatchParams
 	if err := decodeStrict(raw, &params); err != nil {
 		return nil, nil, err
 	}

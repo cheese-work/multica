@@ -233,8 +233,8 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 }
 
 const createDecisionCardAnswer = `-- name: CreateDecisionCardAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id)
-VALUES ($1, $2, 'card', '{}', $3, $4, $5)
+INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
+VALUES ($1, $2, 'card', '{}', $3, $4, $5, GREATEST($4::timestamptz, clock_timestamp()))
 RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source
 `
 
@@ -247,7 +247,8 @@ type CreateDecisionCardAnswerParams struct {
 }
 
 // A human's click on a decision card (approve or reject of a decision_action).
-// No task, chat or comment source: the answering turn does not exist.
+// No task, chat or comment source: the answering turn does not exist, so no
+// finalizer will ever schedule it. The click schedules the wake itself.
 func (q *Queries) CreateDecisionCardAnswer(ctx context.Context, arg CreateDecisionCardAnswerParams) (DecisionAnswer, error) {
 	row := q.db.QueryRow(ctx, createDecisionCardAnswer,
 		arg.DecisionRequestID,

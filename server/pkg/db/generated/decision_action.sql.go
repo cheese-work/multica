@@ -79,6 +79,86 @@ func (q *Queries) CreateDecisionAction(ctx context.Context, arg CreateDecisionAc
 	return i, err
 }
 
+const decisionActionExpired = `-- name: DecisionActionExpired :one
+SELECT expires_at <= clock_timestamp() FROM decision_action WHERE id = $1 AND workspace_id = $2
+`
+
+type DecisionActionExpiredParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Judged on the database clock, never the application's.
+func (q *Queries) DecisionActionExpired(ctx context.Context, arg DecisionActionExpiredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, decisionActionExpired, arg.ID, arg.WorkspaceID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const finishDecisionActionRow = `-- name: FinishDecisionActionRow :one
+UPDATE decision_action SET
+    state = $1, approved_by_user_id = $2,
+    approved_at = clock_timestamp(), executed_at = clock_timestamp(),
+    webauthn_credential_id = $3, result = $4,
+    error_code = $5, error_message = $6, updated_at = now()
+WHERE id = $7 AND workspace_id = $8 AND state = 'pending'
+  AND $1 IN ('executed', 'failed')
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+`
+
+type FinishDecisionActionRowParams struct {
+	State                string      `json:"state"`
+	ApprovedByUserID     pgtype.UUID `json:"approved_by_user_id"`
+	WebauthnCredentialID pgtype.UUID `json:"webauthn_credential_id"`
+	Result               []byte      `json:"result"`
+	ErrorCode            pgtype.Text `json:"error_code"`
+	ErrorMessage         pgtype.Text `json:"error_message"`
+	ID                   pgtype.UUID `json:"id"`
+	WorkspaceID          pgtype.UUID `json:"workspace_id"`
+}
+
+// Execution and the terminal state commit together; there is no "executing" row.
+func (q *Queries) FinishDecisionActionRow(ctx context.Context, arg FinishDecisionActionRowParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, finishDecisionActionRow,
+		arg.State,
+		arg.ApprovedByUserID,
+		arg.WebauthnCredentialID,
+		arg.Result,
+		arg.ErrorCode,
+		arg.ErrorMessage,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getDecisionAction = `-- name: GetDecisionAction :one
 SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2
 `
@@ -217,6 +297,88 @@ func (q *Queries) LockDecisionActionNowait(ctx context.Context, arg LockDecision
 	return i, err
 }
 
+const lockDecisionAgentsNowait = `-- name: LockDecisionAgentsNowait :many
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, custom_env_version FROM agent
+WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+ORDER BY id
+FOR UPDATE NOWAIT
+`
+
+type LockDecisionAgentsNowaitParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+// The asking agent and the action's target agent, each locked once, in id order.
+func (q *Queries) LockDecisionAgentsNowait(ctx context.Context, arg LockDecisionAgentsNowaitParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, lockDecisionAgentsNowait, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+			&i.ConversationStarters,
+			&i.CustomEnvVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockDecisionIssueNowait = `-- name: LockDecisionIssueNowait :one
+SELECT id FROM issue
+WHERE workspace_id = $1 AND id = $2
+FOR NO KEY UPDATE NOWAIT
+`
+
+type LockDecisionIssueNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionIssueNowait(ctx context.Context, arg LockDecisionIssueNowaitParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionIssueNowait, arg.WorkspaceID, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockDecisionLiveAnswerNowait = `-- name: LockDecisionLiveAnswerNowait :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
@@ -342,6 +504,21 @@ func (q *Queries) LockWorkspaceKeyShareNowait(ctx context.Context, id pgtype.UUI
 	return id_2, err
 }
 
+const markDecisionActionPostCommitDone = `-- name: MarkDecisionActionPostCommitDone :exec
+UPDATE decision_action SET post_commit_done_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND state IN ('executed', 'failed') AND post_commit_done_at IS NULL
+`
+
+type MarkDecisionActionPostCommitDoneParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) MarkDecisionActionPostCommitDone(ctx context.Context, arg MarkDecisionActionPostCommitDoneParams) error {
+	_, err := q.db.Exec(ctx, markDecisionActionPostCommitDone, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const readDecisionActionForShare = `-- name: ReadDecisionActionForShare :one
 SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR SHARE
 `
@@ -424,4 +601,16 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const tryLockDecisionCommentThread = `-- name: TryLockDecisionCommentThread :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0))::boolean
+`
+
+// Same advisory key as LockCommentThread, but never waits.
+func (q *Queries) TryLockDecisionCommentThread(ctx context.Context, threadRootID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockDecisionCommentThread, threadRootID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
