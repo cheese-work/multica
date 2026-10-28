@@ -137,14 +137,11 @@ func (q *Queries) ListUsablePasskeys(ctx context.Context, userID pgtype.UUID) ([
 }
 
 const lockOpenPasskeyChallenge = `-- name: LockOpenPasskeyChallenge :one
-
 SELECT id, nonce, user_id, purpose, subject_id, session_data, expires_at, consumed_at, superseded_at, created_at FROM passkey_assertion_challenge
 WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
 FOR UPDATE NOWAIT
 `
 
-// One open assertion challenge per user across every purpose. The issuer
-// locks it NOWAIT: a verification holding it makes issuing fail fast.
 func (q *Queries) LockOpenPasskeyChallenge(ctx context.Context, userID pgtype.UUID) (PasskeyAssertionChallenge, error) {
 	row := q.db.QueryRow(ctx, lockOpenPasskeyChallenge, userID)
 	var i PasskeyAssertionChallenge
@@ -244,4 +241,22 @@ UPDATE passkey_assertion_challenge SET superseded_at = now() WHERE id = $1
 func (q *Queries) SupersedePasskeyChallenge(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, supersedePasskeyChallenge, id)
 	return err
+}
+
+const tryLockPasskeyChallengeIssue = `-- name: TryLockPasskeyChallengeIssue :one
+
+
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::uuid::text || ':passkey_challenge', 0))::boolean
+`
+
+// One open assertion challenge per user across every purpose. The issuer
+// locks it NOWAIT: a verification holding it makes issuing fail fast.
+// The open-row lock cannot serialize two first issuers: before the first
+// commits there is no row to lock and the second would wait on the unique
+// index. This per-user advisory lock is taken first and never waits.
+func (q *Queries) TryLockPasskeyChallengeIssue(ctx context.Context, userID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockPasskeyChallengeIssue, userID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

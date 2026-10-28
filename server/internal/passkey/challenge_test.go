@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -187,3 +188,58 @@ func TestSecondOpenChallengeRowIsRejectedByTheDatabase(test *testing.T) {
 		test.Fatal("two open challenges for one user were accepted")
 	}
 }
+
+// slowCommit holds each transaction it begins at Commit until released, so a
+// test can freeze an issuer after its insert.
+type slowCommit struct {
+	Beginner
+	reached chan struct{}
+	release chan struct{}
+}
+
+type slowTx struct {
+	pgx.Tx
+	owner *slowCommit
+}
+
+func (pool slowCommit) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := pool.Beginner.Begin(ctx)
+	return slowTx{tx, &pool}, err
+}
+
+func (tx slowTx) Commit(ctx context.Context) error {
+	close(tx.owner.reached)
+	<-tx.owner.release
+	return tx.Tx.Commit(ctx)
+}
+
+func TestIssueFailsFastWhileTheFirstIssuerIsStillCommitting(test *testing.T) {
+	pool := testPool(test)
+	user, subject := newUser(test, pool), pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	first := slowCommit{Beginner: pool, reached: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := IssueChallenge(context.Background(), first, user, PurposeDecisionApprove, subject, session)
+		done <- err
+	}()
+	<-first.reached
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := IssueChallenge(ctx, pool, user, PurposeRevoke, subject, session)
+	close(first.release)
+	if firstErr := <-done; firstErr != nil {
+		test.Fatalf("first issuer: %v", firstErr)
+	}
+	if !errors.Is(err, ErrBusy) {
+		test.Fatalf("second issuer err = %v, want ErrBusy", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		test.Errorf("waited %v, want an immediate refusal", elapsed)
+	}
+	if openRows(test, pool, user) != 1 {
+		test.Error("the user must keep exactly one open challenge")
+	}
+}
+
