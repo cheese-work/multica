@@ -31,15 +31,22 @@ var errSubWorkflowRefused = errors.New("sub-workflow child refused")
 // subWorkflowHandoffResolver resolves the child's start-step handler with the
 // admission a new issue gets (createHandoffResolver): the same handler rules,
 // then the same assignee gate. No request exists on the edge path, so the invoke
-// gate judges the human the parent acts for: its requester, else its creator
-// when that is a member. A handler that person may not use refuses the spawn.
+// gate judges the humans the parent acts for. The creator is set by the server
+// from the authenticated request; the requester is only what the caller named,
+// so it can narrow who may be used (human_by_role routing, an extra person who
+// must be allowed) and never widen it. Each spawn passes both on unchanged, so a
+// nested child is judged by the same two people. A handler any of them may not
+// use refuses the spawn.
 func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHandoffResolver {
-	originator := ""
-	switch {
-	case parent.RequestedByID.Valid:
-		originator = uuidToString(parent.RequestedByID)
-	case parent.CreatorType == "member":
-		originator = uuidToString(parent.CreatorID)
+	var originators []string
+	if parent.CreatorType == "member" {
+		originators = append(originators, uuidToString(parent.CreatorID))
+	}
+	if parent.RequestedByID.Valid {
+		originators = append(originators, uuidToString(parent.RequestedByID))
+	}
+	if len(originators) == 0 {
+		originators = append(originators, "")
 	}
 	workspaceID := uuidToString(parent.WorkspaceID)
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
@@ -53,7 +60,12 @@ func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHand
 		}
 		assignee := pgtype.Text{String: assigneeType, Valid: true}
 		status, msg := h.validateAssignee(ctx, workspaceID, assignee, assigneeID, func(agent db.Agent) bool {
-			return h.canInvokeAgent(ctx, agent, "system", "", originator, workspaceID)
+			for _, originator := range originators {
+				if !h.canInvokeAgent(ctx, agent, "system", "", originator, workspaceID) {
+					return false
+				}
+			}
+			return true
 		})
 		if status != 0 {
 			return pgtype.Text{}, pgtype.UUID{}, fmt.Errorf("%w: %s", errSubWorkflowRefused, msg)
@@ -198,6 +210,7 @@ func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, su
 		Priority:        parent.Priority,
 		CreatorType:     parent.CreatorType,
 		CreatorID:       parent.CreatorID,
+		RequestedByID:   parent.RequestedByID,
 		ParentIssueID:   parent.ID,
 		ProjectID:       parent.ProjectID,
 		WorkflowID:      targetID,
