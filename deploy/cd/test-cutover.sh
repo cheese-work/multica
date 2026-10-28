@@ -1328,8 +1328,8 @@ if drained_before_refusal "$state_dir"; then echo "scenario che823-pull-persiste
 
 # ---------------------------------------------------------------------------
 # CHE-1854: scoped Jev runtime inputs survive recreation. The optional
-# deploy/cd/docker-compose.jev.yml overlay is added to EVERY compose call
-# only when the compose dir's .env configures it; a configured-but-broken
+# deploy/cd/docker-compose.flags.yml carries flags independently of Jev.
+# The Jev overlay is added only when the compose dir's .env configures its network; a configured-but-broken
 # prerequisite refuses before the first mutation (drain, pull, migrate).
 # Launched CD-shaped (.env sourced, not exported) with synthetic values only.
 # ---------------------------------------------------------------------------
@@ -1364,8 +1364,36 @@ run_jev() { # run_jev <state_dir> <cutover|rollback>
 }
 
 jev_overlay_calls() { grep -c 'docker-compose.jev.yml' "$1/control/docker-calls.log" || true; }
+flags_overlay_calls() { grep -c 'docker-compose.flags.yml' "$1/control/docker-calls.log" || true; }
 compose_calls() { grep -c '^compose ' "$1/control/docker-calls.log" || true; }
 mutated() { [ -f "$1/control/stop-calls.log" ] || grep -qE '^compose .*(pull|up|run) ' "$1/control/docker-calls.log"; }
+
+for flags_setting in MULTICA_FEATURE_FLAGS_FILE MULTICA_JEV_FLAGS_FILE; do
+  write_jev_env "$flags_setting=$jev_flags"
+  state_dir="$(fresh_scenario_dir "flags-only-$flags_setting")"
+  output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-only-$flags_setting"
+  if [ "$(flags_overlay_calls "$state_dir")" -ne "$(compose_calls "$state_dir")" ] || [ "$(compose_calls "$state_dir")" -eq 0 ]; then
+    echo "scenario flags-only-$flags_setting: generic flags overlay missing from compose calls" >&2
+    exit 1
+  fi
+  [ "$(jev_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario flags-only-$flags_setting: Jev overlay loaded without a gateway" >&2; exit 1; }
+  output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-rollback-$flags_setting"
+  grep -E 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log" | grep -q 'docker-compose.flags.yml' || { echo "scenario flags-rollback-$flags_setting: predecessor restarted without flags" >&2; exit 1; }
+done
+
+write_jev_env "MULTICA_FEATURE_FLAGS_FILE=$jev_flags" "MULTICA_JEV_FLAGS_FILE=$work_dir/absent.yaml"
+state_dir="$(fresh_scenario_dir flags-generic-precedence)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" flags-generic-precedence
+
+write_jev_env "MULTICA_FEATURE_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml"
+state_dir="$(fresh_scenario_dir flags-malformed)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 1 "$status" flags-malformed
+expect_contains "$output" MULTICA_FEATURE_FLAGS_FILE flags-malformed
+if mutated "$state_dir"; then echo "scenario flags-malformed: mutated before refusing" >&2; exit 1; fi
 
 # Unconfigured: byte-identical compose arguments, no overlay.
 write_jev_env
@@ -1374,6 +1402,7 @@ output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
 expect_exit 0 "$status" jev-unconfigured
 expect_contains "$output" "cutover complete: green is now active" jev-unconfigured
 [ "$(jev_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario jev-unconfigured: overlay used without configuration" >&2; exit 1; }
+[ "$(flags_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario jev-unconfigured: flags overlay used without configuration" >&2; exit 1; }
 
 # Configured: the overlay rides on every compose call; one candidate up, the
 # incumbent never started; the key never reaches output or docker arguments.
@@ -1386,6 +1415,7 @@ if [ "$(jev_overlay_calls "$state_dir")" -ne "$(compose_calls "$state_dir")" ] |
   echo "scenario jev-configured: overlay missing from $(( $(compose_calls "$state_dir") - $(jev_overlay_calls "$state_dir") )) compose call(s)" >&2
   exit 1
 fi
+[ "$(flags_overlay_calls "$state_dir")" -eq "$(compose_calls "$state_dir")" ] || { echo "scenario jev-configured: generic flags overlay missing" >&2; exit 1; }
 [ "$(grep -cE 'up -d --no-deps backend-green\b' "$state_dir/control/docker-calls.log")" -eq 1 ] || { echo "scenario jev-configured: want exactly one backend-green up" >&2; exit 1; }
 if grep -qE 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log"; then
   echo "scenario jev-configured: incumbent backend-blue was started (two active backends)" >&2; exit 1
@@ -1425,7 +1455,6 @@ jev_refusals=(
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/flag-not-map.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-by-one.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-uint64.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
-  "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|missing-gateway-network"
 )
 n=0
@@ -1439,7 +1468,7 @@ for spec in "${jev_refusals[@]}"; do
   [ -z "$flag" ] || touch "$state_dir/control/$flag"
   output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
   expect_exit 1 "$status" "jev-refusal-$n"
-  expect_contains "$output" "jev overlay" "jev-refusal-$n"
+  expect_contains "$output" "overlay" "jev-refusal-$n"
   expect_contains "$output" "$var" "jev-refusal-$n"
   expect_not_contains "$output" "$jev_key" "jev-refusal-$n"
   if mutated "$state_dir"; then echo "scenario jev-refusal-$n: mutated before refusing ($var)" >&2; exit 1; fi
