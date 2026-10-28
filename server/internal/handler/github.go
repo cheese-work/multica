@@ -26,6 +26,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -1694,6 +1695,7 @@ type ghPullRequestPayload struct {
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
+			SHA string `json:"sha"`
 		} `json:"base"`
 		User struct {
 			Login     string `json:"login"`
@@ -2097,8 +2099,27 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list persisted links: %w", err)
 	}
+	lifecycle := prLifecycleKind(prevState, state)
+	if lifecycle != "" && pr.HeadRepoSame {
+		if _, err := ghsnapshot.CapturePREvent(ctx, qtx, ghsnapshot.PREventInput{
+			PRID: pr.ID, Kind: lifecycle, HeadSHA: pr.HeadSha, BaseSHA: p.PullRequest.Base.SHA,
+			ObservedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt).Time,
+		}); err != nil {
+			return fmt.Errorf("github: capture pr %s event: %w", lifecycle, err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
+	}
+	if lifecycle != "" && pr.HeadRepoSame {
+		// A failure returns 5xx so GitHub redelivers; the capture dedupes and
+		// the stop or notice repeats safely.
+		if err := h.TaskService.ApplyPRLifecycleEvent(ctx, service.PRLifecycleEvent{
+			PRID: pr.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+			Number: p.PullRequest.Number, Kind: string(lifecycle),
+		}); err != nil {
+			return fmt.Errorf("github: apply pr %s event: %w", lifecycle, err)
+		}
 	}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
@@ -2311,6 +2332,22 @@ type ghPRChanges struct {
 // existing mergeable_state.
 func baseRefChanged(c *ghPRChanges) bool {
 	return c != nil && c.Base != nil && c.Base.Ref != nil && c.Base.Ref.From != ""
+}
+
+// prLifecycleKind names the lifecycle event a PR state change raises, or "" for
+// none. A PR first seen as draft or closed is not a change a live run missed.
+func prLifecycleKind(prev, state string) ghsnapshot.PREventKind {
+	switch {
+	case state == "merged" && prev != "merged":
+		return ghsnapshot.PREventMerged
+	case state == "closed" && prev != "" && prev != "closed" && prev != "merged":
+		return ghsnapshot.PREventClosed
+	case state == "draft" && prev != "" && prev != "draft":
+		return ghsnapshot.PREventDraft
+	case state == "open" && prev == "draft":
+		return ghsnapshot.PREventReady
+	}
+	return ""
 }
 
 func derivePRState(state string, draft, merged bool) string {
