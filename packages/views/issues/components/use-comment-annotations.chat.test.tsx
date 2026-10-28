@@ -72,6 +72,43 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+describe("selection released outside the message text", () => {
+  function select(source: HTMLElement) {
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+  }
+
+  it.each(["card padding", "document body"])("opens the popup when pointerup lands on the %s", async (where) => {
+    const { container } = renderWithI18n(<ChatFixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
+    select(source);
+    fireEvent.pointerUp(where === "card padding" ? container.firstElementChild! : document.body);
+    expect(await screen.findByRole("button", { name: "Add comment" })).toBeVisible();
+  });
+
+  it("ignores a pointerup that has no armed pointerdown in the message", () => {
+    const { container } = renderWithI18n(<ChatFixture />);
+    select(container.querySelector<HTMLElement>("[data-comment-content]")!);
+    fireEvent.pointerUp(document.body);
+    expect(screen.queryByRole("button", { name: "Add comment" })).toBeNull();
+  });
+
+  it("opens only once per press", async () => {
+    const { container } = renderWithI18n(<ChatFixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
+    select(source);
+    fireEvent.pointerUp(document.body);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    window.getSelection()!.removeAllRanges();
+    select(source);
+    fireEvent.pointerUp(document.body);
+    expect(screen.queryByRole("button", { name: "Add comment" })).toBeNull();
+  });
+});
+
 describe("chat surface reading and focus order", () => {
   it.each(["fine", "coarse"])("focuses once per open and ignores a previous comment's late marker positioning (%s pointer)", async (pointer) => {
     vi.spyOn(window, "matchMedia").mockImplementation((query) => ({ matches: query === `(pointer: ${pointer})` }) as MediaQueryList);
@@ -102,6 +139,7 @@ describe("chat surface reading and focus order", () => {
     const range = document.createRange();
     range.setStart(source.firstChild!, 9);
     range.setEnd(source.firstChild!, 13);
+    fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
     act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
     fireEvent.pointerUp(source);
     fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));

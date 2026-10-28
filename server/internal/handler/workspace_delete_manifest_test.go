@@ -94,12 +94,16 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"feedback":                           workspaceDeleteDetach,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
+	"github_route_grant":                 workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
 	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
+	"github_webhook_intake":              workspaceDeleteKeep,
+	"github_webhook_dispatch":            workspaceDelete,
+	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
 	"run_gate_event":                     workspaceDelete, // CHE-1918 run-gate shadow ledger; workspace-owned leaf.
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.

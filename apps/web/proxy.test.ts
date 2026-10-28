@@ -83,6 +83,23 @@ describe("proxy legacy workspace route redirects", () => {
     ).toBe("https://app.multica.test/acme/squads/squad-123?view=members");
   });
 
+  it("redirects singular UUID issue links and preserves query strings and fragments", () => {
+    expect(
+      redirectLocation(
+        "/issue/11111111-1111-4111-8111-111111111111?view=comments#comment-22222222-2222-4222-8222-222222222222",
+        sessionCookies,
+      ),
+    ).toBe(
+      "https://app.multica.test/acme/issues/11111111-1111-4111-8111-111111111111?view=comments#comment-22222222-2222-4222-8222-222222222222",
+    );
+  });
+
+  it("redirects plural issue-key links to the workspace issue route", () => {
+    expect(redirectLocation("/issues/CHE-123?tab=activity", sessionCookies)).toBe(
+      "https://app.multica.test/acme/issues/CHE-123?tab=activity",
+    );
+  });
+
   it("sends logged-out legacy URLs to login", () => {
     expect(redirectLocation("/usage?tab=billing")).toBe(
       "https://app.multica.test/login?tab=billing",

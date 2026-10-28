@@ -3621,6 +3621,7 @@ describe("IssueDetail (shared)", () => {
       Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
       vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 600, 400));
       Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(10, 10, 120, 20) });
+      fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
       const range = document.createRange();
       range.selectNodeContents(source);
       act(() => {

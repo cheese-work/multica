@@ -131,6 +131,10 @@ export function IssueWindowNavigationProvider({
       },
       getShareableUrl: (path) =>
         runtimeConfig.ok ? `${runtimeConfig.config.appUrl}${path}` : path,
+      openMediaWindow: async (path, title) => {
+        const result = await window.desktopAPI.openMediaWindow({ path, title });
+        if (!result.ok) throw new Error("Media window request rejected");
+      },
     };
   }, [
     location.pathname,
