@@ -192,15 +192,17 @@ stateless: GitHub's delivery log caps attempts and rate-limits redelivery.
 
 - **R1** retries a stored signed payload through the intake worker (CHE-2208).
 - **R2** lists `GET /app/hook/deliveries` with the App JWT (cursor from the
-  `Link` header, URL never followed, at most 5 pages) and asks
+  `Link` header, URL never followed, at most 20 pages; a log that is not fully read redelivers nothing) and asks
   `POST /app/hook/deliveries/{id}/attempts` for a failed delivery older than the
-  10-minute grace. The redelivery is signed by GitHub and re-enters the normal
-  webhook path. It stops after 5 attempts per GUID and outside the 72-hour window.
+  10-minute grace and newer than 72 hours. The redelivery is signed by GitHub and re-enters the normal
+  webhook path. It stops after 5 attempts per GUID.
   Off unless `GITHUB_INTAKE_REDELIVER=1`.
 - **R3** reads open, same-repo pull requests through the REST API and records
   each review, inline comment or PR comment with no stored signed event as an
-  `unsigned` revision. The body is hashed, never stored. Insert is idempotent on
-  the revision identity index. `unsigned` is never dispatched automatically.
+  `unsigned` revision. The body is hashed, never stored. Only the newest stored revision
+  of the object is compared, so an edit back to an earlier body is recorded.
+  Insert is idempotent on the revision identity index; a review edited back to
+  identical metadata after a reconciled row stays unrecorded. `unsigned` is never dispatched automatically.
   Off unless `GITHUB_INTAKE_UNSIGNED=1`.
 - A revision with no `source_delivery_guid` settles as `unsigned`
   (`no_signed_delivery`), not as a retrying error.

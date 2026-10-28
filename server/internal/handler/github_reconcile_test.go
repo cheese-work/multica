@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,13 +15,25 @@ import (
 
 type fakeReconcileAPI struct {
 	deliveries  []ghsnapshot.DeliveryAttempt
+	pages       [][]ghsnapshot.DeliveryAttempt // when set, paged by cursor "pN" instead of deliveries
 	redelivered []int64
 	objects     ghsnapshot.PullObjects
 	objectCalls int
 }
 
-func (api *fakeReconcileAPI) ListHookDeliveries(context.Context, string) ([]ghsnapshot.DeliveryAttempt, string, error) {
-	return api.deliveries, "", nil
+func (api *fakeReconcileAPI) ListHookDeliveries(_ context.Context, cursor string) ([]ghsnapshot.DeliveryAttempt, string, error) {
+	if api.pages == nil {
+		return api.deliveries, "", nil
+	}
+	index := 0
+	if cursor != "" {
+		index, _ = strconv.Atoi(strings.TrimPrefix(cursor, "p"))
+	}
+	next := ""
+	if index+1 < len(api.pages) {
+		next = fmt.Sprintf("p%d", index+1)
+	}
+	return api.pages[index], next, nil
 }
 
 func (api *fakeReconcileAPI) RedeliverHook(_ context.Context, id int64) error {
@@ -165,4 +180,76 @@ func TestGitHubIntakeWorkerSettlesRevisionWithoutDelivery(t *testing.T) {
 		t.Fatalf("revision without delivery not settled as unsigned: %d", n)
 	}
 	assertIntakeWorkerDispatch(t, fixture, 0)
+}
+
+// pagedLog spreads a delivery log over pages: filler holds recent successful
+// deliveries of other GUIDs, and each extra attempt lands on its own page.
+func pagedLog(pageCount int, extra map[int]ghsnapshot.DeliveryAttempt) [][]ghsnapshot.DeliveryAttempt {
+	pages := make([][]ghsnapshot.DeliveryAttempt, pageCount)
+	for index := range pages {
+		pages[index] = []ghsnapshot.DeliveryAttempt{{ID: int64(1000 + index), GUID: fmt.Sprintf("filler-%d", index), Event: "pull_request_review", StatusCode: 202, DeliveredAt: time.Now().Add(-time.Hour)}}
+		if attempt, ok := extra[index]; ok {
+			pages[index] = append(pages[index], attempt)
+		}
+	}
+	return pages
+}
+
+func TestGitHubReconcileCountsAttemptsAcrossPages(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	guid := fixture.issueID + "-paged"
+	extra := map[int]ghsnapshot.DeliveryAttempt{0: failedAttempt(31, guid, time.Hour)}
+	for index := 1; index <= 4; index++ {
+		extra[index] = failedAttempt(int64(31+index), guid, time.Hour+time.Duration(index)*time.Minute)
+	}
+	api := &fakeReconcileAPI{pages: pagedLog(6, extra)}
+	if n, err := reconcilerForTest(fixture, api).redeliver(context.Background()); err != nil || n != 0 || len(api.redelivered) != 0 {
+		t.Fatalf("5 attempts across pages were redelivered: n=%d calls=%v err=%v", n, api.redelivered, err)
+	}
+}
+
+func TestGitHubReconcileIncompleteLogRedeliversNothing(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	guid := fixture.issueID + "-deep"
+	extra := map[int]ghsnapshot.DeliveryAttempt{0: failedAttempt(41, guid, time.Hour)}
+	for index := 25; index <= 28; index++ {
+		extra[index] = failedAttempt(int64(41+index), guid, time.Hour+time.Duration(index)*time.Second)
+	}
+	api := &fakeReconcileAPI{pages: pagedLog(30, extra)}
+	if n, err := reconcilerForTest(fixture, api).redeliver(context.Background()); err == nil || n != 0 || len(api.redelivered) != 0 {
+		t.Fatalf("incomplete log was acted on: n=%d calls=%v err=%v", n, api.redelivered, err)
+	}
+}
+
+func TestGitHubReconcileSkipsDeliveriesOutsideTheWindow(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	api := &fakeReconcileAPI{deliveries: []ghsnapshot.DeliveryAttempt{
+		failedAttempt(51, fixture.issueID+"-inside", 71*time.Hour),
+		failedAttempt(52, fixture.issueID+"-expired", 73*time.Hour),
+	}}
+	if n, err := reconcilerForTest(fixture, api).redeliver(context.Background()); err != nil || n != 1 || len(api.redelivered) != 1 || api.redelivered[0] != 51 {
+		t.Fatalf("redelivered n=%d calls=%v err=%v, want only attempt 51", n, api.redelivered, err)
+	}
+}
+
+func TestGitHubReconcileRecordsCommentEditedBackToAnEarlierBody(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	comment := func(body string, edited time.Duration) ghsnapshot.PullObjects {
+		created, updated := time.Now().Add(-4*time.Hour), time.Now().Add(-edited)
+		return ghsnapshot.PullObjects{RepositoryID: 9001, HeadSHA: "review-head", Open: true, SameRepo: true, Objects: []ghsnapshot.PullObject{
+			{Kind: "issue_comment", ID: 9100, Body: body, AuthorID: 42, AuthorLogin: "reviewer", AuthorType: "User", CreatedAt: &created, UpdatedAt: &updated},
+		}}
+	}
+	api := &fakeReconcileAPI{}
+	reconciler := reconcilerForTest(fixture, api)
+	for step, want := range []struct {
+		body   string
+		edited time.Duration
+		n      int
+	}{{"A", 3 * time.Hour, 1}, {"B", 2 * time.Hour, 1}, {"A", 90 * time.Minute, 1}, {"A", 90 * time.Minute, 0}} {
+		api.objects = comment(want.body, want.edited)
+		if n, err := reconciler.recordUnsigned(context.Background()); err != nil || n != want.n {
+			t.Fatalf("step %d (%s): recorded %d (err=%v), want %d", step, want.body, n, err, want.n)
+		}
+	}
 }

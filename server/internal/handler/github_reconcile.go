@@ -22,7 +22,7 @@ const (
 	// GitHub keeps delivery history for 3 days; older failures fall to R3.
 	githubDeliveryWindow        = 72 * time.Hour
 	githubRedeliveryMaxAttempts = 5
-	githubDeliveryMaxPages      = 5
+	githubDeliveryMaxPages      = 20
 	githubIntakeStaleAfter      = time.Hour
 )
 
@@ -91,6 +91,7 @@ func (reconciler githubReconciler) redeliver(ctx context.Context) (int, error) {
 	attempts := map[string][]ghsnapshot.DeliveryAttempt{}
 	var order []string
 	cursor := ""
+	complete := false
 	for page := 0; page < githubDeliveryMaxPages; page++ {
 		entries, next, err := reconciler.api.ListHookDeliveries(ctx, cursor)
 		if err != nil {
@@ -106,9 +107,14 @@ func (reconciler githubReconciler) redeliver(ctx context.Context) (int, error) {
 			attempts[entry.GUID] = append(attempts[entry.GUID], entry)
 		}
 		if next == "" || len(entries) == 0 || reconciler.now().Sub(entries[len(entries)-1].DeliveredAt) > githubDeliveryWindow {
+			complete = true
 			break
 		}
 		cursor = next
+	}
+	if !complete {
+		// Attempts beyond the page cap are unseen, so an attempt count would be too low and could pass the cap.
+		return 0, errors.New("github: delivery log pagination limit exceeded")
 	}
 	requested := 0
 	for _, guid := range order {
@@ -144,12 +150,14 @@ func redeliverableAttempt(attempts []ghsnapshot.DeliveryAttempt, now time.Time) 
 	for _, event := range githubIntakeEvents {
 		supported = supported || event == newest.Event
 	}
-	return newest, supported && len(attempts) < githubRedeliveryMaxAttempts && now.Sub(newest.DeliveredAt) >= githubReconcileGrace
+	age := now.Sub(newest.DeliveredAt)
+	return newest, supported && len(attempts) < githubRedeliveryMaxAttempts && age >= githubReconcileGrace && age <= githubDeliveryWindow
 }
 
 // recordUnsigned is R3: a review or comment on an open, same-repository linked
-// PR that no stored revision covers is recorded as `unsigned`. The worker never
-// dispatches it; exact-snapshot approval is a separate slice.
+// PR whose newest stored revision has a different body is recorded as
+// `unsigned`. The worker never dispatches it; exact-snapshot approval is a
+// separate slice.
 func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, error) {
 	queries := reconciler.handler.Queries
 	pulls, err := queries.ListGitHubReconcilePullRequests(ctx)
@@ -185,15 +193,15 @@ func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, err
 			}
 			digest := sha256.Sum256([]byte(object.Body))
 			bodyHash := hex.EncodeToString(digest[:])
-			covered, err := queries.HasGitHubWebhookRevisionBody(ctx, db.HasGitHubWebhookRevisionBodyParams{
+			// Only the newest revision counts: an object edited back to an earlier body is a new revision.
+			latest, err := queries.GetLatestGitHubWebhookRevisionBodyHash(ctx, db.GetLatestGitHubWebhookRevisionBodyHashParams{
 				WorkspaceID: pull.WorkspaceID, InstallationID: pull.InstallationID, RepositoryID: listed.RepositoryID,
-				ObjectKind: object.Kind, ObjectID: object.ID, BodyHash: bodyHash,
+				ObjectKind: object.Kind, ObjectID: object.ID,
 			})
-			if err != nil {
-				return recorded, err
-			}
-			if covered {
+			if err == nil && latest == bodyHash {
 				continue
+			} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return recorded, err
 			}
 			inserted, err := queries.InsertGitHubWebhookRevision(ctx, db.InsertGitHubWebhookRevisionParams{
 				WorkspaceID: pull.WorkspaceID, InstallationID: pull.InstallationID, RepositoryID: listed.RepositoryID,

@@ -242,33 +242,33 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 	return i, err
 }
 
-const hasGitHubWebhookRevisionBody = `-- name: HasGitHubWebhookRevisionBody :one
-SELECT EXISTS (SELECT 1 FROM github_webhook_revision
+const getLatestGitHubWebhookRevisionBodyHash = `-- name: GetLatestGitHubWebhookRevisionBodyHash :one
+SELECT body_hash FROM github_webhook_revision
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
-  AND object_kind = $4 AND object_id = $5 AND body_hash = $6)
+  AND object_kind = $4 AND object_id = $5
+ORDER BY created_at DESC, id DESC
+LIMIT 1
 `
 
-type HasGitHubWebhookRevisionBodyParams struct {
+type GetLatestGitHubWebhookRevisionBodyHashParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	InstallationID int64       `json:"installation_id"`
 	RepositoryID   int64       `json:"repository_id"`
 	ObjectKind     string      `json:"object_kind"`
 	ObjectID       int64       `json:"object_id"`
-	BodyHash       string      `json:"body_hash"`
 }
 
-func (q *Queries) HasGitHubWebhookRevisionBody(ctx context.Context, arg HasGitHubWebhookRevisionBodyParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasGitHubWebhookRevisionBody,
+func (q *Queries) GetLatestGitHubWebhookRevisionBodyHash(ctx context.Context, arg GetLatestGitHubWebhookRevisionBodyHashParams) (string, error) {
+	row := q.db.QueryRow(ctx, getLatestGitHubWebhookRevisionBodyHash,
 		arg.WorkspaceID,
 		arg.InstallationID,
 		arg.RepositoryID,
 		arg.ObjectKind,
 		arg.ObjectID,
-		arg.BodyHash,
 	)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+	var body_hash string
+	err := row.Scan(&body_hash)
+	return body_hash, err
 }
 
 const hasGitHubWebhookRevisionDispatch = `-- name: HasGitHubWebhookRevisionDispatch :one
