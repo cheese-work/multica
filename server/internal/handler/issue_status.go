@@ -224,7 +224,7 @@ func (h *Handler) CreateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create issue status")
 		return
 	}
-	h.publishIssueStatusChanged(workspaceID, member, "created")
+	h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	writeJSON(w, http.StatusCreated, issueStatusToResponse(entry))
 }
 
@@ -462,7 +462,9 @@ func (h *Handler) UpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update issue status")
 		return
 	}
-	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "updated")
+	// Issue rows carry a server-resolved status_category, so a category move
+	// also tells clients to refresh their issue projections.
+	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "updated", changedIssueCount != nil)
 	writeJSON(w, http.StatusOK, updateIssueStatusResponse{
 		IssueStatusResponse: issueStatusToResponse(updated),
 		IssueCount:          changedIssueCount,
@@ -581,7 +583,7 @@ func (h *Handler) ArchiveIssueStatus(w http.ResponseWriter, r *http.Request) {
 	// After the commit, never before: an event that announced a change the
 	// transaction then rolled back would have every other tab re-read the
 	// catalog and cache the pre-archive row as the new truth.
-	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "archived")
+	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "archived", false)
 	h.publishIssueWorkflowChanged(uuidToString(wsUUID), member, "updated")
 	writeJSON(w, http.StatusOK, issueStatusToResponse(archived))
 }
@@ -626,10 +628,12 @@ func (h *Handler) loadIssueStatusForAdmin(w http.ResponseWriter, r *http.Request
 // changed row travels here on purpose — a client that merged an entry out of
 // an event would have to reconcile it against a concurrent write it cannot
 // see, and the catalog is a handful of rows to re-read.
-func (h *Handler) publishIssueStatusChanged(workspaceID string, actor db.Member, action string) {
-	h.publish(protocol.EventIssueStatusChanged, workspaceID, "member", uuidToString(actor.UserID), map[string]any{
-		"action": action,
-	})
+func (h *Handler) publishIssueStatusChanged(workspaceID string, actor db.Member, action string, categoryChanged bool) {
+	payload := map[string]any{"action": action}
+	if categoryChanged {
+		payload["category_changed"] = true
+	}
+	h.publish(protocol.EventIssueStatusChanged, workspaceID, "member", uuidToString(actor.UserID), payload)
 }
 
 // ReorderIssueStatusesRequest orders a category's active statuses. IncludeSystem
@@ -814,7 +818,7 @@ func (h *Handler) ReorderIssueStatuses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to reorder issue statuses")
 		return
 	}
-	h.publishIssueStatusChanged(workspaceID, member, "reordered")
+	h.publishIssueStatusChanged(workspaceID, member, "reordered", false)
 
 	resp := make([]IssueStatusResponse, len(entries))
 	for i, e := range entries {

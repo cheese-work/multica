@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Category changes on custom statuses (CHE-2274). An owner/admin may move a
@@ -157,4 +159,37 @@ func TestAgentStatusGuardFollowsCategoryChange(t *testing.T) {
 	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID)
 	patchIssueStatus(t, entry, map[string]any{"category": "done", "confirm_category_change": true}, testUserID).Want(http.StatusOK)
 	set(http.StatusConflict)
+}
+
+// Issue rows carry a server-resolved status_category, so a category move must
+// tell every client to refresh issue projections; a rename must not.
+func TestCategoryChangeEventFlagsIssueProjections(t *testing.T) {
+	published := make(chan events.Event, 8)
+	testHandler.Bus.Subscribe(protocol.EventIssueStatusChanged, func(e events.Event) {
+		select {
+		case published <- e:
+		default:
+		}
+	})
+	categoryChanged := func(t *testing.T, body map[string]any, entry db.IssueStatus) any {
+		t.Helper()
+		for len(published) > 0 {
+			<-published
+		}
+		patchIssueStatus(t, entry, body, testUserID).Want(http.StatusOK)
+		payload, ok := (<-published).Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("event payload is not a map")
+		}
+		return payload["category_changed"]
+	}
+
+	moved := createTestCustomStatus(t, "cat_event_move", "done")
+	if got := categoryChanged(t, map[string]any{"category": "started", "confirm_category_change": true}, moved); got != true {
+		t.Fatalf("category_changed = %v on a category move, want true", got)
+	}
+	renamed := createTestCustomStatus(t, "cat_event_rename", "done")
+	if got := categoryChanged(t, map[string]any{"name": "Renamed only"}, renamed); got != nil {
+		t.Fatalf("category_changed = %v on a rename, want it absent", got)
+	}
 }
