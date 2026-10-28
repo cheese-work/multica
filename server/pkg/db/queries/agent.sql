@@ -1625,12 +1625,15 @@ SET retired_session_id = COALESCE(retired_session_id, sqlc.arg('retired_session_
 WHERE id = sqlc.arg('id') AND status = 'cancelled';
 
 -- name: MarkAgentTaskCancelAcked :exec
--- Records the daemon's cancel-ack as proof the runner stopped. Same status CAS
--- as the other cancel-ack writes (a late ack from a stale run must not stamp a
--- completed/failed row); the first ack wins, so a replay is a no-op.
+-- Records the daemon's cancel-ack as proof the runner stopped. Settles a
+-- cancelled row, or a row the stop gate retained after it was rewritten
+-- (stop_unconfirmed_at, set by trigger agent_task_keep_stop_unconfirmed). Any
+-- other failed/completed row is a late ack from a stale run and is not
+-- stamped. The first ack wins, so a replay is a no-op.
 UPDATE agent_task_queue
 SET cancel_acked_at = now()
-WHERE id = sqlc.arg('id') AND status = 'cancelled' AND cancel_acked_at IS NULL;
+WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
+  AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
 
 -- name: GetUnackedSupersededRun :one
 -- The newest run of the issue cancelled as superseded whose runner is not yet

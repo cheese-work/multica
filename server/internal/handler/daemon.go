@@ -6242,6 +6242,9 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	var cancellationResult map[string]any
 	_ = json.Unmarshal(task.Result, &cancellationResult)
 	needsConfirmation, _ := cancellationResult["process_cleanup_pending"].(bool)
+	// A run already reported unconfirmed (stop_unconfirmed_at) is settled only by
+	// an ack that states the cleanup is confirmed; silence is not confirmation.
+	needsConfirmation = needsConfirmation || task.StopUnconfirmedAt.Valid
 	cleanupUnconfirmed := req.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() ||
 		(needsConfirmation && (req.ProcessCleanupConfirmed == nil || !*req.ProcessCleanupConfirmed))
 	switch {

@@ -8045,12 +8045,15 @@ func (q *Queries) LockQueuedSiblingTask(ctx context.Context, taskID pgtype.UUID)
 const markAgentTaskCancelAcked = `-- name: MarkAgentTaskCancelAcked :exec
 UPDATE agent_task_queue
 SET cancel_acked_at = now()
-WHERE id = $1 AND status = 'cancelled' AND cancel_acked_at IS NULL
+WHERE id = $1 AND cancel_acked_at IS NULL
+  AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL)
 `
 
-// Records the daemon's cancel-ack as proof the runner stopped. Same status CAS
-// as the other cancel-ack writes (a late ack from a stale run must not stamp a
-// completed/failed row); the first ack wins, so a replay is a no-op.
+// Records the daemon's cancel-ack as proof the runner stopped. Settles a
+// cancelled row, or a row the stop gate retained after it was rewritten
+// (stop_unconfirmed_at, set by trigger agent_task_keep_stop_unconfirmed). Any
+// other failed/completed row is a late ack from a stale run and is not
+// stamped. The first ack wins, so a replay is a no-op.
 func (q *Queries) MarkAgentTaskCancelAcked(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markAgentTaskCancelAcked, id)
 	return err
