@@ -248,9 +248,10 @@ WHERE id = sqlc.arg(id) AND (review_at IS NULL OR review_at <= sqlc.arg(submitte
 
 -- name: ClearGitHubPRReview :exec
 -- Withdraws the stored review when GitHub dismisses that exact review. A
--- dismissal of any other review leaves it alone.
+-- dismissal of any other review leaves it alone. review_at stays as the
+-- ordering watermark, so an older review delivered late is still dropped.
 UPDATE github_pull_request
-SET review_state = '', review_head_sha = '', review_id = 0, review_at = NULL
+SET review_state = '', review_head_sha = '', review_id = 0
 WHERE workspace_id = sqlc.arg(workspace_id)
   AND installation_id = sqlc.arg(installation_id)
   AND repo_owner = sqlc.arg(repo_owner)

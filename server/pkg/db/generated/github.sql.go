@@ -13,7 +13,7 @@ import (
 
 const clearGitHubPRReview = `-- name: ClearGitHubPRReview :exec
 UPDATE github_pull_request
-SET review_state = '', review_head_sha = '', review_id = 0, review_at = NULL
+SET review_state = '', review_head_sha = '', review_id = 0
 WHERE workspace_id = $1
   AND installation_id = $2
   AND repo_owner = $3
@@ -32,7 +32,8 @@ type ClearGitHubPRReviewParams struct {
 }
 
 // Withdraws the stored review when GitHub dismisses that exact review. A
-// dismissal of any other review leaves it alone.
+// dismissal of any other review leaves it alone. review_at stays as the
+// ordering watermark, so an older review delivered late is still dropped.
 func (q *Queries) ClearGitHubPRReview(ctx context.Context, arg ClearGitHubPRReviewParams) error {
 	_, err := q.db.Exec(ctx, clearGitHubPRReview,
 		arg.WorkspaceID,

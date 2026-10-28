@@ -44,6 +44,18 @@ func (fixture githubReviewFixture) review(t *testing.T, id int64, state string) 
 	}
 }
 
+// reviewAt delivers a submitted review with its own GitHub submit time and
+// delivery id, so a late redelivery of an older review can be replayed.
+func (fixture githubReviewFixture) reviewAt(t *testing.T, id int64, state, submittedAt, delivery string) {
+	t.Helper()
+	review := fixture.payload["review"].(map[string]any)
+	review["id"], review["state"], review["submitted_at"] = id, state, submittedAt
+	fixture.payload["action"] = "submitted"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		t.Fatalf("%s review: %d %s", state, response.Code, response.Body.String())
+	}
+}
+
 func (fixture githubReviewFixture) dismiss(t *testing.T, id int64) {
 	t.Helper()
 	review := fixture.payload["review"].(map[string]any)
@@ -128,5 +140,22 @@ func TestEdgesGitHubDismissedReview(t *testing.T) {
 				t.Fatalf("dismissing review %d left the issue at %s, want %s", tc.dismissed, got, tc.want)
 			}
 		})
+	}
+}
+
+// Dismissal keeps the ordering watermark: an older review that arrives late
+// after the deciding review was dismissed cannot bring its decision back.
+func TestEdgesGitHubLateOlderReviewAfterDismissalIsIgnored(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture, c := newReviewEdgeCase(t)
+	fixture.reviewAt(t, 70, "changes_requested", "2026-10-26T08:01:00Z", fixture.issueID+"a")
+	fixture.reviewAt(t, 71, "commented", "2026-10-26T08:02:00Z", fixture.issueID+"b")
+	fixture.dismiss(t, 71)
+	fixture.reviewAt(t, 70, "changes_requested", "2026-10-26T08:01:00Z", fixture.issueID+"a-late")
+	tickEdges(t)
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("a late older review after the dismissal moved the issue to %s", got)
 	}
 }
