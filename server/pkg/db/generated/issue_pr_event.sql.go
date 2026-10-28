@@ -154,12 +154,16 @@ func (q *Queries) LockGitHubPRForEvent(ctx context.Context, id pgtype.UUID) (Loc
 }
 
 const lockIssueForPREvent = `-- name: LockIssueForPREvent :one
-SELECT id FROM issue WHERE id = $1 FOR SHARE
+SELECT id FROM issue WHERE id = $1 FOR KEY SHARE NOWAIT
 `
 
-// Share-locks the issue so a concurrent DeleteIssue waits for this capture
+// Key-share-locks the issue so a concurrent DeleteIssue waits for this capture
 // instead of sweeping events before the capture's insert commits. No row means
 // the issue is already gone; the capture must write nothing for it.
+// NOWAIT: capture already holds the PR row lock, and workspace teardown takes
+// issue locks before PR locks. Waiting here would close that cycle (40P01), so a
+// held issue lock fails the capture (55P03); the snapshot tx rolls back whole and
+// the next refresh re-derives the same transition.
 func (q *Queries) LockIssueForPREvent(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, lockIssueForPREvent, id)
 	var id_2 pgtype.UUID

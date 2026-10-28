@@ -11,10 +11,14 @@ FOR UPDATE;
 SELECT issue_id FROM issue_pull_request WHERE pull_request_id = $1;
 
 -- name: LockIssueForPREvent :one
--- Share-locks the issue so a concurrent DeleteIssue waits for this capture
+-- Key-share-locks the issue so a concurrent DeleteIssue waits for this capture
 -- instead of sweeping events before the capture's insert commits. No row means
 -- the issue is already gone; the capture must write nothing for it.
-SELECT id FROM issue WHERE id = $1 FOR SHARE;
+-- NOWAIT: capture already holds the PR row lock, and workspace teardown takes
+-- issue locks before PR locks. Waiting here would close that cycle (40P01), so a
+-- held issue lock fails the capture (55P03); the snapshot tx rolls back whole and
+-- the next refresh re-derives the same transition.
+SELECT id FROM issue WHERE id = $1 FOR KEY SHARE NOWAIT;
 
 -- name: DeleteIssuePREvents :exec
 -- Second-pass sweep, run after DeleteIssue: it sees events a capture committed
