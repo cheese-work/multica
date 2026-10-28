@@ -445,7 +445,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 
 // claimProjectWorkflow renders the issue's project workflow for a task claim,
 // or nil when there is nothing to say beyond the runtime's own status rules:
-// no project, or Default with no handoffs. The issue's assignee gets the
+// no project, or Default with no handoffs and no run budget. The issue's assignee gets the
 // step's instructions and commands; any other agent working on the issue
 // gets the observer brief, so it does not move a step it does not own.
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue) *TaskProjectWorkflowData {
@@ -455,7 +455,15 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			"issue_id", uuidToString(issue.ID), "error", err)
 		return nil
 	}
-	if def == nil || (def.IsDefault && !def.HandsOffAnywhere()) {
+	if def == nil {
+		return nil
+	}
+	if def.IsDefault && !def.HandsOffAnywhere() {
+		// Nothing to say about the workflow, but a budgeted Default still
+		// refuses runs at admission, so the run is told its budget.
+		if line := h.runBudgetLine(ctx, issue, def); line != "" {
+			return &TaskProjectWorkflowData{Brief: line}
+		}
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)

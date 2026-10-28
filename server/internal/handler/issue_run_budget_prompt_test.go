@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -51,5 +53,36 @@ func TestClaimBriefShowsRunBudget(t *testing.T) {
 	const want = "Run budget: 3 runs left of 5; 1500 tokens used (1 run unreported)."
 	if !strings.Contains(got.Brief, want) {
 		t.Fatalf("brief is missing %q:\n%s", want, got.Brief)
+	}
+}
+
+// A budgeted Default workflow with no handoffs still enforces its budget at
+// admission, so its claim carries the budget line alone, with no workflow text.
+func TestClaimBriefShowsRunBudgetForDefaultWithoutHandoffs(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	var list struct {
+		Workflows []IssueWorkflowResponse `json:"workflows"`
+	}
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK).JSON(&list)
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, list.Workflows[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	project := createWorkflowTestProject(t, "Budgeted default project")
+	issueID := dbfx.Issue(t, "budgeted default", testutil.Cols{"project_id": project, "status": "todo"})
+	issue, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := testHandler.claimProjectWorkflow(ctx, issue, nil)
+	if got == nil {
+		t.Fatal("a budgeted Default workflow must carry its budget line")
+	}
+	if want := "Run budget: 5 runs left of 5; 0 tokens used (0 runs unreported).\n"; got.Brief != want {
+		t.Fatalf("brief = %q, want only %q", got.Brief, want)
 	}
 }
