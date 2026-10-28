@@ -81,3 +81,9 @@ DELETE FROM decision_request request
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id));
+
+-- name: DeleteDecisionOrphanRequestAction :exec
+-- Called only for a request LockDecisionOrphanRequests returned, in the same
+-- transaction, before DeleteDecisionOrphanRequest.
+DELETE FROM decision_action
+WHERE decision_request_id = $1;

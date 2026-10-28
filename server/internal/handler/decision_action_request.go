@@ -214,6 +214,10 @@ func agentCopySettingsDigest(ctx context.Context, queries *db.Queries, source db
 	if err != nil {
 		return "", err
 	}
+	return digestAgentCopySettings(source, targets, skills)
+}
+
+func digestAgentCopySettings(source db.Agent, targets []db.AgentInvocationTarget, skills []db.Skill) (string, error) {
 	settings := struct {
 		PermissionMode string   `json:"permission_mode"`
 		Targets        []string `json:"targets"`

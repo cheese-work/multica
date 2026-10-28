@@ -73,6 +73,18 @@ func (q *Queries) DeleteDecisionOrphanRequest(ctx context.Context, arg DeleteDec
 	return err
 }
 
+const deleteDecisionOrphanRequestAction = `-- name: DeleteDecisionOrphanRequestAction :exec
+DELETE FROM decision_action
+WHERE decision_request_id = $1
+`
+
+// Called only for a request LockDecisionOrphanRequests returned, in the same
+// transaction, before DeleteDecisionOrphanRequest.
+func (q *Queries) DeleteDecisionOrphanRequestAction(ctx context.Context, decisionRequestID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanRequestAction, decisionRequestID)
+	return err
+}
+
 const listDecisionFinalizations = `-- name: ListDecisionFinalizations :many
 SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id

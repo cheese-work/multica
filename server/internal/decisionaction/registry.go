@@ -130,13 +130,13 @@ var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 const envMaskedMarker = "****"
 
-type agentCopyParams struct {
+type AgentCopyParams struct {
 	SourceAgentID        string                `json:"source_agent_id"`
 	Name                 string                `json:"name"`
 	RuntimeID            string                `json:"runtime_id"`
 	Description          string                `json:"description"`
 	Instructions         *string               `json:"instructions"`
-	ConversationStarters []conversationStarter `json:"conversation_starters"`
+	ConversationStarters []ConversationStarter `json:"conversation_starters"`
 	AvatarURL            *string               `json:"avatar_url"`
 	CustomArgs           []string              `json:"custom_args"`
 	MaxConcurrentTasks   int32                 `json:"max_concurrent_tasks"`
@@ -145,7 +145,7 @@ type agentCopyParams struct {
 	ServiceTier          string                `json:"service_tier"`
 }
 
-type conversationStarter struct {
+type ConversationStarter struct {
 	Label  string `json:"label"`
 	Prompt string `json:"prompt"`
 }
@@ -154,7 +154,7 @@ func normalizeAgentCopy(raw json.RawMessage, slots []SecretSlot) (json.RawMessag
 	if len(slots) > 0 {
 		return nil, nil, invalid("agent.copy takes no secret slots")
 	}
-	var params agentCopyParams
+	var params AgentCopyParams
 	if err := decodeStrict(raw, &params); err != nil {
 		return nil, nil, err
 	}
@@ -172,7 +172,7 @@ func normalizeAgentCopy(raw json.RawMessage, slots []SecretSlot) (json.RawMessag
 		return nil, nil, invalid("max_concurrent_tasks must be 0 (default) or 1-50")
 	}
 	if params.ConversationStarters == nil {
-		params.ConversationStarters = []conversationStarter{}
+		params.ConversationStarters = []ConversationStarter{}
 	}
 	if params.CustomArgs == nil {
 		params.CustomArgs = []string{}
