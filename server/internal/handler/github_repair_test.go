@@ -88,11 +88,12 @@ func TestGitHubRepairKeepsExclusion(t *testing.T) {
 }
 
 // Rows older than the head_repo_same column carry its false default and were
-// never judged by the fork check, so the sweep must not spend API calls on them.
+// never judged by the fork check, so the sweep must not spend API calls on them,
+// even after a snapshot refresh touched the row (it moves updated_at only).
 func TestGitHubRepairSkipsRowsFromBeforeTheForkCheck(t *testing.T) {
 	fixture := newGitHubReviewFixture(t)
 	prID := legacyUnverifiedPR(t, fixture)
-	dbfx.Exec(t, `UPDATE github_pull_request SET updated_at = '2026-10-01T00:00:00Z' WHERE id=$1`, prID)
+	dbfx.Exec(t, `UPDATE github_pull_request SET pr_updated_at = '2026-10-01T00:00:00Z', updated_at = now() WHERE id=$1`, prID)
 	handler := *fixture.handler
 	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) {
 		t.Error("fetched a row from before the fork check")
@@ -118,5 +119,30 @@ func TestGitHubRepairWarnsWhenAPIClientMissing(t *testing.T) {
 	}
 	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "unverified head sweep skipped") {
 		t.Errorf("no skip warning, logs: %q", out)
+	}
+}
+
+// Two workspaces can mirror one PR with different timestamps; the sweep reads
+// GitHub once per PR address.
+func TestGitHubRepairFetchesEachPullRequestAddressOnce(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	legacyUnverifiedPR(t, fixture)
+	var otherWorkspaceID string
+	dbfx.QueryRow(t, `INSERT INTO workspace (name, slug, description, issue_prefix) VALUES ('Repair Mirror', 'che2301-repair-mirror', '', 'RPM') RETURNING id`).Scan(&otherWorkspaceID)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM github_pull_request WHERE workspace_id=$1`, otherWorkspaceID); dbfx.Exec(t, `DELETE FROM workspace WHERE id=$1`, otherWorkspaceID) })
+	dbfx.Exec(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha, head_repo_same)
+		SELECT $2, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at + interval '1 hour', head_sha, false
+		FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID, otherWorkspaceID)
+	fetches := 0
+	handler := *fixture.handler
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) {
+		fetches++
+		return nil, nil
+	}
+	if _, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 1 {
+		t.Errorf("fetches = %d, want 1", fetches)
 	}
 }
