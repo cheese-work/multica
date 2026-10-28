@@ -14,6 +14,13 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
+func githubRepositoryForTest(owner, name string) map[string]any {
+	return map[string]any{
+		"id": 424242, "full_name": owner + "/" + name, "fork": false,
+		"name": name, "owner": map[string]any{"login": owner},
+	}
+}
+
 func buildMergedPRWebhookBody(issueIdentifier string, prNumber int, repoOwner, repoName string, installationID int64) map[string]any {
 	return map[string]any{
 		"action": "closed",
@@ -30,7 +37,7 @@ func buildMergedPRWebhookBody(issueIdentifier string, prNumber int, repoOwner, r
 			"created_at":       "2026-09-10T09:00:00Z",
 			"updated_at":       "2026-09-10T09:54:34Z",
 			"merge_commit_sha": "ae18acf237df4b9862d52f82aa7d866052613507",
-			"head":             map[string]any{"ref": "fix/ship-it"},
+			"head":             map[string]any{"ref": "fix/ship-it", "repo": githubRepositoryForTest(repoOwner, repoName)},
 			"user":             map[string]any{"login": "octocat", "avatar_url": ""},
 		},
 		"repository": map[string]any{

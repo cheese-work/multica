@@ -64,9 +64,10 @@ export function DecisionQuoteCard({
   const state: DecisionState = conflict === "withdrawn" ? "disclaimed" : (entry.decision_state ?? "pending");
   const { note, quote } = splitDecisionQuote(entry.content ?? "");
   const recorder = getActorName("agent", entry.decision_recorder_agent_id ?? entry.actor_id);
-  const sessionId = entry.decision_source_session_id;
-  const messageId = entry.decision_source_message_id;
-  const dmHref = sessionId && messageId ? `${paths.chatSession(sessionId)}&message=${encodeURIComponent(messageId)}` : undefined;
+  const dmLink = (session?: string, message?: string) =>
+    session && message ? `${paths.chatSession(session)}&message=${encodeURIComponent(message)}` : undefined;
+  const dmHref = dmLink(entry.decision_source_session_id, entry.decision_source_message_id);
+  const askedHref = dmLink(entry.decision_request_session_id, entry.decision_request_message_id);
   const klass = entry.decision_class ?? "";
 
   const refresh = () => {
@@ -124,6 +125,17 @@ export function DecisionQuoteCard({
         <span className="mr-auto text-caption text-muted-foreground">
           {t(($) => $.decision.recorded_by, { name: recorder })}
         </span>
+        {isHuman && askedHref && state !== "disclaimed" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            nativeButton={false}
+            render={<AppLink href={askedHref} data-testid="decision-quote-asked-dm" />}
+          >
+            {t(($) => $.decision.asked_in_dm)}
+          </Button>
+        )}
         {isHuman && dmHref && state !== "disclaimed" ? (
           <Button
             size="sm"
@@ -132,7 +144,7 @@ export function DecisionQuoteCard({
             nativeButton={false}
             render={<AppLink href={dmHref} data-testid="decision-quote-open-dm" />}
           >
-            {t(($) => $.decision.open_dm)}
+            {t(($) => $.decision.answered_in_dm)}
           </Button>
         ) : !isHuman ? (
           <span className="text-caption text-muted-foreground">{t(($) => $.decision.private_dm)}</span>

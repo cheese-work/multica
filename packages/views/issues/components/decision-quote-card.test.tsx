@@ -47,6 +47,8 @@ function quote(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
     decision_state: "pending",
     decision_source_session_id: "session-1",
     decision_source_message_id: "msg-1",
+    decision_request_session_id: "session-0",
+    decision_request_message_id: "ask-1",
     ...overrides,
   };
 }
@@ -87,9 +89,24 @@ describe("DecisionQuoteCard", () => {
     expect(screen.getByTestId("decision-disclaim-button")).toBeEnabled();
   });
 
+  it("links the request card and the answering message, each in its own DM session", () => {
+    renderCard(quote());
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveAttribute("href", "/acme/chat?session=session-0&message=ask-1");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Asked in DM");
+    expect(screen.getByTestId("decision-quote-open-dm")).toHaveAttribute("href", "/acme/chat?session=session-1&message=msg-1");
+    expect(screen.getByTestId("decision-quote-open-dm")).toHaveTextContent("Answered");
+  });
+
+  it("omits the asked link when the request card is unknown", () => {
+    renderCard(quote({ decision_request_session_id: undefined, decision_request_message_id: undefined }));
+    expect(screen.queryByTestId("decision-quote-asked-dm")).toBeNull();
+    expect(screen.getByTestId("decision-quote-open-dm")).toBeInTheDocument();
+  });
+
   it("gives another member neither a link nor Disclaim, and says the source is private", () => {
-    renderCard(quote({ decision_source_session_id: undefined, decision_source_message_id: undefined }), "member-2");
+    renderCard(quote({ decision_source_session_id: undefined, decision_source_message_id: undefined, decision_request_session_id: undefined, decision_request_message_id: undefined }), "member-2");
     expect(screen.queryByTestId("decision-quote-open-dm")).toBeNull();
+    expect(screen.queryByTestId("decision-quote-asked-dm")).toBeNull();
     expect(screen.queryByTestId("decision-disclaim-button")).toBeNull();
     expect(screen.getByTestId("decision-quote-card")).toHaveTextContent("from a private DM");
   });
