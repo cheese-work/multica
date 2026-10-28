@@ -363,6 +363,10 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
+	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
+	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
+	GitHubReviewAuthors json.RawMessage `json:"github_review_authors"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -565,6 +569,29 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.AutoCompact = req.AutoCompact
 		}
+	}
+	for _, mapping := range []struct {
+		field string
+		raw   json.RawMessage
+		dest  *[]byte
+	}{
+		{"github_review_members", req.GitHubReviewMembers, &params.GithubReviewMembers},
+		{"github_review_authors", req.GitHubReviewAuthors, &params.GithubReviewAuthors},
+	} {
+		if mapping.raw == nil {
+			continue
+		}
+		clean, err := h.validateGitHubReviewMapping(r.Context(), idUUID, mapping.field, mapping.raw)
+		var invalid reviewMappingError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate "+mapping.field)
+			return
+		}
+		*mapping.dest = clean
 	}
 	if req.Repos != nil {
 		reposJSON, err := validateAndNormalizeWorkspaceRepos(req.Repos)
