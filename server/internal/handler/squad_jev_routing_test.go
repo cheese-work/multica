@@ -701,17 +701,28 @@ func TestTryJevSquadRouting_TodoStatusAndInProgress(t *testing.T) {
 	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
 
 	// 1. Test todo -> in_progress transition
+	occupiedIssueID := dbid.NewV7()
+	dbfx.Exec(t, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Existing issue number', '', 'todo', 'none', 'member', $3, 1, 2001)
+		ON CONFLICT (workspace_id, number) DO NOTHING
+	`, occupiedIssueID, wsUUID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, occupiedIssueID)
+
 	todoIssueID := dbid.NewV7()
-	_, _ = testPool.Exec(ctx, `
-		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Todo task', 'Promoted from backlog to todo', 'todo', 'high', 'squad', $3, 'member', $4, 1, 2001)
-	`, todoIssueID, wsUUID, squadID, testUserID)
+	dbfx.Issue(t, "Todo task", testutil.Cols{
+		"id": todoIssueID, "description": "Promoted from backlog to todo", "status": "todo",
+		"priority": "high", "assignee_type": "squad", "assignee_id": squadID,
+	})
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, todoIssueID)
 
-	todoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
-	routed, _ := testHandler.tryJevSquadRouting(ctx, todoIssue, squad, "member", testUserID, testUserID)
+	todoIssue, err := testHandler.Queries.GetIssue(ctx, todoIssueID)
+	if err != nil {
+		t.Fatalf("get todo issue: %v", err)
+	}
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, todoIssue, squad, "member", testUserID, testUserID)
 	if !routed {
-		t.Fatalf("expected routing from todo to succeed")
+		t.Fatalf("expected routing from todo to succeed: %s", advisory)
 	}
 	afterTodoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
 	if afterTodoIssue.Status != "in_progress" {
@@ -720,16 +731,19 @@ func TestTryJevSquadRouting_TodoStatusAndInProgress(t *testing.T) {
 
 	// 2. Test in_progress status remains in_progress (does NOT jump to in_review)
 	inProgIssueID := dbid.NewV7()
-	_, _ = testPool.Exec(ctx, `
-		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'In progress task', 'Already in progress', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, 2002)
-	`, inProgIssueID, wsUUID, squadID, testUserID)
+	dbfx.Issue(t, "In progress task", testutil.Cols{
+		"id": inProgIssueID, "description": "Already in progress", "status": "in_progress",
+		"priority": "high", "assignee_type": "squad", "assignee_id": squadID,
+	})
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, inProgIssueID)
 
-	inProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
-	routed2, _ := testHandler.tryJevSquadRouting(ctx, inProgIssue, squad, "member", testUserID, testUserID)
+	inProgIssue, err := testHandler.Queries.GetIssue(ctx, inProgIssueID)
+	if err != nil {
+		t.Fatalf("get in-progress issue: %v", err)
+	}
+	routed2, advisory := testHandler.tryJevSquadRouting(ctx, inProgIssue, squad, "member", testUserID, testUserID)
 	if !routed2 {
-		t.Fatalf("expected routing from in_progress to succeed")
+		t.Fatalf("expected routing from in_progress to succeed: %s", advisory)
 	}
 	afterInProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
 	if afterInProgIssue.Status != "in_progress" {

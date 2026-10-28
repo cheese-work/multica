@@ -167,6 +167,28 @@ describe("proxy runtime upstream rewrites", () => {
     });
   });
 
+  it.each([
+    "/api/search/suggestions?q=typed-text",
+    "/api/issues/search?q=typed-text",
+    "/api/projects/search?q=typed-text",
+  ])("leaves locally handled search API requests on the web server: %s", (path) => {
+    const previous = process.env.REMOTE_API_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    try {
+      const response = proxy(makeRequest(path));
+
+      expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    } finally {
+      restoreEnv("REMOTE_API_URL", previous);
+    }
+  });
+
+  it("sets an origin referrer policy on workspace search responses", () => {
+    const response = proxy(makeRequest("/che1593-preview/search?q=SEARCH_PAGE_QUERY_MARKER_1593"));
+
+    expect(response.headers.get("referrer-policy")).toBe("origin");
+  });
+
   it("does not rewrite Plugin API requests when no runtime API origin is configured", () => {
     withoutRuntimeUpstreams(() => {
       const res = proxy(makeRequest("/v1/context?x=1"));

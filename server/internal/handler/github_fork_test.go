@@ -126,6 +126,53 @@ func TestGitHubForkGateExplicitAuthorBinding(t *testing.T) {
 	}
 }
 
+func TestGitHubForkGateReviewIntake(test *testing.T) {
+	for _, candidate := range githubForkGateCases() {
+		test.Run(candidate.name, func(test *testing.T) {
+			fixture := newGitHubIntakeFixture(test)
+			fixture.payload["repository"].(map[string]any)["id"] = 10
+			fixture.payload["pull_request"] = githubForkGatePR(test, fixture, candidate.head)
+			delivery := fixture.issueID + "-fork-" + candidate.name
+			if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+				test.Fatalf("review: %d %s", response.Code, response.Body.String())
+			}
+			wantState, wantReason := "denied", "fork_pull_request"
+			if candidate.want == 1 {
+				wantState, wantReason = "deferred", "awaiting_admission"
+			}
+			switch candidate.name {
+			case "deleted_head_repository", "missing_id", "missing_name", "missing_fork_flag":
+				wantState, wantReason = "deferred", "missing_pull_request_metadata"
+			}
+			var state, reason string
+			dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+			if state != wantState || reason != wantReason {
+				test.Errorf("revision = %s/%s, want %s/%s", state, reason, wantState, wantReason)
+			}
+			assertGitHubIntakeNoEffects(test, fixture)
+		})
+	}
+}
+
+func TestGitHubForkGateIntakeExplicitAuthorBinding(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	fixture.payload["repository"].(map[string]any)["id"] = 10
+	fixture.payload["pull_request"] = githubForkGatePR(test, fixture, map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true})
+	dbfx.Exec(test, `UPDATE workspace SET settings=jsonb_set(settings,'{github_review_authors}',jsonb_build_object('acme/widget#2019',$1::text)) WHERE id=$2`, fixture.author, testWorkspaceID)
+	delivery := fixture.issueID + "-fork-explicit-author"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("review: %d %s", response.Code, response.Body.String())
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+		test.Fatalf("explicit author binding bypassed fork gate: %d runs", count)
+	}
+	var state, reason string
+	dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+	if state != "denied" || reason != "fork_pull_request" {
+		test.Fatalf("explicit author binding revision = %s/%s, want denied/fork_pull_request", state, reason)
+	}
+}
+
 func TestGitHubForkGateLinkedPRWake(t *testing.T) {
 	for _, event := range []string{"merged", "converted_to_draft", "snapshot_failure", "snapshot_success", "snapshot_conflict"} {
 		t.Run(event, func(t *testing.T) {
