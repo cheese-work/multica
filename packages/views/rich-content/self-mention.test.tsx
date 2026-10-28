@@ -93,7 +93,8 @@ describe("RichContent self-member mentions", () => {
       expect(screen.getByText("@ChEeSe").matches(selfRule.selectorText)).toBe(true);
       expect(selfRule.style.getPropertyValue("background-color")).toBe("var(--mention-self-bg)");
       expect(selfRule.style.getPropertyValue("color")).toBe("var(--mention-self-fg)");
-      for (const label of ["@Other", "@Agent", "@all"]) {
+      expect(screen.getByText("@all").matches(selfRule.selectorText)).toBe(true);
+      for (const label of ["@Other", "@Agent"]) {
         expect(screen.getByText(label).matches(selfRule.selectorText)).toBe(false);
         expect(screen.getByText(label)).toHaveAttribute("class", "mention");
       }
@@ -113,11 +114,19 @@ describe("RichContent self-member mentions", () => {
 
       expect(screen.getByText("@ChEeSe")).toHaveClass("mention", "mention-self");
       expect(screen.getByText("@ChEeSe")).toHaveTextContent(/^@ChEeSe$/);
-      for (const label of ["@Other", "@Agent", "@all"]) {
+      for (const label of ["@Other", "@Agent"]) {
         expect(screen.getByText(label)).toHaveAttribute("class", "mention");
       }
     },
   );
+
+  it("treats @all as a mention of every signed-in viewer", () => {
+    render(<RichContent content={CONTENT} />);
+    expect(screen.getByText("@all")).toHaveClass("mention", "mention-self");
+
+    act(() => authStore.setState({ user: { id: OTHER_ID } as User }));
+    expect(screen.getByText("@all")).toHaveClass("mention", "mention-self");
+  });
 
   it("does not highlight member mentions without a current user", () => {
     authStore.setState({ user: null });
@@ -125,6 +134,7 @@ describe("RichContent self-member mentions", () => {
 
     expect(container.querySelectorAll(".mention")).toHaveLength(4);
     expect(container.querySelector(".mention-self")).toBeNull();
+    expect(screen.getByText("@all")).toHaveAttribute("class", "mention");
   });
 
   it("updates the self variant when the viewer changes or logs out", () => {
@@ -136,5 +146,6 @@ describe("RichContent self-member mentions", () => {
 
     act(() => authStore.setState({ user: null }));
     expect(screen.getByText("@Other")).toHaveAttribute("class", "mention");
+    expect(screen.getByText("@all")).toHaveAttribute("class", "mention");
   });
 });
