@@ -6,28 +6,37 @@ import (
 	"fmt"
 
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// Next-turn fallback for PR events (CHE-2298 a3). An event the mid-run channel
-// could not deliver (no capability, a claim that lost the race with turn end)
-// is stored as next_turn. The scheduler hands each one to the issue's
-// pr_needs_attention rule as a receipt: the rule keeps at most one pending
-// wake, and the receipts it holds are the causes that wake lists.
+// Next-turn fallback for PR events (CHE-2298 a3). An event no mid-run delivery
+// takes (no capability, no live run, a claim that lost the race with turn end)
+// is handed to the issue's pr_needs_attention rule as a receipt: the rule keeps
+// at most one pending wake, and the receipts it holds are the causes that wake
+// lists. The event stays next_turn until the carrying run starts; a wake that
+// ends unstarted, or a receipt the rule discarded, hands the cause back here.
 const (
 	wakeupPREventType    = "pr.event"
 	wakeupPREventKeyBase = "pr_event:"
 	wakeupPREventBatch   = 100
 )
 
-// queueNextTurnPREvents turns next_turn events into receipts, once each.
-// Events stay stored: queued here, delivered when a run takes them along.
+// queueNextTurnPREvents settles started wakes, then bridges every event no
+// receipt is carrying. It follows TriggerPullRequestWakeup: same issue and
+// configuration checks, same rebase, so a cause is never recorded under a
+// revision dispatch would retire. A rule that is off or held records nothing
+// but a visible note; the event stays stored for when the rule is back.
 func (s *IssueWakeupService) queueNextTurnPREvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
+	if _, err := s.Tasks.Queries.MarkStartedPREventsDelivered(ctx, workspaceIDs); err != nil {
+		return err
+	}
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -38,35 +47,125 @@ func (s *IssueWakeupService) queueNextTurnPREvents(ctx context.Context, workspac
 	if err != nil || len(events) == 0 {
 		return err
 	}
+	var withdrawn []db.AgentTaskQueue
+	var noted []wakeupActivity
 	for _, e := range events {
-		w, err := q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{
-			ID: dbid.NewV7(), WorkspaceID: e.WorkspaceID, IssueID: e.IssueID,
+		tasks, activity, err := s.bridgePREvent(ctx, tx, q, e)
+		if err != nil {
+			return err
+		}
+		withdrawn = append(withdrawn, tasks...)
+		noted = append(noted, activity...)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	for _, task := range withdrawn {
+		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+	}
+	s.publishWakeupActivities(noted...)
+	return nil
+}
+
+func (s *IssueWakeupService) bridgePREvent(ctx context.Context, tx pgx.Tx, q *db.Queries, e db.ListNextTurnPREventsRow) ([]db.AgentTaskQueue, []wakeupActivity, error) {
+	var workspace pgtype.UUID
+	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w WHERE w.id=$1 FOR KEY SHARE OF w", e.WorkspaceID).Scan(&workspace); err != nil {
+		return nil, nil, err
+	}
+	issue, err := q.LockWakeupIssue(ctx, e.IssueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if active, err := systemWakeupIssueActive(ctx, q, issue, true); err != nil || !active {
+		return nil, nil, err
+	}
+	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	w, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(SystemRulePRAttention)})
+	exists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, err
+	}
+	var legacy *db.IssueWakeup
+	if exists {
+		legacy = &w
+	}
+	config, err := loadBuiltinWakeup(ctx, q, issue, SystemRulePRAttention, legacy)
+	held := false
+	switch {
+	case errors.Is(err, errWakeupConfigHeld):
+		config, held, err = nil, true, nil
+	case errors.Is(err, errMalformedPRWakeupSettings):
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	enabled, err := prRuleEnabled(ws.Settings, SystemRulePRAttention, config != nil)
+	if errors.Is(err, errMalformedPRWakeupSettings) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if config != nil {
+		enabled = enabled && config.enabled()
+	}
+	if !exists {
+		w, err = q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{
+			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 			EventTypes: []string{}, Enabled: true, SystemRule: systemRuleText(SystemRulePRAttention),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			w, err = q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: e.IssueID, SystemRule: systemRuleText(SystemRulePRAttention)})
+			w, err = q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(SystemRulePRAttention)})
 		}
 		if err != nil {
-			return err
-		}
-		payload, err := json.Marshal(map[string]any{
-			"event_id": util.UUIDToString(e.ID), "kind": e.Kind, "pr_number": e.PrNumber,
-			"repo_owner": e.RepoOwner, "repo_name": e.RepoName, "head_sha": e.HeadSha, "base_sha": e.BaseSha,
-		})
-		if err != nil {
-			return err
-		}
-		if _, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
-			ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision,
-			EventKey: wakeupPREventKeyBase + util.UUIDToString(e.ID), EventType: wakeupPREventType, Payload: payload,
-		}); err != nil {
-			return err
-		}
-		if err := q.MarkPREventQueued(ctx, e.ID); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
-	return tx.Commit(ctx)
+	if !enabled || held || config.expired(w.CreatedAt.Time, time.Now()) {
+		activity, err := s.notePREventQueued(ctx, q, w, e)
+		return nil, activity, err
+	}
+	var withdrawn []db.AgentTaskQueue
+	if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
+		return nil, nil, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"event_id": util.UUIDToString(e.ID), "kind": e.Kind, "pr_number": e.PrNumber,
+		"repo_owner": e.RepoOwner, "repo_name": e.RepoName, "head_sha": e.HeadSha, "base_sha": e.BaseSha,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// A key per attempt: a receipt the rule discarded or a wake that never
+	// started must not hide the cause from the next attempt.
+	if _, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
+		ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision,
+		EventKey: wakeupPREventKeyBase + util.UUIDToString(e.ID) + ":" + util.UUIDToString(dbid.NewV7()), EventType: wakeupPREventType, Payload: payload,
+	}); err != nil {
+		return nil, nil, err
+	}
+	return withdrawn, nil, q.MarkPREventNextTurn(ctx, e.ID)
+}
+
+// notePREventQueued keeps a cause the rule cannot take now on the timeline,
+// once per event.
+func (s *IssueWakeupService) notePREventQueued(ctx context.Context, q *db.Queries, w db.IssueWakeup, e db.ListNextTurnPREventsRow) ([]wakeupActivity, error) {
+	id := util.UUIDToString(e.ID)
+	if done, err := q.PREventQueuedNoted(ctx, db.PREventQueuedNotedParams{IssueID: e.IssueID, EventID: id}); err != nil || done {
+		return nil, err
+	}
+	a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
+		"rule": SystemRulePRAttention, "outcome": wakeupOutcomeQueuedNextTurn, "event_id": id,
+		"message": fmt.Sprintf("PR event queued for next turn: %s on PR #%d", e.Kind, e.PrNumber),
+	})
+	return []wakeupActivity{a}, err
 }
 
 // prEventCause names one pending PR fact for the "queued for next turn" activity.

@@ -1179,9 +1179,6 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
 		}
-		if err := q.MarkQueuedPREventsDelivered(ctx, receiptIDs(run.receipts)); err != nil {
-			return err
-		}
 		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: true, LastTaskID: run.task.ID}); err != nil {
 			return err
 		}
@@ -1314,10 +1311,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if deferring {
 			return q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: taskID, Ids: ids})
 		}
-		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: taskID}); err != nil {
-			return err
-		}
-		return q.MarkQueuedPREventsDelivered(ctx, ids)
+		return q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids, TaskID: taskID})
 	}
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -129,9 +130,6 @@ func TestPREventLosingTheRaceWithTurnEndWakesTheNextTurn(t *testing.T) {
 	if note := e.attentionNote(t); !strings.Contains(note, "head_changed") || !strings.Contains(note, "903") {
 		t.Fatalf("the wake does not list the cause: %q", note)
 	}
-	if got := e.status(t); got != "delivered" {
-		t.Fatalf("event is %q after the wake started, want delivered", got)
-	}
 	e.tickAll(t, e.s)
 	if e.tasks(t, SystemRulePRAttention) != 1 {
 		t.Fatal("a later pass woke the same cause again")
@@ -157,7 +155,7 @@ func TestPREventSwitchOffKeepsPendingCauses(t *testing.T) {
 			t.Fatalf("the pending cause was not delivered after the switch went off and the service restarted")
 		}
 	})
-	t.Run("rule switched off keeps the cause visible", func(t *testing.T) {
+	t.Run("rule switched off keeps the cause visible and recoverable", func(t *testing.T) {
 		e := newPREventEnv(t)
 		e.endWhileDelivering(t)
 		off(t, e, `{"`+WorkspaceSettingPRAttention+`":false}`)
@@ -167,8 +165,101 @@ func TestPREventSwitchOffKeepsPendingCauses(t *testing.T) {
 		if e.tasks(t, SystemRulePRAttention) != 0 {
 			t.Fatal("a switched-off rule started a run")
 		}
-		if got := e.status(t); got != "queued" {
-			t.Fatalf("event is %q, want it stored and visible as queued", got)
+		if got := e.status(t); got != "next_turn" {
+			t.Fatalf("event is %q, want it stored as next_turn", got)
+		}
+		if e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'message' LIKE 'PR event queued for next turn:%'`, e.issue) != 1 {
+			t.Fatal("the pending cause is not visible in the activity")
+		}
+		e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+		if e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND details->>'message' LIKE 'PR event queued for next turn:%'`, e.issue) != 1 {
+			t.Fatal("a later pass noted the same cause again")
+		}
+
+		off(t, e, `{"`+WorkspaceSettingPRAttention+`":true}`)
+		e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+		if e.tasks(t, SystemRulePRAttention) != 1 || !strings.Contains(e.attentionNote(t), "head_changed") {
+			t.Fatal("re-enabling the rule did not deliver the cause")
 		}
 	})
+	t.Run("rule switched off after the cause was pending", func(t *testing.T) {
+		e := newPREventEnv(t)
+		e.endWhileDelivering(t)
+		// Bridge without dispatching, so the receipt is still pending when the rule goes off.
+		if err := e.s.queueNextTurnPREvents(context.Background(), []pgtype.UUID{parseTestUUID(t, e.f.WorkspaceID)}); err != nil {
+			t.Fatal(err)
+		}
+		if e.pending(t, SystemRulePRAttention) != 1 {
+			t.Fatalf("setup: pending = %d, want 1", e.pending(t, SystemRulePRAttention))
+		}
+		off(t, e, `{"`+WorkspaceSettingPRAttention+`":false}`)
+		e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+		e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+		if got := e.status(t); got != "next_turn" {
+			t.Fatalf("event is %q after the rule went off, want next_turn", got)
+		}
+		off(t, e, `{"`+WorkspaceSettingPRAttention+`":true}`)
+		e.tickAll(t, &IssueWakeupService{Tasks: e.s.Tasks})
+		if e.tasks(t, SystemRulePRAttention) != 1 {
+			t.Fatal("re-enabling the rule did not deliver the cause the switch-off had discarded")
+		}
+	})
+}
+
+// An accepted event with no live run takes the next-turn path without anyone
+// enqueueing a delivery.
+func TestPREventWithoutLiveRunWakesNextTurn(t *testing.T) {
+	e := newPREventEnv(t)
+	e.endRun(t, e.run)
+
+	e.tickAll(t, e.s)
+
+	if e.tasks(t, SystemRulePRAttention) != 1 || !strings.Contains(e.attentionNote(t), "head_changed") {
+		t.Fatalf("an accepted event with no live run started %d runs, event is %q", e.tasks(t, SystemRulePRAttention), e.status(t))
+	}
+}
+
+// A project-level pr_needs_attention definition still receives the cause.
+func TestPREventReachesAScopedAttentionRule(t *testing.T) {
+	e := newPREventEnv(t)
+	e.define(t, WakeupScopeProject, SystemRulePRAttention, `"instruction":"Review every PR cause"`)
+	e.endWhileDelivering(t)
+
+	e.tickAll(t, e.s)
+
+	if e.tasks(t, SystemRulePRAttention) != 1 || !strings.Contains(e.attentionNote(t), "head_changed") {
+		t.Fatalf("scoped rule started %d runs, event is %q, pending %d", e.tasks(t, SystemRulePRAttention), e.status(t), e.pending(t, SystemRulePRAttention))
+	}
+}
+
+// The cause is delivered when its wake starts, not when it is queued: a wake
+// cancelled before it started hands the cause back.
+func TestPREventStaysUntilItsWakeStarts(t *testing.T) {
+	e := newPREventEnv(t)
+	e.endWhileDelivering(t)
+	e.tickAll(t, e.s)
+	wake := e.lastTask(t, SystemRulePRAttention)
+	if got := e.status(t); got != "next_turn" {
+		t.Fatalf("event is %q while its wake has not started, want next_turn", got)
+	}
+
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='cancelled', completed_at=now() WHERE id=$1`, wake.ID)
+	cancelled, err := e.f.q.GetAgentTask(context.Background(), wake.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SettleTerminalTaskState(context.Background(), e.f.q, cancelled); err != nil {
+		t.Fatal(err)
+	}
+	e.tickAll(t, e.s)
+	if e.tasks(t, SystemRulePRAttention) != 2 {
+		t.Fatalf("the cause was lost with the cancelled wake: %d wakes", e.tasks(t, SystemRulePRAttention))
+	}
+
+	next := e.lastTask(t, SystemRulePRAttention)
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='running', started_at=now() WHERE id=$1`, next.ID)
+	e.tickAll(t, e.s)
+	if got := e.status(t); got != "delivered" {
+		t.Fatalf("event is %q after its wake started, want delivered", got)
+	}
 }
