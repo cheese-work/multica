@@ -242,4 +242,3 @@ func TestIssueFailsFastWhileTheFirstIssuerIsStillCommitting(test *testing.T) {
 		test.Error("the user must keep exactly one open challenge")
 	}
 }
-
