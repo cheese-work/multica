@@ -1295,6 +1295,22 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 			def.Steps[i] = step
 		}
 	}
+	// A copy is a new workflow and starts with no endpoints, so every webhook
+	// edge it would carry is unbacked.
+	endpointsOn := current.ID
+	if copyFor.Valid {
+		endpointsOn = pgtype.UUID{}
+	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, endpointsOn, def.Steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save handoff")
+		return
+	} else if msg != "" {
+		if copyFor.Valid {
+			msg += " (a project copy does not inherit endpoints)"
+		}
+		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", msg)
+		return
+	}
 	raw, err := issueworkflow.EncodeSteps(def.Steps)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")

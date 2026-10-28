@@ -638,3 +638,76 @@ func TestWorkflowWebhookSaveNeedsAnEnabledEndpoint(t *testing.T) {
 	}
 	save().Want(http.StatusBadRequest)
 }
+
+// whEndpoint seeds an enabled endpoint named ci on a workflow.
+func whEndpoint(t *testing.T, workflowID string) db.WorkflowWebhookEndpoint {
+	t.Helper()
+	sealed, err := testHandler.VCSSecretBox.Seal(bytes.Repeat([]byte{5}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := testHandler.Queries.CreateWorkflowWebhookEndpoint(context.Background(), db.CreateWorkflowWebhookEndpointParams{
+		WorkspaceID: parseUUID(testWorkspaceID), WorkflowID: parseUUID(workflowID), Name: "ci",
+		SecretSealed: sealed, RatePerMin: 60, CreatedBy: parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID)) })
+	return ep
+}
+
+// The handoff form is a save path too: the webhook edge it keeps needs an
+// enabled endpoint, like the same edge saved through the workflow form.
+func TestWorkflowWebhookHandoffSaveNeedsAnEnabledEndpoint(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	useWebhookBox(t)
+	wf := createTestWorkflowSteps(t, "Hook "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"}, {"status_key": "in_progress"}, {"status_key": "in_review"},
+	})
+	ep := whEndpoint(t, wf.ID)
+	patchWorkflow(t, wf.ID, map[string]any{"steps": whSteps}).Want(http.StatusOK)
+	handoff := map[string]any{"handler": map[string]any{"type": "none"}, "instructions": "Look it over."}
+
+	setWorkflowHandoff(t, wf.ID, "in_review", handoff).Want(http.StatusOK)
+
+	if _, err := testHandler.Queries.DisableWorkflowWebhookEndpoint(context.Background(), ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	setWorkflowHandoff(t, wf.ID, "in_review", handoff).Want(http.StatusBadRequest).JSON(&refusal)
+	if !strings.Contains(refusal.Error, `"ci"`) {
+		t.Fatalf("message %q does not name the endpoint", refusal.Error)
+	}
+}
+
+// A project copy is a new workflow and has no endpoints: a webhook edge the
+// copy would carry cannot save, and no copy is made.
+func TestWorkflowWebhookProjectCopyIsRefused(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	seedTestCatalog(t)
+	useWebhookBox(t)
+	wf := createTestWorkflowSteps(t, "Hook "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"}, {"status_key": "in_progress"}, {"status_key": "in_review"},
+	})
+	whEndpoint(t, wf.ID)
+	patchWorkflow(t, wf.ID, map[string]any{"steps": whSteps}).Want(http.StatusOK)
+	projectID := createWorkflowTestProject(t, "Hook copy project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	before := dbfx.Count(t, `SELECT count(*) FROM issue_workflow WHERE workspace_id=$1`, testWorkspaceID)
+
+	setWorkflowHandoff(t, wf.ID, "in_review", map[string]any{
+		"handler": map[string]any{"type": "none"}, "instructions": "Look it over.", "copy_for_project_id": projectID,
+	}).Want(http.StatusBadRequest)
+
+	if after := dbfx.Count(t, `SELECT count(*) FROM issue_workflow WHERE workspace_id=$1`, testWorkspaceID); after != before {
+		t.Fatalf("workflows %d -> %d: a refused copy left a workflow behind", before, after)
+	}
+}
