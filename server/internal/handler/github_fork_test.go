@@ -24,7 +24,7 @@ func githubForkGateCases() []struct {
 		{"same_repository", map[string]any{"id": 10, "full_name": "acme/widget", "fork": false}, 1},
 		{"same_repository_case", map[string]any{"id": 10, "full_name": "ACME/Widget", "fork": false}, 1},
 		{"fork", map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true}, 0},
-		{"fork_flag", map[string]any{"id": 10, "full_name": "acme/widget", "fork": true}, 0},
+		{"fork_flag_on_same_repository", map[string]any{"id": 10, "full_name": "acme/widget", "fork": true}, 1},
 		{"different_id", map[string]any{"id": 20, "full_name": "acme/widget", "fork": false}, 0},
 		{"different_name", map[string]any{"id": 10, "full_name": "outsider/widget", "fork": false}, 0},
 		{"deleted_head_repository", nil, 0},

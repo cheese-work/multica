@@ -537,6 +537,48 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 	return items, nil
 }
 
+const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
+SELECT DISTINCT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE NOT head_repo_same
+ORDER BY installation_id, repo_owner, repo_name, pr_number
+`
+
+type ListGitHubPRsWithUnverifiedHeadRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
+// repository id, so a repair must read GitHub to tell a real fork PR from a
+// same-repository PR that the old fork-flag check rejected.
+func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGitHubPRsWithUnverifiedHeadRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRsWithUnverifiedHead)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubPRsWithUnverifiedHeadRow{}
+	for rows.Next() {
+		var i ListGitHubPRsWithUnverifiedHeadRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubReviewAuthorCandidates = `-- name: ListGitHubReviewAuthorCandidates :many
 SELECT DISTINCT task.agent_id
 FROM agent_task_queue task
