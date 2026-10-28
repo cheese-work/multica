@@ -123,13 +123,13 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state,
+    head_sha, mergeable_state, head_repo_same,
     additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
-    $11, sqlc.narg('mergeable_state'),
+    $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
@@ -177,6 +177,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     END,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
+    head_repo_same = EXCLUDED.head_repo_same,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
     merged_at = CASE
