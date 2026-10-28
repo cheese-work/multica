@@ -61,12 +61,26 @@ export default function WorkspaceLayout({
     ...workspaceBySlugOptions(workspaceSlug),
     enabled: !!user,
   });
+  const isRoutedWorkspace = workspaceSlug === workspaceSlugFromPathname(pathname);
+
+  // This first-response hint supports root-entry browser discovery. It does not
+  // grant workspace access; the suggestions endpoint still enforces admission.
+  const searchDiscoveryLink =
+    isRoutedWorkspace &&
+    (isAuthLoading || (user !== null && workspace !== null)) ? (
+      <link
+        rel="search"
+        type="application/opensearchdescription+xml"
+        href={`/${workspaceSlug}/opensearch.xml`}
+        title={`Multica ${workspaceSlug}`.slice(0, 16)}
+      />
+    ) : null;
 
   // Sync routed workspace identity during render so the first child request has
   // the correct workspace header. Gate this global write on the live pathname:
   // App Router can retain old layouts whose rerenders would otherwise switch the
   // singleton and realtime connection back to a stale workspace.
-  if (workspace && workspaceSlug === workspaceSlugFromPathname(pathname)) {
+  if (workspace && isRoutedWorkspace) {
     setCurrentWorkspace(workspaceSlug, workspace.id);
   }
 
@@ -91,14 +105,14 @@ export default function WorkspaceLayout({
     </div>
   );
 
-  if (isAuthLoading) return loadingIndicator;
+  if (isAuthLoading) return <>{searchDiscoveryLink}{loadingIndicator}</>;
   // Don't render children until workspace is resolved. useWorkspaceId()
   // throws when the list hasn't populated or the slug is unknown — gating
   // here makes that invariant hold for every descendant.
   // The selector returns undefined until the list has resolved, including
   // after an initial request failure. It returns null only when an
   // authoritative list does not contain this slug.
-  if (workspace === undefined) return loadingIndicator;
+  if (workspace === undefined) return <>{searchDiscoveryLink}{loadingIndicator}</>;
   if (workspace === null) {
     // If we've resolved this slug before in this session, it was just
     // removed from our list (deleted/left/evicted). A navigate is almost
@@ -107,19 +121,12 @@ export default function WorkspaceLayout({
     // Otherwise: the URL points at a workspace the user never had access
     // to. Show explicit feedback instead of silently redirecting. Doesn't
     // distinguish 404 vs 403 to avoid letting attackers enumerate slugs.
-    return <NoAccessPage />;
+    return <>{searchDiscoveryLink}<NoAccessPage /></>;
   }
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
-      {user && workspaceSlug === workspaceSlugFromPathname(pathname) && (
-        <link
-          rel="search"
-          type="application/opensearchdescription+xml"
-          href={`/${workspaceSlug}/opensearch.xml`}
-          title={`Multica ${workspaceSlug}`.slice(0, 16)}
-        />
-      )}
+      {searchDiscoveryLink}
       {children}
     </WorkspaceSlugProvider>
   );
