@@ -17,6 +17,8 @@ type DecisionRequestCard struct {
 	IssueIdentifier string  `json:"issue_identifier"`
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
+	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
+	AskingAgentName string  `json:"asking_agent_name,omitempty"`
 	State           string  `json:"state"`
 	CreatedAt       string  `json:"created_at"`
 	WithdrawnAt     *string `json:"withdrawn_at,omitempty"`
@@ -48,7 +50,7 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		card := DecisionRequestCard{
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
 			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
-			Ask:             row.Ask, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 		}
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)

@@ -42,6 +42,13 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: 7 } }).decision_request?.record_comment_id).toBeUndefined();
   });
 
+  it("keeps the asking agent name and drops a malformed one", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, asking_agent_name: "Sol" } }).decision_request?.asking_agent_name).toBe("Sol");
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, asking_agent_name: 7 } }).decision_request?.asking_agent_name).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request?.asking_agent_name).toBeUndefined();
+  });
+
   it("keeps request state, source and original ask from additive metadata", () => {
     const request = {
       id: "request", issue_id: "issue", source_comment_id: "source",

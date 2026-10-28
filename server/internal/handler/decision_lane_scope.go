@@ -56,9 +56,9 @@ func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Iss
 	if err != nil {
 		return err
 	}
-	identity := decisiontx.WithoutSourceTail(ask)
+	identity := decisiontx.WithoutEnrichment(ask)
 	for _, row := range earlier {
-		if decisiontx.WithoutSourceTail(row.Ask) != identity {
+		if decisiontx.WithoutEnrichment(row.Ask) != identity {
 			continue
 		}
 		const layout = "2006-01-02 15:04 ICT"

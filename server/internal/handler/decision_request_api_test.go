@@ -39,7 +39,9 @@ func testAskOption(label string) decisiontx.AskOption {
 }
 
 func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
-	return structuredDecisionAsk(fixture.issueID, fixture.tagID, fixture.input().Ask)
+	ask := structuredDecisionAsk(fixture.issueID, fixture.tagID, fixture.input().Ask)
+	ask.AskedBy = "decision-intent" // the stored ask names the asking agent
+	return ask
 }
 
 func TestDecisionRequestAPIRoundTrip(test *testing.T) {
