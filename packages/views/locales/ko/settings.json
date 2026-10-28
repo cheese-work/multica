@@ -33,7 +33,7 @@
       "key_hint": "API와 CLI에서는 {{key}}로 참조합니다.",
       "created": "상태를 만들었습니다. API와 CLI에서는 {{key}}로 참조합니다.",
       "category": "카테고리",
-      "category_locked": "상태를 만든 뒤에는 카테고리를 변경할 수 없습니다.",
+      "category_change_hint": "카테고리를 변경하면 이 상태의 모든 이슈 동작이 바뀝니다. 저장 전에 확인합니다.",
       "description": "설명",
       "description_placeholder": "팀에게 이 상태가 의미하는 것",
       "color": "색상",
@@ -52,6 +52,12 @@
       "save": "저장",
       "saving": "저장 중…",
       "save_failed": "상태를 저장하지 못했습니다."
+    },
+    "category_change_dialog": {
+      "title": "카테고리를 변경할까요?",
+      "description_other": "이 상태의 이슈 {{count}}개가 “{{from}}”에서 “{{to}}”(으)로 바뀝니다.",
+      "cancel": "취소",
+      "confirm": "카테고리 변경"
     },
     "archive_dialog": {
       "retry": "보관 다시 시도",
@@ -304,7 +310,8 @@
     "language": {
       "title": "언어",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",

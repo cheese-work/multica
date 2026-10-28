@@ -236,7 +236,7 @@ func classifyGitHubIntake(ctx context.Context, queries *db.Queries, workspaceID 
 			return pullID, "deferred", "missing_pull_request_metadata", nil
 		}
 	} else {
-		if headRepo.ID <= 0 || headRepo.FullName == "" {
+		if headRepo.ID <= 0 || headRepo.FullName == "" || headRepo.Fork == nil {
 			return pullID, "deferred", "missing_pull_request_metadata", nil
 		}
 		if !headRepo.sameRepository(payload.Repository.ID, payload.Repository.Owner.Login, payload.Repository.Name) {

@@ -7,7 +7,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -62,12 +61,12 @@ func newOpenclawTestBackend(bin string) *openclawBackend {
 
 // newOpenclawTestBackendWithLog also captures what the backend logs, so a test
 // can assert that a specific branch was taken instead of inferring it from
-// timing. Warnings still reach stderr so a failure stays readable.
+// timing.
 func newOpenclawTestBackendWithLog(bin string) (*openclawBackend, *syncBuffer) {
 	buf := &syncBuffer{}
 	return &openclawBackend{cfg: Config{
 		ExecutablePath: bin,
-		Logger: slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, buf),
+		Logger: slog.New(slog.NewTextHandler(buf,
 			&slog.HandlerOptions{Level: slog.LevelWarn})),
 	}}, buf
 }
