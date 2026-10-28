@@ -31,25 +31,20 @@ var errSubWorkflowRefused = errors.New("sub-workflow child refused")
 // subWorkflowHandoffResolver resolves the child's start-step handler with the
 // admission a new issue gets (createHandoffResolver): the same handler rules,
 // then the same assignee gate. No request exists on the edge path, so the invoke
-// gate judges the humans the parent acts for. The creator is set by the server
-// from the authenticated request; the requester is only what the caller named,
-// so it can narrow who may be used (human_by_role routing, an extra person who
-// must be allowed) and never widen it. Each spawn passes both on unchanged, so a
-// nested child is judged by the same two people. A handler any of them may not
-// use refuses the spawn.
+// gate judges the humans the parent acts for. The first is the trusted
+// originator of the spawn chain (spawnOriginator), the same provenance a task
+// run for that issue is judged by. The second is the requester, which is only
+// what the caller named: it can narrow who may be used (an extra person who must
+// be allowed) and never widen it. Every child passes both on, so a nested child
+// is judged by the same two people. A handler any of them may not use refuses
+// the spawn.
 func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHandoffResolver {
-	var originators []string
-	if parent.CreatorType == "member" {
-		originators = append(originators, uuidToString(parent.CreatorID))
-	}
-	if parent.RequestedByID.Valid {
-		originators = append(originators, uuidToString(parent.RequestedByID))
-	}
-	if len(originators) == 0 {
-		originators = append(originators, "")
-	}
 	workspaceID := uuidToString(parent.WorkspaceID)
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
+		originators := []string{h.spawnOriginator(ctx, parent)}
+		if parent.RequestedByID.Valid {
+			originators = append(originators, uuidToString(parent.RequestedByID))
+		}
 		humans, err := h.workflowHumans(ctx, step, project, project.WorkspaceID, parent.RequestedByID)
 		if err != nil {
 			return pgtype.Text{}, pgtype.UUID{}, err
@@ -72,6 +67,36 @@ func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHand
 		}
 		return assignee, assigneeID, nil
 	}
+}
+
+// spawnOriginator returns the human at the top of the chain that made the issue:
+// what TaskService.OriginatorForIssueTask resolves for the first issue above it
+// that was not itself spawned onto a workflow in a stage by the same creator (a member's own issue,
+// or an agent's issue back to the task that created it). A spawned child has no
+// provenance of its own, so it is read from that issue. "" when the chain has no
+// human, which the invoke gate treats as no one: a private agent is refused.
+func (h *Handler) spawnOriginator(ctx context.Context, issue db.Issue) string {
+	cur := issue
+	for i := 0; cur.WorkflowID.Valid && cur.Stage.Valid && cur.ParentIssueID.Valid; i++ {
+		if i > maxSubWorkflowDepth {
+			return ""
+		}
+		next, err := h.Queries.GetIssue(ctx, cur.ParentIssueID)
+		if err != nil {
+			return ""
+		}
+		// A spawn copies its creator from the issue above it; a child made by
+		// hand under someone else's issue does not borrow that issue's provenance.
+		if next.CreatorType != cur.CreatorType || next.CreatorID != cur.CreatorID {
+			break
+		}
+		cur = next
+	}
+	originator := h.TaskService.OriginatorForIssueTask(ctx, cur, pgtype.UUID{})
+	if !originator.Valid {
+		return ""
+	}
+	return uuidToString(originator)
 }
 
 // subWorkflowTargetsMessage checks every sub-workflow step of a definition
