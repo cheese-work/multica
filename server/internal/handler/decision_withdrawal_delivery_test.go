@@ -7,6 +7,52 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
+func TestDecisionRetractionFollowsDecisionRecipient(test *testing.T) {
+	for _, assigneeType := range []string{"agent", "squad", "member", "unassigned", "archived_asker"} {
+		test.Run(assigneeType, func(test *testing.T) {
+			resetDecisionLease(test)
+			fixture, recorded := readyDecisionDelivery(test)
+			assignee := createHandlerTestAgent(test, "Retraction fallback owner", []byte("[]"))
+			dbfx.Exec(test, `UPDATE issue SET assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+			switch assigneeType {
+			case "squad":
+				squad := dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Retraction fallback squad", "creator_id": testUserID, "leader_id": assignee})
+				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'squad', assignee_id = $1 WHERE id = $2`, squad, fixture.issueID)
+			case "member":
+				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'member', assignee_id = $1 WHERE id = $2`, testUserID, fixture.issueID)
+			case "unassigned":
+				dbfx.Exec(test, `UPDATE issue SET assignee_type = NULL, assignee_id = NULL WHERE id = $1`, fixture.issueID)
+			}
+			handler, runner := newDecisionRunnerFixture(test)
+			decisionPass(test, runner)
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND trigger_comment_id = $3`, fixture.issueID, fixture.agentID, recorded.Comment.ID); count != 1 {
+				test.Fatalf("decision reached asker %d times, want 1", count)
+			}
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, fixture.issueID, fixture.agentID)
+			expected := fixture.agentID
+			if assigneeType == "archived_asker" {
+				dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)
+				expected = assignee
+			}
+			withdrawn, err := handler.disclaimDecisionAnswerTx(fixture.request(), fixture.issue.WorkspaceID, recorded.Answer.ID, parseUUID(fixture.humanID))
+			if err != nil {
+				test.Fatal(err)
+			}
+			decisionPass(test, runner)
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND trigger_comment_id = $3`, fixture.issueID, expected, withdrawn.Answer.WithdrawalCommentID); count != 1 {
+				test.Fatalf("retraction reached expected decision recipient %d times, want 1", count)
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id <> $2 AND trigger_comment_id = $3`, fixture.issueID, expected, withdrawn.Answer.WithdrawalCommentID); count != 0 {
+				test.Fatalf("retraction reached %d unrelated recipients", count)
+			}
+			decisionPass(test, runner)
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND trigger_comment_id = $2`, fixture.issueID, withdrawn.Answer.WithdrawalCommentID); count != 1 {
+				test.Fatalf("retry changed retraction run count to %d, want 1", count)
+			}
+		})
+	}
+}
+
 func TestDecisionWithdrawalDelivery(test *testing.T) {
 	for _, branch := range []string{"enqueue", "queued", "running", "member", "unassigned", "unbound", "reassigned", "veto_suppressed", "not_woken", "closed", "archived_lane"} {
 		test.Run(branch, func(test *testing.T) {
@@ -36,16 +82,14 @@ func TestDecisionWithdrawalDelivery(test *testing.T) {
 				}
 			case "member":
 				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'member', assignee_id = $1 WHERE id = $2`, testUserID, fixture.issueID)
-				outcome = "comment_member"
 			case "unassigned":
 				dbfx.Exec(test, `UPDATE issue SET assignee_type = NULL, assignee_id = NULL WHERE id = $1`, fixture.issueID)
-				outcome = "comment_unassigned"
 			case "unbound":
 				dbfx.Exec(test, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, recipient)
 				outcome = ""
 			case "reassigned", "veto_suppressed":
-				recipient = createHandlerTestAgent(test, "Withdrawal recipient", []byte("[]"))
-				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, recipient, fixture.issueID)
+				assignee := createHandlerTestAgent(test, "Withdrawal assignee", []byte("[]"))
+				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
 				if branch == "veto_suppressed" {
 					dbfx.Exec(test, `UPDATE decision_answer SET retraction_delivered_at = clock_timestamp(), retraction_outcome = 'suppressed_agent_veto' WHERE id = $1`, recorded.Answer.ID)
 					outcome = "suppressed_agent_veto"
@@ -65,7 +109,7 @@ func TestDecisionWithdrawalDelivery(test *testing.T) {
 			}
 			if outcome == "run_enqueued" || outcome == "merged_into_queued" || outcome == "planned_input" {
 				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, recipient, withdrawn.Answer.WithdrawalCommentID); count != 1 {
-					test.Fatalf("withdrawal did not reach current assignee exactly once: %d", count)
+					test.Fatalf("withdrawal did not reach the asker exactly once: %d", count)
 				}
 			}
 			if branch == "archived_lane" {
@@ -119,6 +163,7 @@ func TestDecisionRetractionRechecksAssigneeAndRuntime(test *testing.T) {
 	handler.TxStarter = &decisionDeliveryMutation{txStarter: testPool, mutate: func() {
 		dbfx.Exec(test, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, runtimeID, recipient)
 		dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, recipient, fixture.issueID)
+		dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)
 	}}
 	if err := handler.deliverDecisionItem(context.Background(), fixture.issue.WorkspaceID, recorded.Answer.ID, "retraction"); err != nil {
 		test.Fatal(err)

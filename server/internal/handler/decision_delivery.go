@@ -121,7 +121,7 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 		}
 		agentID, snapshot.squadID = squad.LeaderID, squad.ID
 	}
-	if kind == "" {
+	if kind == "" || kind == "retraction" {
 		askingID := request.AskingAgentID
 		if request.Origin == "unprompted" && len(snapshot.answers) == 1 {
 			quote, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: snapshot.answers[0].IssueCommentID})
@@ -336,7 +336,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
 	}
-	eligible = eligible && (!asking.ArchivedAt.Valid || snapshot.kind == "" && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
+	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
 	outcome := "skipped_ineligible"
 	var queued db.AgentTaskQueue
 	var comments, cleared []db.Comment
