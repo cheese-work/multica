@@ -28,7 +28,7 @@ func newSingleCallFixture(test *testing.T) singleCallFixture {
 	dbfx.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, fixture.issueID)
 	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
 	details := structuredDecisionAsk(fixture.issueID, sourceID, "Approve the reversible change?")
-	return singleCallFixture{intentFixture: fixture, ask: details.Content(), footer: "Next owner: none", sourceID: sourceID, details: details}
+	return singleCallFixture{intentFixture: fixture, ask: details.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 func (fixture singleCallFixture) body() map[string]any {
@@ -384,7 +384,7 @@ func TestDecisionSingleCallComposedCommentLimit(test *testing.T) {
 			fixture := newSingleCallFixture(test)
 			body := fixture.body()
 			ask := fixture.details
-			ask.Decision = strings.Repeat("a", tc.ask-len(ask.Content())+len(ask.Decision))
+			ask.Decision = strings.Repeat("a", tc.ask-len(ask.Content(handlerTestWorkspaceSlug))+len(ask.Decision))
 			body["ask"] = ask
 			body["footer"] = strings.Repeat("f", tc.footer)
 			testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(tc.want)
