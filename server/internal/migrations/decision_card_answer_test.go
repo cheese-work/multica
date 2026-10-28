@@ -69,8 +69,12 @@ func TestDecisionCardAnswerSchema(test *testing.T) {
 		if err != nil {
 			test.Fatal(err)
 		}
-		if answer.AnswerSource != "card" || answer.AnsweredByTaskID.Valid || answer.AnsweredByUserID != humanID || answer.SourceChatSessionID.Valid || answer.SourceCommentID.Valid || len(answer.ChatMessageIds) != 0 || answer.WakeAt.Valid {
+		if answer.AnswerSource != "card" || answer.AnsweredByTaskID.Valid || answer.AnsweredByUserID != humanID || answer.SourceChatSessionID.Valid || answer.SourceCommentID.Valid || len(answer.ChatMessageIds) != 0 {
 			test.Fatalf("unexpected card answer: %+v", answer)
+		}
+		// A card answer is eligible to wake the asking agent at once.
+		if !answer.WakeAt.Valid {
+			test.Fatalf("card answer has no wake_at: %+v", answer)
 		}
 	})
 	test.Run("agent_record_unchanged", func(test *testing.T) {
@@ -80,7 +84,7 @@ func TestDecisionCardAnswerSchema(test *testing.T) {
 		if err != nil {
 			test.Fatal(err)
 		}
-		if answer.AnswerSource != "agent_record" || answer.AnsweredByUserID.Valid {
+		if answer.AnswerSource != "agent_record" || answer.AnsweredByUserID.Valid || answer.WakeAt.Valid {
 			test.Fatalf("unexpected agent_record answer: %+v", answer)
 		}
 	})

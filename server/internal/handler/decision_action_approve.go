@@ -185,6 +185,13 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if current.Status != "open" || action.State != "pending" {
 		return empty, errNotPending
 	}
+	// A committed issue close or asking-agent archive wins over a stale open
+	// row: the sweeper that records it runs later, so check it under the locks.
+	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
+		return empty, err
+	} else if reason != "" {
+		return empty, errNotPending
+	}
 	if expired, err := queries.DecisionActionExpired(ctx, db.DecisionActionExpiredParams{ID: action.ID, WorkspaceID: caller.workspaceID}); err != nil {
 		return empty, err
 	} else if expired {

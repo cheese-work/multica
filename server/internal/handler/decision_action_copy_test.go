@@ -94,3 +94,41 @@ func TestApproveAgentCopyOnAPrivateRuntimeOfAnotherMemberFails(test *testing.T) 
 		test.Fatal("the approver created an agent on a runtime private to someone else")
 	}
 }
+
+func TestApproveAgentCopyRefusesASourceTheApproverCannotSee(test *testing.T) {
+	action := newPendingCopy(test, "che2233 copy hidden source", nil)
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, action.agentID, testUserID)
+	dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusForbidden)
+	if !strings.Contains(body, "source_not_visible") {
+		test.Fatalf("body %q lacks source_not_visible", body)
+	}
+	action.assertUntouched(test)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent WHERE name = 'che2233 copy hidden source'`); n != 0 {
+		test.Fatal("a copy of a private source the approver cannot view was created")
+	}
+}
+
+func TestApproveAgentCopyAllowsAWorkspaceAdminToCopyASourceOwnedByAnotherMember(test *testing.T) {
+	action := newPendingCopy(test, "che2233 copy admin source", nil)
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $2 WHERE id = $1`, action.agentID, testUserID)
+	dbfx.Exec(test, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent WHERE name = 'che2233 copy admin source' AND owner_id = $1`, action.humanID); n != 1 {
+		test.Fatal("an admin's approved copy was not created")
+	}
+}
+
+func TestApproveAgentCopyRefusesWhenTheSourcePermissionsDrifted(test *testing.T) {
+	action := newPendingCopy(test, "che2233 copy widened", nil)
+	dbfx.Exec(test, `UPDATE member SET role = 'admin' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private' WHERE id = $1`, action.agentID)
+	body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusConflict)
+	if !strings.Contains(body, "precondition_drift") {
+		test.Fatalf("body %q lacks precondition_drift", body)
+	}
+	action.assertUntouched(test)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent WHERE name = 'che2233 copy widened'`); n != 0 {
+		test.Fatal("a copy carried permissions the approver never saw")
+	}
+}

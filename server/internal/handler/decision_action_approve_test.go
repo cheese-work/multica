@@ -149,6 +149,9 @@ func TestApproveDecisionActionRefusals(test *testing.T) {
 		{"expired", func(action pendingAction) {
 			dbfx.Exec(test, `UPDATE decision_action SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, action.actionID)
 		}, nil, http.StatusConflict, "expired"},
+		{"issue closed before the sweeper ran", func(action pendingAction) {
+			dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, action.issueID)
+		}, nil, http.StatusConflict, "not_pending"},
 		{"missing secret", nil, func(action pendingAction) map[string]any { return action.claim(test, nil) }, http.StatusBadRequest, "secrets_mismatch"},
 		{"unexpected secret", nil, func(action pendingAction) map[string]any {
 			return action.claim(test, map[string]string{"KEY": secretSentinel, "OTHER": "x"})
@@ -321,5 +324,24 @@ func TestApproveDecisionActionExecutesForAWorkspaceAdmin(test *testing.T) {
 	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
 	if after, _ := action.agentEnvVersion(test); after != before+1 {
 		test.Fatalf("env version %d, want %d", after, before+1)
+	}
+}
+
+// The asking agent is archived but the sweeper has not cancelled the request
+// yet: approval must not write the target's env.
+func TestApproveDecisionActionRefusesAnArchivedAskingAgentBeforeTheSweeper(test *testing.T) {
+	fixture := newActionFixture(test)
+	targetID := createHandlerTestAgent(test, "approve archived-asker target", []byte("[]"))
+	var created actionResponse
+	fixture.respond(test, fixture.withAction(fixture.envPatch(map[string]any{"agent_id": targetID, "set": map[string]string{"A": "1"}})), http.StatusCreated, &created)
+	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
+	action := pendingAction{fixture, created.ID, created.Action.ID}
+	dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)
+	body := action.approve(test, withVerifier(acceptingVerifier), map[string]any{"payload_sha256": action.hash(test), "assertion": map[string]any{"id": "fake"}}, http.StatusConflict)
+	if !strings.Contains(body, "not_pending") {
+		test.Fatalf("body %q lacks not_pending", body)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent WHERE id = $1 AND custom_env->>'A' = '1'`, targetID); n != 0 {
+		test.Fatal("the target env was written by an approval from an archived asking agent")
 	}
 }
