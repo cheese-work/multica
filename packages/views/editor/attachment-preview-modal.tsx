@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ComponentProps,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -99,6 +100,8 @@ import {
 } from "./hooks/use-html-preview-location";
 import { CodeBlockStatic } from "./code-block-static";
 import { TablePreview } from "./table-preview";
+import { PlanRevisionViewer } from "./plan-revision-viewer";
+import { planRevisionNumber } from "@multica/core/attachments";
 import { StructuredTree } from "./structured-tree";
 import {
   HTML_VIEWPORTS,
@@ -661,7 +664,14 @@ function useStructuredParse(state: PreviewState, enabled: boolean) {
 //
 // `surface` is where it is mounted: the viewer overlay, or the "open in new
 // tab" page, which has no close, no sequence and no window drag region.
-function PreviewPanel({
+function PreviewPanel(props: ComponentProps<typeof GenericPreviewPanel>) {
+  if (props.kind === "markdown" && props.source.kind === "full" && props.source.attachment.issue_id && planRevisionNumber(props.source.attachment.filename) !== null) {
+    return <PlanRevisionViewer key={props.source.attachment.id} attachment={props.source.attachment} onDownload={props.onDownload} onClose={props.onClose} onOpenInNewTab={props.onOpenInNewTab} titleAccessory={props.titleAccessory} info={props.info} locate={props.locate} onOpenOverview={props.onOpenOverview} />;
+  }
+  return <GenericPreviewPanel {...props} />;
+}
+
+function GenericPreviewPanel({
   surface,
   kind,
   source,

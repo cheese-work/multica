@@ -8543,14 +8543,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityTaskSupplementV1)
+		taskCapabilities = append(taskCapabilities,
+			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
 	}
-	taskSupplementNegotiated, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
+	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
 	}
-	if taskSupplementNegotiated {
+	if negotiation.Supplement || negotiation.PREvent {
 		// Register before provider launch so a hint cannot arrive in the gap
 		// between the committed server transition and turn/started. The row is
 		// durable, so a coalesced hint is sufficient; the five-second fallback
@@ -8843,7 +8844,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{
-		EnableTaskSupplement:       taskSupplementNegotiated,
+		// PR events ride the same injection channel, so they need its hooks too.
+		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
 		Cwd:                        env.WorkDir,
 		Model:                      model,
@@ -8955,6 +8957,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
 	outputObserver := &taskOutputObserver{}
 	ctx = withTaskOutputObserver(ctx, outputObserver)
+	ctx = withTaskPREvents(ctx, negotiation.PREvent)
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err

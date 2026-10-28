@@ -319,7 +319,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 					AssigneeType: loaded.AssigneeType,
 					AssigneeID:   loaded.AssigneeID,
 				}
-				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, nil); err == nil && hand != nil {
+				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, workflowCaller{}); err == nil && hand != nil {
 					post.AssigneeType = params.AssigneeType
 					post.AssigneeID = params.AssigneeID
 					in.AssigneeChanged = true

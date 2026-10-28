@@ -150,7 +150,8 @@ func TestStartTaskCapabilityNegotiationMixedVersions(t *testing.T) {
 
 				task := startTestClaim()
 				task.StartClaimSupported = mode == "claim-fenced"
-				got, err := NewClient(srv.URL).StartTask(context.Background(), task, protocol.DaemonCapabilityTaskSupplementV1)
+				negotiation, err := NewClient(srv.URL).StartTask(context.Background(), task, protocol.DaemonCapabilityTaskSupplementV1)
+				got := negotiation.Supplement
 				if (err != nil) != tc.wantError {
 					t.Errorf("StartTask: %v", err)
 				}

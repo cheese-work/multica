@@ -1,0 +1,30 @@
+Source: ea08b88a682d3a27cbfccd5c5dccdbea73c6d3be
+Parent: b9e4e6d1fd310a76fea8f2f925ef7cdcdf012022
+Host: X99; Codex 0.155.1; pnpm 10.28.2
+Date: 27 October 2026, ICT
+
+Observed red before the viewer edit, 17:33 ICT, Playwright exit 1 / make exit 2:
+make env-exec ARGS='-- env F3_RED=1 node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep reads'
+Output: f3-red-web.log; phone Next change viewport ratio 0.
+The source file had no diff from the parent at that run.
+
+Observed green, 17:36 ICT, exit 0:
+make env-exec ARGS='-- node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep reads'
+Output: f3-green-web.log; 1 passed (20.3s).
+
+Observed exit 0 from packages/views:
+../../node_modules/.bin/vitest run editor/plan-revision-viewer.test.tsx editor/attachment-preview-modal.test.tsx locales/parity.test.ts
+../../node_modules/.bin/tsc --noEmit
+../../node_modules/.bin/eslint editor/plan-revision-viewer.tsx
+Output: 301 passed; TypeScript and ESLint emitted no diagnostics.
+
+Observed exit 0 from repository root:
+node scripts/check-ui-radius-tokens.mjs
+git diff --check
+make env-exec ARGS='-- node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep enforces --output ../.capture-output/f3-permission-results'
+make env-exec ARGS='-- env VITE_API_URL=http://localhost:19034 VITE_WS_URL=ws://localhost:19034 VITE_APP_URL=http://localhost:13954 corepack pnpm@10.28.2 --filter @multica/desktop build'
+make env-exec ARGS='-- env PLAN_DESKTOP_CAPTURE=1 node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep desktop.captures --output ../.capture-output/f3-desktop-results'
+
+The source-sha256.txt hashes are unchanged from the green runs to the source commit.
+The first cold page.goto timeout is preserved in f3-cold-web.log, not counted as behavioral red.
+Full frontend suite and screen-reader review: NOT-RUN locally for this follow-up.

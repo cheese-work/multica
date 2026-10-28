@@ -1,0 +1,13 @@
+◇ injected env (1) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+
+Running 2 tests using 1 worker
+
+(node:673888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:673888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+  ✓  1 e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths (18.7s)
+  ✓  2 e2e/plan-revisions.spec.ts:140:3 › plan revision viewer › enforces membership for discovery, current metadata and either content body (364ms)
+
+  2 passed (21.5s)
