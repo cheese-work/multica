@@ -242,6 +242,23 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 	return i, err
 }
 
+const hasGitHubWebhookRevisionDispatch = `-- name: HasGitHubWebhookRevisionDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND revision_id = $2 AND state = 'dispatched')
+`
+
+type HasGitHubWebhookRevisionDispatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RevisionID  pgtype.UUID `json:"revision_id"`
+}
+
+func (q *Queries) HasGitHubWebhookRevisionDispatch(ctx context.Context, arg HasGitHubWebhookRevisionDispatchParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubWebhookRevisionDispatch, arg.WorkspaceID, arg.RevisionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertGitHubWebhookIntake = `-- name: InsertGitHubWebhookIntake :execrows
 INSERT INTO github_webhook_intake (delivery_guid, event, signature, payload)
 VALUES ($1, $2, $3, $4)
@@ -570,6 +587,61 @@ func (q *Queries) SetGitHubWebhookRevisionState(ctx context.Context, arg SetGitH
 		arg.ID,
 		arg.State,
 		arg.Reason,
+	)
+	return err
+}
+
+const supersedePendingGitHubWebhookRevisions = `-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.workspace_id, scoped.installation_id, scoped.repository_id, scoped.pull_request_id, scoped.pr_number, scoped.object_kind, scoped.object_id, scoped.body_hash, scoped.source_delivery_guid, scoped.event, scoped.action, scoped.sender_id, scoped.author_id, scoped.author_login, scoped.author_type, scoped.head_sha, scoped.review_state, scoped.object_created_at, scoped.object_updated_at, scoped.object_submitted_at, scoped.state, scoped.reason, scoped.created_at, scoped.updated_at, scoped.id FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND (
+        (pending.object_kind = 'review' AND (
+          pending.action = 'submitted'
+          OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+        ))
+        OR (pending.object_kind <> 'review' AND newer.object_updated_at IS NOT NULL AND (
+          newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_created_at)
+          OR (newer.object_updated_at = COALESCE(pending.object_updated_at, pending.object_created_at) AND (
+            pending.action = 'created'
+            OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+          ))
+        ))
+      )
+  )
+`
+
+type SupersedePendingGitHubWebhookRevisionsParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepositoryID   int64  `json:"repository_id"`
+	ObjectKind     string `json:"object_kind"`
+	ObjectID       int64  `json:"object_id"`
+}
+
+func (q *Queries) SupersedePendingGitHubWebhookRevisions(ctx context.Context, arg SupersedePendingGitHubWebhookRevisionsParams) error {
+	_, err := q.db.Exec(ctx, supersedePendingGitHubWebhookRevisions,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
 	)
 	return err
 }

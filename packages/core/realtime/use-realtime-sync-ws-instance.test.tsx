@@ -326,6 +326,31 @@ describe("useRealtimeSync — ws instance change", () => {
     });
   });
 
+  it("refetches cached issue rows when a status changes category", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    onAny!({
+      type: "issue_status:changed",
+      payload: { action: "updated", category_changed: true },
+    } as never);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // Rows carry the server-resolved status_category (and category-bucketed
+    // groups and facets), so a category move leaves every cached projection
+    // stale. issueKeys.all covers lists, detail, table groups and facets.
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: issueKeys.all("ws-1"),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: issueStatusKeys.all("ws-1"),
+    });
+  });
+
   it("ignores removed DingTalk group-route events", () => {
     const ws = createMockWs();
     renderHook(() => useRealtimeSync(ws, stores), {

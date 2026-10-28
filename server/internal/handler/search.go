@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // searchStatementTimeout bounds every /search request at the Postgres level.
@@ -41,6 +42,36 @@ const (
 	searchWorkMemEnv       = "DATABASE_SEARCH_WORK_MEM_MB"
 	defaultSearchWorkMemMB = 64
 )
+
+func scanSearchIssue(rows pgx.Rows) (searchResult, error) {
+	var result searchResult
+	err := rows.Scan(
+		&result.issue.ID, &result.issue.WorkspaceID, &result.issue.Title, &result.issue.Description,
+		&result.issue.Status, &result.issue.Priority, &result.issue.AssigneeType, &result.issue.AssigneeID,
+		&result.issue.CreatorType, &result.issue.CreatorID, &result.issue.ParentIssueID,
+		&result.issue.AcceptanceCriteria, &result.issue.ContextRefs, &result.issue.Position,
+		&result.issue.StartDate, &result.issue.DueDate, &result.issue.CreatedAt, &result.issue.UpdatedAt,
+		&result.issue.LastActivityAt, &result.issue.Number, &result.issue.ProjectID, &result.issue.Revision,
+		&result.issue.DuplicateOfIssueID, &result.matchSource, &result.matchedCommentContent,
+	)
+	return result, err
+}
+
+type searchProjectResult struct {
+	project     db.Project
+	matchSource string
+}
+
+func scanSearchProject(rows pgx.Rows) (searchProjectResult, error) {
+	var result searchProjectResult
+	err := rows.Scan(
+		&result.project.ID, &result.project.WorkspaceID, &result.project.Title, &result.project.Description,
+		&result.project.Icon, &result.project.Status, &result.project.Priority, &result.project.LeadType,
+		&result.project.LeadID, &result.project.StartDate, &result.project.DueDate,
+		&result.project.CreatedAt, &result.project.UpdatedAt, &result.matchSource,
+	)
+	return result, err
+}
 
 // configuredSearchWorkMemMB removes the candidate-first comment aggregation
 // spill seen at Postgres' 4 MB default. work_mem is a per-node ceiling, not a
@@ -117,6 +148,17 @@ func runSearchQuery(
 	args []any,
 	rowsFn func(pgx.Rows) error,
 ) error {
+	return runSearchQueryWithTimeout(ctx, txStarter, sql, args, rowsFn, effectiveSearchStatementTimeout())
+}
+
+func runSearchQueryWithTimeout(
+	ctx context.Context,
+	txStarter txStarter,
+	sql string,
+	args []any,
+	rowsFn func(pgx.Rows) error,
+	timeout time.Duration,
+) error {
 	tx, err := txStarter.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin search tx: %w", err)
@@ -133,7 +175,7 @@ func runSearchQuery(
 	// SET LOCAL is transaction-scoped, so pgxpool can safely hand this
 	// connection back out after COMMIT without search-specific settings leaking
 	// to unrelated queries.
-	timeoutMs := int(effectiveSearchStatementTimeout() / time.Millisecond)
+	timeoutMs := int(timeout / time.Millisecond)
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", timeoutMs)); err != nil {
 		return fmt.Errorf("set search statement_timeout: %w", err)
 	}

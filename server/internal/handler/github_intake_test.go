@@ -21,8 +21,6 @@ func newGitHubIntakeFixture(t *testing.T) githubReviewFixture {
 	fixture.payload["pull_request"].(map[string]any)["head"] = map[string]any{
 		"sha": "review-head", "repo": map[string]any{"id": 9001, "full_name": "acme/widget", "fork": false},
 	}
-	fixture.payload["review"].(map[string]any)["created_at"] = "2026-10-26T08:00:00Z"
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:00:00Z"
 	fixture.payload["review"].(map[string]any)["submitted_at"] = "2026-10-26T08:01:00Z"
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID)
