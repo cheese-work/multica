@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "미디어",
+    "more": "더 보기",
+    "open_in_new_window": "새 창에서 열기",
+    "open_failed": "미디어 페이지를 열 수 없습니다",
+    "loading": "미디어 로딩 중…",
+    "load_failed": "미디어를 불러올 수 없습니다",
+    "offline": "오프라인 — 마지막으로 불러온 내용을 표시합니다.",
+    "retry": "다시 시도"
+  },
   "bubble_menu": {
     "bold": "굵게",
     "italic": "기울임",

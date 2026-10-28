@@ -45,6 +45,7 @@ import {
   renderSvgToPngBlob,
 } from "./utils/mermaid-export";
 import type { Size } from "./utils/zoom-transform";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 const COPY_FEEDBACK_MS = 2000;
 
@@ -144,7 +145,7 @@ function MermaidViewerContent({
   onClose,
 }: MermaidViewerContentProps & {
   canvasRef: React.RefObject<HTMLDivElement | null>;
-  onClose: () => void;
+  onClose?: () => void;
 }) {
   const { t } = useT("editor");
   const [showSource, setShowSource] = useState(false);
@@ -203,14 +204,12 @@ function MermaidViewerContent({
     <>
       {/* Sibling of the scrolling canvas, never inside it: the toolbar must
           stay put no matter how far the diagram is panned or zoomed. */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-3 py-2">
-          <DialogTitle className="mr-1 truncate text-body font-medium">
-            {t(($) => $.mermaid.viewer_title)}
-          </DialogTitle>
+      <header data-testid="media-toolbar" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-3 py-2 max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10">
+          {onClose ? <DialogTitle className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</DialogTitle> : <h1 className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</h1>}
 
           <ZoomControls canvas={canvas} disabled={showSource} />
 
-          <div className="ml-auto flex items-center gap-0.5">
+          <ViewerActions>
             <ToolbarButton
               onClick={() => setShowSource((value) => !value)}
               label={
@@ -256,13 +255,14 @@ function MermaidViewerContent({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <ToolbarButton
+            <MediaLinkAction kind="mermaid" content={chart} />
+          </ViewerActions>
+            {onClose && <ToolbarButton
               onClick={onClose}
               label={t(($) => $.mermaid.close_viewer)}
             >
               <X className="size-4" />
-            </ToolbarButton>
-          </div>
+            </ToolbarButton>}
         </header>
 
         {showSource ? (
@@ -290,4 +290,9 @@ function MermaidViewerContent({
         )}
     </>
   );
+}
+
+export function MermaidViewerStandalone(props: MermaidViewerContentProps) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  return <div className="flex h-full min-h-0 w-full flex-col" data-testid="media-stage"><MermaidViewerContent {...props} canvasRef={canvasRef} /></div>;
 }

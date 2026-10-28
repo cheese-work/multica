@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "Média",
+    "more": "Plus",
+    "open_in_new_window": "Ouvrir dans une nouvelle fenêtre",
+    "open_failed": "Impossible d’ouvrir la page du média",
+    "loading": "Chargement du média…",
+    "load_failed": "Impossible de charger le média",
+    "offline": "Hors ligne — affichage de la dernière copie chargée.",
+    "retry": "Réessayer"
+  },
   "bubble_menu": {
     "bold": "Gras",
     "italic": "Italique",

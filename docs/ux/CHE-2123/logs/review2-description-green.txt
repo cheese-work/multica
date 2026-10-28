@@ -1,0 +1,12 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > keeps Open in new tab for a saved description block 822ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action for an unsaved description block 369ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > hides the action immediately after an edit and restores it after undo 471ms
+ ✓ editor/content-editor-media.test.tsx > persisted description media in ContentEditor > has no Open action in a composer even when its text matches saved description media 160ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  23:32:10
+   Duration  18.86s (transform 8.23s, setup 312ms, import 12.89s, tests 1.83s, environment 2.73s)

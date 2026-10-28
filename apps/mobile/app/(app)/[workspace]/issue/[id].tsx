@@ -116,7 +116,7 @@ export default function IssueDetail() {
     if (!issue || !wsSlug) return;
     const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
     const issueLink = webUrl
-      ? `${webUrl}/${wsSlug}/issue/${issue.identifier}`
+      ? `${webUrl}/${wsSlug}/issues/${issue.identifier}`
       : null;
     const actions = ["cancel", "pin"];
     if (isPinned) actions[1] = "unpin";

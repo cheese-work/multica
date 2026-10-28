@@ -115,36 +115,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 	if pull.InstallationID != payload.Installation.ID {
 		return nil
 	}
-	var authorID pgtype.UUID
-	pullKey := fmt.Sprintf("%s/%s#%d", strings.ToLower(pull.RepoOwner), strings.ToLower(pull.RepoName), pull.PrNumber)
-	if binding, exists := settings.ReviewAuthors[pullKey]; exists {
-		authorID, err = util.ParseUUID(binding)
-		if err != nil {
-			return nil
-		}
-	} else {
-		if !pull.Branch.Valid || pull.Branch.String == "" {
-			return nil
-		}
-		taskKey := ""
-		branch := strings.Split(pull.Branch.String, "/")
-		if len(branch) == 3 && branch[0] == "agent" && branch[1] != "" {
-			if match := githubReviewTaskKeyPattern.FindStringSubmatch(branch[2]); len(match) == 2 {
-				taskKey = match[1]
-			}
-		}
-		candidates, err := h.Queries.ListGitHubReviewAuthorCandidates(ctx, db.ListGitHubReviewAuthorCandidatesParams{
-			PullRequestID: pull.ID, WorkspaceID: workspaceID, TaskKey: taskKey,
-		})
-		if err != nil {
-			return err
-		}
-		if len(candidates) != 1 {
-			return nil
-		}
-		authorID = candidates[0]
-	}
-	author, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: authorID, WorkspaceID: workspaceID})
+	author, err := githubIntakeAuthor(ctx, h.Queries, pull)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
