@@ -1647,9 +1647,13 @@ type ghPRHeadRepository struct {
 	Fork     *bool  `json:"fork"`
 }
 
+// sameRepository compares head and base by repository id and full name only.
+// GitHub's `fork` flag describes the repository, not the PR: a same-repo PR in
+// a repository that is itself a fork (cheese-work/multica) carries fork=true.
+// The flag must be present, so a truncated payload still defers.
 func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
 	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
-		repo.Fork != nil && !*repo.Fork && strings.EqualFold(repo.FullName, owner+"/"+name)
+		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
 }
 
 type ghPullRequestPayload struct {
