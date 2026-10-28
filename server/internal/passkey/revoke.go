@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,26 +28,20 @@ func revocationChallenge(targetID pgtype.UUID, nonce []byte) []byte {
 	return hash.Sum(nil)
 }
 
-// revocable refuses a target that is not the user's, is already revoked, or
-// would leave the user with no usable passkey.
-func revocable(target db.UserPasskey, userID pgtype.UUID, usable []db.UserPasskey) error {
+// revocable refuses a target that is not the user's or is already revoked.
+func revocable(target db.UserPasskey, userID pgtype.UUID) error {
 	if target.UserID != userID {
 		return forbidden("credential_not_yours: no such passkey")
 	}
 	if target.RevokedAt.Valid {
 		return conflict("already_revoked: this passkey is already revoked")
 	}
-	for _, key := range usable {
-		if key.ID != target.ID {
-			return nil
-		}
-	}
-	return conflict("last_passkey: add another passkey before revoking this one")
+	return nil
 }
 
 // IssueRevocation opens the user's one assertion challenge for revoking the
-// target credential, superseding any challenge they had open. Any of their
-// usable passkeys, the target included, may answer it.
+// target credential, superseding any challenge they had open. Only another
+// usable passkey may answer it; with none, the mailed code is the way.
 func (service *Service) IssueRevocation(ctx context.Context, userID, targetID pgtype.UUID) (Issued, error) {
 	target, err := service.Queries.GetPasskey(ctx, targetID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -55,24 +50,24 @@ func (service *Service) IssueRevocation(ctx context.Context, userID, targetID pg
 	if err != nil {
 		return Issued{}, err
 	}
+	if err := revocable(target, userID); err != nil {
+		return Issued{}, err
+	}
 	usable, err := service.Queries.ListUsablePasskeys(ctx, userID)
 	if err != nil {
 		return Issued{}, err
 	}
-	if len(usable) == 0 {
-		return Issued{}, ErrNoPasskey
+	signers := slices.DeleteFunc(usable, func(key db.UserPasskey) bool { return key.ID == targetID })
+	if len(signers) == 0 {
+		return Issued{}, conflict("no_other_passkey: confirm with the mailed code instead")
 	}
-	if err := revocable(target, userID, usable); err != nil {
-		return Issued{}, err
-	}
-	return service.issueAssertion(ctx, userID, PurposeRevoke, targetID, usable, func(nonce []byte) []byte {
+	return service.issueAssertion(ctx, userID, PurposeRevoke, targetID, signers, func(nonce []byte) []byte {
 		return revocationChallenge(targetID, nonce)
 	})
 }
 
 // Revoke retires the target credential once the user signed its revocation
-// with a usable passkey. The signer may be the target only while another
-// usable passkey remains. The notice goes out after the commit. A sign-count
+// with another usable passkey. The notice goes out after the commit. A sign-count
 // regression marks the signing credential suspect, outside the aborted
 // transaction.
 func (service *Service) Revoke(ctx context.Context, userID, targetID pgtype.UUID, assertion json.RawMessage, email string) error {
@@ -107,11 +102,7 @@ func (service *Service) Revoke(ctx context.Context, userID, targetID pgtype.UUID
 	if err != nil {
 		return err
 	}
-	usable, err := queries.ListUsablePasskeys(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if err := revocable(target, userID, usable); err != nil {
+	if err := revocable(target, userID); err != nil {
 		return err
 	}
 	if err := queries.RevokePasskey(ctx, targetID); err != nil {

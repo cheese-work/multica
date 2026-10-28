@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -33,6 +34,8 @@ func writeRevokeError(writer http.ResponseWriter, err error) {
 		writeError(writer, refusal.Status, refusal.Message)
 	case errors.Is(err, passkey.ErrNoPasskey):
 		writeError(writer, http.StatusConflict, "no_passkey: no usable passkey to sign with")
+	case errors.Is(err, passkey.ErrDeliveryUnavailable):
+		writeError(writer, http.StatusServiceUnavailable, "stepup_delivery_unavailable: the removal code cannot be mailed right now")
 	case errors.Is(err, passkey.ErrBusy):
 		writer.Header().Set("Retry-After", "1")
 		writeError(writer, errBusyRetry.status, errBusyRetry.message)
@@ -84,6 +87,69 @@ func (handler *Handler) RevokePasskey(writer http.ResponseWriter, request *http.
 		return
 	}
 	if err := handler.Passkeys.Revoke(ctx, userID, targetID, body.Assertion, user.Email); err != nil {
+		writeRevokeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]bool{"revoked": true})
+}
+
+type revokeCodeStartResponse struct {
+	CeremonyID string    `json:"ceremony_id"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// StartPasskeyRevocationByCode mails the human a code that retires the passkey
+// when no other passkey can sign. Like the other revocation endpoints it stays
+// open while enrollment is closed.
+func (handler *Handler) StartPasskeyRevocationByCode(writer http.ResponseWriter, request *http.Request) {
+	userID, targetID, ok := handler.revokeCaller(writer, request)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
+	defer cancel()
+	user, err := handler.Queries.GetUser(ctx, userID)
+	if err != nil {
+		writeRevokeError(writer, err)
+		return
+	}
+	started, err := handler.Passkeys.StartRevocationByCode(ctx, userID, targetID, user.Email)
+	if err != nil {
+		writeRevokeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, revokeCodeStartResponse{CeremonyID: uuidToString(started.CeremonyID), ExpiresAt: started.ExpiresAt})
+}
+
+type revokeCodeConfirmRequest struct {
+	CeremonyID string `json:"ceremony_id"`
+	Code       string `json:"code"`
+}
+
+// ConfirmPasskeyRevocationByCode revokes the passkey once the mailed code is
+// typed back.
+func (handler *Handler) ConfirmPasskeyRevocationByCode(writer http.ResponseWriter, request *http.Request) {
+	userID, targetID, ok := handler.revokeCaller(writer, request)
+	if !ok {
+		return
+	}
+	var body revokeCodeConfirmRequest
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, enrollBodyLimit)).Decode(&body); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ceremonyID, ok := parseUUIDOrBadRequest(writer, body.CeremonyID, "ceremony_id")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
+	defer cancel()
+	user, err := handler.Queries.GetUser(ctx, userID)
+	if err != nil {
+		writeRevokeError(writer, err)
+		return
+	}
+	if err := handler.Passkeys.RevokeByCode(ctx, userID, targetID, ceremonyID, body.Code, user.Email); err != nil {
 		writeRevokeError(writer, err)
 		return
 	}

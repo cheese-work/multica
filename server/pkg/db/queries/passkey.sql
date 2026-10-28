@@ -90,8 +90,8 @@ UPDATE passkey_enroll_limit SET locked_until = now() + interval '24 hours' WHERE
 UPDATE passkey_enroll_ceremony SET consumed_at = now() WHERE user_id = $1 AND consumed_at IS NULL;
 
 -- name: InsertPasskeyEnrollCeremony :one
-INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, expires_at)
-VALUES ($1, $2, $3, now() + interval '10 minutes')
+INSERT INTO passkey_enroll_ceremony (user_id, code_hmac, session_data, purpose, target_passkey_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')
 RETURNING id, expires_at;
 
 -- name: LockPasskeyEnrollCeremonyNowait :one
