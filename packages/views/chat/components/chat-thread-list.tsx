@@ -43,21 +43,9 @@ import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
+import { formatChatTime } from "./format-chat-time";
 
 const apiLogger = createLogger("chat.api");
-
-// IM-style timestamp: today → clock, this year → M/D, else full date.
-function formatChatTime(dateStr: string, locale: string): string {
-  const d = new Date(dateStr);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
-  }
-  if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString(locale, { month: "numeric", day: "numeric" });
-  }
-  return d.toLocaleDateString(locale);
-}
 
 // Collapse a (possibly markdown / multi-line) message into a one-line preview.
 function toPreview(content: string): string {
