@@ -88,6 +88,32 @@ function scrollRangeIntoView(container: HTMLElement | null, range: Range): void 
   container.scrollTop = Math.max(0, target);
 }
 
+const SETTLE_FRAMES = 60;
+
+// A reveal or table layout below the first scroll can push the match back out
+// of view, because the scroll runs once against the layout of that moment. For
+// about a second, re-scroll each frame while the match is outside the band;
+// any user input on the container ends it. Returns the cancel function.
+function keepRangeInView(container: HTMLElement | null, range: Range): () => void {
+  if (!container) return () => {};
+  let frames = 0;
+  let raf = 0;
+  const stop = () => {
+    cancelAnimationFrame(raf);
+    for (const type of USER_SCROLL_EVENTS) container.removeEventListener(type, stop);
+  };
+  const tick = () => {
+    if (!range.startContainer.isConnected || ++frames > SETTLE_FRAMES) return stop();
+    scrollRangeIntoView(container, range);
+    raf = requestAnimationFrame(tick);
+  };
+  for (const type of USER_SCROLL_EVENTS) container.addEventListener(type, stop, { once: true, passive: true });
+  raf = requestAnimationFrame(tick);
+  return stop;
+}
+
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
 export interface UseInPageFindResult {
   open: boolean;
   query: string;
@@ -168,6 +194,8 @@ export function useInPageFind(options: {
   const revealDocumentRef = useRef(revealDocument);
   revealDocumentRef.current = revealDocument;
   const pendingSourceScroll = useRef(false);
+  const stopSettleRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopSettleRef.current?.(), []);
   const navigationCountRef = useRef(0);
   useEffect(() => {
     if (!open || !activeSourceId) return;
@@ -202,7 +230,11 @@ export function useInPageFind(options: {
           CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
         }
       }
-      if (range && scroll) scrollRangeIntoView(containerRef.current, range);
+      if (range && scroll) {
+        stopSettleRef.current?.();
+        scrollRangeIntoView(containerRef.current, range);
+        stopSettleRef.current = keepRangeInView(containerRef.current, range);
+      }
     },
     [supported],
   );

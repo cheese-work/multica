@@ -155,6 +155,28 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(revealDocument).toHaveBeenCalledWith("comment-long");
   });
 
+  it("re-scrolls the active match when layout shifts after the first scroll", async () => {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    let documentY = 1200;
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
+    };
+    const documents = [{ id: "comment-long", text: "one distant match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
+    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
+    await flushFrames();
+    expect(container.scrollTop).toBeGreaterThan(0);
+
+    // A table or fold lays out below the first scroll and pushes the match away.
+    documentY = 7200;
+    await flushFrames(4);
+    const top = documentY - container.scrollTop;
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top + 20).toBeLessThanOrEqual(400);
+  });
+
   it("does not reveal an unchanged match after a timeline refresh", async () => {
     const revealDocument = vi.fn();
     const documents = [{ id: "first", text: "needle needle" }];
