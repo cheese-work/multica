@@ -22,18 +22,21 @@
 
 The reviewer's seven other correction checks passed on rev-2 and are kept. Reviewer correction 6 asked for a labeled list in frame 14. It is now the same labeled list in every result frame.
 
-## Open product choices (prepared, not sent)
+## Product choices (answered)
 
-rev-3 approves none of these. The recommendations are the reviewer's, from verdict `01a1613b-7e20-7b93-9194-3be03f44ac12`. Cheese owns each choice.
+Cheese answered "I choose A for four decisions" on 28 Oct 2026, 17:09 ICT (CHE-1794 comment `01a181fc-3992-777d-8315-c078f2150219`), replying to packet `01a16163-894a-70d8-a9fe-3915f38d7db4`. The answers select; they do not approve the design. Approval is the merge of PR 346.
 
-| ID | Question | Option A | Option B | Reviewer recommends |
-| --- | --- | --- | --- | --- |
-| `dm-search-web-desktop-back` | After Back from an opened result? | Restore the query and results (frame 11). The query then needs a place to live across history entries. | Return to the plain list, query cleared (frame 11b). Matches L2, where the URL holds only the open chat. | A |
-| `dm-search-web-desktop-row-height` | Result row height? | Keep the taller three-line row (drawn). Fewer hits per screen. | 56 px rows with a one-line snippet beside the agent. Not drawn. | A |
-| `dm-search-web-desktop-archived-action` | Action on an archived hit? | Unarchive beside the open link (frame 4b). | No inline action. Open the Archived view. | A |
-| `dm-search-web-desktop-slash` | The `/` shortcut? | Bind bare `/` to DM search outside editable controls. A new shortcut registry action. | Leave it unbound and remove the `/` hint. | B |
+| ID | Answer | Result |
+| --- | --- | --- |
+| `dm-search-web-desktop-back` | A | Back restores the query and results (frame 11). Frame 11b is the unchosen option and stays as history. |
+| `dm-search-web-desktop-row-height` | A | Keep the taller three-line row, as drawn. |
+| `dm-search-web-desktop-archived-action` | A | Inline Unarchive beside the open link on an archived hit (frame 4b). Delete stays in the Archived view only (L2). |
+| `dm-search-web-desktop-slash` | A | Bare `/` binds to DM search outside editable controls. This is a new shortcut registry action. The reviewer recommended B; Cheese's choice stands. |
 
-Delete stays in the Archived view only, under either archived-hit option (L2). The frames still draw the `/` hint, because the choice is open.
+S2 build notes from these answers:
+
+- The query lives across history entries, so Back restores it. L2 keeps only the open chat in the URL, so S2 must place the query in history state or the route.
+- Add a shortcut action for DM search in `packages/core/shortcuts/definitions.ts`. At the base, bare `/` is unbound, `Mod+/` toggles the right sidebar and `Mod+K` opens global search. The `/` binding must not fire inside inputs, textareas or contenteditable controls.
 
 ## Part 2 — settled sources
 

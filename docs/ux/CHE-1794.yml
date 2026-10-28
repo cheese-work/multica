@@ -1,0 +1,34 @@
+# S2 of the DM search work (CHE-1789): the search field in the web and desktop DM list. Direction A,
+# field above the list, with Cheese's four answers (Back restores query and results, three-line rows,
+# inline Unarchive on an archived hit, bare / opens DM search outside editable controls).
+# Frame 11b (Back, option 2) is the unchosen option and is not built.
+issue: CHE-1794
+design: design/dm-search-web-desktop/rev-3/A.html @ 78d53cf894f7a89beff98c0e9af7c94a7c69c905
+pages:
+  - id: chat-page-thread-list
+    url: /<workspace-slug>/chat   # same path on base and preview; list rail on the full page
+    keep:
+      - chat-thread-row
+      - chat-thread-group-pinned
+      - chat-thread-group-recent
+      - chat-thread-group-archived
+      - chat-new-dm
+    change:
+      - chat-search-field: "new search field as the first row under the header; shortcut hint /; 24 px clear button; 16 px input at phone width; Escape or Clear restores the list"
+      - chat-search-results: "results replace the list in place as a labelled list of listitem rows: title hits first, then message hits; each row has an open link (title, agent, highlighted snippet, time) and a sibling labelled action group; open chat carries aria-current"
+      - chat-search-archived-hit: "archived hits are marked and show an inline Unarchive beside the open link; no Delete outside the Archived view"
+      - chat-search-show-more: "Show more control under the results"
+      - chat-search-states: "searching, no results, failed, timed out, disconnected (field-first banner), query too long"
+      - chat-search-open-at-message: "opening a hit pushes a history entry and scrolls to the matching message; Back restores the query and results; a notice shows when the message is gone"
+      - chat-search-shortcut: "bare / focuses the field outside inputs, textareas and contenteditable controls; new shortcut registry action"
+    remove: []
+  - id: floating-chat-history
+    url: /<workspace-slug>/issues/<issue-id>   # any workspace page with the floating chat open
+    keep:
+      - floating-chat-composer
+      - floating-chat-session-dropdown
+    change:
+      - chat-search-field: "same field as the first row of the history popover"
+      - chat-search-results: "same list rows, ordering and actions, inside the popover"
+      - chat-search-states: "default, results, no results and failed, as drawn in frames 13 to 16"
+    remove: []
