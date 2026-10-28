@@ -32,6 +32,10 @@ var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget
 // started category, so the budget names it besides the done and closed ones.
 const statusMerged = "merged"
 
+// statusAgentReview is the Default workflow's agent review step, a custom
+// started status that hands the issue to its reviewer.
+const statusAgentReview = "agent_review"
+
 // RunTarget is the run an enqueue asks for: the agent that would receive it
 // and what asked (comment, mention, retry...). The guard needs both to tell the
 // reviewer's first run on a head from other bookkeeping, and to say what it
@@ -176,6 +180,13 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	return ReviewGate{}, ErrRunBudgetExhausted
 }
 
+// IsReviewStatus reports whether a status hands the issue to its reviewer: the
+// built-in in_review, and the Default workflow's agent_review step. The
+// workflow definition has no review marker, so the two keys are named here.
+func IsReviewStatus(status string) bool {
+	return status == issuestatus.InReview || status == statusAgentReview
+}
+
 // IsFinishedStatus reports whether a status ends the issue's work: merged, or
 // any done or closed category status.
 func IsFinishedStatus(ctx context.Context, q issuestatus.Querier, workspaceID pgtype.UUID, status string) bool {
@@ -192,13 +203,13 @@ func isFinishedStatus(ctx context.Context, q *db.Queries, issue db.Issue) bool {
 
 // reviewHeadOf names the PR head the run reviews and whether that head's first
 // review was already admitted. Only the issue's assignee while the issue is in
-// in_review is the reviewer, so a leader's, a mention's or an earlier
+// a review status (IsReviewStatus) is the reviewer, so a leader's, a mention's or an earlier
 // in_progress run never counts, and only the one head the run is pinned to
 // (GetIssueReviewHeadSha) does. The guard only reads: the enqueue writes the
 // admission together with the task row, so a failed, deduplicated or rolled
 // back enqueue leaves the head unreviewed.
 func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target RunTarget) (head string, admitted bool, err error) {
-	if !target.ReviewRun || issue.Status != issuestatus.InReview || issue.AssigneeType.String != "agent" ||
+	if !target.ReviewRun || !IsReviewStatus(issue.Status) || issue.AssigneeType.String != "agent" ||
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}

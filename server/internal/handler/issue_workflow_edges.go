@@ -213,8 +213,8 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 // blocked alone (something else parked it), one whose workflow has no blocked
 // status, where the refusal alone holds the line, and one that is no longer in
 // the status the refused run was for: the hook runs after the refusal, and a
-// finish written in between (CHE-2226) must stay. An issue in review is blocked
-// only by a refusal of its reviewer.
+// finish written in between (CHE-2226) must stay. An issue in a review status is
+// blocked only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || issue.Status == issuestatus.Blocked || issue.Status != e.Status ||
@@ -223,7 +223,7 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}
 	// A refused run for anyone but the reviewer must not block the review: the
 	// reviewer's own first run on a head is still admitted.
-	if issue.Status == issuestatus.InReview && issue.AssigneeID != e.Target.AgentID {
+	if service.IsReviewStatus(issue.Status) && issue.AssigneeID != e.Target.AgentID {
 		return
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
