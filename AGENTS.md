@@ -26,6 +26,16 @@ Multica is a task management platform where people and agents collaborate on iss
 - Wire shared features into both web routes and the desktop router or overlay. Reuse existing guards/providers such as `DashboardGuard` in `packages/views/layout/`.
 - Each workspace declares its directly imported external dependencies. Use `catalog:` for shared dependencies; mobile pins Expo/React Native dependencies in its own manifest.
 
+## Settings-first features
+
+- Ship an opinionated default that works out of the box; every opinion is a setting. Gates use `off | warn | block`.
+- Generalize the incident into a primitive: for example, catalog-based status entry conditions attached to upstream project-workflow columns, not a one-off "no draft PR in in_review" check.
+- Provide presets such as Solo, Team with review, and Cheese strict so new workspaces are usable without tuning.
+- Keep rules in settings, not prose. Agents read settings through the CLI; skills point to the setting.
+- Keep fork cost low: use a generic settings store, not a new column or migration per feature; prefer shapes upstream can accept.
+
+Each setting has a named default, a reason, and a scope (`workspace`, `project`, or `issue`). Review settings nobody changes for 30 days.
+
 ## Development and Verification
 
 Use `Makefile`, workspace `package.json` files, and `pnpm-workspace.yaml` for current commands and versions. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and worktree operations.
