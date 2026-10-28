@@ -99,6 +99,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
+	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
+	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,

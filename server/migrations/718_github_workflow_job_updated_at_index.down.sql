@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS github_workflow_job_updated_at_idx;
