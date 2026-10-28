@@ -20,9 +20,11 @@ FROM workspace w
 WHERE w.id = $1;
 
 -- name: GetLatestIssuePREventObservedAt :one
+-- Per-head watermark: head order outranks time, so an observation of another
+-- head must never mark a current-head event as older.
 SELECT max(observed_at)::timestamptz AS observed_at
 FROM issue_pr_event
-WHERE issue_id = $1 AND pull_request_id = $2;
+WHERE issue_id = $1 AND pull_request_id = $2 AND head_sha = $3;
 
 -- name: InsertIssuePREvent :execrows
 INSERT INTO issue_pr_event (
@@ -36,3 +38,4 @@ SELECT api_mergeable, checks_rollup_state, snapshot_head_sha
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;
+

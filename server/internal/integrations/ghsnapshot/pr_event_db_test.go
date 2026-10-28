@@ -189,3 +189,57 @@ func TestPREventSwitchOffStopsCapture(t *testing.T) {
 		t.Fatalf("other kind outcome = %v, want [accepted]", out)
 	}
 }
+
+func (w prEventWorld) capture(t *testing.T, kind PREventKind, head string, observed time.Time) PREventOutcome {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	outcomes, err := CapturePREvent(ctx, w.q.WithTx(tx), PREventInput{
+		PRID: w.pr.ID, Kind: kind, HeadSHA: head, BaseSHA: "base", ObservedAt: observed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %v, want exactly one", outcomes)
+	}
+	return outcomes[0]
+}
+
+func TestPREventOldHeadObservationDoesNotSupersedeCurrentHead(t *testing.T) {
+	w := seedPREventWorld(t, `{}`)
+	if _, err := w.pool.Exec(context.Background(), `UPDATE github_pull_request SET head_sha='B' WHERE id=$1`, w.pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Unix(1_700_100_000, 0)
+	if got := w.capture(t, PREventHeadChanged, "B", t0); got != PREventAccepted {
+		t.Fatalf("current-head event = %s, want accepted", got)
+	}
+	if got := w.capture(t, PREventConflict, "A", t0.Add(2*time.Minute)); got != PREventSuperseded {
+		t.Fatalf("old-head event = %s, want superseded", got)
+	}
+	if got := w.capture(t, PREventChecksFailed, "B", t0.Add(time.Minute)); got != PREventAccepted {
+		t.Fatalf("current-head checks after a superseded old-head observation = %s, want accepted", got)
+	}
+}
+
+func TestPREventDeletingIssueRemovesItsEvents(t *testing.T) {
+	w := seedPREventWorld(t, `{}`)
+	w.capture(t, PREventConflict, "A", time.Unix(1_700_100_000, 0))
+	if len(w.events(t)) != 1 {
+		t.Fatalf("events before delete = %+v, want one", w.events(t))
+	}
+	if err := w.q.DeleteIssue(context.Background(), db.DeleteIssueParams{ID: parseUUID(w.issueID), WorkspaceID: w.wsID}); err != nil {
+		t.Fatal(err)
+	}
+	if events := w.events(t); len(events) != 0 {
+		t.Fatalf("events retained after deleting their issue = %+v, want none", events)
+	}
+}

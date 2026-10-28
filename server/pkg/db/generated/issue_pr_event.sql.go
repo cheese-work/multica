@@ -35,16 +35,19 @@ func (q *Queries) GetGitHubPRSnapshotState(ctx context.Context, id pgtype.UUID) 
 const getLatestIssuePREventObservedAt = `-- name: GetLatestIssuePREventObservedAt :one
 SELECT max(observed_at)::timestamptz AS observed_at
 FROM issue_pr_event
-WHERE issue_id = $1 AND pull_request_id = $2
+WHERE issue_id = $1 AND pull_request_id = $2 AND head_sha = $3
 `
 
 type GetLatestIssuePREventObservedAtParams struct {
 	IssueID       pgtype.UUID `json:"issue_id"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	HeadSha       string      `json:"head_sha"`
 }
 
+// Per-head watermark: head order outranks time, so an observation of another
+// head must never mark a current-head event as older.
 func (q *Queries) GetLatestIssuePREventObservedAt(ctx context.Context, arg GetLatestIssuePREventObservedAtParams) (pgtype.Timestamptz, error) {
-	row := q.db.QueryRow(ctx, getLatestIssuePREventObservedAt, arg.IssueID, arg.PullRequestID)
+	row := q.db.QueryRow(ctx, getLatestIssuePREventObservedAt, arg.IssueID, arg.PullRequestID, arg.HeadSha)
 	var observed_at pgtype.Timestamptz
 	err := row.Scan(&observed_at)
 	return observed_at, err

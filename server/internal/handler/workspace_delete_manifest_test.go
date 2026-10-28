@@ -138,6 +138,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
 	"issue_pull_request_exclusion":       workspaceDelete,
+	"issue_pr_event":                     workspaceDelete, // CHE-2298 a1 PR event store; no FKs, swept by DeleteWorkspace.
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,

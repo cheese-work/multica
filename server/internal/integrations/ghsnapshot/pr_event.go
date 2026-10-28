@@ -47,7 +47,7 @@ type PREventInput struct {
 // lock that serializes capture per PR is held until that transaction ends.
 //
 // Ordering: an event for a head other than the PR's current head, or observed
-// before the latest stored event of that (issue, PR), is stored as superseded
+// before the latest stored event of that (issue, PR, head), is stored as superseded
 // and never delivered. Checks for a non-current head are dropped outright.
 func CapturePREvent(ctx context.Context, q *db.Queries, in PREventInput) ([]PREventOutcome, error) {
 	pr, err := q.LockGitHubPRForEvent(ctx, in.PRID)
@@ -87,7 +87,7 @@ func capturePREventForIssue(ctx context.Context, q *db.Queries, pr db.LockGitHub
 	status, outcome := "accepted", PREventAccepted
 	superseded := staleHead
 	if !superseded {
-		latest, err := q.GetLatestIssuePREventObservedAt(ctx, db.GetLatestIssuePREventObservedAtParams{IssueID: issueID, PullRequestID: in.PRID})
+		latest, err := q.GetLatestIssuePREventObservedAt(ctx, db.GetLatestIssuePREventObservedAtParams{IssueID: issueID, PullRequestID: in.PRID, HeadSha: in.HeadSHA})
 		if err != nil {
 			return "", err
 		}
