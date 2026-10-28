@@ -335,6 +335,22 @@ LIMIT @page_limit;
 -- COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 -- that passes no id still inserts — it just gets a random v4, exactly as before.
 -- The same pattern is used by every INSERT listed in pkg/dbid's write table.
+-- gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
+-- admitted as the issue's reviewer records the head in issue_review_admission in
+-- this same statement, so the claim and the task row commit or roll back
+-- together. When the budget is spent (gate_required) only the statement that
+-- inserted the claim writes a task; a concurrent loser writes none and the
+-- caller sees no row.
+WITH review_claim AS (
+    INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
+    SELECT i.workspace_id, i.id, sqlc.narg('gate_head')::text, $1
+    FROM issue i
+    WHERE i.id = $3
+      AND COALESCE(sqlc.narg('gate_head')::text, '') <> ''
+      AND lock_task_owner_rows($1, $3, $2)
+    ON CONFLICT (issue_id, head_sha) DO NOTHING
+    RETURNING issue_id
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -369,6 +385,7 @@ SELECT
     (SELECT i.status FROM issue i WHERE i.id = $3),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
+  AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one

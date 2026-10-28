@@ -39,6 +39,28 @@ func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const hasIssueReviewAdmission = `-- name: HasIssueReviewAdmission :one
+SELECT EXISTS (
+    SELECT 1 FROM issue_review_admission
+    WHERE issue_id = $1::uuid AND head_sha = $2::text
+)
+`
+
+type HasIssueReviewAdmissionParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Whether the issue's first review of this PR head was already admitted. The
+// row is written with the task row (CreateAgentTask), so it exists exactly when
+// a run was admitted as the reviewer for that head.
+func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueReviewAdmissionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueReviewAdmission, arg.IssueID, arg.HeadSha)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
 WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
@@ -102,6 +124,33 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const raiseIssueMaxRuns = `-- name: RaiseIssueMaxRuns :one
+UPDATE issue SET max_runs_override = $1::int
+WHERE id = $2::uuid AND workspace_id = $3::uuid
+  AND $1::int > COALESCE(max_runs_override, $4::int)
+RETURNING max_runs_override
+`
+
+type RaiseIssueMaxRunsParams struct {
+	Runs        int32       `json:"runs"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowMax int32       `json:"workflow_max"`
+}
+
+// Sets the issue's own run cap, only upward from the cap now in force.
+func (q *Queries) RaiseIssueMaxRuns(ctx context.Context, arg RaiseIssueMaxRunsParams) (pgtype.Int4, error) {
+	row := q.db.QueryRow(ctx, raiseIssueMaxRuns,
+		arg.Runs,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.WorkflowMax,
+	)
+	var max_runs_override pgtype.Int4
+	err := row.Scan(&max_runs_override)
+	return max_runs_override, err
 }
 
 const scheduleWorkflowEdges = `-- name: ScheduleWorkflowEdges :exec
