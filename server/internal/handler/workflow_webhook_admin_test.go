@@ -78,7 +78,7 @@ func whActivity(t *testing.T, workflowID, action string) int {
 	return n
 }
 
-// Case 17: create returns the secret once; the secret opens with the box and
+// create returns the secret once; the secret opens with the box and
 // matches the whs_ shape; list never carries it.
 func TestWorkflowWebhookAdminCreateShowsSecretOnce(t *testing.T) {
 	wf := whAdminWorkflow(t)
@@ -114,7 +114,7 @@ func TestWorkflowWebhookAdminCreateShowsSecretOnce(t *testing.T) {
 	}
 }
 
-// Case 18: bad name 400, duplicate name 409, out-of-range rate 400.
+// bad name 400, duplicate name 409, out-of-range rate 400.
 func TestWorkflowWebhookAdminValidation(t *testing.T) {
 	wf := whAdminWorkflow(t)
 	whCreate(t, wf, "ci")
@@ -127,7 +127,7 @@ func TestWorkflowWebhookAdminValidation(t *testing.T) {
 	}
 }
 
-// Case 19: rotate shows a new secret once, keeps the old one valid for 24 h,
+// rotate shows a new secret once, keeps the old one valid for 24 h,
 // and writes one activity row. A second rotate replaces the previous secret.
 func TestWorkflowWebhookAdminRotateKeepsPreviousFor24h(t *testing.T) {
 	wf := whAdminWorkflow(t)
@@ -161,7 +161,7 @@ func TestWorkflowWebhookAdminRotateKeepsPreviousFor24h(t *testing.T) {
 	}
 }
 
-// Case 20: disable stops the endpoint, drops the previous secret, writes one
+// disable stops the endpoint, drops the previous secret, writes one
 // row, and a second disable or a rotate afterwards is a 404 that writes none.
 func TestWorkflowWebhookAdminDisable(t *testing.T) {
 	wf := whAdminWorkflow(t)
@@ -183,7 +183,7 @@ func TestWorkflowWebhookAdminDisable(t *testing.T) {
 	}
 }
 
-// Case 21: only the workflow owner and workspace admins manage endpoints; a
+// only the workflow owner and workspace admins manage endpoints; a
 // plain member gets 403 on every verb, writes nothing, and cannot list.
 func TestWorkflowWebhookAdminNeedsOwnerOrAdmin(t *testing.T) {
 	wf := whAdminWorkflow(t)
@@ -200,7 +200,7 @@ func TestWorkflowWebhookAdminNeedsOwnerOrAdmin(t *testing.T) {
 	}
 }
 
-// Case 22: without a secret box the API answers 503 and stores nothing.
+// without a secret box the API answers 503 and stores nothing.
 func TestWorkflowWebhookAdminWithoutBoxIs503(t *testing.T) {
 	wf := whAdminWorkflow(t)
 	ep := whCreate(t, wf, "ci")
@@ -215,7 +215,7 @@ func TestWorkflowWebhookAdminWithoutBoxIs503(t *testing.T) {
 	}
 }
 
-// Case 23: an endpoint of another workflow is not reachable through this one.
+// an endpoint of another workflow is not reachable through this one.
 func TestWorkflowWebhookAdminScopedToWorkflow(t *testing.T) {
 	wf := whAdminWorkflow(t)
 	other := whAdminWorkflow(t)
