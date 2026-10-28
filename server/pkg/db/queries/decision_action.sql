@@ -42,7 +42,7 @@ FOR UPDATE OF answer NOWAIT;
 SELECT * FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR UPDATE NOWAIT;
 
 -- name: LockDecisionActionMemberNowait :one
-SELECT id FROM member
+SELECT * FROM member
 WHERE workspace_id = sqlc.arg('workspace_id') AND user_id = sqlc.arg('user_id')
 FOR SHARE NOWAIT;
 

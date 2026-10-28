@@ -30,7 +30,9 @@ func newPendingSecretAction(test *testing.T) pendingAction {
 	var created actionResponse
 	fixture.respond(test, body, http.StatusCreated, &created)
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
-	return pendingAction{fixture, created.ID, created.Action.ID}
+	action := pendingAction{fixture, created.ID, created.Action.ID}
+	action.setEnvAuthority(test, true)
+	return action
 }
 
 func (action pendingAction) hash(test *testing.T) string {
