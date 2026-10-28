@@ -116,43 +116,68 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
-	code, err := newCode()
+	row, err := service.mailCeremony(ctx, userID, email, ceremony{
+		Purpose: ceremonyEnroll, Session: sessionData, Subject: codeSubject, Lead: "Your passkey enrollment code is",
+	})
 	if err != nil {
 		return Started{}, err
 	}
+	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}, nil
+}
 
+const (
+	ceremonyEnroll = "enroll"
+	ceremonyRevoke = "revoke"
+)
+
+// ceremony is what mailCeremony stores and mails: a code the user must type
+// back, optionally bound to one passkey.
+type ceremony struct {
+	Purpose string
+	Target  pgtype.UUID
+	Session []byte
+	Subject string
+	Lead    string
+}
+
+// mailCeremony opens the user's one code ceremony, superseding any open one,
+// and mails its code. The ceremony commits only after the provider took the
+// mail.
+func (service *Service) mailCeremony(ctx context.Context, userID pgtype.UUID, email string, kind ceremony) (db.InsertPasskeyEnrollCeremonyRow, error) {
+	code, err := newCode()
+	if err != nil {
+		return db.InsertPasskeyEnrollCeremonyRow{}, err
+	}
 	tx, err := service.Tx.Begin(ctx)
 	if err != nil {
-		return Started{}, err
+		return db.InsertPasskeyEnrollCeremonyRow{}, err
 	}
 	defer tx.Rollback(ctx)
 	queries := db.New(tx)
 	if err := lockEnrollment(ctx, queries, userID, true); err != nil {
-		return Started{}, err
+		return db.InsertPasskeyEnrollCeremonyRow{}, err
 	}
 	if err := queries.ConsumeOpenPasskeyEnrollCeremony(ctx, userID); err != nil {
-		return Started{}, err
+		return db.InsertPasskeyEnrollCeremonyRow{}, err
 	}
 	row, err := queries.InsertPasskeyEnrollCeremony(ctx, db.InsertPasskeyEnrollCeremonyParams{
-		UserID: userID, CodeHmac: codeMAC(service.CodeKey, userID, code), SessionData: sessionData,
+		UserID: userID, CodeHmac: codeMAC(service.CodeKey, userID, code), SessionData: kind.Session,
+		Purpose: kind.Purpose, TargetPasskeyID: kind.Target,
 	})
 	if err != nil {
-		return Started{}, busyOr(err)
+		return row, busyOr(err)
 	}
 	if err := queries.CountPasskeyEnrollStart(ctx, userID); err != nil {
-		return Started{}, err
+		return row, err
 	}
-	body := fmt.Sprintf("<p>Your passkey enrollment code is</p><p><b>%s</b></p><p>It expires in 10 minutes. If you did not ask for it, ignore this email.</p>", code)
-	if err := service.Mail.SendPrivileged(email, codeSubject, body); err != nil {
+	body := fmt.Sprintf("<p>%s</p><p><b>%s</b></p><p>It expires in 10 minutes. If you did not ask for it, ignore this email.</p>", kind.Lead, code)
+	if err := service.Mail.SendPrivileged(email, kind.Subject, body); err != nil {
 		if errors.Is(err, ErrDeliveryUnavailable) {
-			return Started{}, err
+			return row, err
 		}
-		return Started{}, fmt.Errorf("%w: %v", ErrDeliveryUnavailable, err)
+		return row, fmt.Errorf("%w: %v", ErrDeliveryUnavailable, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Started{}, err
-	}
-	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}, nil
+	return row, tx.Commit(ctx)
 }
 
 // lockEnrollment takes the user's limit row, the first lock of every
@@ -202,30 +227,16 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 		return busyOr(err)
 	case ceremony.UserID != userID:
 		return forbidden("ceremony_not_yours: no such enrollment")
+	case ceremony.Purpose != ceremonyEnroll:
+		return forbidden("ceremony_not_yours: no such enrollment")
 	case ceremony.ConsumedAt.Valid:
 		return conflict("ceremony_used: start a new enrollment")
 	case ceremony.Expired:
 		return conflict("ceremony_expired: start a new enrollment")
 	}
 
-	var after func()
 	reject := func(refusal Refusal) error {
-		attempts, err := queries.BumpPasskeyEnrollAttempt(ctx, ceremony.ID)
-		if err != nil {
-			return err
-		}
-		if attempts >= maxCodeAttempts {
-			if after, err = service.lockIfRepeated(ctx, queries, userID, email); err != nil {
-				return err
-			}
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		if after != nil {
-			after()
-		}
-		return refusal
+		return service.spendAttempt(ctx, tx, queries, ceremony.ID, userID, email, refusal)
 	}
 
 	if !hmac.Equal(ceremony.CodeHmac, codeMAC(service.CodeKey, userID, code)) {
@@ -269,6 +280,28 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	}
 	service.notify(email, enrolledSubject, "<p>A passkey was added to your Multica account. If this was not you, contact support now.</p>")
 	return nil
+}
+
+// spendAttempt records one failed try on the ceremony and commits that spend
+// even though the call fails. The fifth failed try may lock enrollment.
+func (service *Service) spendAttempt(ctx context.Context, tx pgx.Tx, queries *db.Queries, ceremonyID, userID pgtype.UUID, email string, refusal Refusal) error {
+	attempts, err := queries.BumpPasskeyEnrollAttempt(ctx, ceremonyID)
+	if err != nil {
+		return err
+	}
+	var after func()
+	if attempts >= maxCodeAttempts {
+		if after, err = service.lockIfRepeated(ctx, queries, userID, email); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if after != nil {
+		after()
+	}
+	return refusal
 }
 
 // lockIfRepeated locks enrollment for 24 hours once the third ceremony in a

@@ -15,10 +15,9 @@ import (
 
 const enrollBodyLimit = 64 << 10
 
-// enrollCaller gates both enrollment endpoints. Only an interactive browser
-// session may enroll: a CLI token, PAT or machine actor never adds a passkey.
-// The flag stays closed until the mailbox-isolation decision is recorded.
-func (handler *Handler) enrollCaller(writer http.ResponseWriter, request *http.Request) (pgtype.UUID, bool) {
+// interactiveCaller admits only an interactive browser session: a CLI token,
+// PAT or machine actor never changes a human's passkeys.
+func interactiveCaller(writer http.ResponseWriter, request *http.Request) (pgtype.UUID, bool) {
 	var userID pgtype.UUID
 	if request.Header.Get("X-Actor-Source") != "interactive_jwt" {
 		writeError(writer, http.StatusForbidden, errNotTheHuman.message)
@@ -27,6 +26,16 @@ func (handler *Handler) enrollCaller(writer http.ResponseWriter, request *http.R
 	userID, err := util.ParseUUID(request.Header.Get("X-User-ID"))
 	if err != nil {
 		writeError(writer, http.StatusForbidden, errNotTheHuman.message)
+		return userID, false
+	}
+	return userID, true
+}
+
+// enrollCaller gates both enrollment endpoints. The flag stays closed until
+// the mailbox-isolation decision is recorded.
+func (handler *Handler) enrollCaller(writer http.ResponseWriter, request *http.Request) (pgtype.UUID, bool) {
+	userID, ok := interactiveCaller(writer, request)
+	if !ok {
 		return userID, false
 	}
 	if !featureflags.PasskeyEnrollmentEnabled(request.Context(), handler.FeatureFlags) {

@@ -62,6 +62,14 @@ func (service *Service) IssueApproval(ctx context.Context, userID, actionID pgty
 	if err != nil {
 		return Issued{}, err
 	}
+	return service.issueAssertion(ctx, userID, PurposeDecisionApprove, actionID, rows, func(nonce []byte) []byte {
+		return approvalChallenge(actionID, payloadSHA256, nonce)
+	})
+}
+
+// issueAssertion opens the user's one open challenge, answerable by any of
+// their usable passkeys, over the bytes expect derives from the fresh nonce.
+func (service *Service) issueAssertion(ctx context.Context, userID pgtype.UUID, purpose Purpose, subjectID pgtype.UUID, rows []db.UserPasskey, expect func(nonce []byte) []byte) (Issued, error) {
 	if len(rows) == 0 {
 		return Issued{}, ErrNoPasskey
 	}
@@ -71,9 +79,9 @@ func (service *Service) IssueApproval(ctx context.Context, userID, actionID pgty
 		allowed[i] = protocol.CredentialDescriptor{Type: protocol.PublicKeyCredentialType, CredentialID: row.CredentialID}
 	}
 	var options []byte
-	challenge, err := IssueChallenge(ctx, service.Tx, userID, PurposeDecisionApprove, actionID, func(nonce []byte) ([]byte, error) {
+	challenge, err := IssueChallenge(ctx, service.Tx, userID, purpose, subjectID, func(nonce []byte) ([]byte, error) {
 		assertion, session, err := service.WebAuthn.BeginLogin(user,
-			webauthn.WithChallenge(approvalChallenge(actionID, payloadSHA256, nonce)),
+			webauthn.WithChallenge(expect(nonce)),
 			webauthn.WithUserVerification(protocol.VerificationRequired),
 			webauthn.WithAllowedCredentials(allowed))
 		if err != nil {

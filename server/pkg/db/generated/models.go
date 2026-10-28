@@ -1764,15 +1764,17 @@ type PasskeyAssertionChallenge struct {
 }
 
 type PasskeyEnrollCeremony struct {
-	ID          pgtype.UUID        `json:"id"`
-	UserID      pgtype.UUID        `json:"user_id"`
-	CodeHmac    []byte             `json:"code_hmac"`
-	SessionData []byte             `json:"session_data"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	Attempts    int32              `json:"attempts"`
-	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
-	FailedAt    pgtype.Timestamptz `json:"failed_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ID              pgtype.UUID        `json:"id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	CodeHmac        []byte             `json:"code_hmac"`
+	SessionData     []byte             `json:"session_data"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	Attempts        int32              `json:"attempts"`
+	ConsumedAt      pgtype.Timestamptz `json:"consumed_at"`
+	FailedAt        pgtype.Timestamptz `json:"failed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Purpose         string             `json:"purpose"`
+	TargetPasskeyID pgtype.UUID        `json:"target_passkey_id"`
 }
 
 type PasskeyEnrollLimit struct {
