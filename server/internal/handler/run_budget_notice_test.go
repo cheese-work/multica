@@ -252,6 +252,30 @@ func TestRunBudgetWarningAtEightyPercentOfAdmission(t *testing.T) {
 	}
 }
 
+// A deferred channel admission (a media-gated /issue task) is a run too: the
+// one that makes 4 of 5 writes the warning.
+func TestRunBudgetWarningCoversDeferredChannelAdmission(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2310012, mergeEdgeSteps, 5)
+	c.spend(t, 3)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := testHandler.TaskService.EnqueueDeferredChannelIssueTask(context.Background(), issue, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("deferred admission refused: %v", err)
+	}
+	if err := testHandler.TaskService.PromoteDeferredChannelIssueTask(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if comments, inbox := c.waitNotices(t, service.RunBudgetKindWarn80, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("notices after a deferred admission at 4 of 5 = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
+
 // warnEvent is what guardRunBudget fires when an admission would make the 4th
 // of 5 runs, before that admission's insert has committed.
 func (c budgetCase) warnEvent(t *testing.T) service.RunBudgetEvent {

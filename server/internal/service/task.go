@@ -1562,6 +1562,9 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
 			FireAt:               fireAt,
 		})
+		if err == nil {
+			noteRunInserted(ctx, queries, createParams.IssueID)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
 	}

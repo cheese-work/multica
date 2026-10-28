@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -481,13 +482,33 @@ func TestDMReplyUpdatePublishesInboxUpdated(t *testing.T) {
 		t.Skip("database not available")
 	}
 	resetDMInbox(t)
+	// The bus has no unsubscribe, so the handlers outlive this test and later
+	// notice goroutines from other tests publish into them: guard the slice and
+	// stop recording once the test is over.
+	var mu sync.Mutex
 	var types []string
-	testHandler.Bus.Subscribe(protocol.EventInboxNew, func(e events.Event) { types = append(types, e.Type) })
-	testHandler.Bus.Subscribe(protocol.EventInboxUpdated, func(e events.Event) { types = append(types, e.Type) })
+	recording := true
+	t.Cleanup(func() {
+		mu.Lock()
+		recording = false
+		mu.Unlock()
+	})
+	record := func(e events.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if recording {
+			types = append(types, e.Type)
+		}
+	}
+	testHandler.Bus.Subscribe(protocol.EventInboxNew, record)
+	testHandler.Bus.Subscribe(protocol.EventInboxUpdated, record)
 	agentID, sessionID, _, _ := setupDirectChatSession(t, context.Background(), "events")
 	dmReply(t, agentID, sessionID, "one")
 	dmReply(t, agentID, sessionID, "two")
-	if len(types) != 2 || types[0] != protocol.EventInboxNew || types[1] != protocol.EventInboxUpdated {
-		t.Fatalf("events = %v, want [inbox:new inbox:updated]", types)
+	mu.Lock()
+	got := append([]string(nil), types...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != protocol.EventInboxNew || got[1] != protocol.EventInboxUpdated {
+		t.Fatalf("events = %v, want [inbox:new inbox:updated]", got)
 	}
 }
