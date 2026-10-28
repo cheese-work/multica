@@ -37,7 +37,7 @@ func snapshotServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 func writeTestPR(w http.ResponseWriter, sha string, mergeable any, state string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"head":      map[string]any{"sha": sha, "repo": map[string]any{"full_name": "external/fork"}},
-		"base":      map[string]any{"ref": "release/1.x"},
+		"base":      map[string]any{"ref": "release/1.x", "sha": "base-tip"},
 		"mergeable": mergeable, "mergeable_state": state,
 	})
 }
@@ -86,6 +86,9 @@ func TestFetchPRSnapshotRESTPagination(t *testing.T) {
 	snap, err := FetchPRSnapshot(context.Background(), newTestClient(t, srv.URL), 1, "o", "r", 5)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if snap.BaseSHA != "base-tip" {
+		t.Fatalf("BaseSHA = %q, want the base branch tip", snap.BaseSHA)
 	}
 	if snap.BaseRef != "release/1.x" {
 		t.Fatalf("BaseRef = %q, want the PR's base branch (CHE-1417)", snap.BaseRef)
