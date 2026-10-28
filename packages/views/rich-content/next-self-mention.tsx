@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import { useAuthStore } from "@multica/core/auth";
 import { useT } from "../i18n";
@@ -10,6 +10,12 @@ import { useT } from "../i18n";
 // window, so a mention further down has no element to find. Only "where is the
 // viewport" is read from the DOM, off the row index Virtuoso stamps on every
 // mounted row.
+
+// Virtuoso scrolls to an estimated offset for rows it has not measured, so one
+// jump can land short or long. Re-issue it each frame until the row sits at the
+// top of the viewport, for at most ~1s, and give up the moment the reader scrolls.
+const SETTLE_TOLERANCE_PX = 40;
+const SETTLE_MAX_FRAMES = 60;
 
 const FENCED_CODE = /```[\s\S]*?```|`[^`\n]*`/g;
 
@@ -53,6 +59,7 @@ interface NextSelfMentionProps {
 export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, className }: NextSelfMentionProps) {
   const { t } = useT("editor");
   const [visibleEnd, setVisibleEnd] = useState<number | null>(null);
+  const jumpId = useRef(0);
 
   useEffect(() => {
     if (!scrollEl) return;
@@ -63,6 +70,9 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, c
     };
     measure();
     scrollEl.addEventListener("scroll", measure, { passive: true });
+    const cancelJump = () => void jumpId.current++;
+    scrollEl.addEventListener("wheel", cancelJump, { passive: true });
+    scrollEl.addEventListener("touchstart", cancelJump, { passive: true });
     const resize = new ResizeObserver(measure);
     resize.observe(scrollEl);
     // Rows mount and unmount as Virtuoso windows the list.
@@ -71,6 +81,9 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, c
     return () => {
       cancelAnimationFrame(frame);
       scrollEl.removeEventListener("scroll", measure);
+      scrollEl.removeEventListener("wheel", cancelJump);
+      scrollEl.removeEventListener("touchstart", cancelJump);
+      cancelJump();
       resize.disconnect();
       mutations.disconnect();
     };
@@ -83,11 +96,26 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, c
     return out;
   }, [flags, visibleEnd, firstItemIndex]);
 
+  const jump = (target: number) => {
+    const id = ++jumpId.current;
+    let frames = 0;
+    const settle = () => {
+      if (!scrollEl || id !== jumpId.current || ++frames > SETTLE_MAX_FRAMES) return;
+      const row = scrollEl.querySelector(`[data-item-index="${target + firstItemIndex}"]`);
+      const offTop = row ? row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top : Infinity;
+      if (Math.abs(offTop) <= SETTLE_TOLERANCE_PX) return;
+      onJump(target);
+      requestAnimationFrame(settle);
+    };
+    onJump(target);
+    requestAnimationFrame(settle);
+  };
+
   if (below.length === 0) return null;
   return (
     <button
       type="button"
-      onClick={() => onJump(below[0]!)}
+      onClick={() => jump(below[0]!)}
       className={
         className ??
         "absolute bottom-28 right-6 z-20 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground shadow-md outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring"

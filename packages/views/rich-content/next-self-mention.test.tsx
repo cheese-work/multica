@@ -106,4 +106,37 @@ describe("NextSelfMention", () => {
     });
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  // A jump mounts row 3; `tops` is where it sits after each successive jump.
+  function jumpMounting(scroller: HTMLElement, tops: number[]) {
+    let calls = 0;
+    return vi.fn(() => {
+      let row = scroller.querySelector<HTMLElement>('[data-item-index="3"]');
+      if (!row) {
+        row = document.createElement("div");
+        row.setAttribute("data-item-index", "3");
+        scroller.append(row);
+      }
+      const top = tops[Math.min(calls++, tops.length - 1)]!;
+      row.getBoundingClientRect = () => ({ top, bottom: top + 40 }) as DOMRect;
+    });
+  }
+
+  it("re-issues the jump until the target row has settled at the top", () => {
+    // Estimated heights: the first two jumps land the row off the top.
+    const scroller = mountList({ 0: 0, 1: 50 });
+    const onJump = jumpMounting(scroller, [70, 55, 4]);
+    render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onJump).toHaveBeenCalledTimes(3);
+    expect(onJump).toHaveBeenCalledWith(3);
+  });
+
+  it("jumps once when the target row lands at the top", () => {
+    const scroller = mountList({ 0: 0, 1: 50 });
+    const onJump = jumpMounting(scroller, [4]);
+    render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onJump).toHaveBeenCalledTimes(1);
+  });
 });
