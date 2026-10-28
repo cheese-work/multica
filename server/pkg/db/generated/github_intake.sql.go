@@ -130,7 +130,7 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 }
 
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one
-SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id FROM issue
+SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override FROM issue
 JOIN issue_pull_request link ON link.issue_id=issue.id
 JOIN github_pull_request pull ON pull.id=link.pull_request_id AND pull.workspace_id=issue.workspace_id
 JOIN github_installation installation ON installation.workspace_id=issue.workspace_id AND installation.installation_id=pull.installation_id
@@ -187,6 +187,7 @@ func (q *Queries) GetGitHubRouteIssue(ctx context.Context, arg GetGitHubRouteIss
 		&i.DuplicateOfIssueID,
 		&i.WorkflowID,
 		&i.RequestedByID,
+		&i.MaxRunsOverride,
 	)
 	return i, err
 }
