@@ -67,7 +67,11 @@ func PreviewRunBudgetRaiseTo(credited, used, target int) (RunBudgetRaise, error)
 	return PreviewRunBudgetRaise(credited, used, target-max(credited, used))
 }
 
-// SuggestedRaiseTarget is the absolute limit the suggested raise sets.
+// SuggestedRaiseTarget is the absolute limit the suggested raise sets, or 0
+// when the platform maximum leaves no valid raise.
 func SuggestedRaiseTarget(credited, used int) int {
+	if MaxAllowedRaise(credited, used) == 0 {
+		return 0
+	}
 	return max(credited, used) + SuggestedRaise(credited, used)
 }

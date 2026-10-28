@@ -83,12 +83,13 @@ func TestRunBudgetRaiseToRefusesATargetBelowUsed(t *testing.T) {
 	}
 }
 
-func TestSuggestedRaiseTargetClearsTheRunsUsed(t *testing.T) {
+func TestSuggestedRaiseTargetClearsTheRunsUsedOrIsZeroAtTheMaximum(t *testing.T) {
 	for _, c := range []struct{ credited, used, want int }{
 		{40, 40, 50},     // at the limit: 10 more
 		{40, 45, 55},     // overdrawn: 10 more than used, not limit+5 = 45
 		{995, 995, 1000}, // clamped to the platform maximum
-		{1000, 1000, 1000},
+		{1000, 1000, 0},  // no valid raise: nothing above the maximum
+		{1000, 1010, 0},  // overdrawn past the maximum
 	} {
 		if got := SuggestedRaiseTarget(c.credited, c.used); got != c.want {
 			t.Errorf("SuggestedRaiseTarget(%d, %d) = %d, want %d", c.credited, c.used, got, c.want)

@@ -251,9 +251,21 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
-	h.postSystemComment(ctx, issue, fmt.Sprintf(
+	h.postSystemComment(ctx, issue, runBudgetBlockedMessage(refused, int(e.Runs), e.Max, raise))
+}
+
+// runBudgetBlockedMessage is the system comment for a budget block. Without a
+// raise command (the platform maximum leaves no valid raise) it names the
+// maximum and the recovery a person has instead.
+func runBudgetBlockedMessage(refused string, runs, max int, raise string) string {
+	if raise == "" {
+		return fmt.Sprintf(
+			"Blocked: %s was refused because the issue used %d of %d runs. The platform maximum of %d runs is reached, so no raise is possible. A person moves the issue's status to open a new run window.",
+			refused, runs, max, issueworkflow.MaxRunsPerIssueLimit)
+	}
+	return fmt.Sprintf(
 		"Blocked: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
-		refused, e.Runs, e.Max, raise))
+		refused, runs, max, raise)
 }
 
 // runBudgetRefusedRun names the run the budget refused in one phrase: the
@@ -275,13 +287,18 @@ func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetEx
 
 // runBudgetRaiseCommand is the command that lifts this issue's cap to leave
 // 10 runs after the ones already used, using the issue's identifier when the
-// workspace prefix is known.
+// workspace prefix is known. It is empty when the platform maximum leaves no
+// valid raise.
 func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
 	ref := uuidToString(issue.ID)
 	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
 		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
 	}
-	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, service.SuggestedRaiseTarget(max, used))
+	target := service.SuggestedRaiseTarget(max, used)
+	if target == 0 {
+		return ""
+	}
+	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target)
 }
 
 // postSystemComment adds a top-level system comment to the issue.
