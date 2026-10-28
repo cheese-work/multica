@@ -25,7 +25,7 @@
       "key_hint": "API 和 CLI 中透過 {{key}} 引用。",
       "created": "狀態已建立。API 和 CLI 中透過 {{key}} 引用。",
       "category": "分類",
-      "category_locked": "狀態建立後不能修改分類。",
+      "category_change_hint": "修改分類會改變該狀態下所有任務的行為，儲存前需要確認。",
       "description": "描述",
       "description_placeholder": "這個狀態對團隊意味著什麼",
       "color": "顏色",
@@ -44,6 +44,12 @@
       "save": "儲存",
       "saving": "儲存中…",
       "save_failed": "狀態儲存失敗。"
+    },
+    "category_change_dialog": {
+      "title": "修改分類？",
+      "description_other": "該狀態下的 {{count}} 個任務將從“{{from}}”變為“{{to}}”。",
+      "cancel": "取消",
+      "confirm": "修改分類"
     },
     "archive_dialog": {
       "retry": "重試歸檔",
