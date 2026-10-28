@@ -195,5 +195,8 @@
     "clear_filter": "필터 지우기",
     "no_matches": "일치하는 행이 없습니다",
     "close": "닫기"
+  },
+  "next_self_mention": {
+    "label": "내 다음 멘션"
   }
 }

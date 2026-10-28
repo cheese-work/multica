@@ -223,6 +223,9 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// workflowWriter overrides how workflow deliveries are stored; nil means the
+	// default transaction-per-workspace writer. Tests inject faults through it.
+	workflowWriter         workflowWriter
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor

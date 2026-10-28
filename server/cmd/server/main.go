@@ -790,6 +790,7 @@ func main() {
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
+	go h.RunGitHubIntakeReconciler(sweepCtx)
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
 	// installation and drives each channel.Channel. It is channel-agnostic,
@@ -866,6 +867,11 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
+	}
+	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
+	// condition is a 30-day cache; drop rows with no event for that long.
+	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
+		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)

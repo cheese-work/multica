@@ -197,7 +197,16 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	var publications []githubIntakePublication
 	for _, revision := range revisions {
 		if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
-			return "", "", nil, errors.New("github: missing canonical revision delivery")
+			// No signed delivery backs this revision (R3). Settle it as unsigned; retrying cannot create one.
+			if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
+				WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: "unsigned", Reason: "no_signed_delivery",
+			}); err != nil {
+				return "", "", nil, err
+			}
+			if priority["unsigned"] >= priority[state] {
+				state, reason = "unsigned", "no_signed_delivery"
+			}
+			continue
 		}
 		decision := githubIntakeDecision{State: revision.State, Reason: revision.Reason}
 		needsAdmission := revision.State == "deferred"
