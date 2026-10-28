@@ -1,4 +1,14 @@
 {
+  "media": {
+    "title": "媒体",
+    "more": "更多",
+    "open_in_new_window": "在新窗口中打开",
+    "open_failed": "无法打开媒体页面",
+    "loading": "正在加载媒体…",
+    "load_failed": "无法加载媒体",
+    "offline": "离线 — 正在显示上次加载的内容。",
+    "retry": "重试"
+  },
   "bubble_menu": {
     "bold": "加粗",
     "italic": "斜体",
