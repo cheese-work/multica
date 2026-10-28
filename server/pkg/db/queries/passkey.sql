@@ -23,3 +23,26 @@ UPDATE passkey_assertion_challenge SET superseded_at = now() WHERE id = $1;
 INSERT INTO passkey_assertion_challenge (nonce, user_id, purpose, subject_id, session_data, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
+
+-- name: LockPasskeyChallengeNowait :one
+SELECT challenge.*, (challenge.expires_at <= clock_timestamp())::bool AS expired
+FROM passkey_assertion_challenge challenge
+WHERE challenge.id = $1
+FOR UPDATE NOWAIT;
+
+-- name: ConsumePasskeyChallenge :exec
+UPDATE passkey_assertion_challenge SET consumed_at = now() WHERE id = $1;
+
+-- name: ListUsablePasskeys :many
+SELECT * FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL
+ORDER BY id;
+
+-- name: LockPasskeyByCredentialNowait :one
+SELECT * FROM user_passkey WHERE credential_id = $1 FOR UPDATE NOWAIT;
+
+-- name: AdvancePasskey :exec
+UPDATE user_passkey SET sign_count = $2, last_used_at = now() WHERE id = $1;
+
+-- name: MarkPasskeySuspect :exec
+UPDATE user_passkey SET suspect_at = now() WHERE id = $1 AND suspect_at IS NULL;

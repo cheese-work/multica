@@ -29,7 +29,20 @@ func newPendingAction(test *testing.T) pendingAction {
 	var created actionResponse
 	fixture.respond(test, body, http.StatusCreated, &created)
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
-	return pendingAction{fixture, created.ID, created.Action.ID}
+	action := pendingAction{fixture, created.ID, created.Action.ID}
+	action.setEnvAuthority(test, true)
+	return action
+}
+
+// setEnvAuthority makes the asked human the agent's owner, or a plain member
+// of an agent nobody owns.
+func (action pendingAction) setEnvAuthority(test *testing.T, granted bool) {
+	test.Helper()
+	owner := any(nil)
+	if granted {
+		owner = action.humanID
+	}
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $1 WHERE id = $2`, owner, action.agentID)
 }
 
 func (action pendingAction) decide(verb, userID, source string) *http.Request {
