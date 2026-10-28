@@ -86,6 +86,7 @@ afterEach(() => {
   configStore.getState().setServerVersion("");
   configStore.getState().setServerBuild("");
   configStore.getState().setServerCommit("");
+  configStore.setState({ daemonAppUrl: "" });
 });
 
 describe("HelpLauncher", () => {
@@ -128,6 +129,23 @@ describe("HelpLauncher", () => {
     expect(screen.getByRole("link", { name: /Docs/ })).toHaveAttribute(
       "href",
       href,
+    );
+  });
+
+  it("links Change log to the brand site when no app URL is configured", () => {
+    render(<HelpLauncher />);
+    expect(screen.getByRole("link", { name: /Change log/ })).toHaveAttribute(
+      "href",
+      "https://multica.ai/changelog",
+    );
+  });
+
+  it("links Change log to the instance app URL when configured", () => {
+    configStore.setState({ daemonAppUrl: "https://multica.example.com:19443/" });
+    render(<HelpLauncher />);
+    expect(screen.getByRole("link", { name: /Change log/ })).toHaveAttribute(
+      "href",
+      "https://multica.example.com:19443/changelog",
     );
   });
 
