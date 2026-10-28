@@ -242,6 +242,35 @@ func (q *Queries) GetGitHubWebhookIntake(ctx context.Context, deliveryGuid strin
 	return i, err
 }
 
+const hasGitHubWebhookRevisionBody = `-- name: HasGitHubWebhookRevisionBody :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_revision
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5 AND body_hash = $6)
+`
+
+type HasGitHubWebhookRevisionBodyParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepositoryID   int64       `json:"repository_id"`
+	ObjectKind     string      `json:"object_kind"`
+	ObjectID       int64       `json:"object_id"`
+	BodyHash       string      `json:"body_hash"`
+}
+
+func (q *Queries) HasGitHubWebhookRevisionBody(ctx context.Context, arg HasGitHubWebhookRevisionBodyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubWebhookRevisionBody,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasGitHubWebhookRevisionDispatch = `-- name: HasGitHubWebhookRevisionDispatch :one
 SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
 WHERE workspace_id = $1 AND revision_id = $2 AND state = 'dispatched')
@@ -396,6 +425,51 @@ func (q *Queries) ListDeferredGitHubWebhookIntakes(ctx context.Context, limit in
 	return items, nil
 }
 
+const listGitHubReconcilePullRequests = `-- name: ListGitHubReconcilePullRequests :many
+SELECT DISTINCT pull.id, pull.workspace_id, pull.installation_id, pull.repo_owner, pull.repo_name, pull.pr_number
+FROM github_pull_request pull
+JOIN issue_pull_request link ON link.pull_request_id = pull.id
+JOIN github_installation installation ON installation.workspace_id = pull.workspace_id AND installation.installation_id = pull.installation_id
+WHERE pull.state = 'open' AND pull.head_repo_same
+ORDER BY pull.id
+`
+
+type ListGitHubReconcilePullRequestsRow struct {
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	PrNumber       int32       `json:"pr_number"`
+}
+
+func (q *Queries) ListGitHubReconcilePullRequests(ctx context.Context) ([]ListGitHubReconcilePullRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubReconcilePullRequests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubReconcilePullRequestsRow{}
+	for rows.Next() {
+		var i ListGitHubReconcilePullRequestsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubWebhookRevisionsForWork = `-- name: ListGitHubWebhookRevisionsForWork :many
 SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at, id FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
@@ -473,6 +547,53 @@ func (q *Queries) ListGitHubWebhookRevisionsForWork(ctx context.Context, arg Lis
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleGitHubWebhookItems = `-- name: ListStaleGitHubWebhookItems :many
+SELECT 'intake'::text AS item, delivery_guid AS ref, state, reason,
+       EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
+FROM github_webhook_intake
+WHERE state = 'deferred' AND received_at < now() - $1::bigint * interval '1 second'
+UNION ALL
+SELECT 'revision'::text, id::text, state, reason,
+       EXTRACT(EPOCH FROM (now() - created_at))::bigint
+FROM github_webhook_revision
+WHERE state = 'unsigned' AND created_at < now() - $1::bigint * interval '1 second'
+ORDER BY 5 DESC
+`
+
+type ListStaleGitHubWebhookItemsRow struct {
+	Item       string `json:"item"`
+	Ref        string `json:"ref"`
+	State      string `json:"state"`
+	Reason     string `json:"reason"`
+	AgeSeconds int64  `json:"age_seconds"`
+}
+
+func (q *Queries) ListStaleGitHubWebhookItems(ctx context.Context, minAgeSeconds int64) ([]ListStaleGitHubWebhookItemsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleGitHubWebhookItems, minAgeSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleGitHubWebhookItemsRow{}
+	for rows.Next() {
+		var i ListStaleGitHubWebhookItemsRow
+		if err := rows.Scan(
+			&i.Item,
+			&i.Ref,
+			&i.State,
+			&i.Reason,
+			&i.AgeSeconds,
 		); err != nil {
 			return nil, err
 		}

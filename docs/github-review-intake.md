@@ -72,7 +72,8 @@ withdrawals. Intake immediately denies pending revisions for a signed dismissal
 or deletion, scoped to workspace, installation, repository and object kind/ID.
 Dispatched rows remain intact; the projection worker owns any later notify-only
 withdrawal note. Delivery deduplication does not replace revision admission or a
-committed dispatch receipt. R1/R2/R3 reconciliation remains separate (CHE-2209).
+committed dispatch receipt. R1/R2/R3 reconciliation is described under
+"Reconciler (R1/R2/R3)" below.
 
 Keep the deployed `github_review_members` mapping unset until gate G. Numeric
 ID `129714106` is not mapped by this change. No actionable dispatch, App
@@ -184,6 +185,32 @@ R2 must reconcile within that window. Missing revisions without a stored
 signed delivery follow R3 (`unsigned`, exact-snapshot approval required),
 never automatic admission from API text alone.
 
+## Reconciler (R1/R2/R3)
+
+`RunGitHubIntakeReconciler` runs every 10 minutes beside the intake sweep. It is
+stateless: GitHub's delivery log caps attempts and rate-limits redelivery.
+
+- **R1** retries a stored signed payload through the intake worker (CHE-2208).
+- **R2** lists `GET /app/hook/deliveries` with the App JWT (cursor from the
+  `Link` header, URL never followed, at most 5 pages) and asks
+  `POST /app/hook/deliveries/{id}/attempts` for a failed delivery older than the
+  10-minute grace. The redelivery is signed by GitHub and re-enters the normal
+  webhook path. It stops after 5 attempts per GUID and outside the 72-hour window.
+  Off unless `GITHUB_INTAKE_REDELIVER=1`.
+- **R3** reads open, same-repo pull requests through the REST API and records
+  each review, inline comment or PR comment with no stored signed event as an
+  `unsigned` revision. The body is hashed, never stored. Insert is idempotent on
+  the revision identity index. `unsigned` is never dispatched automatically.
+  Off unless `GITHUB_INTAKE_UNSIGNED=1`.
+- A revision with no `source_delivery_guid` settles as `unsigned`
+  (`no_signed_delivery`), not as a retrying error.
+- **Alert:** a `deferred` or `unsigned` row older than 1 hour logs
+  `slog.Error` with `alert=github_intake_stale` (item, ref, state, reason,
+  `age_seconds`). Routing that log line to a pager is an operator step.
+
+The approval half of R3 (exact-snapshot approval) lands in 5b. Notify-only until
+gate G: no actionable dispatch, no webhook replay, no App subscription change.
+
 ## Normalization and dispatch-time admission
 
 Content always comes from the stored HMAC-verified delivery, never a new API
@@ -237,8 +264,8 @@ signed lowercase equivalents. No GraphQL author login is used for trust.
 Tests cover T3, T4, T13, T14, T15, T22, T23, T24 and T25 in
 `admission_test.go` and `github_admission_test.go`. Dispatch exactly-once receipts
 and replacement of pending self-edits are worker duties (CHE-2208), not side
-effects of this admission check. Withdrawal projection remains a separate
-CHE-2209 duty.
+effects of this admission check. Withdrawal projection is not part of the
+reconciler.
 
 Migrations 728/729 replace body-only uniqueness with revision identity using
 concurrent indexes. Rolling back 729 can fail safely if newer revisions share a
