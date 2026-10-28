@@ -1,0 +1,12 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media editor/mermaid-viewer.test.tsx editor/mermaid-diagram.test.tsx editor/html-block-preview.test.tsx editor/attachment-preview-modal.test.tsx rich-content/rich-table.test.tsx attachments/attachment-preview-page.test.tsx locales/parity.test.ts
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+
+ Test Files  11 passed (11)
+      Tests  405 passed (405)
+   Start at  18:37:12
+   Duration  14.37s (transform 28.85s, setup 2.26s, import 59.46s, tests 22.00s, environment 9.31s)

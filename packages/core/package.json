@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "exports": {
+    "./paths/media": "./paths/media.ts",
     ".": "./index.ts",
     "./markdown": "./markdown/index.ts",
     "./types": "./types/index.ts",

@@ -1,0 +1,12 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media editor/extensions/code-block-view.test.tsx editor/html-block-preview.test.tsx editor/mermaid-diagram.test.tsx editor/attachment-preview-modal.test.tsx rich-content/rich-table.test.tsx attachments/attachment-preview-page.test.tsx
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+
+ Test Files  10 passed (10)
+      Tests  181 passed (181)
+   Start at  20:35:59
+   Duration  107.94s (transform 144.79s, setup 1.87s, import 340.44s, tests 19.58s, environment 12.31s)

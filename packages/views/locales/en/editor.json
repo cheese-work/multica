@@ -31,6 +31,16 @@
     "unchanged": "{{count}} unchanged lines",
     "retry": "Retry"
   },
+  "media": {
+    "title": "Media",
+    "more": "More",
+    "open_in_new_window": "Open in new window",
+    "open_failed": "Couldn't open the media page",
+    "loading": "Loading media…",
+    "load_failed": "Couldn't load media",
+    "offline": "Offline — showing the last loaded copy.",
+    "retry": "Retry"
+  },
   "bubble_menu": {
     "bold": "Bold",
     "italic": "Italic",
@@ -221,5 +231,8 @@
     "clear_filter": "Clear filter",
     "no_matches": "No matching rows",
     "close": "Close"
+  },
+  "next_self_mention": {
+    "label": "Next mention of me"
   }
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // maxPreviewTriggerIssues caps a single preview request so a pathological
@@ -85,6 +87,13 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	// Checked here as well as at the queue door so the activity names the actor
+	// whose status move or assignment was refused; the door has no actor.
+	var notConfirmed *service.StopNotConfirmedError
+	if err := service.StopGate(ctx, h.Queries, issue.ID); errors.As(err, &notConfirmed) {
+		h.recordStopNotConfirmed(ctx, issue, actorType, actorID, notConfirmed)
+		return false
+	}
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
@@ -324,4 +333,31 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 
 	resp.TotalCount = len(resp.Triggers)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordStopNotConfirmed leaves the reason a run did not start where people
+// read the issue: the gate is closed until the old run's daemon acks.
+func (h *Handler) recordStopNotConfirmed(ctx context.Context, issue db.Issue, actorType, actorID string, e *service.StopNotConfirmedError) {
+	details, _ := json.Marshal(map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		ActorType:   strToText(actorType),
+		ActorID:     optionalActorUUID(actorID),
+		Action:      "stop_not_confirmed",
+		Details:     details,
+	})
+	if err != nil {
+		slog.Warn("record stop-not-confirmed activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
+		"issue_id": uuidToString(issue.ID),
+		"entry": map[string]any{
+			"type": "activity", "id": uuidToString(activity.ID), "action": activity.Action,
+			"actor_type": actorType, "actor_id": actorID, "details": json.RawMessage(details),
+			"created_at": timestampToString(activity.CreatedAt),
+		},
+	})
 }
