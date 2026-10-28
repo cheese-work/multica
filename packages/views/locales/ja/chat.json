@@ -374,7 +374,6 @@
     "loading_more": "読み込み中…",
     "archived_badge": "アーカイブ済み",
     "title_match": "タイトル一致",
-    "actions_aria": "{{title}} の操作",
-    "message_gone": "このメッセージはこのチャットにはもうありません"
+    "actions_aria": "{{title}} の操作"
   }
 }

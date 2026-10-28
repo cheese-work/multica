@@ -66,9 +66,6 @@ export const useChatSearchStore = create<{
   queries: Partial<Record<ChatSearchScope, string>>;
   setQuery: (scope: ChatSearchScope, query: string) => void;
   clear: (scope: ChatSearchScope) => void;
-  /** A hit being opened: the message the target chat should scroll to once it shows. */
-  pendingJump: { sessionId: string; messageId: string } | null;
-  requestJump: (jump: { sessionId: string; messageId: string } | null) => void;
 }>((set) => ({
   queries: {},
   setQuery: (scope, query) => set((s) => ({ queries: { ...s.queries, [scope]: query } })),
@@ -77,6 +74,4 @@ export const useChatSearchStore = create<{
       const { [scope]: _dropped, ...rest } = s.queries;
       return { queries: rest };
     }),
-  pendingJump: null,
-  requestJump: (pendingJump) => set({ pendingJump }),
 }));

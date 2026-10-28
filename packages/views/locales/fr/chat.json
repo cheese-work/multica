@@ -383,7 +383,6 @@
     "loading_more": "Chargement…",
     "archived_badge": "Archivée",
     "title_match": "Titre correspondant",
-    "actions_aria": "Actions pour {{title}}",
-    "message_gone": "Ce message n'est plus dans cette discussion"
+    "actions_aria": "Actions pour {{title}}"
   }
 }

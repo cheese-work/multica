@@ -73,7 +73,7 @@ beforeEach(() => {
   searchChats.mockReset();
   onOpenHit.mockReset();
   onUnarchive.mockReset();
-  useChatSearchStore.setState({ queries: {}, pendingJump: null });
+  useChatSearchStore.setState({ queries: {} });
 });
 
 describe("ChatSearch", () => {

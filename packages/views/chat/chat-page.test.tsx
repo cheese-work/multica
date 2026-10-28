@@ -63,15 +63,25 @@ vi.mock("./components/chat-input", () => ({
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
     onSelectSession,
+    onOpenSearchHit,
   }: {
     onSelectSession: (s: { id: string; agent_id: string }) => void;
+    onOpenSearchHit?: (hit: { session_id: string; message_id: string | null }) => void;
   }) => (
-    <button
-      type="button"
-      onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
-    >
-      select-thread
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
+      >
+        select-thread
+      </button>
+      <button
+        type="button"
+        onClick={() => onOpenSearchHit?.({ session_id: "session-9", message_id: "msg-4" })}
+      >
+        open-message-hit
+      </button>
+    </>
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
@@ -726,6 +736,31 @@ describe("ChatPage back stack", () => {
     expect(activeSession()).toBeNull();
     back();
     expect(history.url).toBe("/acme/inbox");
+  });
+
+  it("opens a message hit with one pushed entry that targets the message, and Back returns to the list", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    fireEvent.click(screen.getByRole("button", { name: "open-message-hit" }));
+
+    expect(history.writes).toEqual([
+      { kind: "push", url: "/acme/chat?session=session-9&message=msg-4" },
+    ]);
+    expect(activeSession()).toBe("session-9");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-4");
+
+    // Landing drops ?message= by replace, so the entry count stays at one push.
+    fireEvent.click(screen.getByRole("button", { name: "settle-landed" }));
+    expect(history.entries).toEqual([
+      "/acme/inbox",
+      "/acme/chat",
+      "/acme/chat?session=session-9",
+    ]);
+
+    back();
+    expect(history.url).toBe("/acme/chat");
+    expect(activeSession()).toBeNull();
   });
 
   it("pushes a thread selection instead of replacing the list entry", () => {

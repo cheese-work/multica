@@ -383,7 +383,6 @@
     "loading_more": "Loading…",
     "archived_badge": "Archived",
     "title_match": "Title match",
-    "actions_aria": "Actions for {{title}}",
-    "message_gone": "That message is no longer in this chat"
+    "actions_aria": "Actions for {{title}}"
   }
 }

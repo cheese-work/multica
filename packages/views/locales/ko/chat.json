@@ -374,7 +374,6 @@
     "loading_more": "불러오는 중…",
     "archived_badge": "보관됨",
     "title_match": "제목 일치",
-    "actions_aria": "{{title}} 작업",
-    "message_gone": "이 메시지는 더 이상 이 채팅에 없습니다"
+    "actions_aria": "{{title}} 작업"
   }
 }

@@ -374,7 +374,6 @@
     "loading_more": "加载中…",
     "archived_badge": "已归档",
     "title_match": "标题匹配",
-    "actions_aria": "{{title}} 的操作",
-    "message_gone": "该消息已不在此聊天中"
+    "actions_aria": "{{title}} 的操作"
   }
 }

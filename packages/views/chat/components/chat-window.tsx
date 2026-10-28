@@ -55,6 +55,7 @@ import {
   PropertyPicker,
 } from "../../issues/components/pickers/property-picker";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { ChatSearch } from "./chat-search";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
@@ -903,6 +904,7 @@ export function ChatWindow() {
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
             onArchiveSession={dm.archive}
+            onUnarchiveSession={dm.unarchive}
             onTogglePin={dm.togglePin}
             onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
@@ -1240,6 +1242,7 @@ export function SessionDropdown({
   activeSessionId,
   onSelectSession,
   onArchiveSession,
+  onUnarchiveSession,
   onTogglePin,
   onOpenStatistics,
   renameRequest,
@@ -1250,6 +1253,7 @@ export function SessionDropdown({
   onSelectSession: (session: ChatSession) => void;
   /** Archives through the shared guarded door; the owner advances the selection. */
   onArchiveSession: (session: ChatSession) => unknown;
+  onUnarchiveSession: (session: ChatSession) => unknown;
   onTogglePin: (session: ChatSession) => unknown;
   onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
@@ -1689,18 +1693,32 @@ export function SessionDropdown({
           className="max-h-96 w-auto min-w-[max(16rem,var(--anchor-width,16rem))] max-w-96 gap-0 overflow-y-auto p-1"
           onClick={(e) => e.stopPropagation()}
         >
-          {historySessions.length === 0 ? (
-            <div className="px-2 py-1.5 text-caption text-muted-foreground">
-              {t(($) => $.window.no_previous)}
-            </div>
-          ) : (
-            <div role="group" aria-label={t(($) => $.window.history_group)}>
-              <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
-                {t(($) => $.window.history_group)}
+          <ChatSearch
+            scope="popover"
+            sessions={sessions}
+            agents={agents}
+            activeSessionId={activeSessionId}
+            onOpenHit={(hit) => {
+              const session = sessions.find((s) => s.id === hit.session_id);
+              if (session) handleSelectSession(session);
+            }}
+            onUnarchive={(session) => void onUnarchiveSession(session)}
+            onTogglePin={(session) => void onTogglePin(session)}
+            onArchive={(session) => void onArchiveSession(session)}
+          >
+            {historySessions.length === 0 ? (
+              <div className="px-2 py-1.5 text-caption text-muted-foreground">
+                {t(($) => $.window.no_previous)}
               </div>
-              {historySessions.map(renderRow)}
-            </div>
-          )}
+            ) : (
+              <div role="group" aria-label={t(($) => $.window.history_group)}>
+                <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
+                  {t(($) => $.window.history_group)}
+                </div>
+                {historySessions.map(renderRow)}
+              </div>
+            )}
+          </ChatSearch>
         </PopoverContent>
       </Popover>
     </>
