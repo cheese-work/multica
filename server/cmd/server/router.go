@@ -2292,6 +2292,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteIssueWorkflow)
 					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
+					r.Get("/webhooks", h.ListWorkflowWebhooks)
+					r.Post("/webhooks", h.CreateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/rotate", h.RotateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/disable", h.DisableWorkflowWebhook)
 				})
 			})
 
