@@ -36,7 +36,11 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
 import { derivePRMergeStatus } from "@multica/core/github";
 import { useCurrentWorkspace } from "@multica/core/paths";
-import { issueStatusArchiveConflictCount, createIssueStatusListStore } from "@multica/core/issue-statuses";
+import {
+  issueStatusArchiveConflictCount,
+  issueStatusCategoryChangeConflictCount,
+  createIssueStatusListStore,
+} from "@multica/core/issue-statuses";
 import { baselineFromQuery } from "@multica/core/issue-views/baseline";
 import { IssueSurfaceWithStore } from "../../issues/surface/issue-surface";
 import { memberListOptions } from "@multica/core/workspace/queries";
@@ -627,6 +631,8 @@ function StatusEditorDialog({
   const update = useUpdateIssueStatus();
   const [draft, setDraft] = useState<StatusDraft>(EMPTY_DRAFT);
   const [iconChanged, setIconChanged] = useState(false);
+  // Set when the server asks the admin to confirm a category change.
+  const [pendingCategoryChange, setPendingCategoryChange] = useState<{ issueCount: number } | null>(null);
 
   const categoryItems = ALL_STATUSES.map((c) => ({
     value: c,
@@ -636,6 +642,7 @@ function StatusEditorDialog({
   useEffect(() => {
     if (!open) return;
     setIconChanged(false);
+    setPendingCategoryChange(null);
     setDraft(
       status
         ? {
@@ -650,15 +657,24 @@ function StatusEditorDialog({
     );
   }, [status, category, open]);
 
-  const submit = () => {
+  const currentCategory = status ? normalizeIssueStatusCategory(status.category) ?? "unstarted" : null;
+
+  const submit = (confirmCategoryChange = false) => {
     const name = draft.name.trim();
     if (!name || create.isPending || update.isPending) return;
-    const onError = (error: unknown) =>
+    const onError = (error: unknown) => {
+      const issueCount = issueStatusCategoryChangeConflictCount(error);
+      if (issueCount !== null) {
+        setPendingCategoryChange({ issueCount });
+        return;
+      }
       toast.error(
         error instanceof Error ? error.message : t(($) => $.issue_statuses.editor.save_failed),
       );
+    };
 
     if (status) {
+      const categoryChanged = draft.category !== currentCategory;
       update.mutate(
         {
           id: status.id,
@@ -667,8 +683,17 @@ function StatusEditorDialog({
           color: draft.color,
           // Preserve an unknown future icon when only other fields are edited.
           ...(iconChanged ? { icon: draft.icon } : {}),
+          ...(categoryChanged
+            ? { category: draft.category, confirm_category_change: confirmCategoryChange }
+            : {}),
         },
-        { onSuccess: () => onOpenChange(false), onError },
+        {
+          onSuccess: () => {
+            setPendingCategoryChange(null);
+            onOpenChange(false);
+          },
+          onError,
+        },
       );
       return;
     }
@@ -700,6 +725,7 @@ function StatusEditorDialog({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <form
@@ -747,8 +773,9 @@ function StatusEditorDialog({
             </div>
             <div className="space-y-2">
               <FieldLabel htmlFor="status-category">{t(($) => $.issue_statuses.editor.category)}</FieldLabel>
-              {/* Immutable after creation: changing it would alter the
-                  lifecycle of every issue already on this status. */}
+              {/* Changing it alters the lifecycle of every issue already on
+                  this status, so saving asks the server to count them and
+                  waits for the admin's confirmation. */}
               <Select
                 items={categoryItems}
                 value={draft.category}
@@ -756,7 +783,6 @@ function StatusEditorDialog({
                   value &&
                   setDraft((current) => ({ ...current, category: value as IssueStatusCategory }))
                 }
-                disabled={Boolean(status)}
               >
                 <SelectTrigger id="status-category">
                   <SelectValue />
@@ -770,8 +796,8 @@ function StatusEditorDialog({
                 </SelectContent>
               </Select>
               <p className="text-caption text-muted-foreground">
-                {status
-                  ? t(($) => $.issue_statuses.editor.category_locked)
+                {status && draft.category !== currentCategory
+                  ? t(($) => $.issue_statuses.editor.category_change_hint)
                   : t(($) => $.issue_statuses.categories[draft.category])}
               </p>
             </div>
@@ -864,6 +890,32 @@ function StatusEditorDialog({
         </form>
       </DialogContent>
     </Dialog>
+    <AlertDialog
+      open={pendingCategoryChange !== null}
+      onOpenChange={(nextOpen) => !nextOpen && !update.isPending && setPendingCategoryChange(null)}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t(($) => $.issue_statuses.category_change_dialog.title)}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t(($) => $.issue_statuses.category_change_dialog.description, {
+              count: pendingCategoryChange?.issueCount ?? 0,
+              from: currentCategory ? t(($) => $.issue_statuses.category_labels[currentCategory]) : "",
+              to: t(($) => $.issue_statuses.category_labels[draft.category]),
+            })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={update.isPending}>
+            {t(($) => $.issue_statuses.category_change_dialog.cancel)}
+          </AlertDialogCancel>
+          <AlertDialogAction disabled={update.isPending} onClick={() => submit(true)}>
+            {t(($) => $.issue_statuses.category_change_dialog.confirm)}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
