@@ -402,9 +402,10 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 
 -- name: ListDecisionCards :many
 -- One row per answer that a DM bubble was quoted into, or that a comment/
--- reference message names. Matches on the source messages (GIN index) and on
--- explicit answer ids so one call serves the issue timeline and the DM list.
-SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
+-- reference message names. Matches on the source messages (GIN index), on
+-- explicit answer ids and on the source comment a member answered in, so one
+-- call serves the issue timeline and the DM list.
+SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
        answer.chosen_option_index, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
@@ -415,7 +416,8 @@ JOIN decision_request request ON request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id
 JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id')
-  AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[])
+  AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[]
+       OR answer.source_comment_id = ANY(sqlc.arg('source_comment_ids')::uuid[]))
 ORDER BY answer.created_at, answer.id;
 
 -- name: ListChatDecisionContext :many

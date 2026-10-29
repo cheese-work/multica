@@ -1813,7 +1813,8 @@
       "pending": "待生效",
       "effective": "已生效",
       "disclaimed": "已撤回",
-      "delivered": "已送達"
+      "delivered": "已送達",
+      "recorded": "已記錄"
     },
     "via_dm": "來自私信",
     "recorded_by": "由 {{name}} 記錄",

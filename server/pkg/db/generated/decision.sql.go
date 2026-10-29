@@ -907,7 +907,7 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 }
 
 const listDecisionCards = `-- name: ListDecisionCards :many
-SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
+SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
        answer.chosen_option_index, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
@@ -918,20 +918,23 @@ JOIN decision_request request ON request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id
 JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = $1
-  AND (answer.id = ANY($2::uuid[]) OR answer.chat_message_ids && $3::uuid[])
+  AND (answer.id = ANY($2::uuid[]) OR answer.chat_message_ids && $3::uuid[]
+       OR answer.source_comment_id = ANY($4::uuid[]))
 ORDER BY answer.created_at, answer.id
 `
 
 type ListDecisionCardsParams struct {
-	WorkspaceID pgtype.UUID   `json:"workspace_id"`
-	AnswerIds   []pgtype.UUID `json:"answer_ids"`
-	MessageIds  []pgtype.UUID `json:"message_ids"`
+	WorkspaceID      pgtype.UUID   `json:"workspace_id"`
+	AnswerIds        []pgtype.UUID `json:"answer_ids"`
+	MessageIds       []pgtype.UUID `json:"message_ids"`
+	SourceCommentIds []pgtype.UUID `json:"source_comment_ids"`
 }
 
 type ListDecisionCardsRow struct {
 	AnswerID             pgtype.UUID        `json:"answer_id"`
 	ChatMessageIds       []pgtype.UUID      `json:"chat_message_ids"`
 	SourceChatSessionID  pgtype.UUID        `json:"source_chat_session_id"`
+	SourceCommentID      pgtype.UUID        `json:"source_comment_id"`
 	IssueCommentID       pgtype.UUID        `json:"issue_comment_id"`
 	EffectiveAt          pgtype.Timestamptz `json:"effective_at"`
 	WokenAt              pgtype.Timestamptz `json:"woken_at"`
@@ -950,10 +953,16 @@ type ListDecisionCardsRow struct {
 }
 
 // One row per answer that a DM bubble was quoted into, or that a comment/
-// reference message names. Matches on the source messages (GIN index) and on
-// explicit answer ids so one call serves the issue timeline and the DM list.
+// reference message names. Matches on the source messages (GIN index), on
+// explicit answer ids and on the source comment a member answered in, so one
+// call serves the issue timeline and the DM list.
 func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsParams) ([]ListDecisionCardsRow, error) {
-	rows, err := q.db.Query(ctx, listDecisionCards, arg.WorkspaceID, arg.AnswerIds, arg.MessageIds)
+	rows, err := q.db.Query(ctx, listDecisionCards,
+		arg.WorkspaceID,
+		arg.AnswerIds,
+		arg.MessageIds,
+		arg.SourceCommentIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -965,6 +974,7 @@ func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsPa
 			&i.AnswerID,
 			&i.ChatMessageIds,
 			&i.SourceChatSessionID,
+			&i.SourceCommentID,
 			&i.IssueCommentID,
 			&i.EffectiveAt,
 			&i.WokenAt,

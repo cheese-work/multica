@@ -1885,7 +1885,8 @@
       "pending": "En attente",
       "effective": "En vigueur",
       "disclaimed": "Retirée",
-      "delivered": "Livrée"
+      "delivered": "Livrée",
+      "recorded": "Enregistrée"
     },
     "via_dm": "via DM",
     "recorded_by": "Enregistré par {{name}}",

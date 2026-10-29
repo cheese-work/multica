@@ -1886,7 +1886,8 @@
       "pending": "Pending",
       "effective": "In effect",
       "disclaimed": "Disclaimed",
-      "delivered": "Delivered"
+      "delivered": "Delivered",
+      "recorded": "Recorded"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",

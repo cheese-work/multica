@@ -53,12 +53,12 @@ function quote(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
   };
 }
 
-function renderCard(entry: TimelineEntry, currentUserId = "human-1") {
+function renderCard(entry: TimelineEntry, currentUserId = "human-1", compact = false) {
   const qc = new QueryClient();
   const invalidate = vi.spyOn(qc, "invalidateQueries");
   const view = renderWithI18n(
     <QueryClientProvider client={qc}>
-      <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId={currentUserId} />
+      <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId={currentUserId} compact={compact} />
     </QueryClientProvider>,
   );
   return { ...view, invalidate };
@@ -86,9 +86,41 @@ describe("DecisionQuoteCard", () => {
     expect(card).toHaveTextContent("Keep the words.");
     expect(card).not.toHaveTextContent("> Yes");
     expect(card).toHaveTextContent("reversible");
-    expect(card).toHaveTextContent("Pending");
+    expect(card).toHaveTextContent("Recorded");
+    expect(card).not.toHaveTextContent("Pending");
     expect(card).toHaveTextContent("x99-claude-sonnet");
     expect(card).toHaveTextContent("Agent note here.");
+  });
+
+  it("shows Recorded, never In effect, for a woken answer the agent never received", () => {
+    renderCard(quote({ decision_state: "effective", decision_delivered: false }));
+    expect(screen.getByTestId("decision-quote-card")).toHaveTextContent("Recorded");
+    expect(screen.getByTestId("decision-quote-card")).not.toHaveTextContent("In effect");
+  });
+
+  it("puts the receipt on the member's own comment: no quote body, Option N, Jump to card, Disclaim", async () => {
+    renderCard(
+      quote({
+        actor_type: "member",
+        actor_id: "human-1",
+        content: "Hold.",
+        decision_comment_kind: undefined,
+        decision_answer_id: undefined,
+        decision_receipt_answer_id: "answer-9",
+        decision_chosen_option_index: 0,
+        decision_option_label: "Hold",
+      }),
+      "human-1",
+      true,
+    );
+    const card = screen.getByTestId("decision-quote-card");
+    expect(card).toHaveTextContent("Recorded");
+    expect(card).toHaveTextContent("Option 1");
+    expect(card).not.toHaveTextContent("Hold.");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
+    fireEvent.click(screen.getByTestId("decision-disclaim-button"));
+    fireEvent.click(await screen.findByRole("button", { name: "Disclaim" }));
+    await waitFor(() => expect(calls).toEqual(["answer-9"]));
   });
 
   it("gives the request's human an Open DM link and a Disclaim button", () => {

@@ -43,11 +43,14 @@ export function DecisionQuoteCard({
   issueId,
   currentUserId,
   onJumpToComment,
+  compact = false,
 }: {
   entry: TimelineEntry;
   issueId: string;
   currentUserId?: string;
   onJumpToComment?: (commentId: string) => void;
+  /** Receipt only, under the member's own comment: the words are already shown above it. */
+  compact?: boolean;
 }) {
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
@@ -59,7 +62,7 @@ export function DecisionQuoteCard({
   const [conflict, setConflict] = useState<DisclaimConflict | undefined>();
   const [failed, setFailed] = useState(false);
 
-  const answerId = entry.decision_answer_id ?? "";
+  const answerId = entry.decision_answer_id ?? entry.decision_receipt_answer_id ?? "";
   const isHuman = !!currentUserId && entry.decision_human_user_id === currentUserId;
   const state: DecisionState = conflict === "withdrawn" ? "disclaimed" : (entry.decision_state ?? "pending");
   const { note, quote } = splitDecisionQuote(entry.content ?? "");
@@ -107,7 +110,8 @@ export function DecisionQuoteCard({
       data-testid="decision-quote-card"
       data-state={state}
       className={cn(
-        "mt-1 overflow-hidden rounded-md border border-surface-border",
+        "overflow-hidden rounded-md border border-surface-border",
+        compact ? "mt-2" : "mt-1",
         state === "disclaimed" && "bg-muted text-muted-foreground",
       )}
     >
@@ -117,17 +121,21 @@ export function DecisionQuoteCard({
           {t(($) => $.decision.class[klass as keyof typeof $.decision.class] ?? klass, { defaultValue: klass })}
         </span>
         <span className={cn("rounded-full px-2 text-micro font-medium", STATE_TONE[state])}>
-          {delivered ? t(($) => $.decision.state.delivered) : t(($) => $.decision.state[state])}
+          {state === "disclaimed"
+            ? t(($) => $.decision.state.disclaimed)
+            : delivered
+              ? t(($) => $.decision.state.delivered)
+              : t(($) => $.decision.state.recorded)}
         </span>
         {optionIndex !== undefined && (
           <span className="rounded-xs border px-1.5 text-micro" title={entry.decision_option_label}>
             {t(($) => $.decision.option_n, { number: optionIndex + 1 })}
           </span>
         )}
-        <span className="text-micro text-muted-foreground">{t(($) => $.decision.via_dm)}</span>
+        {!compact && <span className="text-micro text-muted-foreground">{t(($) => $.decision.via_dm)}</span>}
       </div>
-      <p className="whitespace-pre-wrap break-words px-2.5 py-2 text-body">{quote}</p>
-      {note && <p className="px-2.5 pb-2 text-caption text-muted-foreground">{note}</p>}
+      {!compact && <p className="whitespace-pre-wrap break-words px-2.5 py-2 text-body">{quote}</p>}
+      {!compact && note && <p className="px-2.5 pb-2 text-caption text-muted-foreground">{note}</p>}
       <div className="flex flex-wrap items-center gap-1 px-1.5 pb-1.5 pl-2.5">
         <span className="mr-auto text-caption text-muted-foreground">
           {t(($) => $.decision.recorded_by, { name: recorder })}
@@ -153,7 +161,7 @@ export function DecisionQuoteCard({
           >
             {t(($) => $.decision.answered_in_dm)}
           </Button>
-        ) : !isHuman ? (
+        ) : !isHuman && !compact ? (
           <span className="text-caption text-muted-foreground">{t(($) => $.decision.private_dm)}</span>
         ) : null}
         {canDisclaim && (

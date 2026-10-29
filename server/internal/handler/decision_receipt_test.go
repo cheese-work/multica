@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestDecisionRequestPersistsDecodedAsk(test *testing.T) {
@@ -136,3 +140,58 @@ func TestDecisionRequestCardCarriesAnswerState(test *testing.T) {
 	}
 }
 
+// A human's own issue comment that a task recorded as the answer carries the
+// receipt itself; the agent quote is a separate comment and is not the only one.
+func TestSourceCommentCarriesReceiptWithoutNewComment(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	otherIssue := dbfx.Issue(test, "Human replied on another issue")
+	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": otherIssue, "author_type": "member", "author_id": fixture.humanID, "content": "Hold."})
+	bystanderID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": otherIssue, "author_type": "member", "author_id": fixture.humanID, "content": "Unrelated."})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, fixture.taskID)
+	before := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID)
+	result, err := testHandler.createAskedDecisionRecord(fixture.request(), fixture.issue, decisionRecordInput{ParentID: parseUUID(fixture.parentID), SourceCommentID: parseUUID(sourceID)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID); after != before+1 {
+		test.Fatalf("record added %d comments on the issue, want exactly the agent quote", after-before)
+	}
+	comments := make([]db.Comment, 0, 2)
+	for _, id := range []string{sourceID, bystanderID} {
+		comment, err := testHandler.Queries.GetComment(context.Background(), parseUUID(id))
+		if err != nil {
+			test.Fatal(err)
+		}
+		comments = append(comments, comment)
+	}
+	fields := testHandler.decisionCommentFields(context.Background(), comments[0].WorkspaceID, comments, parseUUID(fixture.humanID))
+	got := fields[sourceID]
+	if got.DecisionReceiptAnswerID != uuidToString(result.Answer.ID) || got.DecisionHumanUserID != fixture.humanID || got.DecisionIssueCommentID != uuidToString(result.Comment.ID) {
+		test.Fatalf("source comment lacks its receipt: %+v", got)
+	}
+	if _, stamped := fields[bystanderID]; stamped {
+		test.Fatal("an unrelated member comment got a receipt")
+	}
+}
+
+// A skipped wake never reached the asking agent, so the member's receipt stays
+// undelivered even though the answer was woken.
+func TestSourceCommentReceiptIsUndeliveredAfterSkippedWake(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	otherIssue := dbfx.Issue(test, "Human replied elsewhere")
+	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": otherIssue, "author_type": "member", "author_id": fixture.humanID, "content": "Hold."})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, fixture.taskID)
+	result, err := testHandler.createAskedDecisionRecord(fixture.request(), fixture.issue, decisionRecordInput{ParentID: parseUUID(fixture.parentID), SourceCommentID: parseUUID(sourceID)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'skipped_ineligible' WHERE id = $1`, uuidToString(result.Answer.ID))
+	comment, err := testHandler.Queries.GetComment(context.Background(), parseUUID(sourceID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	got := testHandler.decisionCommentFields(context.Background(), comment.WorkspaceID, []db.Comment{comment}, pgtype.UUID{})[sourceID]
+	if got.DecisionReceiptAnswerID == "" || got.DecisionDelivered {
+		test.Fatalf("skipped wake showed as delivered on the source comment: %+v", got)
+	}
+}

@@ -49,15 +49,18 @@ type DecisionCard struct {
 // carries. The DM pointers are set only for the request's human: a DM is
 // private, so other members must not learn which session or message was quoted.
 type DecisionCommentFields struct {
-	DecisionHumanUserID     string  `json:"decision_human_user_id,omitempty"`
-	DecisionRecorderAgentID string  `json:"decision_recorder_agent_id,omitempty"`
-	DecisionClass           string  `json:"decision_class,omitempty"`
-	DecisionState           string  `json:"decision_state,omitempty"`
-	DecisionDelivered       bool    `json:"decision_delivered,omitempty"`
+	DecisionHumanUserID     string `json:"decision_human_user_id,omitempty"`
+	DecisionRecorderAgentID string `json:"decision_recorder_agent_id,omitempty"`
+	DecisionClass           string `json:"decision_class,omitempty"`
+	DecisionState           string `json:"decision_state,omitempty"`
+	DecisionDelivered       bool   `json:"decision_delivered,omitempty"`
 	// ChosenOptionIndex is 0-based into the ask's options, absent for a free-text answer.
 	DecisionChosenOptionIndex *int   `json:"decision_chosen_option_index,omitempty"`
 	DecisionOptionLabel       string `json:"decision_option_label,omitempty"`
-	DecisionIssueCommentID  string  `json:"decision_issue_comment_id,omitempty"`
+	DecisionIssueCommentID    string `json:"decision_issue_comment_id,omitempty"`
+	// DecisionReceiptAnswerID marks a human's own comment that a task recorded as
+	// the answer: the comment carries the receipt, the agent quote stays separate.
+	DecisionReceiptAnswerID string  `json:"decision_receipt_answer_id,omitempty"`
 	EffectiveAt             *string `json:"effective_at,omitempty"`
 	DisclaimedAt            *string `json:"disclaimed_at,omitempty"`
 	DecisionSourceSessionID string  `json:"decision_source_session_id,omitempty"`
@@ -109,22 +112,22 @@ func decisionCardFromRow(row db.ListDecisionCardsRow) DecisionCard {
 		OptionLabel:       label,
 		RequestSessionID:  uuidToString(row.RequestChatSessionID),
 		RequestMessageID:  uuidToString(row.RequestPingMessageID),
-		AnswerID:        uuidToString(row.AnswerID),
-		IssueID:         uuidToString(row.IssueID),
-		IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
-		IssueCommentID:  uuidToString(row.IssueCommentID),
-		Class:           row.EscalationClass,
-		State:           decisionAnswerState(row.WokenAt, row.DisclaimedAt),
-		EffectiveAt:     timestampToString(row.EffectiveAt),
-		DisclaimedAt:    timestampToPtr(row.DisclaimedAt),
+		AnswerID:          uuidToString(row.AnswerID),
+		IssueID:           uuidToString(row.IssueID),
+		IssueIdentifier:   fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
+		IssueCommentID:    uuidToString(row.IssueCommentID),
+		Class:             row.EscalationClass,
+		State:             decisionAnswerState(row.WokenAt, row.DisclaimedAt),
+		EffectiveAt:       timestampToString(row.EffectiveAt),
+		DisclaimedAt:      timestampToPtr(row.DisclaimedAt),
 	}
 }
 
-func (handler *Handler) listDecisionCards(ctx context.Context, workspaceID pgtype.UUID, answerIDs, messageIDs []pgtype.UUID) []db.ListDecisionCardsRow {
-	if len(answerIDs) == 0 && len(messageIDs) == 0 {
+func (handler *Handler) listDecisionCards(ctx context.Context, workspaceID pgtype.UUID, answerIDs, messageIDs, sourceCommentIDs []pgtype.UUID) []db.ListDecisionCardsRow {
+	if len(answerIDs) == 0 && len(messageIDs) == 0 && len(sourceCommentIDs) == 0 {
 		return nil
 	}
-	rows, err := handler.Queries.ListDecisionCards(ctx, db.ListDecisionCardsParams{WorkspaceID: workspaceID, AnswerIds: answerIDs, MessageIds: messageIDs})
+	rows, err := handler.Queries.ListDecisionCards(ctx, db.ListDecisionCardsParams{WorkspaceID: workspaceID, AnswerIds: answerIDs, MessageIds: messageIDs, SourceCommentIds: sourceCommentIDs})
 	if err != nil {
 		// Cards are display-only: the timeline and the DM stay readable without them.
 		slog.Warn("decision cards lookup failed", "error", err)
@@ -134,50 +137,73 @@ func (handler *Handler) listDecisionCards(ctx context.Context, workspaceID pgtyp
 }
 
 // decisionCommentFields hydrates the card fields of every comment stamped with
-// a decision answer, keyed by comment id. viewer is the authenticated member,
-// or the zero UUID for a broadcast payload that has no single reader.
+// a decision answer, keyed by comment id. A member comment that a task recorded
+// as the answer carries the same fields plus DecisionReceiptAnswerID, so the
+// receipt sits on the human's own words. viewer is the authenticated member, or
+// the zero UUID for a broadcast payload that has no single reader.
 func (handler *Handler) decisionCommentFields(ctx context.Context, workspaceID pgtype.UUID, comments []db.Comment, viewer pgtype.UUID) map[string]DecisionCommentFields {
-	var answerIDs []pgtype.UUID
+	var answerIDs, sourceIDs []pgtype.UUID
 	for _, comment := range comments {
-		if comment.DecisionAnswerID.Valid {
+		switch {
+		case comment.DecisionAnswerID.Valid:
 			answerIDs = append(answerIDs, comment.DecisionAnswerID)
+		case comment.AuthorType == "member":
+			sourceIDs = append(sourceIDs, comment.ID)
 		}
 	}
-	rows := handler.listDecisionCards(ctx, workspaceID, answerIDs, nil)
+	rows := handler.listDecisionCards(ctx, workspaceID, answerIDs, nil, sourceIDs)
 	byAnswer := make(map[pgtype.UUID]db.ListDecisionCardsRow, len(rows))
+	bySource := make(map[pgtype.UUID]db.ListDecisionCardsRow, len(sourceIDs))
 	for _, row := range rows {
 		byAnswer[row.AnswerID] = row
+		if row.SourceCommentID.Valid {
+			// Rows come oldest first, so the newest answer to a comment wins.
+			bySource[row.SourceCommentID] = row
+		}
 	}
-	fields := make(map[string]DecisionCommentFields, len(answerIDs))
+	fields := make(map[string]DecisionCommentFields, len(answerIDs)+len(sourceIDs))
 	for _, comment := range comments {
 		row, ok := byAnswer[comment.DecisionAnswerID]
+		receipt := false
+		if !ok && !comment.DecisionAnswerID.Valid && comment.AuthorType == "member" {
+			row, ok = bySource[comment.ID]
+			receipt = ok
+		}
 		if !ok {
 			continue
 		}
-		index, label := chosenOption(row.RequestOptions, row.ChosenOptionIndex)
-		entry := DecisionCommentFields{
-			DecisionDelivered:         decisionAnswerDelivered(row.WokenAt, row.WakeOutcome, row.DisclaimedAt),
-			DecisionChosenOptionIndex: index,
-			DecisionOptionLabel:       label,
-			DecisionHumanUserID:     uuidToString(row.HumanUserID),
-			DecisionRecorderAgentID: uuidToString(row.AskingAgentID),
-			DecisionClass:           row.EscalationClass,
-			DecisionState:           decisionAnswerState(row.WokenAt, row.DisclaimedAt),
-			DecisionIssueCommentID:  uuidToString(row.IssueCommentID),
-			EffectiveAt:             timestampToPtr(row.EffectiveAt),
-			DisclaimedAt:            timestampToPtr(row.DisclaimedAt),
-		}
-		if viewer.Valid && viewer == row.HumanUserID && len(row.ChatMessageIds) > 0 {
-			entry.DecisionSourceSessionID = uuidToString(row.SourceChatSessionID)
-			entry.DecisionSourceMessageID = uuidToString(row.ChatMessageIds[0])
-		}
-		if viewer.Valid && viewer == row.HumanUserID && row.RequestPingMessageID.Valid {
-			entry.DecisionRequestSessionID = uuidToString(row.RequestChatSessionID)
-			entry.DecisionRequestMessageID = uuidToString(row.RequestPingMessageID)
+		entry := decisionCommentEntry(row, viewer)
+		if receipt {
+			entry.DecisionReceiptAnswerID = uuidToString(row.AnswerID)
 		}
 		fields[uuidToString(comment.ID)] = entry
 	}
 	return fields
+}
+
+func decisionCommentEntry(row db.ListDecisionCardsRow, viewer pgtype.UUID) DecisionCommentFields {
+	index, label := chosenOption(row.RequestOptions, row.ChosenOptionIndex)
+	entry := DecisionCommentFields{
+		DecisionDelivered:         decisionAnswerDelivered(row.WokenAt, row.WakeOutcome, row.DisclaimedAt),
+		DecisionChosenOptionIndex: index,
+		DecisionOptionLabel:       label,
+		DecisionHumanUserID:       uuidToString(row.HumanUserID),
+		DecisionRecorderAgentID:   uuidToString(row.AskingAgentID),
+		DecisionClass:             row.EscalationClass,
+		DecisionState:             decisionAnswerState(row.WokenAt, row.DisclaimedAt),
+		DecisionIssueCommentID:    uuidToString(row.IssueCommentID),
+		EffectiveAt:               timestampToPtr(row.EffectiveAt),
+		DisclaimedAt:              timestampToPtr(row.DisclaimedAt),
+	}
+	if viewer.Valid && viewer == row.HumanUserID && len(row.ChatMessageIds) > 0 {
+		entry.DecisionSourceSessionID = uuidToString(row.SourceChatSessionID)
+		entry.DecisionSourceMessageID = uuidToString(row.ChatMessageIds[0])
+	}
+	if viewer.Valid && viewer == row.HumanUserID && row.RequestPingMessageID.Valid {
+		entry.DecisionRequestSessionID = uuidToString(row.RequestChatSessionID)
+		entry.DecisionRequestMessageID = uuidToString(row.RequestPingMessageID)
+	}
+	return entry
 }
 
 // decisionViewer is the member who may see the owner-only DM pointers, or the
@@ -224,7 +250,7 @@ func (handler *Handler) decisionCardsForMessages(ctx context.Context, workspaceI
 		}
 	}
 	quotes, refs = map[string][]DecisionCard{}, map[string]DecisionCard{}
-	rows := handler.listDecisionCards(ctx, workspaceUUID, answerIDs, messageIDs)
+	rows := handler.listDecisionCards(ctx, workspaceUUID, answerIDs, messageIDs, nil)
 	for _, row := range rows {
 		card := decisionCardFromRow(row)
 		refs[card.AnswerID] = card

@@ -100,12 +100,10 @@ export function DecisionDmCard({ card }: { card: DecisionCard }) {
         <span
           className={cn(
             "rounded-full px-2 text-micro font-medium",
-            state === "pending" && "bg-warning/10 text-warning",
-            (state === "effective" || delivered) && "bg-success/10 text-success",
-            state === "disclaimed" && "bg-muted text-muted-foreground",
+            state === "disclaimed" ? "bg-muted text-muted-foreground" : delivered ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
           )}
         >
-          {delivered ? ti(($) => $.decision.state.delivered) : ti(($) => $.decision.state[state])}
+          {state === "disclaimed" ? ti(($) => $.decision.state.disclaimed) : delivered ? ti(($) => $.decision.state.delivered) : ti(($) => $.decision.state.recorded)}
         </span>
         {card.chosen_option_index !== undefined && (
           <span className="rounded-xs border px-1.5 text-micro" title={card.option_label}>

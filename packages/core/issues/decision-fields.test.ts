@@ -17,6 +17,13 @@ describe("pickDecisionFields", () => {
   });
 });
 
+describe("receipt fields", () => {
+  it("survive a comment snapshot mapping", () => {
+    const comment = { decision_receipt_answer_id: "answer", decision_delivered: true, decision_chosen_option_index: 0, decision_option_label: "Hold" };
+    expect(pickDecisionFields(comment)).toEqual(comment);
+  });
+});
+
 const entry = (fields: Partial<TimelineEntry>): TimelineEntry => ({
   type: "comment",
   id: "c",

@@ -63,7 +63,8 @@ describe("DecisionDmCard", () => {
     const el = screen.getByTestId("decision-dm-card");
     expect(el).toHaveAttribute("data-state", "effective");
     expect(el).toHaveTextContent("Recorded for CHE-1870");
-    expect(el).toHaveTextContent("In effect");
+    expect(el).toHaveTextContent("Recorded");
+    expect(el).not.toHaveTextContent("In effect");
     expect(screen.getByTestId("decision-dm-card-link")).toHaveAttribute("href", "/acme/issues/issue-1#comment-comment-1");
     expect(screen.getByTestId("decision-dm-disclaim")).toBeEnabled();
   });

@@ -1814,7 +1814,8 @@
       "pending": "대기 중",
       "effective": "적용됨",
       "disclaimed": "철회됨",
-      "delivered": "전달됨"
+      "delivered": "전달됨",
+      "recorded": "기록됨"
     },
     "via_dm": "DM 경유",
     "recorded_by": "{{name}} 기록",

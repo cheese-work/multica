@@ -1814,7 +1814,8 @@
       "pending": "待生效",
       "effective": "已生效",
       "disclaimed": "已撤回",
-      "delivered": "已送达"
+      "delivered": "已送达",
+      "recorded": "已记录"
     },
     "via_dm": "来自私信",
     "recorded_by": "由 {{name}} 记录",
