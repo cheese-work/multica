@@ -66,7 +66,7 @@ func (handler *Handler) WithdrawDecision(writer http.ResponseWriter, request *ht
 		handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
 		if result.Message.ID.Valid {
 			message := result.Message
-			handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
+			handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 		}
 	}
 	writeJSON(writer, http.StatusOK, result.Request)

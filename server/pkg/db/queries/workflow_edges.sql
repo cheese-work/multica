@@ -34,6 +34,15 @@ WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);
 SELECT COUNT(*)::bigint FROM agent_task_queue
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND created_at > sqlc.arg('since')::timestamptz;
 
+-- name: CurrentXactID :one
+-- The current transaction's id, so a run-budget notice can wait for that
+-- transaction to finish. The cast keeps the xid8 out of the Go type map.
+SELECT pg_current_xact_id()::text::bigint;
+
+-- name: XactStatus :one
+-- 'in progress', 'committed', 'aborted', or 'unknown' once the id is too old.
+SELECT COALESCE(pg_xact_status(sqlc.arg('xid')::bigint::text::xid8), 'unknown')::text;
+
 -- name: LatestMemberStatusChange :one
 -- When a person last changed the issue's status: a person who moves a blocked
 -- issue on starts its run budget over.

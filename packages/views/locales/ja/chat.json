@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "あなたの判断待ち",
+    "loading": "未回答の依頼を読み込み中…",
+    "error": "依頼を読み込めませんでした。",
+    "retry": "再試行",
+    "empty": "未回答の依頼はありません。"
+  },
   "page": {
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",
@@ -299,7 +306,7 @@
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "disclaimed": "撤回済み" },
     "answer_options": "選択肢",
     "answer_text": "または回答を入力",
     "answer_send": "送信",
@@ -311,6 +318,9 @@
     "answer_discard": "下書きを破棄",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
+    "receipt_recorded": "{{issue}} に記録",
+    "receipt_option": "選択肢 {{number}}",
+    "jump_to_card": "カードへ移動",
     "withdrawn_in": "{{issue}} で取り下げ済み",
     "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",

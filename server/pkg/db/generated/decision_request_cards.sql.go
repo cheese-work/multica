@@ -60,7 +60,10 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
-    record.issue_comment_id AS record_comment_id
+    record.issue_comment_id AS record_comment_id,
+    last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
+    last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
+    last_answer.chosen_option_index AS answer_chosen_option_index
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -70,6 +73,11 @@ LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
     AND record.disclaimed_at IS NULL
+LEFT JOIN LATERAL (
+    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index
+    FROM decision_answer answer WHERE answer.decision_request_id = request.id
+    ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
+) last_answer ON true
 WHERE request.workspace_id = $1
     AND message.id = ANY($2::uuid[])
 ORDER BY message.id, request.created_at, request.id
@@ -81,20 +89,26 @@ type ListDecisionRequestCardsParams struct {
 }
 
 type ListDecisionRequestCardsRow struct {
-	RequestID       pgtype.UUID        `json:"request_id"`
-	MessageID       pgtype.UUID        `json:"message_id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	IssuePrefix     string             `json:"issue_prefix"`
-	IssueNumber     int32              `json:"issue_number"`
-	SourceCommentID pgtype.UUID        `json:"source_comment_id"`
-	Ask             string             `json:"ask"`
-	Status          string             `json:"status"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	WithdrawReason  string             `json:"withdraw_reason"`
-	CancelReason    pgtype.Text        `json:"cancel_reason"`
-	Options         []byte             `json:"options"`
-	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
-	RecordCommentID pgtype.UUID        `json:"record_comment_id"`
+	RequestID               pgtype.UUID        `json:"request_id"`
+	MessageID               pgtype.UUID        `json:"message_id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	IssuePrefix             string             `json:"issue_prefix"`
+	IssueNumber             int32              `json:"issue_number"`
+	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	Ask                     string             `json:"ask"`
+	Status                  string             `json:"status"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	WithdrawReason          string             `json:"withdraw_reason"`
+	CancelReason            pgtype.Text        `json:"cancel_reason"`
+	Options                 []byte             `json:"options"`
+	WithdrawnAt             pgtype.Timestamptz `json:"withdrawn_at"`
+	RecordCommentID         pgtype.UUID        `json:"record_comment_id"`
+	AnswerID                pgtype.UUID        `json:"answer_id"`
+	AnswerCreatedAt         pgtype.Timestamptz `json:"answer_created_at"`
+	AnswerWokenAt           pgtype.Timestamptz `json:"answer_woken_at"`
+	AnswerWakeOutcome       pgtype.Text        `json:"answer_wake_outcome"`
+	AnswerDisclaimedAt      pgtype.Timestamptz `json:"answer_disclaimed_at"`
+	AnswerChosenOptionIndex pgtype.Int4        `json:"answer_chosen_option_index"`
 }
 
 func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecisionRequestCardsParams) ([]ListDecisionRequestCardsRow, error) {
@@ -121,6 +135,77 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.Options,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
+			&i.AnswerID,
+			&i.AnswerCreatedAt,
+			&i.AnswerWokenAt,
+			&i.AnswerWakeOutcome,
+			&i.AnswerDisclaimedAt,
+			&i.AnswerChosenOptionIndex,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDecisionRequestsForHuman = `-- name: ListOpenDecisionRequestsForHuman :many
+SELECT request.id, request.issue_id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.asking_agent_id, COALESCE(agent.name, '')::text AS asking_agent_name,
+    request.ask, request.escalation_class, request.created_at,
+    request.chat_session_id, request.ping_message_id AS message_id
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1
+    AND request.human_user_id = $2
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id
+`
+
+type ListOpenDecisionRequestsForHumanParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+}
+
+type ListOpenDecisionRequestsForHumanRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	IssueIdentifier string             `json:"issue_identifier"`
+	AskingAgentID   pgtype.UUID        `json:"asking_agent_id"`
+	AskingAgentName string             `json:"asking_agent_name"`
+	Ask             string             `json:"ask"`
+	EscalationClass string             `json:"escalation_class"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	MessageID       pgtype.UUID        `json:"message_id"`
+}
+
+func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg ListOpenDecisionRequestsForHumanParams) ([]ListOpenDecisionRequestsForHumanRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionRequestsForHuman, arg.WorkspaceID, arg.HumanUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionRequestsForHumanRow{}
+	for rows.Next() {
+		var i ListOpenDecisionRequestsForHumanRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueIdentifier,
+			&i.AskingAgentID,
+			&i.AskingAgentName,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.CreatedAt,
+			&i.ChatSessionID,
+			&i.MessageID,
 		); err != nil {
 			return nil, err
 		}

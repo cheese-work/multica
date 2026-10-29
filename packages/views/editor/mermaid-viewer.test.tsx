@@ -338,12 +338,17 @@ describe("MermaidViewer canvas interaction", () => {
     expect(currentTranslate()).toEqual(before);
   });
 
-  it("zooms on wheel, anchored so the point under the cursor stays put", () => {
+  it("zooms on ctrl/meta + wheel, anchored so the point under the cursor stays put", () => {
     render(<Harness />);
     const before = { scale: currentScale(), ...currentTranslate() };
     const anchor = { x: 200, y: 150 };
 
-    fireEvent.wheel(canvas(), { deltaY: -100, clientX: anchor.x, clientY: anchor.y });
+    fireEvent.wheel(canvas(), {
+      deltaY: -100,
+      ctrlKey: true,
+      clientX: anchor.x,
+      clientY: anchor.y,
+    });
 
     const after = { scale: currentScale(), ...currentTranslate() };
     expect(after.scale).toBeGreaterThan(before.scale);
@@ -354,13 +359,25 @@ describe("MermaidViewer canvas interaction", () => {
     );
   });
 
-  it("zooms out on the opposite wheel direction", () => {
+  it("zooms out on the opposite ctrl + wheel direction", () => {
     render(<Harness />);
     const before = currentScale();
 
-    fireEvent.wheel(canvas(), { deltaY: 100, clientX: 200, clientY: 150 });
+    fireEvent.wheel(canvas(), { deltaY: 100, ctrlKey: true, clientX: 200, clientY: 150 });
 
     expect(currentScale()).toBeLessThan(before);
+  });
+
+  it("pans on a plain wheel instead of zooming", () => {
+    render(<Harness />);
+    const before = { scale: currentScale(), ...currentTranslate() };
+
+    fireEvent.wheel(canvas(), { deltaX: 20, deltaY: 30, clientX: 200, clientY: 150 });
+
+    const after = { scale: currentScale(), ...currentTranslate() };
+    expect(after.scale).toBe(before.scale);
+    expect(after.x).toBeCloseTo(before.x - 20, 5);
+    expect(after.y).toBeCloseTo(before.y - 30, 5);
   });
 
   it("pinch-zooms with two touch pointers", () => {
@@ -481,5 +498,49 @@ describe("MermaidViewer source and export", () => {
     await expect(blob.text()).resolves.toBe(CHART);
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("MermaidViewer touch containment", () => {
+  function dialog(): HTMLElement {
+    return document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+  }
+
+  it("keeps every touch inside the dialog, header and edges included", () => {
+    render(<Harness />);
+
+    // Tailwind classes, not computed style: jsdom has no stylesheet. `touch-none`
+    // stops the browser claiming a finger that lands on the header; `overscroll-contain`
+    // stops scroll chaining to the page behind.
+    expect(dialog()).toHaveClass("touch-none", "overscroll-contain");
+  });
+
+  it("fills the screen below md, so there is no backdrop strip to touch", () => {
+    render(<Harness />);
+
+    expect(dialog()).toHaveClass("max-md:!inset-0", "max-md:!w-screen", "max-md:!h-dvh");
+  });
+
+  it("swallows an iOS gesturestart that starts anywhere in the dialog", () => {
+    render(<Harness />);
+
+    // Safari's pinch-to-zoom-page fires `gesturestart`; cancelling it on the
+    // dialog root stops a pinch that begins on the header from zooming the page.
+    const event = new Event("gesturestart", { bubbles: true, cancelable: true });
+    screen.getByTestId("media-toolbar").dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("lets the source view scroll by touch", async () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Show source" }));
+
+    // Its own scroll container: touch-action is resolved up to the nearest
+    // scroller, so the dialog's `touch-none` does not reach it. It must not
+    // opt out itself either.
+    const source = (await screen.findByTestId("code-block-static")).parentElement!;
+    expect(source).toHaveClass("overflow-auto");
+    expect(source.className).not.toMatch(/touch-none/);
   });
 });

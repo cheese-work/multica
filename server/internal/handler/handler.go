@@ -605,6 +605,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
 		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {

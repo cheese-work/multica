@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你决定",
+    "loading": "正在加载待处理请求…",
+    "error": "无法加载待处理请求。",
+    "retry": "重试",
+    "empty": "没有待处理请求。"
+  },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
     "interactive_login_action": "登录",
@@ -299,7 +306,7 @@
   "decision": {
     "request_title": "决策请求",
     "request_label": "决策请求：{{state}}",
-    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
+    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "disclaimed": "已撤销" },
     "answer_options": "选项",
     "answer_text": "或输入回答",
     "answer_send": "发送",
@@ -311,6 +318,9 @@
     "answer_discard": "丢弃草稿",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
+    "receipt_recorded": "已记录到 {{issue}}",
+    "receipt_option": "选项 {{number}}",
+    "jump_to_card": "跳到卡片",
     "withdrawn_in": "已在 {{issue}} 撤回",
     "recorded_on": "已记录到 {{issue}}",
     "from_original_dm": "来自原始私信",

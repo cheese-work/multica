@@ -157,7 +157,7 @@ WITH next AS MATERIALIZED (
 )
 SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
        pr.pr_number,
-       COALESCE((
+       COALESCE(NULLIF(e.previous_head_sha, ''), (
            SELECT prev.head_sha FROM issue_pr_event prev
            WHERE e.kind = 'head_changed'
              AND prev.issue_id = e.issue_id
@@ -284,7 +284,7 @@ const listAcceptedPRNoticeEvents = `-- name: ListAcceptedPRNoticeEvents :many
 SELECT id FROM issue_pr_event
 WHERE issue_id = $1
   AND pull_request_id = $2
-  AND kind IN ('draft', 'ready')
+  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed', 'head_changed')
   AND status = 'accepted'
 ORDER BY observed_at, created_at
 `
@@ -294,7 +294,8 @@ type ListAcceptedPRNoticeEventsParams struct {
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
 }
 
-// Draft and ready events of the PR still waiting for a live run to take them.
+// Draft, ready, conflict, checks-failed and head-changed events of the PR still
+// waiting for a live run to take them.
 func (q *Queries) ListAcceptedPRNoticeEvents(ctx context.Context, arg ListAcceptedPRNoticeEventsParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listAcceptedPRNoticeEvents, arg.IssueID, arg.PullRequestID)
 	if err != nil {
@@ -328,6 +329,9 @@ WHERE t.issue_id = $1
         AND NOT (r.event_type IN ('pr.checks_failed', 'pr.checks_passed', 'pr.mergeability', 'pr.returned_to_draft')
                  AND (r.event_key = $2::text
                       OR left(r.event_key, length($2::text) + 1) = $2::text || ':'))
+        AND NOT (r.event_type = 'pr.event'
+                 AND r.payload->>'kind' NOT IN ('merged', 'closed')
+                 AND lower('github:' || (r.payload->>'repo_owner') || '/' || (r.payload->>'repo_name') || '#' || (r.payload->>'pr_number')) = $2::text)
   )
 ORDER BY t.created_at
 `
@@ -341,7 +345,9 @@ type ListPROnlyRunIDsParams struct {
 // Unfinished runs of the issue that exist only to act on this PR: every wakeup
 // receipt that started the run is a PR wake for the PR, and the PR's own
 // pr.merged wake is not among them (it is the work a merge asks for).
-// @key_prefix is 'github:<owner>/<repo>#<number>', lower-cased.
+// @key_prefix is 'github:<owner>/<repo>#<number>', lower-cased. The a3 bridge's
+// pr.event receipts carry the PR in the payload, not the key; a merged or closed
+// cause is the work the merge or close asks for, so it is not PR-only.
 func (q *Queries) ListPROnlyRunIDs(ctx context.Context, arg ListPROnlyRunIDsParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listPROnlyRunIDs, arg.IssueID, arg.KeyPrefix)
 	if err != nil {

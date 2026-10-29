@@ -1369,6 +1369,11 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	}
 	// A new head retires the reviews of the old one (CHE-2307).
 	h.supersedeStaleReviews(ctx, prID)
+	if pr.HeadRepoSame {
+		if err := h.TaskService.NoticePRSnapshotEvents(ctx, prID); err != nil {
+			slog.Warn("github: failed to deliver pull request snapshot events", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	issueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, prID)
 	if err != nil {
 		return
@@ -1376,6 +1381,11 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	linked := make([]string, 0, len(issueIDs))
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
+	}
+	// Kill switch (CHE-2220): the broadcast below still runs, but no linked issue
+	// is dispatched to. This path has no redelivery, so a failed read halts too.
+	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
+		issueIDs = nil
 	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so

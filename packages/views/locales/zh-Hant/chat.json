@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你決定",
+    "loading": "正在載入待處理請求…",
+    "error": "無法載入待處理請求。",
+    "retry": "重試",
+    "empty": "沒有待處理請求。"
+  },
   "page": {
     "title": "聊天",
     "select_prompt": "選擇一個對話，或點 + 新建",
@@ -302,7 +309,10 @@
     "request_state": {
       "open": "待答復",
       "answered": "已答復",
-      "withdrawn": "已撤回"
+      "withdrawn": "已撤回",
+      "recorded": "已記錄",
+      "delivered": "已送達",
+      "disclaimed": "已撤銷"
     },
     "answer_options": "選項",
     "answer_text": "或輸入回答",
@@ -316,6 +326,9 @@
     "source_comment": "來源評論",
     "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",
+    "receipt_recorded": "已記錄到 {{issue}}",
+    "receipt_option": "選項 {{number}}",
+    "jump_to_card": "跳到卡片",
     "withdrawn_in": "已在 {{issue}} 撤回",
     "from_original_dm": "來自原始私信",
     "inherited": "繼承",

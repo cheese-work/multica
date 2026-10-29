@@ -296,6 +296,9 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
 			return err
 		}
+		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
 		if err := queries.DeleteDecisionOrphanRequest(ctx, db.DeleteDecisionOrphanRequestParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}

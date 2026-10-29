@@ -27,6 +27,33 @@ type DecisionRequestCard struct {
 	Reason      string                 `json:"reason,omitempty"`
 	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
+	// Answer is the latest answer to the request, kept after a disclaim so the card can say so.
+	Answer *DecisionRequestAnswer `json:"answer,omitempty"`
+}
+
+// DecisionRequestAnswer is the receipt half of a request card.
+type DecisionRequestAnswer struct {
+	// State is recorded, delivered or disclaimed.
+	State string `json:"state"`
+	// ChosenOptionIndex is 0-based into the card's options, absent for a free-text answer.
+	ChosenOptionIndex *int   `json:"chosen_option_index,omitempty"`
+	OptionLabel       string `json:"option_label,omitempty"`
+	AnsweredAt        string `json:"answered_at"`
+}
+
+func decisionRequestAnswerFromRow(row db.ListDecisionRequestCardsRow) *DecisionRequestAnswer {
+	if !row.AnswerID.Valid {
+		return nil
+	}
+	answer := &DecisionRequestAnswer{State: "recorded", AnsweredAt: timestampToString(row.AnswerCreatedAt)}
+	answer.ChosenOptionIndex, answer.OptionLabel = chosenOption(row.Options, row.AnswerChosenOptionIndex)
+	switch {
+	case row.AnswerDisclaimedAt.Valid:
+		answer.State = "disclaimed"
+	case decisionAnswerDelivered(row.AnswerWokenAt, row.AnswerWakeOutcome, row.AnswerDisclaimedAt):
+		answer.State = "delivered"
+	}
+	return answer
 }
 
 func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspaceID string, messages []db.ChatMessage) map[string][]DecisionRequestCard {
@@ -53,6 +80,7 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
 			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
 			Ask:             row.Ask, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+			Answer: decisionRequestAnswerFromRow(row),
 		}
 		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
 			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)

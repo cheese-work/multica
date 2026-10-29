@@ -201,6 +201,14 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	} else if err != nil {
 		return err
 	}
+	// The kill switch (CHE-2220) drops the event rather than queueing it. A read
+	// that fails returns the error, so the delivery fails and GitHub redelivers.
+	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
+		return err
+	} else if halted {
+		slog.Warn("github dispatch halted: pull request wakeup dropped", "issue_id", util.UUIDToString(issueID), "repo", in.RepoOwner+"/"+in.RepoName, "rule", in.Rule)
+		return tx.Commit(ctx)
+	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
@@ -1124,6 +1132,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		state := w.ConditionState
 		switch {
 		case met && fingerprint != state:
+			if conditionDropped(observed, state, fingerprint, false) {
+				state = fingerprint
+				break
+			}
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return err
 			}
@@ -1463,6 +1475,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
+	noteRunInserted(ctx, q, issue.ID)
 	if err := settleQueued(task.ID); err != nil {
 		return err
 	}

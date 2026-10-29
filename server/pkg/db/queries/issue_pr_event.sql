@@ -1,8 +1,8 @@
 -- PR event store (CHE-2298 a1).
 
 -- name: LockGitHubPRForEvent :one
--- Serializes event capture per PR row and returns the current head.
-SELECT id, workspace_id, head_sha
+-- Serializes event capture per PR row and returns the current head and state.
+SELECT id, workspace_id, head_sha, state
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;
@@ -43,8 +43,8 @@ WHERE issue_id = $1 AND pull_request_id = $2 AND head_sha = $3;
 
 -- name: InsertIssuePREvent :execrows
 INSERT INTO issue_pr_event (
-    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status, previous_head_sha
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (issue_id, pull_request_id, dedupe_key) DO NOTHING;
 
 -- name: GetGitHubPRSnapshotState :one
@@ -70,7 +70,8 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        pr.pr_number, pr.repo_owner, pr.repo_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE (e.status = 'next_turn'
+WHERE e.kind NOT IN ('draft', 'ready')
+  AND (e.status = 'next_turn'
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t

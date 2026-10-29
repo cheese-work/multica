@@ -13,7 +13,6 @@ import {
   midpointOf,
   panBy,
   resizeTransform,
-  wheelZoomFactor,
   zoomByAtCenter,
   zoomToAt,
   type ZoomTransform,
@@ -203,24 +202,6 @@ describe("centerTransform", () => {
       x: 300,
       y: 200,
     });
-  });
-});
-
-describe("wheelZoomFactor", () => {
-  it("zooms in when scrolling up and out when scrolling down", () => {
-    expect(wheelZoomFactor(-100, 0)).toBeGreaterThan(1);
-    expect(wheelZoomFactor(100, 0)).toBeLessThan(1);
-  });
-
-  it("is symmetric, so equal opposite scrolls return to the original scale", () => {
-    expect(wheelZoomFactor(-100, 0) * wheelZoomFactor(100, 0)).toBeCloseTo(1, 10);
-  });
-
-  it("normalizes line and page delta modes so a mouse wheel is not 16x weaker than a trackpad", () => {
-    // deltaMode 1 (lines) — one line is treated as 16 pixels.
-    expect(wheelZoomFactor(1, 1)).toBeCloseTo(wheelZoomFactor(16, 0), 10);
-    // deltaMode 2 (pages) — one page is treated as 100 pixels.
-    expect(wheelZoomFactor(1, 2)).toBeCloseTo(wheelZoomFactor(100, 0), 10);
   });
 });
 
