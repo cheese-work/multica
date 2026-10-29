@@ -167,7 +167,8 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
 	}
-	if workflowBindingRequested(cmd) && body["steps"] == nil {
+	newSteps, hasSteps := body["steps"].([]any)
+	if workflowBindingRequested(cmd) && !hasSteps {
 		return errors.New("a decision-bound write carries --steps-file only")
 	}
 
@@ -187,7 +188,7 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		binding, err := bindWorkflow(cmd, live, before, body["steps"].([]any))
+		binding, err := bindWorkflow(cmd, live, before, newSteps)
 		if err != nil {
 			return err
 		}
