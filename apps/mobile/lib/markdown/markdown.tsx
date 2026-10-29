@@ -43,11 +43,14 @@
 import { useCallback, useMemo } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
+import { useQueries } from "@tanstack/react-query";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import type { Attachment } from "@multica/core/types";
+import type { Attachment, CommentPreview } from "@multica/core/types";
 import { useAuthStore } from "@/data/auth-store";
+import { commentPreviewOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { findCommentIds, linkifyCommentIds, parseCommentMention } from "./comment-ids";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -139,10 +142,23 @@ export function Markdown({
       : style;
   }, [baseStyle, compact, viewerId, isDarkColorScheme]);
 
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const processed = useMemo(() => preprocessMobileMarkdown(content), [content]);
+  const commentIds = useMemo(() => findCommentIds(processed), [processed]);
+  // Only ids the server resolved become chips; the rest stay plain text.
+  const resolvedComments = useQueries({
+    queries: commentIds.map((id) => commentPreviewOptions(wsId, id)),
+    combine: (results) => {
+      const map = new Map<string, CommentPreview>();
+      for (const r of results) if (r.data) map.set(r.data.comment_id, r.data);
+      return map;
+    },
+  });
+
   const segments = useMemo(() => {
-    const processed = preprocessMobileMarkdown(content);
-    return emphasizeSelfMentionSegments(splitMarkdown(processed), viewerId);
-  }, [content, viewerId]);
+    const linked = linkifyCommentIds(processed, resolvedComments);
+    return emphasizeSelfMentionSegments(splitMarkdown(linked), viewerId);
+  }, [processed, resolvedComments, viewerId]);
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
@@ -154,12 +170,30 @@ export function Markdown({
       //
       //   mention://issue/<uuid>   → navigate to that issue detail
       //   mention://project/<uuid> → navigate to that project detail
+      //   mention://comment/<uuid>?issue=<uuid> → issue detail, comment highlighted
       //   mention://member/<uuid>  → no-op (no member profile screen yet)
       //   mention://agent/<uuid>   → no-op (no agent profile screen yet)
       //   mention://squad/<uuid>   → no-op (no squad profile screen yet)
       //   mention://all/all        → no-op (semantic only — "everyone")
       //   anything malformed       → no-op
       if (url.startsWith("mention://")) {
+        const comment = parseCommentMention(url);
+        if (comment) {
+          if (wsSlug) {
+            // `h` re-triggers the scroll + flash when the same comment is
+            // opened twice (see the issue screen's highlight handling).
+            router.push({
+              pathname: "/[workspace]/issue/[id]",
+              params: {
+                workspace: wsSlug,
+                id: comment.issueId,
+                highlight: comment.commentId,
+                h: String(Date.now()),
+              },
+            });
+          }
+          return;
+        }
         const rest = url.slice("mention://".length);
         const slash = rest.indexOf("/");
         if (slash < 0) return;

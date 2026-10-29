@@ -14,6 +14,7 @@
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
 import type {
+  CommentPreview,
   Agent,
   AgentTask,
   Attachment,
@@ -63,6 +64,7 @@ import type {
 } from "@multica/core/types";
 import {
   AppConfigSchema,
+  CommentPreviewSchema,
   EMPTY_APP_CONFIG,
   EMPTY_REFRESH_SESSION_RESPONSE,
   RefreshSessionResponseSchema,
@@ -688,6 +690,27 @@ class ApiClient {
       EMPTY_ISSUE_FALLBACK,
       { ...opts, endpoint: "getIssue" },
     );
+  }
+
+  /**
+   * Where a comment lives plus a one-line preview, for comment-ID chips.
+   * `null` means "render the id as plain text": the server answers 404 for an
+   * unknown, deleted or unreadable comment (no leak), and a malformed body
+   * must not become a half-filled chip.
+   */
+  async getCommentPreview(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CommentPreview | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/comments/${id}/preview`, opts);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+    const parsed = CommentPreviewSchema.safeParse(raw);
+    return parsed.success ? (parsed.data as CommentPreview) : null;
   }
 
   /**
