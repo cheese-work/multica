@@ -142,10 +142,20 @@ function KeptDraft({ draft, onDiscard }: { draft: AnswerDraft; onDiscard: () => 
   );
 }
 
+// Open → Recorded → Delivered, or Withdrawn / Disclaimed. A disclaimed answer
+// can leave the request open again, so the receipt wins over the request state.
+function displayState(card: RequestCard) {
+  if (card.state === "withdrawn") return "withdrawn";
+  if (card.answer?.state === "disclaimed") return "disclaimed";
+  if (card.state === "answered") return card.answer?.state ?? "recorded";
+  return "open";
+}
+
 export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
-  const state = t(($) => $.decision.request_state[card.state]);
+  const shown = displayState(card);
+  const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
@@ -170,7 +180,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
       data-testid="decision-request-card"
-      data-state={card.state}
+      data-state={shown}
       className="min-w-0 rounded-xl border border-surface-border bg-surface text-body"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
@@ -183,12 +193,17 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
         )}
         <span className={cn(
           "rounded-full px-2 py-0.5 text-micro font-medium",
-          card.state === "open" && "bg-warning/10 text-warning",
-          card.state === "answered" && "bg-success/10 text-success",
-          card.state === "withdrawn" && "bg-muted text-muted-foreground",
+          shown === "open" && "bg-warning/10 text-warning",
+          (shown === "recorded" || shown === "delivered") && "bg-success/10 text-success",
+          (shown === "withdrawn" || shown === "disclaimed") && "bg-muted text-muted-foreground",
         )}>
           {state}
         </span>
+        {card.answer?.chosen_option_index !== undefined && shown !== "disclaimed" && (
+          <span className="rounded-xs border px-1.5 text-micro" title={card.answer.option_label}>
+            {t(($) => $.decision.receipt_option, { number: card.answer.chosen_option_index + 1 })}
+          </span>
+        )}
         <AppLink
           href={issueHref}
           className="inline-flex min-h-9 max-w-full items-center break-all rounded-full border border-surface-border px-2 font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"

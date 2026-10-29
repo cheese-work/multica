@@ -79,6 +79,20 @@ describe("DecisionRequestCard accessibility", () => {
     expect(link).toHaveAttribute("data-testid", "decision-request-record");
   });
 
+  it("shows Recorded, Delivered and Disclaimed in place from the answer receipt", () => {
+    const answered = { ...card, state: "answered" as const, record_comment_id: "record" };
+    const answer = (state: "recorded" | "delivered" | "disclaimed") => ({
+      ...answered, state: state === "disclaimed" ? ("open" as const) : answered.state,
+      answer: { state, chosen_option_index: 0, option_label: "Ship now", answered_at: "2026-10-26T23:31:00Z" },
+    });
+    for (const [state, label] of [["recorded", "Recorded"], ["delivered", "Delivered"], ["disclaimed", "Disclaimed"]] as const) {
+      const view = renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={answer(state)} /></WorkspaceSlugProvider></QueryClientProvider>);
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", state);
+      expect(screen.getByRole("region", { name: `Decision request: ${label}` })).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
   it("shows no record link on an open card or an answered card without a record", () => {
     for (const next of [{ ...card, record_comment_id: "record" }, { ...card, state: "answered" as const }]) {
       const view = renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={next} /></WorkspaceSlugProvider></QueryClientProvider>);

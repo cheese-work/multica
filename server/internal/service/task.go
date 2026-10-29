@@ -1591,8 +1591,14 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
 			FireAt:               fireAt,
 		})
+		if err == nil {
+			noteRunInserted(ctx, queries, createParams.IssueID)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
+	}
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1728,6 +1734,9 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
+	}
 	if err != nil {
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -5793,6 +5802,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			})
 			switch {
 			case cerr == nil:
+				noteRunInserted(ctx, qtx, t.IssueID)
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -6401,6 +6411,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		)
 		return nil, err
 	}
+	noteRunInserted(ctx, qtx, parent.IssueID)
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than

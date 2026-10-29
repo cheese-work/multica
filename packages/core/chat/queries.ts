@@ -34,6 +34,7 @@ export const chatKeys = {
   all: (wsId: string) => ["chat", wsId] as const,
   /** Full sessions list (active + archived); the dropdown splits locally. */
   sessions: (wsId: string) => [...chatKeys.all(wsId), "sessions"] as const,
+  openDecisions: (wsId: string) => [...chatKeys.all(wsId), "open-decisions"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
@@ -82,13 +83,22 @@ export function chatSessionsOptions(wsId: string) {
   });
 }
 
+export function openDecisionRequestsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: chatKeys.openDecisions(wsId),
+    queryFn: () => api.listOpenDecisionRequests(),
+    staleTime: Infinity,
+    enabled: !!wsId,
+  });
+}
+
 /**
  * Last-activity timestamp used to rank the IM list (newest first). Floored at
  * the session's creation time like the server (chat.sql): a new fork carries
  * old copied messages and must still list as new.
  */
 function sessionActivityTime(s: ChatSession): number {
-  const activity = new Date(s.last_message?.created_at ?? s.updated_at).getTime();
+  const activity = new Date(s.last_message?.created_at ?? s.created_at).getTime();
   const created = new Date(s.created_at).getTime();
   return Number.isNaN(created) ? activity : Math.max(activity, created);
 }

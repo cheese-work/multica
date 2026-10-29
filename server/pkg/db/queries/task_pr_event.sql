@@ -73,7 +73,7 @@ WITH next AS MATERIALIZED (
 )
 SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
        pr.pr_number,
-       COALESCE((
+       COALESCE(NULLIF(e.previous_head_sha, ''), (
            SELECT prev.head_sha FROM issue_pr_event prev
            WHERE e.kind = 'head_changed'
              AND prev.issue_id = e.issue_id
@@ -164,3 +164,72 @@ WITH settled AS (
       AND e.status = 'delivering'
 )
 SELECT event_id FROM settled;
+
+-- PR lifecycle (CHE-2298 c1).
+
+-- name: ListPROnlyRunIDs :many
+-- Unfinished runs of the issue that exist only to act on this PR: every wakeup
+-- receipt that started the run is a PR wake for the PR, and the PR's own
+-- pr.merged wake is not among them (it is the work a merge asks for).
+-- @key_prefix is 'github:<owner>/<repo>#<number>', lower-cased. The a3 bridge's
+-- pr.event receipts carry the PR in the payload, not the key; a merged or closed
+-- cause is the work the merge or close asks for, so it is not PR-only.
+SELECT t.id
+FROM agent_task_queue t
+WHERE t.issue_id = @issue_id
+  AND t.status IN ('queued', 'dispatched', 'running')
+  AND EXISTS (SELECT 1 FROM issue_wakeup_receipt r WHERE r.task_id = t.id)
+  AND NOT EXISTS (
+      SELECT 1 FROM issue_wakeup_receipt r
+      WHERE r.task_id = t.id
+        AND NOT (r.event_type IN ('pr.checks_failed', 'pr.checks_passed', 'pr.mergeability', 'pr.returned_to_draft')
+                 AND (r.event_key = @key_prefix::text
+                      OR left(r.event_key, length(@key_prefix::text) + 1) = @key_prefix::text || ':'))
+        AND NOT (r.event_type = 'pr.event'
+                 AND r.payload->>'kind' NOT IN ('merged', 'closed')
+                 AND lower('github:' || (r.payload->>'repo_owner') || '/' || (r.payload->>'repo_name') || '#' || (r.payload->>'pr_number')) = @key_prefix::text)
+  )
+ORDER BY t.created_at;
+
+-- name: SupersedeOpenPREventsForPR :execrows
+-- A merged or closed PR has nothing left to fix: undelivered conflict, head,
+-- check, draft and ready events of the PR are superseded, and their pending
+-- deliveries fail. A delivery already in flight (delivering) is left to finish.
+WITH failed AS (
+    UPDATE task_pr_event_delivery d
+    SET status = 'failed', failure_reason = 'pr_closed', updated_at = now()
+    FROM issue_pr_event e
+    WHERE e.id = d.event_id
+      AND e.issue_id = @issue_id
+      AND e.pull_request_id = @pull_request_id
+      AND e.kind NOT IN ('merged', 'closed')
+      AND d.status = 'pending'
+    RETURNING d.event_id
+)
+UPDATE issue_pr_event e
+SET status = 'superseded'
+WHERE e.issue_id = @issue_id
+  AND e.pull_request_id = @pull_request_id
+  AND e.kind NOT IN ('merged', 'closed')
+  AND (e.status IN ('accepted', 'next_turn')
+       OR e.id IN (SELECT event_id FROM failed));
+
+-- name: ListAcceptedPRNoticeEvents :many
+-- Draft, ready, conflict, checks-failed and head-changed events of the PR still
+-- waiting for a live run to take them.
+SELECT id FROM issue_pr_event
+WHERE issue_id = @issue_id
+  AND pull_request_id = @pull_request_id
+  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed', 'head_changed')
+  AND status = 'accepted'
+ORDER BY observed_at, created_at;
+
+-- name: ListRunningPREventTaskIDs :many
+-- Running runs of the issue that negotiated typed PR-event delivery.
+SELECT t.id
+FROM agent_task_queue t
+JOIN task_pr_event_capability cap ON cap.task_id = t.id
+WHERE t.issue_id = @issue_id
+  AND t.status = 'running'
+  AND cap.capability = 'task-supplement-pr-event-v1'
+ORDER BY t.created_at;

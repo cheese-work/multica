@@ -1,5 +1,9 @@
 import type { ChatSession } from "../types/chat";
 
+export function isDecisionLifecycleMessage(kind: string | undefined): boolean {
+  return kind === "decision_cancel_notice" || kind === "decision_reference";
+}
+
 /**
  * The chat unread badge number: total unread assistant *messages* across
  * sessions (IM-style), NOT the number of sessions with unread.

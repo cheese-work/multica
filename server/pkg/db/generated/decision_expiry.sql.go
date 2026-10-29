@@ -97,7 +97,7 @@ func (q *Queries) ListDecisionExpiryDigestRecipients(ctx context.Context, batchS
 }
 
 const listDecisionExpiryDigestRequests = `-- name: ListDecisionExpiryDigestRequests :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json FROM decision_request request
 WHERE request.workspace_id = $1 AND request.human_user_id = $2
     AND request.status = 'cancelled' AND request.cancel_reason = 'expired'
     AND NOT EXISTS (SELECT 1 FROM decision_expiry_digest_request item WHERE item.request_id = request.id)
@@ -149,6 +149,7 @@ func (q *Queries) ListDecisionExpiryDigestRequests(ctx context.Context, arg List
 			&i.WithdrawnByUserID,
 			&i.Options,
 			&i.AskIdentity,
+			&i.AskJson,
 		); err != nil {
 			return nil, err
 		}

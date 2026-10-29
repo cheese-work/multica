@@ -49,6 +49,14 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request?.asking_agent_name).toBeUndefined();
   });
 
+  it("keeps the receipt fields and degrades a malformed answer on its own", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+    const answer = { state: "delivered", chosen_option_index: 1, option_label: "Hold", answered_at: "2026-10-26T06:00:00Z" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer } }).decision_request?.answer).toEqual(answer);
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: "x" } }).decision_request?.answer).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: { ...answer, state: "future" } } }).decision_request?.answer?.state).toBe("recorded");
+  });
+
   it("keeps request state, source and original ask from additive metadata", () => {
     const request = {
       id: "request", issue_id: "issue", source_comment_id: "source",

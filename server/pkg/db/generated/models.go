@@ -191,6 +191,7 @@ type AgentTaskQueue struct {
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
+	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 }
 
 type AgentToLabel struct {
@@ -747,6 +748,19 @@ type DecisionAnswer struct {
 	WithdrawalCommentID     pgtype.UUID        `json:"withdrawal_comment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	ChosenOptionIndex       pgtype.Int4        `json:"chosen_option_index"`
+	ReplyText               pgtype.Text        `json:"reply_text"`
+	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
+}
+
+type DecisionBoundWrite struct {
+	DecisionID   pgtype.UUID        `json:"decision_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	Field        string             `json:"field"`
+	BeforeSha256 string             `json:"before_sha256"`
+	AfterSha256  string             `json:"after_sha256"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type DecisionClassChange struct {
@@ -824,6 +838,7 @@ type DecisionRequest struct {
 	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
 	Options               []byte             `json:"options"`
 	AskIdentity           string             `json:"ask_identity"`
+	AskJson               []byte             `json:"ask_json"`
 }
 
 type DecisionWorkerLease struct {
@@ -875,6 +890,13 @@ type Feedback struct {
 	Message     string             `json:"message"`
 	Metadata    []byte             `json:"metadata"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type GithubDispatchHalt struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Scope       string             `json:"scope"`
+	HaltedBy    pgtype.UUID        `json:"halted_by"`
+	HaltedAt    pgtype.Timestamptz `json:"halted_at"`
 }
 
 type GithubInstallation struct {
@@ -1467,17 +1489,18 @@ type IssuePrAutomation struct {
 }
 
 type IssuePrEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	Kind          string             `json:"kind"`
-	HeadSha       string             `json:"head_sha"`
-	BaseSha       string             `json:"base_sha"`
-	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
-	DedupeKey     string             `json:"dedupe_key"`
-	Status        string             `json:"status"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	PullRequestID   pgtype.UUID        `json:"pull_request_id"`
+	Kind            string             `json:"kind"`
+	HeadSha         string             `json:"head_sha"`
+	BaseSha         string             `json:"base_sha"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	DedupeKey       string             `json:"dedupe_key"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	PreviousHeadSha string             `json:"previous_head_sha"`
 }
 
 type IssueProperty struct {
@@ -2064,6 +2087,16 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RunBudgetNotice struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowID    string             `json:"window_id"`
+	Kind        string             `json:"kind"`
+	CommentID   pgtype.UUID        `json:"comment_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type RunGateEvent struct {
