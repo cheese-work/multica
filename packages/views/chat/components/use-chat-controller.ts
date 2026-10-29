@@ -168,6 +168,8 @@ export function seedAcceptedPendingTask(
     queued?: boolean;
   },
 ) {
+  // A decision reply for another agent's ask starts no task: nothing is pending.
+  if (!task.task_id) return;
   qc.setQueryData<ChatPendingTask>(
     chatKeys.pendingTask(sessionId),
     (old) => {
