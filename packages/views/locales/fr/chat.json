@@ -407,5 +407,15 @@
     "archived_badge": "Archivée",
     "title_match": "Titre correspondant",
     "actions_aria": "Actions pour {{title}}"
+  },
+  "wakeup": {
+    "node_label": "Réveil programmé déclenché",
+    "scheduled_at": "Programmé {{time}}",
+    "set_by": "{{agent}} l'a défini à {{time}}",
+    "show_instruction": "Voir la consigne",
+    "hide_instruction": "Masquer la consigne",
+    "instruction_region": "Consigne pour l'agent",
+    "instruction_note": "Consigne pour l'agent, telle quelle. L'agent la reçoit en entier.",
+    "issue_fallback": "ticket"
   }
 }
