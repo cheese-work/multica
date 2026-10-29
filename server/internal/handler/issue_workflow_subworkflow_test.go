@@ -171,63 +171,47 @@ func TestSubWorkflowSpawnRefusesOtherWorkspaceTarget(t *testing.T) {
 	}
 }
 
-// The spawned child's start step may hand off to an agent. The child takes that
-// handler through the same admission as any new issue: assigned, with a run
-// queued, and the parent's join still closes once the child is done.
-func TestSubWorkflowChildTakesStartStepHandler(t *testing.T) {
+// Containment (CHE-2031, option A): a spawned child is never auto-assigned, so
+// no run starts for it. Unattended child-agent execution is deferred until the
+// spawn carries trusted provenance. The child still exists and the parent's join
+// still closes once the child is done. Both a start step with an agent handler
+// and one with a human handler leave the child unassigned.
+func TestSubWorkflowChildIsLeftUnassigned(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	agentID := seededReadyAgentID(t)
-	c, _ := newSubWorkflowCaseTo(t, 1, []map[string]any{
-		{"status_key": "todo", "handler": map[string]any{"type": "agent", "id": agentID}, "instructions": "Do the sub-task."},
-		{"status_key": "in_progress"}, {"status_key": "in_review"}, {"status_key": "blocked"},
-	})
-	c.enter(t, "in_progress")
-	tickEdges(t)
-	if got := c.children(t); got != 1 {
-		t.Fatalf("spawned %d children, want 1", got)
-	}
-	var childID, assigneeType, assigneeID string
-	dbfx.QueryRow(t, `SELECT id::text, COALESCE(assignee_type, ''), COALESCE(assignee_id::text, '') FROM issue WHERE parent_issue_id=$1`, c.issueID).Scan(&childID, &assigneeType, &assigneeID)
-	if assigneeType != "agent" || assigneeID != agentID {
-		t.Fatalf("child assignee = %s %s, want agent %s", assigneeType, assigneeID, agentID)
-	}
-	if steps := pendingStepRuns(t, childID, agentID); len(steps) != 1 || steps[0] != "todo" {
-		t.Fatalf("runs queued for the child = %v, want one stamped todo", steps)
-	}
-	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status='done' WHERE id=$1`, childID); err != nil {
-		t.Fatal(err)
-	}
-	testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at = now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
-	tickEdges(t)
-	if got := c.status(t); got != "in_review" {
-		t.Fatalf("child done: parent at %s, want in_review", got)
-	}
-}
-
-// The invoke gate still applies: a start-step agent the parent's requester may
-// not invoke is refused, so no child (and no run) is made under that agent.
-func TestSubWorkflowChildRefusesAgentTheRequesterCannotInvoke(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	readyAgent := seededReadyAgentID(t)
-	privateAgent, _, _ := privateAgentTestFixture(t)
-	c, targetID := newSubWorkflowCaseTo(t, 1, []map[string]any{
-		{"status_key": "todo", "handler": map[string]any{"type": "agent", "id": readyAgent}, "instructions": "Do the sub-task."},
-		{"status_key": "in_progress"}, {"status_key": "in_review"}, {"status_key": "blocked"},
-	})
-	// The save-time gate passed for the ready agent; the stored step now names
-	// an agent only another person may invoke.
-	if _, err := testPool.Exec(context.Background(),
-		`UPDATE issue_workflow SET steps = replace(steps::text, $2, $3)::jsonb WHERE id=$1`, targetID, readyAgent, privateAgent); err != nil {
-		t.Fatal(err)
-	}
-	c.enter(t, "in_progress")
-	tickEdges(t)
-	if got := c.children(t); got != 0 {
-		t.Fatalf("spawned %d children under an agent the requester may not invoke, want 0", got)
+	for name, handler := range map[string]map[string]any{
+		"agent": {"type": "agent", "id": agentID},
+		"human": {"type": "human_by_role"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newSubWorkflowCaseTo(t, 1, []map[string]any{
+				{"status_key": "todo", "handler": handler, "instructions": "Do the sub-task."},
+				{"status_key": "in_progress"}, {"status_key": "in_review"}, {"status_key": "blocked"},
+			})
+			c.enter(t, "in_progress")
+			tickEdges(t)
+			if got := c.children(t); got != 1 {
+				t.Fatalf("spawned %d children, want 1", got)
+			}
+			var childID, assigneeType, assigneeID string
+			dbfx.QueryRow(t, `SELECT id::text, COALESCE(assignee_type, ''), COALESCE(assignee_id::text, '') FROM issue WHERE parent_issue_id=$1`, c.issueID).Scan(&childID, &assigneeType, &assigneeID)
+			if assigneeType != "" || assigneeID != "" {
+				t.Fatalf("child assignee = %q %q, want none", assigneeType, assigneeID)
+			}
+			if steps := pendingStepRuns(t, childID, agentID); len(steps) != 0 {
+				t.Fatalf("runs queued for the child = %v, want none", steps)
+			}
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status='done' WHERE id=$1`, childID); err != nil {
+				t.Fatal(err)
+			}
+			testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at = now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+			tickEdges(t)
+			if got := c.status(t); got != "in_review" {
+				t.Fatalf("child done: parent at %s, want in_review", got)
+			}
+		})
 	}
 }
 

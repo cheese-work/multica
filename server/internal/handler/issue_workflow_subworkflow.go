@@ -28,76 +28,13 @@ var errSubWorkflowMissing = errors.New("sub-workflow not found in this workspace
 // check). The watch logs it and stops asking.
 var errSubWorkflowRefused = errors.New("sub-workflow child refused")
 
-// subWorkflowHandoffResolver resolves the child's start-step handler with the
-// admission a new issue gets (createHandoffResolver): the same handler rules,
-// then the same assignee gate. No request exists on the edge path, so the invoke
-// gate judges the humans the parent acts for. The first is the trusted
-// originator of the spawn chain (spawnOriginator), the same provenance a task
-// run for that issue is judged by. The second is the requester, which is only
-// what the caller named: it can narrow who may be used (an extra person who must
-// be allowed) and never widen it. Every child passes both on, so a nested child
-// is judged by the same two people. A handler any of them may not use refuses
-// the spawn.
-func (h *Handler) subWorkflowHandoffResolver(parent db.Issue) service.CreateHandoffResolver {
-	workspaceID := uuidToString(parent.WorkspaceID)
-	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		originators := []string{h.spawnOriginator(ctx, parent)}
-		if parent.RequestedByID.Valid {
-			originators = append(originators, uuidToString(parent.RequestedByID))
-		}
-		humans, err := h.workflowHumans(ctx, step, project, project.WorkspaceID, parent.RequestedByID)
-		if err != nil {
-			return pgtype.Text{}, pgtype.UUID{}, err
-		}
-		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, parent.CreatorType, parent.CreatorID, humans)
-		if !ok {
-			return pgtype.Text{}, pgtype.UUID{}, nil
-		}
-		assignee := pgtype.Text{String: assigneeType, Valid: true}
-		status, msg := h.validateAssignee(ctx, workspaceID, assignee, assigneeID, func(agent db.Agent) bool {
-			for _, originator := range originators {
-				if !h.canInvokeAgent(ctx, agent, "system", "", originator, workspaceID) {
-					return false
-				}
-			}
-			return true
-		})
-		if status != 0 {
-			return pgtype.Text{}, pgtype.UUID{}, fmt.Errorf("%w: %s", errSubWorkflowRefused, msg)
-		}
-		return assignee, assigneeID, nil
-	}
-}
-
-// spawnOriginator returns the human at the top of the chain that made the issue:
-// what TaskService.OriginatorForIssueTask resolves for the first issue above it
-// that was not itself spawned onto a workflow in a stage by the same creator (a member's own issue,
-// or an agent's issue back to the task that created it). A spawned child has no
-// provenance of its own, so it is read from that issue. "" when the chain has no
-// human, which the invoke gate treats as no one: a private agent is refused.
-func (h *Handler) spawnOriginator(ctx context.Context, issue db.Issue) string {
-	cur := issue
-	for i := 0; cur.WorkflowID.Valid && cur.Stage.Valid && cur.ParentIssueID.Valid; i++ {
-		if i > maxSubWorkflowDepth {
-			return ""
-		}
-		next, err := h.Queries.GetIssue(ctx, cur.ParentIssueID)
-		if err != nil {
-			return ""
-		}
-		// A spawn copies its creator from the issue above it; a child made by
-		// hand under someone else's issue does not borrow that issue's provenance.
-		if next.CreatorType != cur.CreatorType || next.CreatorID != cur.CreatorID {
-			break
-		}
-		cur = next
-	}
-	originator := h.TaskService.OriginatorForIssueTask(ctx, cur, pgtype.UUID{})
-	if !originator.Valid {
-		return ""
-	}
-	return uuidToString(originator)
-}
+// A spawned child is created unassigned, with no handler resolved for its start
+// step, so no run starts for it. Auto-assigning it needs the trusted originator
+// of the spawn, which the edge path does not carry (no request, no task), and a
+// parent link a caller can set by hand is not proof of a spawn. Unattended
+// child-agent execution is deferred until the spawn records that provenance
+// (CHE-2031, scope decision A). The child is still made, joins the parent's
+// stage and closes the join when it is done; a person or a later step moves it.
 
 // subWorkflowTargetsMessage checks every sub-workflow step of a definition
 // being saved: its workflow must exist in the workspace, and following the
@@ -241,7 +178,6 @@ func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, su
 		WorkflowID:      targetID,
 		Stage:           pgtype.Int4{Int32: int32(sub.Stage), Valid: true},
 		AllowDuplicate:  true,
-		HandoffResolver: h.subWorkflowHandoffResolver(parent),
 	}, service.IssueCreateOpts{
 		ActorID: uuidToString(parent.CreatorID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, _ []db.IssueLabel) map[string]any {
