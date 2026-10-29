@@ -79,7 +79,7 @@ Exit guards use "any PR" (`anyPR`), and `pr.checks_green` counts drafts (`open()
 | Terminal PR state | `pr.merged`, `pr.closed_unmerged` | Each gate holds or fails as the exit catalog already defines it (`Facts.holds`, `edges.go:216-218`): `pr.merged` = at least one merged PR and no open or draft PR; `pr.closed_unmerged` = at least one closed PR and no open, draft or merged PR. No open-PR requirement. |
 | Non-PR | `children_done`, `issue_status(id, status)` | `Facts.holds`, unchanged. |
 
-Every guard in the catalog except `agent_done` and `agent_verdict(...)` stays allowed. A step's enabled (`warn` or `block`) gates must not mix the open-PR family with the terminal family: such a step can never pass (a terminal guard requires zero open PRs; the open-PR family requires at least one). Validation rejects that combination with a 400 that names both guards. It does not drop either guard silently; each family stays usable on its own.
+Every guard in the catalog except `agent_done` and `agent_verdict(...)` stays allowed. A step may mix families. Each gate is evaluated in its own family, then its own `mode` applies: a failed `warn` gate writes the status with a warning, a failed `block` gate refuses it unless the override rule admits it. Validation does not reject any mix. Some mixes cannot all hold at once (a terminal guard requires zero open PRs; the open-PR family requires at least one); with both in `block`, entry needs a human override.
 
 Expected results (gates enabled on the target step):
 
@@ -94,7 +94,8 @@ Expected results (gates enabled on the target step):
 | Open red PR + draft green PR | `pr.checks_green` | fail: the open red PR fails |
 | Open green PR, children done | `pr.ready` + `pr.checks_green` + `children_done` | pass (per-PR family + non-PR family) |
 | One merged PR, children not done | `pr.merged` + `children_done` | fail: `children_done` |
-| (any) | `pr.merged` + `pr.ready` | rejected at validation, 400 |
+| One merged PR | `pr.merged=block` + `pr.ready=warn` | enters with a warning: `pr.merged` holds, `pr.ready` fails in `warn` |
+| One merged PR | `pr.merged=block` + `pr.ready=block` | 409: `pr.ready` fails; a human override with a reason admits it when `member_override` is true |
 
 Self-hosted VCS PRs carry no checks (`workflow_edges.sql:26`), so `pr.checks_green` can never hold for them. The step editor shows a warning next to a `pr.checks_green` gate; the server does not try to detect self-hosted projects (no speculative validation).
 
@@ -141,7 +142,7 @@ Regression tests (slice 1):
 
 ## Slices (each one PR, one sub-issue under CHE-2295, strictly in order)
 
-1. **Engine + API.** `Entry` on `Step`, `storedStep`, `DecodeSteps`/`EncodeSteps`; handler payload/input structs, `stepToPayload`, `payloadToStep`, `resolveStepInputs` (`issue_workflow.go:80-160`, `366-436`); `NormalizeHandoff`/`ValidateHandoff`, including the open-PR/terminal family mix rejection; merge-preserve; bound-write hash; `system` flag; gate in `verify` for update and batch, plus the in-transaction create hook on the effective initial status; three-family evaluation with the expected-results table as a test matrix; 409 contract; override reason with the credential-source check and its regression table; additive batch `failed` field with a mixed-batch test; warn activity; zod step schema in `packages/core/api/schemas.ts:567` with a malformed-response test; shared TS types (`IssueWorkflowStep.entry` in `packages/core/types/issue-workflow.ts`, `entry_gate_override_reason` on `UpdateIssueRequest`, optional `failed` on `BatchUpdateIssuesResponse` in `packages/core/types/api.ts`); CLI flag. Test-first: red test "agent writes `in_review` with a draft PR on a `block` gate succeeds today", then green; plus regression tests for every system writer listed above.
+1. **Engine + API.** `Entry` on `Step`, `storedStep`, `DecodeSteps`/`EncodeSteps`; handler payload/input structs, `stepToPayload`, `payloadToStep`, `resolveStepInputs` (`issue_workflow.go:80-160`, `366-436`); `NormalizeHandoff`/`ValidateHandoff`; merge-preserve; bound-write hash; `system` flag; gate in `verify` for update and batch, plus the in-transaction create hook on the effective initial status; three-family evaluation with the expected-results table as a test matrix; 409 contract; override reason with the credential-source check and its regression table; additive batch `failed` field with a mixed-batch test; warn activity; zod step schema in `packages/core/api/schemas.ts:567` with a malformed-response test; shared TS types (`IssueWorkflowStep.entry` in `packages/core/types/issue-workflow.ts`, `entry_gate_override_reason` on `UpdateIssueRequest`, optional `failed` on `BatchUpdateIssuesResponse` in `packages/core/types/api.ts`); CLI flag. Test-first: red test "agent writes `in_review` with a draft PR on a `block` gate succeeds today", then green; plus regression tests for every system writer listed above.
 2. **Settings UI + status menu badge.** Step editor section and pre-write badge. Design-loop rules apply (UI change).
 3. **Default workflow gates + instruction cleanup.** Only after slices 1 and 2 are deployed: set `in_review` entry gates (`pr.ready=block`, `pr.checks_green=block`, `member_override=true`) on the Default workflow (`ca300465-4a0e-4b3c-994a-d5623dcaec2e`); then retire the client script lane in `multica-cheese-work-issue` (CHE-2336 text) through the instruction-change process.
 
@@ -151,7 +152,7 @@ Round 1 (independent Claude Opus subagent, same lab as the author): 5/10, 14 iss
 
 Round 3 (CHE-2531 step 1, x99-codex-sol, OpenAI, different lab) on head `b9d246a12`: CHANGES REQUESTED, 2 P1 + 1 P2. Corrections in this revision:
 - P1 override authorization: the override now requires a human credential (`resolveActor` = member and not `isMachineCredentialActor`), not authorship alone; regression table added. Keeps the approved "agents never override" rule.
-- P1 terminal guards: entry evaluation split into open-PR, terminal and non-PR families; `pr.merged` and `pr.closed_unmerged` keep their catalog meaning; expected-results table added; the impossible family mix is rejected at validation instead of narrowing the catalog.
+- P1 terminal guards: entry evaluation split into open-PR, terminal and non-PR families; `pr.merged` and `pr.closed_unmerged` keep their catalog meaning; expected-results table added; mixed families stay valid, each gate evaluated in its own family under its own mode (the blanket mix ban from head `a832f238f` was removed after the delta review).
 - P2 API contract: batch `failed` field is additive; shared TS types named in slice 1.
 - Create hook: in-transaction, on the effective initial status.
 No change to approach B, the `entry` data shape, `workflowWrite.verify` as the update enforcement point, the human-only override rule or the all-open-PR rule.
