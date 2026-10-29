@@ -42,12 +42,12 @@ DELETE FROM issue_pull_request_exclusion
 WHERE issue_id = $1 AND pull_request_id = $2;
 
 -- name: ListIssueLinkedPullRequestStates :many
--- Every PR linked to the issue across GitHub and self-hosted providers, for
--- the merge decision. Ordered by number so reasons read stably.
+-- Delivery PRs across GitHub and self-hosted providers, for the merge decision.
+-- GitHub reference links are excluded. Ordered by number so reasons read stably.
 SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-WHERE ipr.issue_id = $1
+WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
 UNION ALL
 SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state
 FROM vcs_pull_request pr
@@ -79,14 +79,14 @@ WHERE i.id = $1
   AND i.status = sqlc.arg('expected_status')::text
   AND i.status <> sqlc.arg('target_status')::text
   AND EXISTS (
-      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id
+      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
       UNION ALL
       SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
   )
   AND NOT EXISTS (
       SELECT 1 FROM issue_pull_request ipr
       JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+      WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
   )
   AND NOT EXISTS (
       SELECT 1 FROM issue_vcs_pull_request ipr

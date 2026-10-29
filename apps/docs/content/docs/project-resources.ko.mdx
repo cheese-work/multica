@@ -1,6 +1,6 @@
 ---
 title: 프로젝트 리소스
-description: 프로젝트에 GitHub 저장소나 로컬 디렉터리를 연결해 이후 실행에 안정적인 실행 컨텍스트를 제공합니다.
+description: 프로젝트에 저장소, 로컬 디렉터리, HTTPS 참조 링크를 연결합니다.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,12 +11,13 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 
 [프로젝트](/projects) 리소스는 이 작업 묶음에 어떤 코드가 필요하며 어디에서 실행할지 에이전트에게 알려 줍니다. 리소스는 프로젝트에 계속 연결되어 있으므로 각 태스크에 저장소 주소나 로컬 경로를 반복해서 붙여 넣을 필요가 없습니다.
 
-현재 두 가지 리소스를 지원합니다.
+현재 세 가지 리소스를 지원합니다.
 
 | 리소스 | 적합한 경우 | 실행 위치 |
 |---|---|---|
 | **GitHub 저장소** | 팀이 공유하는 코드베이스이며 런타임이 checkout을 관리해야 할 때 | 런타임이 관리하는 작업 디렉터리 |
 | **로컬 디렉터리** | 이미 존재하는 checkout, 매우 큰 저장소, 로컬 변경 내용을 직접 확인해야 할 때 | 지정한 컴퓨터의 원본 디렉터리 |
+| **URL** | 메모가 있는 디자인 파일, 문서 또는 기타 HTTPS 참조 링크 | 컨텍스트로만 사용하며 체크아웃하지 않음 |
 
 ## 리소스가 실행에 들어가는 방식
 
@@ -35,6 +36,20 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 프로젝트를 만들 때 **Repos**에서 바로 저장소를 선택할 수도 있습니다. 하나의 프로젝트에 여러 GitHub 저장소를 연결할 수 있습니다.
 
 리소스의 `ref`에는 이후 checkout에서 기본으로 사용할 브랜치, tag, commit을 지정할 수 있습니다. `default_branch_hint`는 에이전트에게 기본 브랜치 힌트만 제공하며 강제로 브랜치를 전환하지 않습니다.
+
+## HTTPS 참조 링크 추가
+
+CLI로 링크를 추가합니다. 사이드바는 URL과 선택 사항인 `label` 메모를 따로 표시합니다.
+
+```bash
+multica project resource add <project-id> --type url \
+  --url https://example.com/design --label "디자인 파일"
+multica project resource list <project-id>
+multica project resource update <project-id> <resource-id> \
+  --url https://example.com/design-v2 --label "업데이트된 디자인 파일"
+```
+
+API는 `resource_type: "url"`과 `resource_ref: {"url": "https://example.com/design"}`을 받습니다. 호스트 이름이 있는 HTTPS 링크만 허용합니다. 에이전트는 링크를 프로젝트 컨텍스트로 받지만 URL 리소스는 저장소나 체크아웃 대상이 되지 않습니다. GitHub 저장소 리소스의 기존 체크아웃 동작은 그대로 유지됩니다.
 
 ## 로컬 디렉터리 추가
 

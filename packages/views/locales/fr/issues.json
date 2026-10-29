@@ -608,6 +608,7 @@
     "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
+    "show_full": "Afficher le commentaire complet",
     "you": "Vous",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
@@ -1419,6 +1420,10 @@
       "other_done": "Quand {{issue}} est terminée",
       "other_ended": "Quand {{issue}} est terminée ou annulée",
       "other_in_review": "Quand {{issue}} passe en revue",
+      "gh_run_id": "l'exécution {{id}} de {{repo}}",
+      "gh_run_sha": "{{workflow}} à {{sha}} de {{repo}}",
+      "gh_run_completed": "Quand {{run}} se termine",
+      "gh_run_waiting": "Quand {{run}} attend à une étape d'approbation",
       "other_blocked": "Quand {{issue}} passe à Bloqué",
       "another_issue": "une autre tâche",
       "unknown_label": "un libellé supprimé",
@@ -1443,6 +1448,8 @@
       "other_done": "Attend {{issue}}",
       "other_ended": "Attend la fin de {{issue}}",
       "other_in_review": "Attend la revue de {{issue}}",
+      "gh_run_completed": "Attend la fin de {{run}}",
+      "gh_run_waiting": "Attend que {{run}} atteigne une étape d'approbation",
       "other_blocked": "Attend que {{issue}} passe à Bloqué",
       "time": "{{time}} · réveille {{agent}}",
       "header": "{{agent}} : {{what}}",
@@ -1515,6 +1522,7 @@
     "not_merged": "{{prs}} fermée sans fusion",
     "not_merged_action": "Retirer",
     "all_merged_to": "Toutes les PR sont fusionnées. La prochaine PR fusionnée fera passer la tâche à {{status}}.",
+    "workflow_owned": "Le workflow déplace la tâche quand sa PR est fusionnée",
     "issue_disabled": "Les fusions de PR ne changent pas cette tâche",
     "issue_disabled_action": "Réactiver"
   },
@@ -1884,11 +1892,15 @@
     "state": {
       "pending": "En attente",
       "effective": "En vigueur",
-      "disclaimed": "Retirée"
+      "disclaimed": "Retirée",
+      "delivered": "Livrée",
+      "recorded": "Enregistrée"
     },
     "via_dm": "via DM",
     "recorded_by": "Enregistré par {{name}}",
-    "asked_in_dm": "Posé dans le DM",
+    "recorded_for": "Enregistrée pour {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Aller à la carte",
     "answered_in_dm": "Répondu dans le DM",
     "private_dm": "d'un DM privé",
     "disclaim_action": "Retirer",

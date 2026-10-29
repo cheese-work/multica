@@ -146,7 +146,7 @@ describe("ChatMessageList — decision cards", () => {
 
   it("labels answered asks and leaves legacy asks without source metadata usable", () => {
     renderList({ messages: [{ ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: { ...requestCard, state: "answered", source_comment_id: undefined } }] });
-    expect(screen.getByRole("region", { name: "Decision request: Answered" })).toHaveTextContent(requestCard.ask);
+    expect(screen.getByRole("region", { name: "Decision request: Recorded" })).toHaveTextContent(requestCard.ask);
     expect(screen.getByRole("link", { name: "CHE-2088" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Source comment" })).toBeNull();
   });

@@ -18,6 +18,8 @@ import (
 
 const decisionExpiryExplanation = "Expired after 7 days. Expiry is not an answer or permission to execute."
 
+const decisionActionExpiryExplanation = "The approval window for this action closed. Expiry is not an answer or permission to execute."
+
 func (handler *Handler) deliverDecisionExpiryDigest(ctx context.Context, workspaceID, humanID pgtype.UUID) error {
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {

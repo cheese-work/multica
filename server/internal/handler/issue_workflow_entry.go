@@ -44,10 +44,25 @@ type workflowHandoff struct {
 // prospective update and may rewrite params: the status of an issue moving
 // into the project, and the assignee when the write enters a handoff step.
 // enterOnMove makes a project move enter the step the issue lands on.
-// run is the calling agent's run on this issue (nil for members): it may only
-// move the issue from the step it works on. It returns the handoff that write
-// triggers, or nil.
-func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+// caller is who writes: a run on this issue may only move the issue from the
+// step it works on, and an agent only along its step's exits. It returns the
+// handoff that write triggers, or nil.
+func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
+	run := caller.run
+	// A review superseded by a newer head has no say on the status, in any
+	// workflow (CHE-2307).
+	if oldHead, stale := staleVerdictRun(ctx, q, run); stale && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+		h.recordReviewActivity(ctx, prev.ID, "agent", uuidToString(run.AgentID), "review_verdict_stale", map[string]string{
+			"message": "verdict for " + oldHead + " is stale", "task_id": uuidToString(run.ID), "head_sha": oldHead,
+		})
+		return nil, &issueworkflow.StaleVerdictError{
+			IssueIdentifier: h.getIssuePrefix(ctx, prev.WorkspaceID) + "-" + strconv.Itoa(int(prev.Number)),
+			ReviewedSHA:     oldHead,
+		}
+	}
+	if err := h.checkAgentMove(ctx, q, prev, params, statusExplicit, caller); err != nil {
+		return nil, err
+	}
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
@@ -105,6 +120,21 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	params.AssigneeType = pgtype.Text{String: assigneeType, Valid: true}
 	params.AssigneeID = assigneeID
 	return &workflowHandoff{def: *def, step: step, project: project}, nil
+}
+
+// checkAgentMove refuses an agent's status write the issue's current step has
+// no agent exit for. An agent decides its step's exits, whichever issue its run
+// belongs to, so the step comes from the workflow the issue is in now: a write
+// that also clears or changes the project must not drop that policy first.
+func (h *Handler) checkAgentMove(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit bool, caller workflowCaller) error {
+	if !caller.agent || !statusExplicit || !params.Status.Valid || params.Status.String == prev.Status {
+		return nil
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, prev.ProjectID)
+	if err != nil || def == nil {
+		return err
+	}
+	return issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String)
 }
 
 // createHandoffError is a handoff handler the caller may not use, found while
@@ -192,6 +222,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var notAllowed *issueworkflow.MoveNotAllowedError
+	if errors.As(err, &notAllowed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":         notAllowed.Error(),
+			"code":          "status_move_not_allowed",
+			"from":          notAllowed.From,
+			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
 	if errors.Is(err, errHandoffPreviewStale) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; review the move again",
@@ -216,7 +256,24 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var stale *issueworkflow.StaleVerdictError
+	if errors.As(err, &stale) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        stale.Error(),
+			"code":         "review_verdict_stale",
+			"reviewed_sha": stale.ReviewedSHA,
+		})
+		return true
+	}
 	return false
+}
+
+// workflowCaller is who makes a status write: run is the agent's run on this
+// issue, nil for members and for runs on other issues; agent is true for any
+// agent, whatever run it carries.
+type workflowCaller struct {
+	run   *db.AgentTaskQueue
+	agent bool
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,

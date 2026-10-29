@@ -575,6 +575,7 @@
     "wakeup_link_run": "查看運行"
   },
   "comment": {
+    "show_full": "顯示完整評論",
     "add_reaction": "新增表情回應",
     "collapse_thread": "收起討論",
     "expand_thread": "展開討論",
@@ -1352,6 +1353,10 @@
       "other_done": "當 {{issue}} 完成時",
       "other_ended": "當 {{issue}} 完成或取消時",
       "other_in_review": "當 {{issue}} 進入稽覈中時",
+      "gh_run_id": "{{repo}} 的執行 {{id}}",
+      "gh_run_sha": "{{repo}} 的 {{workflow}}（{{sha}}）",
+      "gh_run_completed": "當 {{run}} 結束時",
+      "gh_run_waiting": "當 {{run}} 在審批關卡等待時",
       "other_blocked": "當 {{issue}} 進入 blocked 時",
       "another_issue": "另一個任務",
       "unknown_label": "已刪除的標籤",
@@ -1376,6 +1381,8 @@
       "other_done": "等 {{issue}} 完成",
       "other_ended": "等 {{issue}} 結束",
       "other_in_review": "等 {{issue}} 進入稽覈",
+      "gh_run_completed": "等待 {{run}} 結束",
+      "gh_run_waiting": "等待 {{run}} 到達審批關卡",
       "other_blocked": "等 {{issue}} 進入 blocked",
       "time": "{{time}} 喚醒 {{agent}}",
       "header": "{{agent}} 在{{what}}",
@@ -1446,6 +1453,7 @@
     "not_merged": "{{prs}} 已關閉，未合併",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合併。之後有新 PR 合併時會改為 {{status}}。",
+    "workflow_owned": "PR 合併後由工作流程移動此任務",
     "issue_disabled": "此任務合併後不改狀態",
     "issue_disabled_action": "恢復"
   },
@@ -1812,11 +1820,15 @@
     "state": {
       "pending": "待生效",
       "effective": "已生效",
-      "disclaimed": "已撤回"
+      "disclaimed": "已撤回",
+      "delivered": "已送達",
+      "recorded": "已記錄"
     },
     "via_dm": "來自私信",
     "recorded_by": "由 {{name}} 記錄",
-    "asked_in_dm": "私信中的提問",
+    "recorded_for": "已記錄至 {{issue}}",
+    "option_n": "選項 {{number}}",
+    "jump_to_card": "跳到卡片",
     "answered_in_dm": "私信中的回答",
     "private_dm": "來自私人私信",
     "disclaim_action": "撤回",
