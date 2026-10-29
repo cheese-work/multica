@@ -49,23 +49,35 @@ stateDiagram-v2
 | --- | --- | --- |
 | Pending | The agent is not woken yet. The person can still disclaim. | `Pending. Takes effect 30 Oct, 10:10 ICT; 10 min to disclaim.` |
 | Effective | The agent was woken with the answer. | `In effect since 30 Oct, 11:05 ICT` |
-| Disclaimed | The person withdrew the answer. The request reopens. | `Disclaimed at 30 Oct, 12:30 ICT` |
+| Disclaimed | The person withdrew the answer. See Disclaim for what happens to the request. | `Disclaimed at 30 Oct, 12:30 ICT` |
 
 The card chip reads Recorded until the agent has received the answer, then
 Delivered.
 
 ## Classes and timing
 
-| Class | Delay before effect | Disclaim window |
+| Class | Delay before effect | Disclaim before effect |
 | --- | --- | --- |
-| `reversible` | None. The agent wakes at once. | None |
+| `reversible` | None. The agent wakes at once. | No time before effect |
 | `spend`, `deploy`, `publish`, `irreversible`, `product_direction` | 10 minutes | 10 minutes |
 
 ## Disclaim
 
 Only the person who answered sees Disclaim. It works while the record is
-pending. The agent is told the decision is withdrawn and the request reopens.
-A disclaim cannot be undone.
+pending and also after it is effective. A disclaim cannot be undone.
+
+What happens to the request depends on where the answer came from:
+
+| Answer came from | Disclaim result |
+| --- | --- |
+| A live asked request | The request reopens and the agent can be answered again. |
+| An unprompted record (no request) | The request is cancelled. The agent must ask again. |
+| A request whose DM is archived | The request is cancelled and a cancel note is posted. The agent must ask again. |
+
+If the agent was not woken yet, nothing is delivered. If the agent was already
+woken (the record is effective), the agent receives a retraction that says the
+decision is withdrawn. The agent can also withdraw a record itself; then no
+retraction is sent.
 
 ## Where you see it
 

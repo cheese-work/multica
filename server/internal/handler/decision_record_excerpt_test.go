@@ -139,3 +139,54 @@ func TestDecisionRecordFieldsCarryTimingForPendingAndEffective(test *testing.T) 
 		test.Fatalf("effective timing: %+v", effective)
 	}
 }
+
+// twoMessageRecord records two source messages of one DM, with excerpts.
+func twoMessageRecord(test *testing.T, first, second string, excerpts []string) (askedRecordFixture, decisionRecordResult, error) {
+	test.Helper()
+	fixture := newAskedRecordFixture(test)
+	dbfx.Exec(test, `UPDATE chat_message SET content = $1 WHERE id = $2`, first, fixture.messageID)
+	secondID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": second, "sent_via": "interactive_jwt"})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, fixture.chatTaskID)
+	input := fixture.recordInput()
+	input.MessageIDs = append(input.MessageIDs, parseUUID(secondID))
+	input.Excerpts = excerpts
+	result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
+	return fixture, result, err
+}
+
+func TestDecisionRecordExcerptMustLieInsideOneSourceMessage(test *testing.T) {
+	fixture, result, err := twoMessageRecord(test, "alpha beta", "gamma delta", []string{"beta gamma"})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || refusal.status != http.StatusBadRequest || result.Answer.ID.Valid {
+		test.Fatalf("err=%v, want a 400: an excerpt spanning two messages was never written", err)
+	}
+	fixture.assertRecordCounts(test, 0)
+}
+
+func TestDecisionRecordExcerptsFromEachSourceMessageAreAccepted(test *testing.T) {
+	_, result, err := twoMessageRecord(test, "alpha beta", "gamma delta", []string{"beta", "gamma delta"})
+	if err != nil || !strings.HasSuffix(result.Comment.Content, "> beta\n>\n> gamma delta") {
+		test.Fatalf("one excerpt per message must pass: %v %q", err, result.Comment.Content)
+	}
+}
+
+func TestDecisionRecordRetryMustNameTheSameExcerpts(test *testing.T) {
+	fixture, first, err := excerptRecord(test, multiDecisionMessage, "", []string{"yes"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	retry := func(excerpts []string) (decisionRecordResult, error) {
+		input := fixture.recordInput()
+		input.Excerpts = excerpts
+		return testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
+	}
+	if again, err := retry([]string{"yes"}); err != nil || !again.Replayed || again.Answer.ID != first.Answer.ID {
+		test.Fatalf("identical retry must replay: %+v %v", again, err)
+	}
+	for name, excerpts := range map[string][]string{"reworded": {"yes please"}, "other part": {"A"}, "none": nil} {
+		if again, err := retry(excerpts); err == nil {
+			test.Fatalf("%s retry returned the old record: %+v", name, again)
+		}
+	}
+	fixture.assertRecordCounts(test, 1)
+}

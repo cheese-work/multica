@@ -72,5 +72,8 @@ multica issue comment add <issue> --decision-record \
 
 A record is pending until the agent is woken, then effective, or disclaimed
 by the person. `reversible` records wake at once. Every other class waits 10
-minutes, and the person can disclaim during that time. Times shown to people
+minutes. The person can disclaim while it is pending and after it is
+effective; an effective record sends the agent a retraction. A disclaim
+reopens a live asked request, and cancels the request of an unprompted record
+or an archived DM. Times shown to people
 are ICT. User-facing description: `docs/decision-records.md` in the repo.

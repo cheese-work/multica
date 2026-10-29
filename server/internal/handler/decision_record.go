@@ -268,7 +268,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if decision.Origin != "asked" || decision.Status != "open" {
 			if decision.Origin == "asked" && decision.Status == "answered" {
 				answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
-				if err == nil && input.ParentID == decision.IssueCommentID && answer.AnsweredByTaskID == taskID && answer.SourceCommentID == input.SourceCommentID && slices.Equal(answer.ChatMessageIds, input.MessageIDs) {
+				if err == nil && input.ParentID == decision.IssueCommentID && answer.AnsweredByTaskID == taskID && answer.SourceCommentID == input.SourceCommentID && slices.Equal(answer.ChatMessageIds, input.MessageIDs) && sameExcerpts(answer.Excerpted, answer.ReplyText.String, input.Excerpts) {
 					comment, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: answer.IssueCommentID})
 					if err != nil {
 						return empty, err
@@ -385,10 +385,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	snapshot := strings.Join(contents, "\n\n")
 	quote, replyText := blockQuote(snapshot), snapshot
 	var spans []string
-	var firstStart int
-	var firstUnique bool
+	var first excerptMatch
 	if len(input.Excerpts) > 0 {
-		spans, firstStart, firstUnique, err = verbatimExcerpts(snapshot, input.Excerpts)
+		spans, first, err = verbatimExcerpts(contents, input.Excerpts)
 		if err != nil {
 			return empty, err
 		}
@@ -403,8 +402,8 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || offered.ChatSessionID != sourceSessionID || offered.Role != "assistant" || offered.MessageKind != "message" || !offered.CreatedAt.Time.Before(earliestSource) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "context message is not an earlier assistant message of this DM"}
 		}
-		if firstUnique {
-			answeredLabel = offeredLabel(offered.Content, snapshot, firstStart)
+		if first.unique {
+			answeredLabel = offeredLabel(offered.Content, first.source, first.start)
 		}
 	}
 	if input.Content != "" {

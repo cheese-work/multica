@@ -39,27 +39,54 @@ func collapseSpaces(source string) (collapsed string, from, to []int) {
 }
 
 // verbatimExcerpts returns, for each excerpt, the source's own text that it
-// matches once whitespace is normalised on both sides. An excerpt the source
-// does not hold, or that is blank, is refused: the record must never carry
-// words the human did not write.
-func verbatimExcerpts(source string, excerpts []string) (spans []string, firstStart int, firstUnique bool, err error) {
+// matches once whitespace is normalised on both sides. Each excerpt must lie
+// inside one source message: words that only appear across a join of two
+// messages were never written. An excerpt no message holds, or that is blank,
+// is refused: the record must never carry words the human did not write.
+// first describes where the first excerpt matched, for naming its option.
+func verbatimExcerpts(sources []string, excerpts []string) (spans []string, first excerptMatch, err error) {
 	if len(excerpts) > maxDecisionExcerpts {
-		return nil, 0, false, decisionIntentRefusal{http.StatusBadRequest, "too many excerpts"}
+		return nil, first, decisionIntentRefusal{http.StatusBadRequest, "too many excerpts"}
 	}
-	collapsedSource, from, to := collapseSpaces(source)
 	for position, excerpt := range excerpts {
 		wanted := strings.Join(strings.Fields(excerpt), " ")
-		at := strings.Index(collapsedSource, wanted)
-		if wanted == "" || at < 0 {
-			return nil, 0, false, decisionIntentRefusal{http.StatusBadRequest, "each excerpt must be a verbatim part of the source message"}
+		found := false
+		for _, source := range sources {
+			collapsedSource, from, to := collapseSpaces(source)
+			at := strings.Index(collapsedSource, wanted)
+			if wanted == "" || at < 0 {
+				continue
+			}
+			start, end := from[at], to[at+len(wanted)-1]
+			spans = append(spans, source[start:end])
+			if position == 0 {
+				first = excerptMatch{source: source, start: start, unique: strings.Count(collapsedSource, wanted) == 1}
+			}
+			found = true
+			break
 		}
-		start, end := from[at], to[at+len(wanted)-1]
-		spans = append(spans, source[start:end])
-		if position == 0 {
-			firstStart, firstUnique = start, strings.Count(collapsedSource, wanted) == 1
+		if !found {
+			return nil, first, decisionIntentRefusal{http.StatusBadRequest, "each excerpt must be a verbatim part of one source message"}
 		}
 	}
-	return spans, firstStart, firstUnique, nil
+	return spans, first, nil
+}
+
+// excerptMatch locates the first excerpt in the one message that holds it.
+type excerptMatch struct {
+	source string
+	start  int
+	unique bool
+}
+
+// sameExcerpts reports whether a retry names the excerpts the stored answer
+// quoted: the stored reply text is those excerpts joined, so it must equal the
+// retry's excerpts after whitespace is normalised.
+func sameExcerpts(excerpted bool, storedReply string, excerpts []string) bool {
+	if excerpted != (len(excerpts) > 0) {
+		return false
+	}
+	return !excerpted || strings.Join(strings.Fields(storedReply), " ") == strings.Join(strings.Fields(strings.Join(excerpts, " ")), " ")
 }
 
 // quoteExcerpts renders each excerpt as its own block quote paragraph.
