@@ -109,7 +109,7 @@ func (l *Launcher) SelfCheck(ctx context.Context) error {
 	}
 	dir, err := os.MkdirTemp("", "multica-sandbox-check-")
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrSelfCheck, err)
+		return fmt.Errorf("%w: %w", ErrSelfCheck, err)
 	}
 	defer os.RemoveAll(dir)
 	run, err := l.build(ctx, Spec{
@@ -117,13 +117,13 @@ func (l *Launcher) SelfCheck(ctx context.Context) error {
 		Argv: []string{"/bin/true"},
 	}.mkdirs())
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrSelfCheck, err)
+		return fmt.Errorf("%w: %w", ErrSelfCheck, err)
 	}
 	defer run.Close()
 	out, err := run.Cmd.CombinedOutput()
 	run.scope.releaseFD()
 	if err != nil {
-		return fmt.Errorf("%w: %v: %s", ErrSelfCheck, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: %w: %s", ErrSelfCheck, err, strings.TrimSpace(string(out)))
 	}
 	l.checked = true
 	return nil

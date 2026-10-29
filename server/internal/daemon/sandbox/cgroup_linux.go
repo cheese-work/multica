@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// cgroupFS is the cgroup v2 mount point.
+const cgroupFS = "/sys/fs/cgroup"
+
 // scope is a child cgroup created under the daemon's own cgroup. The command
 // is placed in it at fork time (CLONE_INTO_CGROUP), so no child ever runs
 // outside it.
@@ -32,7 +35,7 @@ func ownCgroup() (string, error) {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if rel, ok := strings.CutPrefix(line, "0::"); ok {
-			return filepath.Join("/sys/fs/cgroup", rel), nil
+			return filepath.Join(cgroupFS, rel), nil
 		}
 	}
 	return "", errors.New("no cgroup v2 entry in /proc/self/cgroup")

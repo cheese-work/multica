@@ -94,7 +94,7 @@ func runSandbox(t *testing.T, l *Launcher, spec Spec) (string, error) {
 }
 
 func TestParseMode(t *testing.T) {
-	for in, want := range map[string]Mode{"": ModeOff, "off": ModeOff, " Audit ": ModeAudit, "ON": ModeOn} {
+	for in, want := range map[string]Mode{"": ModeOff, "off": ModeOff, "Audit": ModeAudit, "ON": ModeOn} {
 		got, err := ParseMode(in)
 		if err != nil || got != want {
 			t.Errorf("ParseMode(%q) = %q, %v; want %q", in, got, err, want)
@@ -102,6 +102,12 @@ func TestParseMode(t *testing.T) {
 	}
 	if _, err := ParseMode("enforce"); err == nil {
 		t.Error("ParseMode(enforce) accepted an unknown mode")
+	}
+}
+
+func TestParseModeTrimsSpace(t *testing.T) {
+	if got, err := ParseMode("  audit\n"); err != nil || got != ModeAudit {
+		t.Errorf("ParseMode with padding = %q, %v", got, err)
 	}
 }
 
