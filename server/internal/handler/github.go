@@ -1366,6 +1366,8 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if err != nil {
 		return
 	}
+	// A new head retires the reviews of the old one (CHE-2307).
+	h.supersedeStaleReviews(ctx, prID)
 	issueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, prID)
 	if err != nil {
 		return

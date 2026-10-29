@@ -1420,7 +1420,7 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 	if !issueID.Valid {
 		return ""
 	}
-	sha, err := s.Queries.GetIssueReviewHeadSha(ctx, issueID)
+	sha, err := issueReviewHead(ctx, s.Queries, issueID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("resolve issue review sha failed",
@@ -1429,6 +1429,33 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 		return ""
 	}
 	return sha
+}
+
+type reviewPRKey struct{}
+
+// reviewPRPin is the PR WithReviewPR pinned on ctx, or the zero (invalid) UUID.
+func reviewPRPin(ctx context.Context) pgtype.UUID {
+	prID, _ := ctx.Value(reviewPRKey{}).(pgtype.UUID)
+	return prID
+}
+
+// WithReviewPR pins the review head every enqueue under ctx resolves to the
+// head of one linked PR, instead of the issue's most recently updated one. A
+// replacement review of a superseded run uses it to stay on its own PR
+// (CHE-2307).
+func WithReviewPR(ctx context.Context, prID pgtype.UUID) context.Context {
+	return context.WithValue(ctx, reviewPRKey{}, prID)
+}
+
+// issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
+// The enqueue's dedup key and the run budget's review gate both resolve the head
+// here, so a pinned replacement is admitted and stamped against one head.
+func issueReviewHead(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	if prID := reviewPRPin(ctx); prID.Valid {
+		pr, err := q.GetGitHubPullRequestByID(ctx, prID)
+		return pr.HeadSha, err
+	}
+	return q.GetIssueReviewHeadSha(ctx, issueID)
 }
 
 // headShaText wraps a resolved review SHA into the pgtype.Text the dedup/enqueue
@@ -1532,6 +1559,8 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		// A pinned replacement keeps the identity of its PR, not just its head.
+		PullRequestID: reviewPRPin(ctx),
 	}
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue

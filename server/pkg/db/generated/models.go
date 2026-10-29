@@ -189,6 +189,8 @@ type AgentTaskQueue struct {
 	ChatCompactionEpoch       pgtype.Int8        `json:"chat_compaction_epoch"`
 	CancelAckedAt             pgtype.Timestamptz `json:"cancel_acked_at"`
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
+	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
+	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 }
 
 type AgentToLabel struct {
