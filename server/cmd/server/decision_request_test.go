@@ -78,7 +78,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task request failed: status=%d body=%+v", response.StatusCode, body)
 	}
 	readJSON(test, response, &created)
-	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
+	if !created.PingNotifiedAt.Valid || created.Ask != askedBy(ask, "Decision requester").Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
 		test.Fatalf("missing receipt or wrong ask: %+v", created)
 	}
 	var requestID string
@@ -175,4 +175,10 @@ func TestDecisionRequestCommentSkipsDuplicateTargetNotification(test *testing.T)
 	if items := inboxItemsForRecipient(test, queries, otherID); len(items) != 1 || items[0].Type != "new_comment" {
 		test.Fatalf("unrelated subscriber notification changed: %+v", items)
 	}
+}
+
+// askedBy mirrors the server, which names the asking agent in the Details block.
+func askedBy(ask decisiontx.Ask, agentName string) decisiontx.Ask {
+	ask.AskedBy = agentName
+	return ask
 }
