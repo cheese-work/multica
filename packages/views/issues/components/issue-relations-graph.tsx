@@ -23,7 +23,7 @@ function sortNodes(nodes: RelationNode[]) {
 
 function Bracket({ count }: { count: number }) {
   const height = count * 44 - 8;
-  return <svg aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 w-8 overflow-visible text-muted-foreground/60" height={height} viewBox={`0 0 32 ${height}`} fill="none" stroke="currentColor" strokeWidth="1.5">
+  return <svg aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 w-8 overflow-visible text-faint-foreground" height={height} viewBox={`0 0 32 ${height}`} fill="none" stroke="currentColor" strokeWidth="1.5">
     <path d={`M0 ${height / 2} H12 M12 18 V${height - 18}`} />
     {Array.from({ length: count }, (_, index) => <path key={index} d={`M12 ${index * 44 + 18} H32`} />)}
   </svg>;
