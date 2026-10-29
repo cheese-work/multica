@@ -192,6 +192,7 @@ type AgentTaskQueue struct {
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
+	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 }
 
 type AgentToLabel struct {

@@ -1,0 +1,18 @@
+{
+  "title": "CHE-867: sync upstream multica v0.6.0",
+  "headRef": "agent/x99-codex-luna/b9eb0c39d403",
+  "body": "Closes CHE-867",
+  "ledger": "| H01 Multi-organization GitHub installations | GitHub | #13, #19 | CHE-268 | fork-only | Source: `server/internal/handler/github.go`, `packages/views/settings/components/github-tab.tsx`. |",
+  "changes": [
+    { "status": "D", "path": "packages/views/settings/components/github-tab.tsx" },
+    { "status": "D", "path": "packages/views/settings/components/github-tab.test.tsx" },
+    { "status": "A", "path": "packages/views/settings/components/code-tab.tsx" },
+    { "status": "A", "path": "packages/views/settings/components/code-tab.test.tsx" }
+  ],
+  "forkTests": ["packages/views/settings/components/github-tab.test.tsx"],
+  "headFiles": [
+    "server/internal/handler/github.go",
+    "packages/views/settings/components/code-tab.tsx",
+    "packages/views/settings/components/code-tab.test.tsx"
+  ]
+}
