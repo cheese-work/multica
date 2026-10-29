@@ -102,4 +102,24 @@ describe("orientChart state-diagram comments", () => {
       'stateDiagram-v2\n  state "Auth %% complete" as Auth {\n    direction LR\n    A --> B\n  }\n  direction LR';
     expect(orientChart(source, "vertical")).toBe(source.replace("  }\n  direction LR", "  }\n  direction TB"));
   });
+
+  it.each(["{", "}", "%% {", "%% }", "{ %% } {"])(
+    "ignores a quoted %s when tracking block depth",
+    (label) => {
+      const source = `stateDiagram-v2\n  state "Auth ${label}" as Auth\n  direction LR\n  [*] --> Auth`;
+      expect(orientChart(source, "vertical")).toBe(source.replace("direction LR", "direction TB"));
+    },
+  );
+
+  it("counts a real brace after a quoted label with braces", () => {
+    const source =
+      'stateDiagram-v2\n  state "a }" as A {\n    direction LR\n    x --> y\n  }\n  direction LR';
+    expect(orientChart(source, "vertical")).toBe(source.replace("  }\n  direction LR", "  }\n  direction TB"));
+  });
+
+  it("does not let a quote inside a comment hide the next brace", () => {
+    const source =
+      'stateDiagram-v2\n  state X { %% say "hi\n    direction LR\n  }\n  direction LR';
+    expect(orientChart(source, "vertical")).toBe(source.replace("  }\n  direction LR", "  }\n  direction TB"));
+  });
 });
