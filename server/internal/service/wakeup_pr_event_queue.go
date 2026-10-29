@@ -225,21 +225,43 @@ func prEventCause(r db.IssueWakeupReceipt) string {
 // causes; the trigger facts list every one of them.
 const maxPREventSentences = 5
 
-// prEventInstruction words the instruction of a fallback wake from its pr.event
-// causes, one sentence per distinct cause. Each kind says only what it is, and a
-// field the event does not carry is left out with its clause. It reports false
-// when the wake carries no such cause, so the rule's other reasons keep their
-// own text.
-func prEventInstruction(receipts []db.IssueWakeupReceipt, pr string) (string, bool) {
+// prAttentionInstruction words the instruction of a pr_needs_attention wake from
+// every cause it carries, one sentence per distinct cause. A pr.event cause is
+// worded by its kind from its own receipt, so each names its own PR and a field
+// the event does not carry is left out with its clause. Any other receipt is a
+// mergeability or returned-to-draft cause and keeps its own text. A wake with
+// no receipt falls back to the latest facts.
+func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts map[string]any) string {
 	var sentences []string
 	seen := map[string]bool{}
-	conflict := false
+	add := func(key, sentence string) {
+		if !seen[key] {
+			seen[key] = true
+			sentences = append(sentences, sentence)
+		}
+	}
+	conflict, legacy := false, false
 	for _, r := range receipts {
 		if r.EventType != wakeupPREventType {
+			var own map[string]any
+			if json.Unmarshal(r.Payload, &own) != nil {
+				continue
+			}
+			number, _ := own["pr_number"].(float64)
+			url, _ := own["pr_url"].(string)
+			label := prLabel(int64(number), url)
+			if number == 0 {
+				label = pr
+			}
+			legacy = true
+			add(fmt.Sprintf("%s|%v|%v|%v|%v", r.EventType, number, own["reason"], own["merge_state"], own["head_sha"]), prAttentionLegacyText(label, own))
 			continue
 		}
 		var p struct {
 			Kind       string `json:"kind"`
+			PRNumber   int64  `json:"pr_number"`
+			RepoOwner  string `json:"repo_owner"`
+			RepoName   string `json:"repo_name"`
 			HeadSHA    string `json:"head_sha"`
 			BaseSHA    string `json:"base_sha"`
 			OldHeadSHA string `json:"old_head_sha"`
@@ -248,24 +270,32 @@ func prEventInstruction(receipts []db.IssueWakeupReceipt, pr string) (string, bo
 		if json.Unmarshal(r.Payload, &p) != nil {
 			continue
 		}
-		sentence := prEventSentence(pr, p.Kind, p.HeadSHA, p.BaseSHA, p.OldHeadSHA, p.CheckName)
 		conflict = conflict || p.Kind == "conflict"
-		if !seen[sentence] {
-			seen[sentence] = true
-			sentences = append(sentences, sentence)
-		}
+		sentence := prEventSentence(prLabel(p.PRNumber, ""), p.Kind, p.HeadSHA, p.BaseSHA, p.OldHeadSHA, p.CheckName)
+		add(p.RepoOwner+"/"+p.RepoName+"|"+sentence, sentence)
 	}
 	if len(sentences) == 0 {
-		return "", false
+		return prAttentionLegacyText(pr, facts)
 	}
 	text := strings.Join(sentences[:min(len(sentences), maxPREventSentences)], " ")
 	if more := len(sentences) - maxPREventSentences; more > 0 {
 		text += fmt.Sprintf(" %d more PR events are in the trigger facts.", more)
 	}
-	if conflict {
-		return text + " Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", true
+	switch {
+	case conflict && !legacy:
+		text += " Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge."
+	case !legacy:
+		text += " Read the current PR and issue state, then decide what follow-up is needed."
 	}
-	return text + " Read the current PR and issue state, then decide what follow-up is needed.", true
+	return text
+}
+
+func prLabel(number int64, url string) string {
+	label := fmt.Sprintf("PR #%d", number)
+	if url != "" {
+		label += " (" + url + ")"
+	}
+	return label
 }
 
 func prEventSentence(pr, kind, head, base, oldHead, check string) string {

@@ -1,8 +1,12 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Fallback wake text per PR event kind (CHE-2298 d6). The tests drive the real
@@ -139,4 +143,64 @@ func TestFallbackWakeWithTwoCausesNamesBoth(t *testing.T) {
 	}
 	requireAbsent(t, text, "cannot merge", "resolve the conflicts")
 	requireNoBlankField(t, text)
+}
+
+// Each cause names its own PR, not the newest receipt's.
+func TestFallbackWakeNamesEachCausesOwnPR(t *testing.T) {
+	e := newPREventEnv(t)
+	e.asKind(t, "head_changed", "old-head")
+	var second string
+	e.f.QueryRow(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha)
+		VALUES ($1, 1, 'acme', 'widget', 904, 'another PR', 'open', 'https://example.test/pr904', now(), now(), 'new-head-904') RETURNING id`, e.f.WorkspaceID).Scan(&second)
+	e.f.Cleanup(t, `DELETE FROM github_pull_request WHERE id=$1`, second)
+	e.f.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id=$1`, second)
+	e.f.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, e.issue, second)
+	e.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, previous_head_sha, base_sha, observed_at, dedupe_key)
+		VALUES ($1, $2, $3, 'head_changed', 'new-head-904', 'old-head-904', 'base-1', now() + interval '1 second', 'head_changed|new-head-904')`, e.f.WorkspaceID, e.issue, second)
+
+	text := e.wake(t)
+
+	for _, want := range []string{
+		"Linked PR #903 has a new head: new-head, replacing old-head.",
+		"Linked PR #904 has a new head: new-head-904, replacing old-head-904.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("instruction lacks %q: %q", want, text)
+		}
+	}
+}
+
+// A mergeability cause that joins a pr.event cause in one wake keeps its text.
+func TestFallbackWakeKeepsACoalescedMergeabilityCause(t *testing.T) {
+	e := newPREventEnv(t)
+	e.asKind(t, "head_changed", "old-head")
+	err := e.s.TriggerPullRequestWakeup(context.Background(), e.issue, PullRequestWakeupInput{Rule: SystemRulePRAttention,
+		RepoOwner: "acme", RepoName: "widget", Number: 903, URL: "https://github.com/acme/widget/pull/903",
+		HeadSHA: "new-head", BaseBranch: "main", Reason: PRAttentionMergeability, MergeState: "DIRTY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := e.wake(t)
+
+	for _, want := range []string{"replacing old-head", "cannot merge as is", "merge state is DIRTY", "against base main", "Do not merge"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("instruction lacks %q: %q", want, text)
+		}
+	}
+	requireNoBlankField(t, text)
+}
+
+// The renderer keeps a returned-to-draft cause next to a pr.event cause.
+func TestAttentionInstructionKeepsAReturnedToDraftCause(t *testing.T) {
+	receipts := []db.IssueWakeupReceipt{
+		{EventType: wakeupPREventType, Payload: []byte(`{"pr_number":903,"kind":"head_changed","head_sha":"new-head","old_head_sha":"old-head"}`)},
+		{EventType: "pr.returned_to_draft", Payload: []byte(`{"pr_number":903,"reason":"returned_to_draft","head_sha":"new-head","issue_status":"in_review"}`)},
+	}
+	text := systemWakeupInstruction(db.IssueWakeup{SystemRule: pgtype.Text{String: SystemRulePRAttention, Valid: true}}, nil, receipts)
+	for _, want := range []string{"replacing old-head", "went back to draft at head new-head"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("instruction lacks %q: %q", want, text)
+		}
+	}
 }
