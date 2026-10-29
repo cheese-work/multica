@@ -4790,6 +4790,7 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // Persist these in the same transaction as running, before cancellation can win.
 type TaskStartCapabilities struct {
 	Supplement     bool
+	PREvent        bool
 	ProcessCleanup bool
 }
 
@@ -4856,6 +4857,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 		})
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
+		}
+		if offered.PREvent {
+			if _, err := qtx.RecordTaskPREventCapability(ctx, task.ID); err != nil {
+				return fmt.Errorf("record PR event capability: %w", err)
+			}
 		}
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
 			return err
@@ -7166,6 +7172,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
+	}
+	if _, err := q.SettleTerminalTaskPREventDeliveries(ctx, taskIDs); err != nil {
+		return fmt.Errorf("settle terminal task PR events: %w", err)
 	}
 	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...); err != nil {
 		return err

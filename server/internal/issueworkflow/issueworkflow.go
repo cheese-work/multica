@@ -330,12 +330,18 @@ func (d Definition) HandsOffAnywhere() bool {
 	return false
 }
 
-// NextStatus is where a step's handler moves the issue when done: the step's
-// own choice, or else the next status on the board that is not blocked.
+// NextStatus is where a step's handler moves the issue when done: the target
+// of the step's first agent_done exit, else the step's own choice, else the
+// next status on the board that is not blocked.
 func (d Definition) NextStatus(key string) string {
 	step, ok := d.Step(key)
 	if !ok {
 		return ""
+	}
+	for _, e := range step.Edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentDone {
+			return e.To
+		}
 	}
 	if step.NextStatusKey != "" {
 		return step.NextStatusKey

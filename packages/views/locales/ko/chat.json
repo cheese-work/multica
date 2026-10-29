@@ -277,6 +277,7 @@
     "unarchive": "채팅 보관 해제"
   },
   "annotations": {
+    "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
     "add": "댓글 추가",
     "confirm_add": "추가",

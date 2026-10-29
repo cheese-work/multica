@@ -277,6 +277,7 @@
     "more_actions": "更多操作"
   },
   "annotations": {
+    "one_request": "請每次只發送針對一個決策請求的評論。",
     "source_label": "{{name}} 的消息",
     "add": "添加評論",
     "confirm_add": "添加",

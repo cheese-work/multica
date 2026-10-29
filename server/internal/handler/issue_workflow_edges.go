@@ -226,7 +226,7 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
 		}
-		raise = h.runBudgetRaiseCommand(ctx, issue, e.Max)
+		raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
 		refused = h.runBudgetRefusedRun(ctx, e)
 		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
 			break
@@ -303,8 +303,26 @@ func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, bl
 	if blocked {
 		lead = "Blocked"
 	}
-	return fmt.Sprintf("%s: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
-		lead, refused, e.Runs, e.Max, raise)
+	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise)
+}
+
+// runBudgetBlockedMessage is the system comment for a budget block.
+func runBudgetBlockedMessage(refused string, runs, max int, raise string) string {
+	return runBudgetNoticeMessage("Blocked", refused, runs, max, raise)
+}
+
+// runBudgetNoticeMessage words a budget notice. Without a raise command (the
+// platform maximum leaves no valid raise) it names the maximum and the
+// recovery a person has instead.
+func runBudgetNoticeMessage(lead, refused string, runs, max int, raise string) string {
+	if raise == "" {
+		return fmt.Sprintf(
+			"%s: %s was refused because the issue used %d of %d runs. The platform maximum of %d runs is reached, so no raise is possible. A person moves the issue's status to open a new run window.",
+			lead, refused, runs, max, issueworkflow.MaxRunsPerIssueLimit)
+	}
+	return fmt.Sprintf(
+		"%s: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
+		lead, refused, runs, max, raise)
 }
 
 // runBudgetRefusedRun names the run the budget refused in one phrase: the
@@ -324,15 +342,18 @@ func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetEx
 	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
 }
 
-// runBudgetRaiseCommand is the command that lifts this issue's cap by a few
-// runs, using the issue's identifier when the workspace prefix is known.
-func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max int) string {
+// runBudgetRaiseCommand is the command that lifts this issue's cap to leave
+// 10 runs after the ones already used, using the issue's identifier when the
+// workspace prefix is known. It is empty when the platform maximum leaves no
+// valid raise.
+func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
 	ref := uuidToString(issue.ID)
 	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
 		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
 	}
-	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, max+runBudgetRaiseStep)
+	target := service.SuggestedRaiseTarget(max, used)
+	if target == 0 {
+		return ""
+	}
+	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target)
 }
-
-// runBudgetRaiseStep is how many runs the suggested raise command adds.
-const runBudgetRaiseStep = 5

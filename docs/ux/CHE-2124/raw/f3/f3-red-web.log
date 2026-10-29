@@ -1,0 +1,83 @@
+F3 red: 27 October 2026 17:33:30 ICT
+Parent: b9e4e6d1fd310a76fea8f2f925ef7cdcdf012022
+Command: make env-exec ARGS='-- env F3_RED=1 node_modules/.bin/playwright test --config ../.capture-output/f3-playwright.config.mjs --grep reads'
+◇ injected env (1) from .env // tip: ⌘ enable debugging { debug: true }
+
+Running 1 test using 1 worker
+
+(node:3976215) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3976215) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+  ✘  1 e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths (15.6s)
+
+
+  1) e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoBeInViewport[2m([22m[2m)[22m failed
+
+    Locator:  getByRole('button', { name: 'Next change', exact: true })
+    Expected: in viewport
+    Received: viewport ratio 0
+    Timeout:  5000ms
+
+    Call log:
+    [2m  - Expect "toBeInViewport" with timeout 5000ms[22m
+    [2m  - waiting for getByRole('button', { name: 'Next change', exact: true })[22m
+    [2m    9 × locator resolved to <button tabindex="0" type="button" data-slot="button" aria-label="Next change" class="group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:bor…>…</button>[22m
+    [2m      - unexpected value "viewport ratio 0"[22m
+
+
+      129 |     await page.getByRole("button", { name: "Next change", exact: true }).click();
+      130 |     await expectFocusedChange(page, 2);
+    > 131 |     await expect(page.getByRole("button", { name: "Next change", exact: true })).toBeInViewport({ ratio: 1 });
+          |                                                                                  ^
+      132 |     await expect(diff).toBeInViewport({ ratio: 1 });
+      133 |     await expect(page.getByText("Change 2 / 2", { exact: true })).toBeInViewport({ ratio: 1 });
+      134 |     await expect(page.getByRole("button", { name: "Previous change", exact: true })).toBeInViewport({ ratio: 1 });
+        at /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/e2e/plan-revisions.spec.ts:131:82
+
+    attachment #1: web-1440-off (image/png) ────────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-off-203a35627897979ebf561d99ae718bdf505f3ce7.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: web-1440-unify (image/png) ──────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-unify-a08d0ac15de0a858b8ae34081149ee8e3cbf4085.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: web-1440-next (image/png) ───────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-next-e1bcb3ae522b8c9f9d73534557b261cd8bb52178.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #4: web-1440-split (image/png) ──────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-split-f68b0c66b41d2aeb28cb1eaeda790aa99d6403d2.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #5: web-1440 (image/png) ────────────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-previous-887c13ca98b7bfd7ad5c1c861f3f560032539e77.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #6: web-1440-base (image/png) ───────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-1440-base-c07d351bde98cdc5d80700ac24e1f28100127e11.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #7: web-390-off (image/png) ─────────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-390-off-bc8b05581f29b93808f7984236c6577d2855fe56.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #8: web-390-unify (image/png) ───────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/attachments/web-390-unify-3a7416400b5215348eb6be72674cb90522ff294d.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #9: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../.capture-output/f3-red-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/error-context.md
+
+  1 failed
+    e2e/plan-revisions.spec.ts:76:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+make: *** [Makefile:177: env-exec] Error 1
+
+Exit: 2

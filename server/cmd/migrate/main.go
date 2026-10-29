@@ -146,6 +146,10 @@ var pgBigmOperatorClass = extensionOperatorClass{
 var concurrentIndexCleanups = map[string]string{
 	"762_run_budget_notice_unique":                              "idx_one_run_budget_notice_per_window",
 	"763_run_budget_notice_workspace_index":                     "idx_run_budget_notice_workspace_id",
+	"759_issue_pr_event_dedupe_index":                           "idx_issue_pr_event_dedupe",
+	"760_issue_pr_event_latest_index":                           "idx_issue_pr_event_latest",
+	"770_task_pr_event_capability_index":                        "task_pr_event_capability_task_uidx",
+	"772_task_pr_event_delivery_key_index":                      "task_pr_event_delivery_key_uidx",
 	"738_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
 	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
