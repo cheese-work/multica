@@ -51,6 +51,7 @@ vi.mock("@multica/core/permissions", () => ({
 }));
 vi.mock("@multica/core/workspace/queries", () => ({
   memberListOptions: () => ({ queryKey: ["members"] }),
+  agentListOptions: () => ({ queryKey: ["agents"] }),
   workspaceKeys: { list: () => ["workspaces"] },
 }));
 vi.mock("@multica/core/github", async () => {

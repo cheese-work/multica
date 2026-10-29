@@ -1,0 +1,12 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run attachments/attachment-preview-page.test.tsx -t 'route permission'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 9 skipped (10)
+   Start at  17:16:54
+   Duration  11.07s (transform 5.22s, setup 155ms, import 8.49s, tests 92ms, environment 983ms)

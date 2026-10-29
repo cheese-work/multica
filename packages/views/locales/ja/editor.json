@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "追加：",
+    "removed": "削除：",
+    "revision": "リビジョン {{number}}",
+    "readonly": "読み取り専用",
+    "issue": "元のタスク",
+    "diff": "差分",
+    "split": "左右表示",
+    "unify": "統合表示",
+    "compare": "比較対象",
+    "choose_base": "基準のリビジョンを選択",
+    "change": "変更 {{current}} / {{total}}",
+    "previous": "前の変更",
+    "next": "次の変更",
+    "download": "ダウンロード",
+    "close": "閉じる",
+    "more": "その他のオプション",
+    "base": "基準",
+    "current": "現在",
+    "loading_revisions": "リビジョンを読み込み中…",
+    "revisions_error": "リビジョンを読み込めませんでした",
+    "no_earlier": "以前のリビジョンはありません",
+    "loading": "文書を読み込み中…",
+    "current_error": "文書を読み込めませんでした",
+    "loading_diff": "比較を読み込み中…",
+    "comparison_error": "比較を読み込めませんでした",
+    "too_large": "比較対象が大きすぎます。ファイルをダウンロードしてローカルで比較してください。",
+    "identical": "リビジョン間に変更はありません",
+    "empty": "この文書は空です",
+    "unchanged": "変更のない {{count}} 行",
+    "retry": "再試行"
+  },
+  "media": {
+    "title": "メディア",
+    "more": "その他",
+    "open_in_new_window": "新しいウィンドウで開く",
+    "open_failed": "メディアページを開けませんでした",
+    "loading": "メディアを読み込み中…",
+    "load_failed": "メディアを読み込めませんでした",
+    "offline": "オフライン — 最後に読み込んだ内容を表示しています。",
+    "retry": "再試行"
+  },
   "bubble_menu": {
     "bold": "太字",
     "italic": "斜体",
@@ -185,5 +227,8 @@
     "clear_filter": "絞り込みを解除",
     "no_matches": "一致する行がありません",
     "close": "閉じる"
+  },
+  "next_self_mention": {
+    "label": "次の自分へのメンション"
   }
 }

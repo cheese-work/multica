@@ -2,7 +2,7 @@
 import { appendFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { generateEntries, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
+import { generateEntries, loadBackfill, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
 
 export const FETCH_DEADLINE_MS = 180_000;
 const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
@@ -98,7 +98,7 @@ export async function main(argv, env) {
       await fetchChangelog({ token: env.GH_TOKEN, out, firstParent: [], summaryPath: env.GITHUB_STEP_SUMMARY });
       return;
     }
-    const options = optionsFromEnv(env);
+    const options = { backfill: loadBackfill(), ...optionsFromEnv(env) };
     if (args.start) options.startDate = args.start;
     if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
     const sha = args.sha ?? env.GITHUB_SHA;

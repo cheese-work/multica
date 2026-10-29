@@ -36,7 +36,7 @@ export function selectTabByShortcut(key: TabSelectionShortcutKey): void {
  */
 export function useTabSelectionShortcut(): void {
   useEffect(() => {
-    if (window.desktopAPI.windowContext?.kind === "issue") return undefined;
+    if (window.desktopAPI.windowContext && window.desktopAPI.windowContext.kind !== "main") return undefined;
     // Optional call keeps renderer HMR safe while an old preload remains
     // attached to a refreshed React tree.
     return window.desktopAPI.onSelectTabShortcut?.(selectTabByShortcut);

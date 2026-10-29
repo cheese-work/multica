@@ -277,6 +277,7 @@
     "unarchive": "取消归档"
   },
   "annotations": {
+    "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",
     "add": "添加评论",
     "confirm_add": "添加",

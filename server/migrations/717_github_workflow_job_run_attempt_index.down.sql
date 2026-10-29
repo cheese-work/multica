@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS github_workflow_job_run_attempt_idx;

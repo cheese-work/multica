@@ -29,6 +29,64 @@ SET status = 'archived', continued_into_session_id = $2, pinned_at = NULL, updat
 WHERE id = $1
 RETURNING *;
 
+-- name: CompactChatSessionInPlace :one
+-- In-place compaction: open a new epoch and drop the resume pointer so the next
+-- turn starts a fresh session seeded from the summary. The DM id, status, pins
+-- and work_dir stay as they are.
+UPDATE chat_session
+SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: LockAgentTaskForCompaction :one
+-- Row lock on the task that asks to compact, taken after the DM lock. NOWAIT:
+-- terminal transitions take the task row first and the DM second, so waiting
+-- here could deadlock against one. The caller refuses a locked task.
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE NOWAIT;
+
+-- name: GetTaskCompactionSummary :one
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: MoveUnstartedChatTasksToSession :many
+-- A continuation answers the turns still waiting in the archived DM. A task no
+-- daemon has claimed (queued, or deferred behind a retry) moves with its input
+-- batch to the new DM; ClaimAgentTask does not read chat_session.status, so
+-- leaving it behind would answer it in the archived DM. The running task that
+-- called continue is not matched.
+UPDATE agent_task_queue
+SET chat_session_id = sqlc.arg(to_session_id)
+WHERE chat_session_id = sqlc.arg(from_session_id) AND status IN ('queued', 'deferred')
+RETURNING id;
+
+-- name: MoveChatMessagesOfTasksToSession :exec
+-- Moves the input messages of the tasks above, in their original order, to just
+-- after the continuation summary so the new DM reads summary, then questions.
+-- A retry reads the batch of the root it cloned (chat_input_task_id), so the
+-- messages are matched through that owner, not the moved task's own id.
+WITH moved AS (
+    SELECT source.id, row_number() OVER (ORDER BY source.created_at, source.id) AS position
+    FROM chat_message AS source
+    WHERE source.chat_session_id = sqlc.arg(from_session_id) AND source.role = 'user'
+      AND source.task_id IN (
+          SELECT COALESCE(task.chat_input_task_id, task.id) FROM agent_task_queue AS task
+          WHERE task.id = ANY(sqlc.arg(task_ids)::uuid[])
+      )
+),
+attached AS (
+    UPDATE attachment AS file SET chat_session_id = sqlc.arg(to_session_id)
+    WHERE file.chat_message_id IN (SELECT id FROM moved)
+)
+UPDATE chat_message AS message
+SET chat_session_id = sqlc.arg(to_session_id),
+    created_at = sqlc.arg(summary_created_at)::timestamptz + moved.position * interval '1 microsecond'
+FROM moved
+WHERE message.id = moved.id;
+
 -- name: SetChatForkSource :one
 -- Runs after the copy, so the read cursor is the newest copied time and the
 -- copied history counts as read. fork_last_message_id is the child's own copy
@@ -688,6 +746,16 @@ VALUES (
     sqlc.narg(decision_answer_id)
 )
 RETURNING *;
+
+-- name: BindChatMessageDecisionAnswer :one
+UPDATE chat_message message
+SET decision_answer_id = sqlc.arg('answer_id')
+FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id')
+  AND session.id = sqlc.arg('session_id') AND message.chat_session_id = session.id
+  AND message.id = sqlc.arg('message_id')
+  AND (message.decision_answer_id IS NULL OR message.decision_answer_id = sqlc.narg('previous_answer_id'))
+RETURNING message.id;
 
 -- name: TaskHasChannelIngestedMessages :one
 -- Immutable channel provenance for a task's user-message input batch:

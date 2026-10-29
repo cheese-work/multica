@@ -29,6 +29,8 @@ type harness struct {
 	messages                []map[string]any
 	prompt                  string
 	sessionAgent            string
+	acks                    []map[string]any
+	sessionStatus           string // Qoder session status after cancel; empty means idle
 }
 
 func setup(t *testing.T) *harness {
@@ -76,7 +78,12 @@ func setup(t *testing.T) *harness {
 			json.NewDecoder(r.Body).Decode(&req)
 			h.messages = append(h.messages, req.Messages...)
 			io.WriteString(w, `{}`)
-		case strings.HasSuffix(r.URL.Path, "/session"), strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+		case strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+			var ack map[string]any
+			json.NewDecoder(r.Body).Decode(&ack)
+			h.acks = append(h.acks, ack)
+			io.WriteString(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/session"):
 			io.WriteString(w, `{}`)
 		default:
 			t.Errorf("unexpected Multica request %s", r.URL)
@@ -132,7 +139,11 @@ func setup(t *testing.T) *harness {
 			h.cancels++
 			io.WriteString(w, `{"status":"canceling"}`)
 		case r.URL.Path == "/sessions/sess_1":
-			io.WriteString(w, `{"status":"idle"}`)
+			status := h.sessionStatus
+			if status == "" {
+				status = "idle"
+			}
+			fmt.Fprintf(w, `{"status":%q}`, status)
 		default:
 			t.Errorf("unexpected Qoder request %s", r.URL)
 			http.NotFound(w, r)
@@ -228,6 +239,53 @@ func TestCancelStopsRemote(t *testing.T) {
 	}
 	if h.cancels != 1 || h.b.state.first() != nil || h.complete != nil {
 		t.Fatal("incorrect cancellation")
+	}
+}
+
+// The stop gate opens on this ack, so it must follow a confirmed remote stop
+// of the exact session — never a best-effort cancel that may have failed.
+func TestCancelAckWaitsForRemoteStop(t *testing.T) {
+	for name, breakRemote := range map[string]func(h *harness) (restore func()){
+		"remote unreachable": func(h *harness) func() {
+			good := h.b.qoder.base
+			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+			h.b.qoder.base = bad.URL
+			return func() { h.b.qoder.base = good; bad.Close() }
+		},
+		"session still running": func(h *harness) func() {
+			h.sessionStatus = "running"
+			return func() { h.sessionStatus = "" }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := setup(t)
+			h.task.CancelAckProof = "proof-1"
+			ctx := context.Background()
+			if err := h.b.step(ctx); err != nil {
+				t.Fatal(err)
+			}
+			restore := breakRemote(h)
+			h.status = "cancelled"
+			if err := h.b.step(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.acks) != 0 {
+				t.Fatalf("acked before the remote stop was confirmed: %v", h.acks)
+			}
+			if h.b.state.first() == nil || len(h.b.state.Cleanup) != 1 {
+				t.Fatal("run or cleanup dropped before stop confirmation")
+			}
+			restore()
+			if err := h.b.step(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.acks) != 1 || h.acks[0]["cancel_ack_proof"] != "proof-1" {
+				t.Fatalf("want one proof-bearing ack after confirmation, got %v", h.acks)
+			}
+			if h.b.state.first() != nil || len(h.b.state.Cleanup) != 0 {
+				t.Fatal("run or cleanup left after confirmed stop")
+			}
+		})
 	}
 }
 func TestRequiresActionIsNotSuccess(t *testing.T) {
