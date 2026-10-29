@@ -887,6 +887,13 @@ type Feedback struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type GithubDispatchHalt struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Scope       string             `json:"scope"`
+	HaltedBy    pgtype.UUID        `json:"halted_by"`
+	HaltedAt    pgtype.Timestamptz `json:"halted_at"`
+}
+
 type GithubInstallation struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

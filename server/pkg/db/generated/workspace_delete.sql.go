@@ -366,6 +366,9 @@ deleted_agent_builder_drafts AS (
 deleted_chat_wakeups AS (
     DELETE FROM chat_wakeup WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halts AS (
+    DELETE FROM github_dispatch_halt WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
