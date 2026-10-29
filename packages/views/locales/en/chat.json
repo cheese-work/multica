@@ -312,7 +312,7 @@
   "decision": {
     "request_title": "Decision request",
     "request_label": "Decision request: {{state}}",
-    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "disclaimed": "Disclaimed" },
     "answer_options": "Options",
     "answer_text": "Or write an answer",
     "answer_send": "Send",
@@ -324,6 +324,9 @@
     "answer_discard": "Discard draft",
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
+    "receipt_recorded": "Recorded for {{issue}}",
+    "receipt_option": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "withdrawn_in": "Withdrawn in {{issue}}",
     "recorded_on": "Recorded on {{issue}}",
     "from_original_dm": "from the original DM",

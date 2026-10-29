@@ -806,6 +806,9 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -905,6 +908,9 @@ WHERE id = @task_id
 UPDATE agent_task_queue
 SET status = 'queued',
     dispatched_at = NULL,
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
 WHERE id = @task_id
@@ -922,6 +928,9 @@ RETURNING *;
 -- recovered delivery attempt.
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -1007,6 +1016,9 @@ WITH candidates AS MATERIALIZED (
 )
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
 RETURNING *;
@@ -3134,9 +3146,19 @@ RETURNING *;
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
 
--- name: SetTaskClaimedModel :exec
--- CHE-1862: the model the daemon is told to run for this claim. The vote gate
--- reads it as the task's lab identity, so an edit of the agent row after the
--- claim cannot change what a running task is counted as.
-UPDATE agent_task_queue SET claimed_model = @claimed_model
-WHERE id = @id AND status = 'dispatched';
+-- name: SetTaskClaimSnapshot :execrows
+-- Requested and claimed run settings for one claim generation (CHE-1862
+-- claimed_model, plus the agent-preset columns). The vote gate reads
+-- claimed_model as the task's lab identity, so an edit of the agent row after
+-- the claim cannot change what a running task is counted as. Every statement
+-- that writes dispatched_at resets these columns, and this write matches
+-- (id, runtime_id, dispatched_at), so a slow handler of an old claim cannot
+-- write into a newer one.
+UPDATE agent_task_queue
+SET preset_name = @preset_name, preset_source = @preset_source, preset_skips = @preset_skips,
+    claimed_model = @claimed_model, claimed_thinking_level = @claimed_thinking_level,
+    claimed_service_tier = @claimed_service_tier, claimed_context_args = @claimed_context_args
+WHERE id = @id
+  AND runtime_id = @runtime_id
+  AND dispatched_at = @dispatched_at
+  AND status = 'dispatched';
