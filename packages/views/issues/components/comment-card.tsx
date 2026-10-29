@@ -32,6 +32,7 @@ import { copyText } from "@multica/ui/lib/clipboard";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useTimeAgo } from "../../i18n";
 import { RichTableDeferContext } from "../../rich-content";
+import { bodyPrefix } from "../../rich-content/body-prefix";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -699,29 +700,6 @@ function CommentRevisionConflict({
 const LONG_BODY_CHARS = 16_000;
 const BODY_PREFIX_CHARS = 2_000;
 
-// CommonMark fences: 3+ backticks or tildes; the close uses the same char and
-// is at least as long. Blank lines inside a fence do not end a block.
-const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
-
-function bodyPrefix(content: string) {
-  let fence = "";
-  let pos = 0;
-  let cut = 0;
-  for (const line of content.split("\n")) {
-    if (pos - 1 > BODY_PREFIX_CHARS) break;
-    const [, marker = "", info = ""] = FENCE_LINE.exec(line) ?? [];
-    if (fence) {
-      if (marker[0] === fence[0] && marker.length >= fence.length && !info.trim()) fence = "";
-    } else if (marker) {
-      fence = marker;
-    } else if (!line.trim() && pos > 1 && pos - 1 <= BODY_PREFIX_CHARS) {
-      cut = pos - 1;
-    }
-    pos += line.length + 1;
-  }
-  return content.slice(0, cut).trimEnd();
-}
-
 /**
  * Comment body that defers the full rich-content mount for oversized text.
  * `forceOpen` (deep-link target, find) opens it and stays open once opened, so
@@ -735,7 +713,7 @@ function CommentBody({ entry, forceOpen, findOpen }: { entry: TimelineEntry; for
   if (forceOpen && !expanded) setExpanded(true);
   const content = entry.content ?? "";
   const deferred = content.length > LONG_BODY_CHARS && !expanded && !forceOpen;
-  const prefix = useMemo(() => (deferred ? bodyPrefix(content) : ""), [deferred, content]);
+  const prefix = useMemo(() => (deferred ? bodyPrefix(content, BODY_PREFIX_CHARS) : ""), [deferred, content]);
   return (
     <RichTableDeferContext.Provider value={content.length > LONG_BODY_CHARS && !findOpen}>
       <ReadonlyContent content={deferred ? prefix : content} attachments={entry.attachments} />

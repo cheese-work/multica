@@ -141,10 +141,16 @@ describe("CommentCard — oversized body (CHE-2191)", () => {
     expect(text).toContain("````\n```\n````");
   });
 
-  it("keeps an indented fence inside a list item whole", () => {
-    const code = Array.from({ length: 200 }, (_, i) => `code line ${i}`).join("\n\n");
-    renderCard(["intro", `- item\n\n  \`\`\`\n${code}\n  \`\`\``, "tail ".repeat(3_500)].join("\n\n"));
-    expect(screen.getByTestId("body").textContent).not.toContain("code line");
+  // A fence opened inside a container (list item, blockquote) is still one block.
+  const code = Array.from({ length: 200 }, (_, i) => `code line ${i}`).join("\n\n");
+  it.each([
+    ["a bullet list item", `- \`\`\`text\n${code.replace(/^/gm, "  ")}\n  \`\`\``],
+    ["a numbered list item", `1. \`\`\`text\n${code.replace(/^/gm, "   ")}\n   \`\`\``],
+    ["a nested list item", `- outer\n  - \`\`\`text\n${code.replace(/^/gm, "    ")}\n    \`\`\``],
+    ["a blockquote", `> \`\`\`text\n${code.replace(/^/gm, "> ").replace(/^> $/gm, ">")}\n> \`\`\``],
+  ])("never cuts inside a fence opened in %s", (_, block) => {
+    renderCard(["intro", block, "tail ".repeat(3_500)].join("\n\n"));
+    expect(screen.getByTestId("body").textContent).toBe("intro");
   });
 
   it("mounts the full body on click and drops the button", () => {
