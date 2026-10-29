@@ -194,6 +194,17 @@ describe("WorkingAgentsHoverContent", () => {
     expect(screen.queryByText(UNKNOWN_HOVER)).toBeNull();
     expect(screen.queryByText(EMPTY_HOVER)).toBeNull();
   });
+
+  it("shows the total active run count beside the agent count", () => {
+    renderWithI18n(
+      <WorkingAgentsHoverContent
+        agents={[makeAgent("a1"), makeAgent("a2", 3)]}
+      />,
+    );
+
+    const header = screen.getByText("2 active agents").parentElement;
+    expect(header?.textContent).toBe("2 active agents4 runs");
+  });
 });
 
 describe("chipActivity", () => {
