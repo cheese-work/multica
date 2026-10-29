@@ -1,10 +1,10 @@
 SET LOCAL lock_timeout = '2s';
 
--- Fails on purpose while any card answer exists: its task id cannot be
--- restored, and deleting a human decision record is not a rollback step.
+-- Fails on purpose while any card answer exists: re-adding the old source
+-- check rejects it, and deleting a human decision record is not a rollback
+-- step. Task nullability belongs to 730, whose down handles it.
 ALTER TABLE decision_answer DROP CONSTRAINT IF EXISTS decision_answer_source_check;
 ALTER TABLE decision_answer
-    ALTER COLUMN answered_by_task_id SET NOT NULL,
     DROP COLUMN IF EXISTS answered_by_user_id,
     DROP COLUMN IF EXISTS answer_source;
 ALTER TABLE decision_answer ADD CONSTRAINT decision_answer_source_check CHECK (
