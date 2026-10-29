@@ -1,7 +1,8 @@
 # DM header "Scheduled" chip (CHE-2400). Lists and cancels pending chat wakeups.
-# No design lock and no Cheese waiver is recorded yet; the PR stays draft until one is.
+# Design lock waived by Cheese for this chip only (CHE-2400 thread reply 01a185d4-c24a-7b87-b814-ba8bc51e7d61, 29 Oct 2026 11:04 ICT).
+# The waiver does not cover UX review, frames, cross-lab review or merge.
 issue: CHE-2400
-design: waiver pending (none recorded)
+design: waiver CHE-2400 comment 01a185d4-c24a-7b87-b814-ba8bc51e7d61 (waived by Cheese)
 pages:
   - id: dm-chat-header
     url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview
