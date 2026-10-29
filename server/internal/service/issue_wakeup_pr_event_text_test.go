@@ -204,3 +204,56 @@ func TestAttentionInstructionKeepsAReturnedToDraftCause(t *testing.T) {
 		}
 	}
 }
+
+// A conflict-bearing cause keeps "Do not merge" beside a draft cause and past the sentence cap.
+func TestAttentionInstructionKeepsDoNotMergeBesideADraftCause(t *testing.T) {
+	receipts := []db.IssueWakeupReceipt{
+		{EventType: "pr.event", Payload: []byte(`{"pr_number":903,"kind":"conflict","head_sha":"new-head","base_sha":"base-1","repo_owner":"acme","repo_name":"widget"}`)},
+		{EventType: "pr.returned_to_draft", Payload: []byte(`{"pr_number":903,"reason":"returned_to_draft","head_sha":"new-head","issue_status":"in_review"}`)},
+	}
+	text := systemWakeupInstruction(db.IssueWakeup{SystemRule: pgtype.Text{String: SystemRulePRAttention, Valid: true}}, nil, receipts)
+	for _, expected := range []string{"merge conflict", "went back to draft", "Do not merge"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("mixed conflict/draft wake lacks %q: %q", expected, text)
+		}
+	}
+}
+
+func TestAttentionInstructionKeepsDoNotMergeWhenTheSentenceCapHidesTheCause(t *testing.T) {
+	var receipts []db.IssueWakeupReceipt
+	for _, head := range []string{"head-1", "head-2", "head-3", "head-4", "head-5"} {
+		receipts = append(receipts, db.IssueWakeupReceipt{EventType: "pr.event", Payload: []byte(`{"pr_number":903,"kind":"head_changed","head_sha":"` + head + `","repo_owner":"acme","repo_name":"widget"}`)})
+	}
+	receipts = append(receipts, db.IssueWakeupReceipt{EventType: "pr.mergeability", Payload: []byte(`{"pr_number":903,"reason":"mergeability","merge_state":"DIRTY","head_sha":"head-5","base_branch":"main","issue_status":"in_progress"}`)})
+	text := systemWakeupInstruction(db.IssueWakeup{SystemRule: pgtype.Text{String: SystemRulePRAttention, Valid: true}}, nil, receipts)
+	if !strings.Contains(text, "Do not merge") {
+		t.Fatalf("truncated legacy conflict loses the safety instruction: %q", text)
+	}
+}
+
+func TestFallbackWakeKeepsDoNotMergeWhenTheSentenceCapHidesADirtyCause(t *testing.T) {
+	env := newPREventEnv(t)
+	env.asKind(t, "head_changed", "old-head")
+	for _, head := range []string{"head-2", "head-3", "head-4", "head-5"} {
+		env.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, previous_head_sha, base_sha, observed_at, dedupe_key)
+			SELECT workspace_id, issue_id, pull_request_id, 'head_changed', $2, 'old-head', base_sha, now() + interval '1 second', 'head_changed|' || $2 FROM issue_pr_event WHERE id=$1`, env.event, head)
+	}
+	env.endWhileDelivering(t)
+	if err := env.s.queueNextTurnPREvents(context.Background(), []pgtype.UUID{parseTestUUID(t, env.f.WorkspaceID)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.s.TriggerPullRequestWakeup(context.Background(), env.issue, PullRequestWakeupInput{
+		Rule: SystemRulePRAttention, RepoOwner: "acme", RepoName: "widget", Number: 903,
+		HeadSHA: "head-5", BaseBranch: "main", Reason: PRAttentionMergeability, MergeState: "DIRTY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.tickAll(t, env.s)
+	if count := env.tasks(t, SystemRulePRAttention); count != 1 {
+		t.Fatalf("queued %d wakes, expected one", count)
+	}
+	text := env.instruction(t)
+	if !strings.Contains(text, "Do not merge") {
+		t.Fatalf("real bridge lost the coalesced DIRTY guard after truncation: %q", text)
+	}
+}

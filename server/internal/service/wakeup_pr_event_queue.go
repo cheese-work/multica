@@ -240,7 +240,9 @@ func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts m
 			sentences = append(sentences, sentence)
 		}
 	}
-	conflict, legacy := false, false
+	// notMerge is set by any cause that says the PR cannot merge; legacy marks
+	// causes that bring their own closing guidance.
+	notMerge, legacy := false, false
 	for _, r := range receipts {
 		if r.EventType != wakeupPREventType {
 			var own map[string]any
@@ -254,6 +256,7 @@ func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts m
 				label = pr
 			}
 			legacy = true
+			notMerge = notMerge || own["reason"] != PRAttentionDraft
 			add(fmt.Sprintf("%s|%v|%v|%v|%v", r.EventType, number, own["reason"], own["merge_state"], own["head_sha"]), prAttentionLegacyText(label, own))
 			continue
 		}
@@ -270,7 +273,7 @@ func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts m
 		if json.Unmarshal(r.Payload, &p) != nil {
 			continue
 		}
-		conflict = conflict || p.Kind == "conflict"
+		notMerge = notMerge || p.Kind == "conflict"
 		sentence := prEventSentence(prLabel(p.PRNumber, ""), p.Kind, p.HeadSHA, p.BaseSHA, p.OldHeadSHA, p.CheckName)
 		add(p.RepoOwner+"/"+p.RepoName+"|"+sentence, sentence)
 	}
@@ -281,10 +284,12 @@ func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts m
 	if more := len(sentences) - maxPREventSentences; more > 0 {
 		text += fmt.Sprintf(" %d more PR events are in the trigger facts.", more)
 	}
+	// The guard rides on the causes, not on which sentences fit: a conflict
+	// never loses "Do not merge" to a draft cause or to the sentence cap.
 	switch {
-	case conflict && !legacy:
+	case notMerge && !strings.Contains(text, "Do not merge"):
 		text += " Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge."
-	case !legacy:
+	case !notMerge && !legacy:
 		text += " Read the current PR and issue state, then decide what follow-up is needed."
 	}
 	return text
