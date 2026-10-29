@@ -63,7 +63,7 @@ function useTimingLine(entry: TimelineEntry, state: DecisionState): string | und
   const minutes = Math.round(windowMs / 60_000);
   return minutes > 0
     ? t(($) => $.decision.timing_pending_window, { time, minutes })
-    : t(($) => $.decision.timing_pending_turn_end);
+    : t(($) => $.decision.timing_pending_wake);
 }
 
 /**

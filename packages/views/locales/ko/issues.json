@@ -1849,6 +1849,6 @@
     "timing_disclaimed": "{{time}}에 철회됨",
     "timing_effective": "{{time}}부터 유효",
     "timing_pending_window": "대기 중. {{time}}에 효력 발생, 철회 가능 시간 {{minutes}}분.",
-    "timing_pending_turn_end": "대기 중. 답변한 턴이 끝나면 효력이 발생합니다."
+    "timing_pending_wake": "대기 중. 에이전트가 깨어나는 즉시 효력이 발생합니다."
   }
 }

@@ -1921,6 +1921,6 @@
     "timing_disclaimed": "Disclaimed at {{time}}",
     "timing_effective": "In effect since {{time}}",
     "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
-    "timing_pending_turn_end": "Pending. Takes effect when the answering turn ends."
+    "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
   }
 }

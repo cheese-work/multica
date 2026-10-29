@@ -1921,6 +1921,6 @@
     "timing_disclaimed": "Désavoué le {{time}}",
     "timing_effective": "En vigueur depuis le {{time}}",
     "timing_pending_window": "En attente. Prend effet le {{time}} ; {{minutes}} min pour désavouer.",
-    "timing_pending_turn_end": "En attente. Prend effet à la fin du tour qui répond."
+    "timing_pending_wake": "En attente. Prend effet dès que l'agent est réveillé."
   }
 }

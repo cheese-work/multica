@@ -1849,6 +1849,6 @@
     "timing_disclaimed": "已于 {{time}} 撤销",
     "timing_effective": "自 {{time}} 起生效",
     "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分钟内可撤销。",
-    "timing_pending_turn_end": "待生效。回答所在的回合结束时生效。"
+    "timing_pending_wake": "待生效。智能体被唤醒后立即生效。"
   }
 }

@@ -1849,6 +1849,6 @@
     "timing_disclaimed": "已於 {{time}} 撤銷",
     "timing_effective": "自 {{time}} 起生效",
     "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分鐘內可撤銷。",
-    "timing_pending_turn_end": "待生效。回答所在的回合結束時生效。"
+    "timing_pending_wake": "待生效。代理被喚醒後立即生效。"
   }
 }

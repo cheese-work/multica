@@ -145,10 +145,10 @@ describe("DecisionQuoteCard", () => {
     expect(timing).toHaveTextContent("10 min to disclaim");
   });
 
-  it("says a reversible pending record takes effect when the answering turn ends", () => {
+  it("says a reversible pending record takes effect as soon as the agent is woken", () => {
     renderCard(quote({ decision_state: "pending", decision_answered_at: "2026-10-30T03:00:00Z", effective_at: "2026-10-30T03:00:00Z" }));
     const timing = screen.getByTestId("decision-timing");
-    expect(timing).toHaveTextContent("when the answering turn ends");
+    expect(timing).toHaveTextContent("as soon as the agent is woken");
     expect(timing).not.toHaveTextContent("to disclaim");
   });
 

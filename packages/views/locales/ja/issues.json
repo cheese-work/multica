@@ -1849,6 +1849,6 @@
     "timing_disclaimed": "{{time}} に取り消し済み",
     "timing_effective": "{{time}} から有効",
     "timing_pending_window": "保留中。{{time}} に有効になります。取り消しは {{minutes}} 分以内。",
-    "timing_pending_turn_end": "保留中。回答したターンの終了時に有効になります。"
+    "timing_pending_wake": "保留中。エージェントが起動され次第、有効になります。"
   }
 }
