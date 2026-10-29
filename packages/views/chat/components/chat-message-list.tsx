@@ -163,6 +163,8 @@ interface ChatListContext {
   availability: AgentAvailability | undefined;
   /** Agent behind each fired-wakeup task, so its running pill joins the rail. */
   wakeupAgentByTask: ReadonlyMap<string, string>;
+  /** The live assistant row is showing, so it owns the reply avatar. */
+  hasLive: boolean;
 }
 
 /**
@@ -231,7 +233,7 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
       {context?.showStatusPill && context.pendingTask ? (
-        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")}>
+        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")} avatar={!context.hasLive}>
           <TaskStatusPill
             pendingTask={context.pendingTask}
             taskMessages={context.liveTaskMessages ?? []}
@@ -243,8 +245,8 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
   );
 }
 
-function WithWakeupRail({ agentId, children }: { agentId?: string; children: ReactNode }) {
-  return agentId ? <WakeupReplyRail agentId={agentId}>{children}</WakeupReplyRail> : <>{children}</>;
+function WithWakeupRail({ agentId, avatar = true, children }: { agentId?: string; avatar?: boolean; children: ReactNode }) {
+  return agentId ? <WakeupReplyRail agentId={agentId} avatar={avatar}>{children}</WakeupReplyRail> : <>{children}</>;
 }
 
 function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
@@ -619,6 +621,7 @@ export function ChatMessageList({
     liveTaskMessages,
     availability,
     wakeupAgentByTask,
+    hasLive,
   };
 
   // Every previewable file in this session, in message order, so opening one

@@ -156,19 +156,29 @@ export function WakeupEventRow({
 /**
  * The thread rail carried into the replying agent: a short rail segment, then
  * the agent avatar, then the reply (or the running-task pill) beside it.
+ * `avatar={false}` keeps only the indent, for a second row of the same reply
+ * (the status pill under the streamed response) so one reply shows one avatar.
  */
 export function WakeupReplyRail({
   agentId,
+  avatar = true,
   children,
 }: {
   agentId: string;
+  avatar?: boolean;
   children: ReactNode;
 }) {
   return (
     <div data-testid="wakeup-reply" className="flex gap-2.5">
       <div className="-mt-2 flex w-6 shrink-0 flex-col items-center">
-        <span aria-hidden className="h-3 w-0.5 bg-warning/30" />
-        <ActorAvatar actorType="agent" actorId={agentId} size="md" profileLink={false} />
+        {avatar && (
+          <>
+            <span aria-hidden className="h-3 w-0.5 bg-warning/30" />
+            <span data-testid="wakeup-reply-avatar">
+              <ActorAvatar actorType="agent" actorId={agentId} size="md" profileLink={false} />
+            </span>
+          </>
+        )}
       </div>
       <div className="min-w-0 flex-1">{children}</div>
     </div>
