@@ -575,6 +575,7 @@
     "wakeup_link_run": "查看運行"
   },
   "comment": {
+    "show_full": "顯示完整評論",
     "add_reaction": "新增表情回應",
     "collapse_thread": "收起討論",
     "expand_thread": "展開討論",
