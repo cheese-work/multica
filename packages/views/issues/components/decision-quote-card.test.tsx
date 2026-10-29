@@ -20,7 +20,7 @@ vi.mock("@multica/core/issues/decision-disclaim", async (importActual) => ({
   useDisclaimDecisionAnswer: () => ({ mutateAsync: disclaim, isPending: false }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  useWorkspacePaths: () => ({ chatSession: (id: string) => `/acme/chat?session=${id}` }),
+  useWorkspacePaths: () => ({ chatSession: (id: string) => `/acme/chat?session=${id}`, issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: (_type: string, id: string) => (id === "agent-1" ? "x99-claude-sonnet" : id) }),
@@ -107,6 +107,8 @@ describe("DecisionQuoteCard", () => {
         decision_comment_kind: undefined,
         decision_answer_id: undefined,
         decision_receipt_answer_id: "answer-9",
+        decision_issue_id: "issue-7",
+        decision_issue_identifier: "CHE-77",
         decision_chosen_option_index: 0,
         decision_option_label: "Hold",
       }),
@@ -117,6 +119,8 @@ describe("DecisionQuoteCard", () => {
     expect(card).toHaveTextContent("Recorded");
     expect(card).toHaveTextContent("Option 1");
     expect(card).not.toHaveTextContent("Hold.");
+    expect(screen.getByTestId("decision-receipt-issue")).toHaveTextContent("Recorded for CHE-77");
+    expect(screen.getByTestId("decision-receipt-issue")).toHaveAttribute("href", "/acme/issues/issue-7");
     expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
     fireEvent.click(screen.getByTestId("decision-disclaim-button"));
     fireEvent.click(await screen.findByRole("button", { name: "Disclaim" }));

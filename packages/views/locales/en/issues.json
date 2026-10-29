@@ -1891,6 +1891,7 @@
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
+    "recorded_for": "Recorded for {{issue}}",
     "option_n": "Option {{number}}",
     "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",

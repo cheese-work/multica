@@ -132,6 +132,15 @@ export function DecisionQuoteCard({
             {t(($) => $.decision.option_n, { number: optionIndex + 1 })}
           </span>
         )}
+        {compact && entry.decision_issue_id && entry.decision_issue_identifier && (
+          <AppLink
+            href={paths.issueDetail(entry.decision_issue_id)}
+            data-testid="decision-receipt-issue"
+            className="text-micro text-muted-foreground hover:underline"
+          >
+            {t(($) => $.decision.recorded_for, { issue: entry.decision_issue_identifier })}
+          </AppLink>
+        )}
         {!compact && <span className="text-micro text-muted-foreground">{t(($) => $.decision.via_dm)}</span>}
       </div>
       {!compact && <p className="whitespace-pre-wrap break-words px-2.5 py-2 text-body">{quote}</p>}

@@ -60,7 +60,11 @@ type DecisionCommentFields struct {
 	DecisionIssueCommentID    string `json:"decision_issue_comment_id,omitempty"`
 	// DecisionReceiptAnswerID marks a human's own comment that a task recorded as
 	// the answer: the comment carries the receipt, the agent quote stays separate.
-	DecisionReceiptAnswerID string  `json:"decision_receipt_answer_id,omitempty"`
+	DecisionReceiptAnswerID string `json:"decision_receipt_answer_id,omitempty"`
+	// The issue that accepted the answer, so a receipt on a comment elsewhere
+	// can say which issue it was recorded for.
+	DecisionIssueID         string  `json:"decision_issue_id,omitempty"`
+	DecisionIssueIdentifier string  `json:"decision_issue_identifier,omitempty"`
 	EffectiveAt             *string `json:"effective_at,omitempty"`
 	DisclaimedAt            *string `json:"disclaimed_at,omitempty"`
 	DecisionSourceSessionID string  `json:"decision_source_session_id,omitempty"`
@@ -192,6 +196,8 @@ func decisionCommentEntry(row db.ListDecisionCardsRow, viewer pgtype.UUID) Decis
 		DecisionClass:             row.EscalationClass,
 		DecisionState:             decisionAnswerState(row.WokenAt, row.DisclaimedAt),
 		DecisionIssueCommentID:    uuidToString(row.IssueCommentID),
+		DecisionIssueID:           uuidToString(row.IssueID),
+		DecisionIssueIdentifier:   fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
 		EffectiveAt:               timestampToPtr(row.EffectiveAt),
 		DisclaimedAt:              timestampToPtr(row.DisclaimedAt),
 	}
@@ -267,10 +273,36 @@ func (handler *Handler) decisionCardsForMessages(ctx context.Context, workspaceI
 
 // publishDecisionAnswerUpdated tells open clients a decision card changed
 // state. The payload carries ids and state only; clients refetch the cards.
+// A receipt can sit on the human's comment in another issue, so the payload
+// names that issue too and its open timeline refreshes.
 func (handler *Handler) publishDecisionAnswerUpdated(workspaceID, actorType, actorID string, answerID, issueID pgtype.UUID, state string) {
-	handler.publish(protocol.EventDecisionAnswerUpdated, workspaceID, actorType, actorID, map[string]any{
+	payload := map[string]any{
 		"answer_id": uuidToString(answerID),
 		"issue_id":  uuidToString(issueID),
 		"state":     state,
-	})
+	}
+	if sourceIssueID := handler.decisionSourceIssueID(workspaceID, answerID); sourceIssueID.Valid && sourceIssueID != issueID {
+		payload["source_issue_id"] = uuidToString(sourceIssueID)
+	}
+	handler.publish(protocol.EventDecisionAnswerUpdated, workspaceID, actorType, actorID, payload)
+}
+
+// decisionSourceIssueID is the issue holding the member comment an answer was
+// recorded from, or the zero UUID for a DM answer. The event is a hint, so a
+// failed lookup only skips the extra refresh.
+func (handler *Handler) decisionSourceIssueID(workspaceID string, answerID pgtype.UUID) pgtype.UUID {
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	ctx := context.Background()
+	answer, err := handler.Queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceUUID, ID: answerID})
+	if err != nil || !answer.SourceCommentID.Valid {
+		return pgtype.UUID{}
+	}
+	comment, err := handler.Queries.GetComment(ctx, answer.SourceCommentID)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return comment.IssueID
 }

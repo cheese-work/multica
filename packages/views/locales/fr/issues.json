@@ -1890,6 +1890,7 @@
     },
     "via_dm": "via DM",
     "recorded_by": "Enregistré par {{name}}",
+    "recorded_for": "Enregistrée pour {{issue}}",
     "option_n": "Option {{number}}",
     "jump_to_card": "Aller à la carte",
     "answered_in_dm": "Répondu dans le DM",

@@ -19,7 +19,7 @@ describe("pickDecisionFields", () => {
 
 describe("receipt fields", () => {
   it("survive a comment snapshot mapping", () => {
-    const comment = { decision_receipt_answer_id: "answer", decision_delivered: true, decision_chosen_option_index: 0, decision_option_label: "Hold" };
+    const comment = { decision_receipt_answer_id: "answer", decision_delivered: true, decision_chosen_option_index: 0, decision_option_label: "Hold", decision_issue_id: "issue", decision_issue_identifier: "CHE-1" };
     expect(pickDecisionFields(comment)).toEqual(comment);
   });
 });

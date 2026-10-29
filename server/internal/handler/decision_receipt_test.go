@@ -10,8 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestDecisionRequestPersistsDecodedAsk(test *testing.T) {
@@ -169,6 +171,9 @@ func TestSourceCommentCarriesReceiptWithoutNewComment(test *testing.T) {
 	if got.DecisionReceiptAnswerID != uuidToString(result.Answer.ID) || got.DecisionHumanUserID != fixture.humanID || got.DecisionIssueCommentID != uuidToString(result.Comment.ID) {
 		test.Fatalf("source comment lacks its receipt: %+v", got)
 	}
+	if got.DecisionIssueID != uuidToString(fixture.issue.ID) || !strings.Contains(got.DecisionIssueIdentifier, "-") {
+		test.Fatalf("receipt does not name the issue that accepted the answer: %+v", got)
+	}
 	if _, stamped := fields[bystanderID]; stamped {
 		test.Fatal("an unrelated member comment got a receipt")
 	}
@@ -193,5 +198,26 @@ func TestSourceCommentReceiptIsUndeliveredAfterSkippedWake(test *testing.T) {
 	got := testHandler.decisionCommentFields(context.Background(), comment.WorkspaceID, []db.Comment{comment}, pgtype.UUID{})[sourceID]
 	if got.DecisionReceiptAnswerID == "" || got.DecisionDelivered {
 		test.Fatalf("skipped wake showed as delivered on the source comment: %+v", got)
+	}
+}
+
+// The receipt sits on a comment in another issue's timeline, so the live event
+// names that issue too; otherwise an open source timeline never refreshes.
+func TestDecisionAnswerUpdatedNamesTheSourceCommentIssue(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	otherIssue := dbfx.Issue(test, "Human replied elsewhere")
+	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": otherIssue, "author_type": "member", "author_id": fixture.humanID, "content": "Hold."})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, fixture.taskID)
+	result, err := testHandler.createAskedDecisionRecord(fixture.request(), fixture.issue, decisionRecordInput{ParentID: parseUUID(fixture.parentID), SourceCommentID: parseUUID(sourceID)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	var payload map[string]any
+	testHandler.Bus.Subscribe(protocol.EventDecisionAnswerUpdated, func(event events.Event) {
+		payload, _ = event.Payload.(map[string]any)
+	})
+	testHandler.publishDecisionAnswerUpdated(testWorkspaceID, "agent", fixture.agentID, result.Answer.ID, fixture.issue.ID, decisionStateEffective)
+	if payload["issue_id"] != uuidToString(fixture.issue.ID) || payload["source_issue_id"] != otherIssue {
+		test.Fatalf("event does not name the source comment's issue: %+v", payload)
 	}
 }

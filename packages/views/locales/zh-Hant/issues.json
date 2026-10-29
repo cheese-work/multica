@@ -1818,6 +1818,7 @@
     },
     "via_dm": "來自私信",
     "recorded_by": "由 {{name}} 記錄",
+    "recorded_for": "已記錄至 {{issue}}",
     "option_n": "選項 {{number}}",
     "jump_to_card": "跳到卡片",
     "answered_in_dm": "私信中的回答",

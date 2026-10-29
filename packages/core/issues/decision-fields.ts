@@ -13,6 +13,8 @@ const DECISION_FIELD_KEYS = [
   "decision_chosen_option_index",
   "decision_option_label",
   "decision_receipt_answer_id",
+  "decision_issue_id",
+  "decision_issue_identifier",
   "decision_issue_comment_id",
   "effective_at",
   "disclaimed_at",

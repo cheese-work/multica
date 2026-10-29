@@ -89,6 +89,9 @@ export interface DecisionCommentFields {
   decision_issue_comment_id?: string;
   /** Set on a member's own comment that a task recorded as the answer: that comment carries the receipt. */
   decision_receipt_answer_id?: string;
+  /** The issue that accepted the answer; a receipt on a comment elsewhere names it. */
+  decision_issue_id?: string;
+  decision_issue_identifier?: string;
   effective_at?: string | null;
   disclaimed_at?: string | null;
   decision_source_session_id?: string;

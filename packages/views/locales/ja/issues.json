@@ -1819,6 +1819,7 @@
     },
     "via_dm": "DM 経由",
     "recorded_by": "{{name}} が記録",
+    "recorded_for": "{{issue}} に記録",
     "option_n": "選択肢 {{number}}",
     "jump_to_card": "カードへ移動",
     "answered_in_dm": "DM での回答",

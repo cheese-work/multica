@@ -983,6 +983,8 @@ const decisionCommentShape = {
   decision_option_label: z.string().optional().catch(undefined),
   decision_issue_comment_id: z.string().optional().catch(undefined),
   decision_receipt_answer_id: z.string().optional().catch(undefined),
+  decision_issue_id: z.string().optional().catch(undefined),
+  decision_issue_identifier: z.string().optional().catch(undefined),
   effective_at: z.string().nullable().optional().catch(undefined),
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   decision_source_session_id: z.string().optional().catch(undefined),
