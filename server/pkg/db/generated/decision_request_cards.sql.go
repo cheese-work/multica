@@ -58,7 +58,7 @@ const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
-    request.withdraw_reason, request.cancel_reason,
+    request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id
 FROM decision_request request
@@ -92,6 +92,7 @@ type ListDecisionRequestCardsRow struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	WithdrawReason  string             `json:"withdraw_reason"`
 	CancelReason    pgtype.Text        `json:"cancel_reason"`
+	Options         []byte             `json:"options"`
 	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
 	RecordCommentID pgtype.UUID        `json:"record_comment_id"`
 }
@@ -117,8 +118,74 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.CreatedAt,
 			&i.WithdrawReason,
 			&i.CancelReason,
+			&i.Options,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDecisionRequestsForHuman = `-- name: ListOpenDecisionRequestsForHuman :many
+SELECT request.id, request.issue_id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.asking_agent_id, COALESCE(agent.name, '')::text AS asking_agent_name,
+    request.ask, request.escalation_class, request.created_at,
+    request.chat_session_id, request.ping_message_id AS message_id
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1
+    AND request.human_user_id = $2
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id
+`
+
+type ListOpenDecisionRequestsForHumanParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+}
+
+type ListOpenDecisionRequestsForHumanRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	IssueIdentifier string             `json:"issue_identifier"`
+	AskingAgentID   pgtype.UUID        `json:"asking_agent_id"`
+	AskingAgentName string             `json:"asking_agent_name"`
+	Ask             string             `json:"ask"`
+	EscalationClass string             `json:"escalation_class"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	MessageID       pgtype.UUID        `json:"message_id"`
+}
+
+func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg ListOpenDecisionRequestsForHumanParams) ([]ListOpenDecisionRequestsForHumanRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionRequestsForHuman, arg.WorkspaceID, arg.HumanUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionRequestsForHumanRow{}
+	for rows.Next() {
+		var i ListOpenDecisionRequestsForHumanRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssueIdentifier,
+			&i.AskingAgentID,
+			&i.AskingAgentName,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.CreatedAt,
+			&i.ChatSessionID,
+			&i.MessageID,
 		); err != nil {
 			return nil, err
 		}

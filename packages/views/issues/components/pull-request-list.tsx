@@ -321,6 +321,10 @@ function AutoCompleteLine({
       icon = <CheckCircle2 className="text-muted-foreground" />;
       body = withTarget(t(($) => $.pr_automation.all_merged_to, { status: STATUS_SLOT }));
       break;
+    case "workflow_owned":
+      icon = <CheckCircle2 className="text-muted-foreground" />;
+      body = t(($) => $.pr_automation.workflow_owned);
+      break;
     case "issue_disabled":
       icon = <CircleSlash className="text-muted-foreground" />;
       body = (

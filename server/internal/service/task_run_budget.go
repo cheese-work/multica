@@ -77,6 +77,9 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}
+	if err == nil {
+		noteRunInserted(ctx, q, p.IssueID)
+	}
 	return task, err
 }
 
@@ -87,8 +90,70 @@ type RunBudgetExhausted struct {
 	IssueID pgtype.UUID
 	Runs    int64
 	Max     int
+	Since   time.Time
 	Status  string
 	Target  RunTarget
+}
+
+// Run-budget notice kinds (CHE-2297 L1a). They are also the kind half of the
+// notice claim key.
+const (
+	RunBudgetKindWarn80    = "warn80"
+	RunBudgetKindExhausted = "exhausted"
+)
+
+// RunBudgetEvent describes one budget notice: its kind, how many runs the issue
+// has and the cap, and the start of the budget window it belongs to. Xid is the
+// transaction that inserted the run behind a warning (0 when unknown), so the
+// handler can follow it to commit or rollback.
+type RunBudgetEvent struct {
+	IssueID pgtype.UUID
+	Kind    string
+	Runs    int64
+	Max     int
+	Since   time.Time
+	Xid     int64
+}
+
+var onRunBudgetEvent atomic.Pointer[func(context.Context, RunBudgetEvent)]
+
+// SetOnRunBudgetEvent registers the function that writes the 80% warning (nil
+// clears it). The handler registers it; the service has no business writing
+// comments or inbox items.
+func SetOnRunBudgetEvent(fn func(context.Context, RunBudgetEvent)) {
+	if fn == nil {
+		onRunBudgetEvent.Store(nil)
+		return
+	}
+	onRunBudgetEvent.Store(&fn)
+}
+
+// runBudgetWarnAt is the run count that triggers the 80% warning.
+func runBudgetWarnAt(max int) int64 {
+	return int64((max*4 + 4) / 5)
+}
+
+// noteRunInserted fires the 80% warning when the task row q just inserted is the
+// run that reaches it. It runs after the insert, on the insert's own handle, so
+// the run count includes the new row and the transaction id is the inserting
+// transaction's: the handler follows that transaction to commit or rollback.
+// Best effort: a failed read loses the warning, never the run.
+func noteRunInserted(ctx context.Context, q *db.Queries, issueID pgtype.UUID) {
+	hook := onRunBudgetEvent.Load()
+	if hook == nil || !issueID.Valid {
+		return
+	}
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return
+	}
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil || usage == nil || usage.Runs != runBudgetWarnAt(usage.Max) {
+		return
+	}
+	// A failed read leaves Xid 0: the handler then only counts committed runs.
+	xid, _ := q.CurrentXactID(ctx)
+	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid})
 }
 
 var onRunBudgetExhausted atomic.Pointer[func(context.Context, RunBudgetExhausted)]
@@ -131,28 +196,14 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		}
 		return ReviewGate{}, fmt.Errorf("run budget: load issue: %w", err)
 	}
-	if !issue.ProjectID.Valid && !issue.WorkflowID.Valid {
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil {
+		return ReviewGate{}, err
+	}
+	if usage == nil {
 		return ReviewGate{}, nil
 	}
-	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if errors.Is(err, issueworkflow.ErrOverrideMissing) || (err == nil && (def == nil || def.RunBudgetSince.IsZero())) {
-		return ReviewGate{}, nil
-	}
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: load workflow: %w", err)
-	}
-	since, err := RunBudgetStart(ctx, q, issue.ID, def)
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: window start: %w", err)
-	}
-	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: since, Valid: true}})
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: count runs: %w", err)
-	}
-	max := def.EffectiveMaxRuns()
-	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > max {
-		max = int(issue.MaxRunsOverride.Int32)
-	}
+	runs, max := usage.Runs, usage.Max
 	spent := runs >= int64(max)
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
@@ -173,7 +224,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
-			IssueID: issue.ID, Runs: runs, Max: max,
+			IssueID: issue.ID, Runs: runs, Max: max, Since: usage.Since,
 			Status: issue.Status, Target: target,
 		})
 	}
@@ -213,7 +264,7 @@ func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target Run
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}
-	head, err = q.GetIssueReviewHeadSha(ctx, issue.ID)
+	head, err = issueReviewHead(ctx, q, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
 		return "", false, nil
 	}

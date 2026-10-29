@@ -24,6 +24,9 @@ const (
 
 	wakeupOutcomeDeferred     = "deferred_active_run"
 	wakeupOutcomeDeferExpired = "defer_expired"
+	// wakeupOutcomeQueuedNextTurn: a PR fact that reached a rule without a
+	// defer choice while its target ran (CHE-2298 a3). It is kept, not dropped.
+	wakeupOutcomeQueuedNextTurn = "queued_next_turn"
 )
 
 // wakeupDeferRetention bounds how long a running target may hold a fact back.
@@ -68,12 +71,13 @@ func (b *builtinWakeup) defersActiveRun() bool {
 // target runs. Facts older than the retention window expire visibly; facts held
 // for the first time are noted once, and everything else stays pending
 // untouched. Only a run that includes the evidence, or the self-actor rule
-// (decided before this point), ever consumes a fact.
+// (decided before this point), ever consumes a fact. With queueNextTurn the
+// facts never expire and the activity reads "PR event queued for next turn".
 func deferForActiveRun(ctx context.Context, q *db.Queries, w db.IssueWakeup, target wakeTarget, receipts []db.IssueWakeupReceipt, now time.Time,
-	note func(string, map[string]any) error) error {
+	note func(string, map[string]any) error, queueNextTurn bool) error {
 	var expired, held []db.IssueWakeupReceipt
 	for _, r := range receipts {
-		if r.CreatedAt.Valid && now.Sub(r.CreatedAt.Time) > wakeupDeferRetention {
+		if !queueNextTurn && r.CreatedAt.Valid && now.Sub(r.CreatedAt.Time) > wakeupDeferRetention {
 			expired = append(expired, r)
 		} else {
 			held = append(held, r)
@@ -86,6 +90,9 @@ func deferForActiveRun(ctx context.Context, q *db.Queries, w db.IssueWakeup, tar
 			facts := systemWakeupFacts(w, []db.IssueWakeupReceipt{r})
 			facts["target_type"], facts["target_id"] = target.Type, util.UUIDToString(target.ID)
 			facts["outcome"], facts["receipt_id"] = outcome, util.UUIDToString(r.ID)
+			if outcome == wakeupOutcomeQueuedNextTurn {
+				facts["message"] = "PR event queued for next turn: " + prEventCause(r)
+			}
 			if err := note(wakeupActivityTriggered, facts); err != nil {
 				return err
 			}
@@ -106,6 +113,9 @@ func deferForActiveRun(ctx context.Context, q *db.Queries, w db.IssueWakeup, tar
 	fresh, err := q.MarkWakeupReceiptsDeferred(ctx, receiptIDs(held))
 	if err != nil || len(fresh) == 0 {
 		return err
+	}
+	if queueNextTurn {
+		return record(wakeupOutcomeQueuedNextTurn, fresh)
 	}
 	return record(wakeupOutcomeDeferred, fresh)
 }

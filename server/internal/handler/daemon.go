@@ -4807,6 +4807,7 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
+		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
 	}
 	var task *db.AgentTaskQueue
@@ -4851,6 +4852,11 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 			resp.SupplementCapability = capability.Capability
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
 			slog.Warn("start task: failed to load negotiated supplement capability", "task_id", taskID, "error", capabilityErr)
+		}
+		if capability, capabilityErr := h.Queries.GetTaskPREventCapability(r.Context(), task.ID); capabilityErr == nil {
+			resp.PREventCapability = capability.Capability
+		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
+			slog.Warn("start task: failed to load negotiated PR event capability", "task_id", taskID, "error", capabilityErr)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -6256,6 +6262,11 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			slog.Error("cancel ack: record cancel_acked_at failed", "task_id", taskID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to record cancel ack")
 			return
+		}
+		// The gate may have just opened: release the replacement review a newer
+		// head was waiting on (CHE-2307).
+		if task.IssueID.Valid {
+			h.releaseSupersededReviewReplacement(r.Context(), task.IssueID)
 		}
 	default:
 		slog.Warn("cancel ack without a valid proof; stop gate stays closed", "task_id", taskID)

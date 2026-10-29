@@ -1516,6 +1516,7 @@
     "not_merged": "{{prs}} fermée sans fusion",
     "not_merged_action": "Retirer",
     "all_merged_to": "Toutes les PR sont fusionnées. La prochaine PR fusionnée fera passer la tâche à {{status}}.",
+    "workflow_owned": "Le workflow déplace la tâche quand sa PR est fusionnée",
     "issue_disabled": "Les fusions de PR ne changent pas cette tâche",
     "issue_disabled_action": "Réactiver"
   },

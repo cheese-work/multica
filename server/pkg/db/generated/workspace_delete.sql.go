@@ -31,6 +31,12 @@ deleted_task_supplements AS (
 deleted_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_task_pr_event_deliveries AS (
+    DELETE FROM task_pr_event_delivery WHERE task_id IN (SELECT id FROM batch)
+),
+deleted_task_pr_event_capabilities AS (
+    DELETE FROM task_pr_event_capability WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_channel_outbound_cards AS (
     DELETE FROM channel_outbound_card_message WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -327,6 +333,12 @@ deleted_orphan_task_supplements AS (
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
 ),
+deleted_orphan_task_pr_event_deliveries AS (
+    DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
+),
+deleted_orphan_task_pr_event_capabilities AS (
+    DELETE FROM task_pr_event_capability WHERE workspace_id = $1
+),
 deleted_hourly_dirty AS (
     DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1
 ),
@@ -365,6 +377,9 @@ deleted_stage_completion_wakes AS (
 ),
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
+),
+deleted_run_budget_notices AS (
+    DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -619,6 +634,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
@@ -705,6 +721,10 @@ WITH deleted_github_webhook_dispatches AS (
 ), deleted_github_webhook_revisions AS (
     DELETE FROM github_webhook_revision
     WHERE github_webhook_revision.workspace_id = $1
+), deleted_issue_pr_events AS (
+    -- Runs after DeleteWorkspaceIssueRoots: a capture that share-locked an issue
+    -- has committed by then, so this sweep sees its events (CHE-2298 a1).
+    DELETE FROM issue_pr_event WHERE issue_pr_event.workspace_id = $1
 ), deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1

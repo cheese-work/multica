@@ -2,10 +2,13 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { configStore } from "@multica/core/config";
 import enCommon from "../../locales/en/common.json";
 import enSettings from "../../locales/en/settings.json";
+import frSettings from "../../locales/fr/settings.json";
+import zhHantSettings from "../../locales/zh-Hant/settings.json";
 
 const mockUpdateWorkspace = vi.hoisted(() => vi.fn());
 const mockDeleteInstallation = vi.hoisted(() => vi.fn());
@@ -145,6 +148,54 @@ describe("CodeTab — GitHub", () => {
     expect(screen.getByText(/Connected to acme · Connected by Ada/)).toBeInTheDocument();
   });
 
+  it.each(["owner", "admin"] as const)(
+    "lets a connected %s add another account or organization",
+    async (role) => {
+      connect();
+      roleRef.current = role;
+      installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
+      mockGetConnectURL.mockResolvedValue({ configured: true, url: "https://github.com/apps/x" });
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      const user = userEvent.setup();
+      render(<CodeTab />, { wrapper: Wrapper });
+
+      await user.click(screen.getByRole("button", { name: "Add account or organization" }));
+
+      await waitFor(() =>
+        expect(open).toHaveBeenCalledWith("https://github.com/apps/x", "_blank", "noopener"),
+      );
+      expect(mockGetConnectURL).toHaveBeenCalledWith("workspace-1");
+      expect(mockDeleteInstallation).not.toHaveBeenCalled();
+      open.mockRestore();
+    },
+  );
+
+  it("keeps adding an account available while GitHub features are paused", () => {
+    connect();
+    workspaceRef.current.settings = { github_enabled: false };
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("button", { name: "Add account or organization" })).toBeEnabled();
+  });
+
+  it("disables adding an account when the install flow is not configured", () => {
+    connect();
+    installationsRef.current.configured = false;
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("button", { name: "Add account or organization" })).toBeDisabled();
+  });
+
+  it("does not offer GitHub management when the server denies it to an admin", () => {
+    connect();
+    roleRef.current = "admin";
+    installationsRef.current.can_manage = false;
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole("button", { name: "Add account or organization" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "GitHub actions" })).toBeNull();
+  });
+
   it("pauses GitHub from the row menu, keeping the other settings", async () => {
     connect();
     workspaceRef.current.settings = { pr_merge_status: "done", co_authored_by_enabled: false };
@@ -204,14 +255,92 @@ describe("CodeTab — GitHub", () => {
     render(<CodeTab />, { wrapper: Wrapper });
 
     await user.click(screen.getByRole("button", { name: "GitHub actions" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect acme" }));
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
-    const dialog = await screen.findByRole("alertdialog");
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect acme?" });
+    expect(dialog).toHaveTextContent("Multica will stop receiving webhooks for acme.");
     await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() =>
       expect(mockDeleteInstallation).toHaveBeenCalledWith("workspace-1", "inst-1"),
     );
+  });
+
+  it.each([
+    ["inst-1", "acme"],
+    ["inst-2", "other-org"],
+  ])("disconnects only the selected installation %s", async (id, login) => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
+    mockDeleteInstallation.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "GitHub actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: `Disconnect ${login}` }));
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("alertdialog", { name: `Disconnect ${login}?` });
+    expect(dialog).toHaveTextContent(`Multica will stop receiving webhooks for ${login}.`);
+    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => {
+      expect(mockDeleteInstallation).toHaveBeenCalledExactlyOnceWith("workspace-1", id);
+      expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ["github", "workspace-1"] });
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+  });
+
+  it("does not disconnect a selected organization when confirmation is cancelled", async () => {
+    connect();
+    const user = userEvent.setup();
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "GitHub actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect acme" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect acme?" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected organization and confirmation open after a failed disconnect", async () => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
+    mockDeleteInstallation.mockRejectedValue(new Error("Disconnect failed"));
+    const user = userEvent.setup();
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "GitHub actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect other-org" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect other-org?" });
+    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Disconnect failed"));
+    expect(screen.getByRole("alertdialog", { name: "Disconnect other-org?" })).toBeInTheDocument();
+    expect(mockInvalidate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["fr", frSettings],
+    ["zh-Hant", zhHantSettings],
+  ] as const)("names the selected organization in the %s confirmation", async (locale, settings) => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
+    const user = userEvent.setup();
+    render(
+      <I18nProvider locale={locale} resources={{ [locale]: { common: enCommon, settings } }}>
+        <CodeTab />
+      </I18nProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: settings.code.github_actions }));
+    await user.click(await screen.findByRole("menuitem", { name: `${settings.github.disconnect} other-org` }));
+    const dialog = await screen.findByRole("alertdialog");
+
+    expect(dialog).toHaveAccessibleName(/other-org/);
+    expect(dialog).toHaveAccessibleDescription(/other-org/);
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
   });
 
   it("shows members the connection read-only and who can change it", () => {
@@ -221,6 +350,7 @@ describe("CodeTab — GitHub", () => {
     render(<CodeTab />, { wrapper: Wrapper });
 
     expect(screen.getByRole("note")).toHaveTextContent("View only");
+    expect(screen.queryByRole("button", { name: "Add account or organization" })).toBeNull();
     expect(screen.queryByRole("button", { name: "GitHub actions" })).toBeNull();
     expect(screen.getByRole("switch", { name: "Pull Request sidebar" })).toHaveAttribute(
       "aria-disabled",
