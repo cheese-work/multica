@@ -1591,6 +1591,9 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
 			FireAt:               fireAt,
 		})
+		if err == nil {
+			noteRunInserted(ctx, queries, createParams.IssueID)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
@@ -5793,6 +5796,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			})
 			switch {
 			case cerr == nil:
+				noteRunInserted(ctx, qtx, t.IssueID)
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -6401,6 +6405,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		)
 		return nil, err
 	}
+	noteRunInserted(ctx, qtx, parent.IssueID)
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than
