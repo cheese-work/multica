@@ -298,6 +298,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
+				if msg.Origin != nil && msg.Origin.Kind != "human" {
+					b.cfg.Logger.Debug("ignoring Claude-injected turn result", "origin", msg.Origin.Kind)
+					continue
+				}
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
@@ -688,6 +692,9 @@ type claudeSDKMessage struct {
 	SessionID       string          `json:"session_id,omitempty"`
 	Model           string          `json:"model,omitempty"`
 	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
+	Origin          *struct {
+		Kind string `json:"kind"`
+	} `json:"origin,omitempty"`
 
 	// result fields
 	ResultText string `json:"result,omitempty"`
