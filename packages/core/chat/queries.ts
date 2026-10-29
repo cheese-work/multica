@@ -201,8 +201,9 @@ export function chatDraftRestoresOptions(sessionId: string) {
 }
 
 /**
- * Pending agent-scheduled wakeups for a DM. Fires reach clients as chat:message
- * events, which invalidate this key; a cancel updates it directly.
+ * Pending agent-scheduled wakeups for a DM. A turn that schedules or cancels
+ * one ends in chat:done and a fire arrives as chat:message; both invalidate
+ * this key, as does a reconnect. A cancel here updates it directly.
  */
 export function chatWakeupsOptions(sessionId: string) {
   return queryOptions({

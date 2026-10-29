@@ -282,7 +282,8 @@
     "title_unknown_agent": "予約済みのフォローアップ",
     "cancel": "キャンセル",
     "cancel_label": "{{time}} に予約されたフォローアップをキャンセル",
-    "cancel_failed": "フォローアップをキャンセルできませんでした"
+    "cancel_failed": "フォローアップをキャンセルできませんでした",
+    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行"
   },
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",

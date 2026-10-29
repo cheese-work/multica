@@ -256,6 +256,9 @@ export function applyChatDoneToCache(
     // landed this row.
     upsertChatMessageToCaches(qc, sessionId, assistant);
   }
+  // The turn may have scheduled or cancelled a wakeup: creating one emits no
+  // event of its own, so the end of the turn is when the chip learns of it.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
   // Replacement is in the messages list now; remove only this task. If a
   // follow-up is queued, it becomes the next head in the same render tick.
   qc.setQueryData<ChatPendingTask>(
@@ -718,6 +721,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
   qc.invalidateQueries({ queryKey: chatKeys.pendingTaskAll() });
   qc.invalidateQueries({ queryKey: chatKeys.taskMessagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.wakeupsAll() });
   // A chat:cancel_finalized broadcast missed while disconnected is exactly
   // what the durable draft-restore rows exist for (#5219) — re-pull them so
   // a mounted composer recovers the prompt without a remount.

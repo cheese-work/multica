@@ -6,7 +6,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
-import { chatKeys } from "../chat/queries";
+import { chatKeys, chatWakeupsOptions } from "../chat/queries";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
 import { notificationPreferenceKeys } from "../notification-preferences/queries";
@@ -72,6 +72,26 @@ function donePayload(overrides: Partial<ChatDonePayload> = {}): ChatDonePayload 
 }
 
 describe("applyChatDoneToCache", () => {
+  it("refetches a mounted wakeups list when the agent finishes a turn that scheduled one", async () => {
+    const listChatSessionWakeups = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listChatSessionWakeups } as unknown as ApiClient);
+    const qc = createQueryClient();
+    const observer = new QueryObserver(qc, chatWakeupsOptions(sessionId));
+    const unsubscribe = observer.subscribe(() => undefined);
+    try {
+      await observer.refetch();
+      const scheduled = { id: "w-new", agent_id: "a1", fire_at: "2026-10-30T00:00:00Z", instruction: "Follow up", status: "pending" };
+      listChatSessionWakeups.mockResolvedValue([scheduled]);
+
+      applyChatDoneToCache(qc, donePayload());
+
+      await vi.waitFor(() => expect(qc.getQueryData(chatKeys.wakeups(sessionId))).toEqual([scheduled]));
+    } finally {
+      unsubscribe();
+      setApiInstance(undefined as unknown as ApiClient);
+    }
+  });
+
   it("writes the assistant message before clearing pending task", () => {
     const qc = createQueryClient();
     qc.setQueryData<ChatMessage[]>(messagesKey, [userMessage()]);

@@ -92,4 +92,34 @@ describe("ScheduledWakeupsChip", () => {
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith(enChat.scheduled.cancel_failed));
     expect(screen.getByText("First")).toBeInTheDocument();
   });
+
+  it("shows a retry control when the list fails to load, then the chip once it loads", async () => {
+    mocks.list.mockRejectedValueOnce(new Error("schedule service unavailable"));
+    renderChip();
+
+    const retry = await screen.findByRole("button", { name: /couldn't load/i });
+    mocks.list.mockResolvedValue([wakeup("w1", "Check the deploy", "2026-10-29T08:00:00Z")]);
+    fireEvent.click(retry);
+
+    expect(await screen.findByRole("button", { name: /Scheduled 1/ })).toBeTruthy();
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the list when a background refetch fails", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.list.mockResolvedValue([wakeup("w1", "Check the deploy", "2026-10-29T08:00:00Z")]);
+    render(
+      <QueryClientProvider client={client}>
+        <I18nProvider locale="en" resources={{ en: { chat: enChat } }}>
+          <ScheduledWakeupsChip sessionId="s1" agentName="Sol" />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("button", { name: /Scheduled 1/ });
+
+    mocks.list.mockRejectedValue(new Error("blip"));
+    await client.invalidateQueries();
+
+    expect(screen.getByRole("button", { name: /Scheduled 1/ })).toBeTruthy();
+  });
 });

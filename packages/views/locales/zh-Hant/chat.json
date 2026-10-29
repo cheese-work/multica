@@ -282,7 +282,8 @@
     "title_unknown_agent": "已排程的跟進",
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的排程跟進",
-    "cancel_failed": "無法取消該跟進"
+    "cancel_failed": "無法取消該跟進",
+    "load_failed": "無法載入已排程的跟進。重試"
   },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",

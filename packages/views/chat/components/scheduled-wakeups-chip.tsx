@@ -25,8 +25,23 @@ export function ScheduledWakeupsChip({
   agentName?: string | null;
 }) {
   const { t } = useT("chat");
-  const { data: wakeups = [] } = useQuery(chatWakeupsOptions(sessionId));
+  const { data, isError, refetch } = useQuery(chatWakeupsOptions(sessionId));
   const cancel = useCancelChatWakeup();
+  // A failed first load is not "nothing scheduled": keep a way to retry.
+  if (!data && isError) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="shrink-0 gap-1.5 text-muted-foreground"
+        onClick={() => void refetch()}
+      >
+        <Clock className="h-3.5 w-3.5" />
+        {t(($) => $.scheduled.load_failed)}
+      </Button>
+    );
+  }
+  const wakeups = data ?? [];
   if (wakeups.length === 0) return null;
 
   return (
