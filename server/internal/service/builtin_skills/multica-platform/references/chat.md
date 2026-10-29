@@ -44,6 +44,22 @@ Sets the DM title and posts a message announcing the new title and who
 changed it, without reading the DM's contents. JSON carries `id`, `title`,
 `previous_title` and `message_id`.
 
+## Schedule a wakeup in this DM
+
+```bash
+multica chat wakeup create --after 25m --instruction "check the deploy and report" --output json
+multica chat wakeup create --at 2026-11-01T09:00:00+07:00 --instruction "..." --output json
+multica chat wakeup list --output json                  # pending wakeups of the current DM
+multica chat wakeup cancel <wakeup-id>
+```
+
+- Give exactly one of `--after <duration>` (`25m`, `2h`) or `--at <RFC3339>`.
+  `--instruction` is required: it is what the scheduled turn does when it fires.
+- The wakeup starts a new turn in this DM later; finish the current turn
+  instead of waiting for it.
+- These are DM wakeups. Issue wakeups use `multica issue wakeup`
+  (see [wakeups.md](wakeups.md)).
+
 ## DM lanes for decisions
 
 `multica chat sessions --issue <issue> --for <user-id>` lists the DM lanes a

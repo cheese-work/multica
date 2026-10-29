@@ -28,11 +28,11 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
 | `references/autopilots.md` | Autopilots: schedule / webhook / manual triggers, `create_issue` vs `run_only`, why one did not fire |
 | `references/projects.md` | Projects and their durable resources (`github_repo`, `local_directory`, worktree mode); project workflows — status columns, handoffs, a `[Project workflow]` block in your prompt |
-| `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes) |
+| `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes), per-issue run budget (`issue budget get/raise`) |
 | `references/decisions.md` | Asking a named person to decide: `decision request/get/list/withdraw`, DM lane choice |
-| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork), `chat rename` |
+| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork), `chat rename`, `chat wakeup` |
 | `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
-| `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export |
+| `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
 

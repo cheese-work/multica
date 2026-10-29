@@ -53,3 +53,18 @@ Always read the printed readback. A rejected steps array changes nothing.
 An instruction edit changes what every future run on every issue in the
 workflow is told, so it is a standing-instruction change: follow the
 workspace's own change process before running it.
+
+## Run budget
+
+```bash
+multica issue budget get <issue-id> --output json
+multica issue budget raise <issue-id> --runs <total> --output json
+```
+
+- `get` shows the runs used in the issue's budget window, the limit in force,
+  its state and what a suggested raise would leave.
+- `raise` sets this issue's own cap to `--runs` total runs. `--runs` must be
+  above the cap now in force (the workflow's, or an earlier raise). Other
+  issues on the workflow keep the workflow's cap.
+- `raise` is members only; the server rejects an agent. An agent that hit the
+  cap reports the blocker and asks a person; it never raises its own budget.

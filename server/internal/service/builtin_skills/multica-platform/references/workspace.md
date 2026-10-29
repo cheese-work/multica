@@ -100,3 +100,15 @@ human workspace owners and admins may run it: agent task tokens are rejected.
 Every scope flag is explicit: `--workspace` (exactly one) never falls back to
 `--workspace-id`, `MULTICA_WORKSPACE_ID` or the saved config. Each successful
 export writes an audit row.
+
+## GitHub kill switch
+
+```bash
+multica github kill-switch status                      # active halts, read-only
+multica github kill-switch on --scope owner/repo       # halt GitHub-triggered dispatch
+multica github kill-switch off --scope owner/repo      # resume it
+```
+
+- `--scope` is `*` (org-wide, the default), an owner, or `owner/repo`.
+- `on` and `off` change dispatch for the whole scope. Run them only when a
+  person asked for it.
