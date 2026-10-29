@@ -132,7 +132,7 @@ func (in PREventInput) dedupeKey() string {
 	switch in.Kind {
 	case PREventConflict:
 		return string(in.Kind) + "|" + in.HeadSHA + "|" + in.BaseSHA
-	case PREventDraft, PREventReady:
+	case PREventDraft, PREventReady, PREventClosed:
 		return string(in.Kind) + "|" + in.HeadSHA + "|" + strconv.FormatInt(in.ObservedAt.UnixNano(), 10)
 	default:
 		return string(in.Kind) + "|" + in.HeadSHA

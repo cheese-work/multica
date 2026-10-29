@@ -112,7 +112,7 @@ export function runBudget() {
   const current = api(`${prefix}/actions/runs/${runId}`)
   function jobs(run) {
     return pages(`${prefix}/actions/runs/${run.id}/jobs?filter=latest`, "jobs")
-      .filter((job) => job.name !== "warning-budget" && job.conclusion !== "skipped")
+      .filter((job) => !["warning-budget", "push-go-cache-warm", "push-turbo-cache-warm"].includes(job.name) && job.conclusion !== "skipped")
   }
   function collect(job) {
     if (job.status !== "completed") throw new Error(`Job ${job.name} has not completed`)
