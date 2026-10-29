@@ -22,6 +22,7 @@ import type {
   ChatPendingTask,
   ChatSession,
   ChatSessionUsage,
+  ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -2376,6 +2377,18 @@ export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
   continued_into_session_id: null,
   forked_from_session_id: null,
 };
+
+const ChatWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  fire_at: z.string(),
+  instruction: z.string().default(""),
+  status: z.string().default("pending"),
+}).loose();
+
+export const ChatWakeupsSchema = z.array(ChatWakeupSchema);
+
+export const EMPTY_CHAT_WAKEUPS: ChatWakeup[] = [];
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,

@@ -276,6 +276,14 @@
     "archive": "归档会话",
     "unarchive": "取消归档"
   },
+  "scheduled": {
+    "chip": "已计划 {{count}}",
+    "title": "{{name}} 的计划",
+    "title_unknown_agent": "已计划的跟进",
+    "cancel": "取消",
+    "cancel_label": "取消 {{time}} 的计划跟进",
+    "cancel_failed": "无法取消该跟进"
+  },
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",

@@ -276,6 +276,14 @@
     "archive": "채팅 보관",
     "unarchive": "채팅 보관 해제"
   },
+  "scheduled": {
+    "chip": "예약됨 {{count}}",
+    "title": "{{name}}이(가) 예약함",
+    "title_unknown_agent": "예약된 후속 작업",
+    "cancel": "취소",
+    "cancel_label": "{{time}}에 예약된 후속 작업 취소",
+    "cancel_failed": "후속 작업을 취소하지 못했습니다"
+  },
   "annotations": {
     "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",

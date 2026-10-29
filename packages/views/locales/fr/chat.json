@@ -281,6 +281,14 @@
     "unarchive": "Désarchiver la discussion",
     "delete": "Supprimer la discussion"
   },
+  "scheduled": {
+    "chip": "Planifié {{count}}",
+    "title": "Planifié par {{name}}",
+    "title_unknown_agent": "Relances planifiées",
+    "cancel": "Annuler",
+    "cancel_label": "Annuler la relance prévue à {{time}}",
+    "cancel_failed": "Impossible d'annuler la relance"
+  },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",

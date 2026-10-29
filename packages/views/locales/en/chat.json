@@ -281,6 +281,14 @@
     "unarchive": "Unarchive chat",
     "delete": "Delete chat"
   },
+  "scheduled": {
+    "chip": "Scheduled {{count}}",
+    "title": "Scheduled by {{name}}",
+    "title_unknown_agent": "Scheduled follow-ups",
+    "cancel": "Cancel",
+    "cancel_label": "Cancel scheduled follow-up at {{time}}",
+    "cancel_failed": "Couldn't cancel the follow-up"
+  },
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",

@@ -276,6 +276,14 @@
     "compact_now": "立即壓縮",
     "more_actions": "更多操作"
   },
+  "scheduled": {
+    "chip": "已排程 {{count}}",
+    "title": "{{name}} 的排程",
+    "title_unknown_agent": "已排程的跟進",
+    "cancel": "取消",
+    "cancel_label": "取消 {{time}} 的排程跟進",
+    "cancel_failed": "無法取消該跟進"
+  },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",
     "source_label": "{{name}} 的消息",

@@ -1232,6 +1232,22 @@ describe("chat quick-actions supplement flow", () => {
 });
 
 describe("applyChatMessageToCache", () => {
+  it("invalidates the DM's pending wakeups so a fired one leaves the chip", () => {
+    const qc = createQueryClient();
+    qc.setQueryData(chatKeys.wakeups(sessionId), [{ id: "w1" }]);
+
+    applyChatMessageToCache(qc, {
+      chat_session_id: sessionId,
+      message_id: "msg-sys",
+      role: "user",
+      content: "[Scheduled wakeup]",
+      task_id: taskId,
+      created_at: "2026-05-13T05:00:05Z",
+    });
+
+    expect(qc.getQueryState(chatKeys.wakeups(sessionId))?.isInvalidated).toBe(true);
+  });
+
   function messagePayload(
     overrides: Partial<ChatMessageEventPayload> = {},
   ): ChatMessageEventPayload {

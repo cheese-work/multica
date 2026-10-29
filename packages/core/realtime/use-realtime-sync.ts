@@ -223,6 +223,8 @@ export function applyChatMessageToCache(
   }
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+  // A scheduled wakeup fires as a system user message; it leaves the DM's list.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 export function applyChatDoneToCache(
