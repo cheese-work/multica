@@ -712,6 +712,14 @@ type DaemonConnection struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DaemonPause struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	DaemonID    string             `json:"daemon_id"`
+	Reason      string             `json:"reason"`
+	PausedBy    pgtype.UUID        `json:"paused_by"`
+	PausedAt    pgtype.Timestamptz `json:"paused_at"`
+}
+
 type DaemonToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	TokenHash   string             `json:"token_hash"`
