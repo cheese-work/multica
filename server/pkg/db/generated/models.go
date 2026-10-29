@@ -80,6 +80,21 @@ type AgentMcpServer struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type AgentPreset struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Name          string             `json:"name"`
+	Model         pgtype.Text        `json:"model"`
+	ThinkingLevel pgtype.Text        `json:"thinking_level"`
+	ServiceTier   pgtype.Text        `json:"service_tier"`
+	ContextArgs   []byte             `json:"context_args"`
+	IsDefault     bool               `json:"is_default"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AgentRuntime struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -187,6 +202,12 @@ type AgentTaskQueue struct {
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 	ClaimedModel              pgtype.Text        `json:"claimed_model"`
 	ChatCompactionEpoch       pgtype.Int8        `json:"chat_compaction_epoch"`
+	PresetName                pgtype.Text        `json:"preset_name"`
+	PresetSource              pgtype.Text        `json:"preset_source"`
+	PresetSkips               []byte             `json:"preset_skips"`
+	ClaimedThinkingLevel      pgtype.Text        `json:"claimed_thinking_level"`
+	ClaimedServiceTier        pgtype.Text        `json:"claimed_service_tier"`
+	ClaimedContextArgs        []byte             `json:"claimed_context_args"`
 	CancelAckedAt             pgtype.Timestamptz `json:"cancel_acked_at"`
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
@@ -590,6 +611,7 @@ type ChatSession struct {
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
 	TitleManuallySet       bool               `json:"title_manually_set"`
 	CompactionEpoch        int64              `json:"compaction_epoch"`
+	PresetName             pgtype.Text        `json:"preset_name"`
 }
 
 type ChatWakeup struct {
