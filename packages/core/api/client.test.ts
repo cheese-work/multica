@@ -257,13 +257,13 @@ describe("ApiClient pull-request response schema", () => {
     );
   }
 
-  it("parses the auto-complete decision and link source", async () => {
+  it.each(["title", "reference"])("parses the auto-complete decision and %s link source", async (linkSource) => {
     stubPullRequests({
-      pull_requests: [{ ...validPR, link_source: "title" }],
+      pull_requests: [{ ...validPR, link_source: linkSource }],
       auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true, target_status: "in_review" },
     });
     const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
-    expect(result.pull_requests[0]?.link_source).toBe("title");
+    expect(result.pull_requests[0]?.link_source).toBe(linkSource);
     expect(result.auto_complete).toEqual({
       state: "waiting",
       pull_request_ids: ["pr-1"],

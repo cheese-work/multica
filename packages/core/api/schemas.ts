@@ -416,7 +416,7 @@ export const GitHubPullRequestSchema = z.object({
   closed_at: z.string().nullable(),
   pr_created_at: z.string(),
   pr_updated_at: z.string(),
-  link_source: z.enum(["manual", "title", "branch", "auto"]).optional().catch(undefined),
+  link_source: z.enum(["manual", "title", "branch", "reference", "auto"]).optional().catch(undefined),
   mergeable: z.string().nullable().optional(),
   merge_state_status: z.string().nullable().optional(),
   snapshot_available: z.boolean().optional(),
