@@ -1516,6 +1516,7 @@
     "not_merged": "{{prs}} closed without merging",
     "not_merged_action": "Remove",
     "all_merged_to": "All PRs merged. The next merged PR moves this issue to {{status}}.",
+    "workflow_owned": "The workflow moves this issue when its PR merges",
     "issue_disabled": "PR merges won’t change this issue",
     "issue_disabled_action": "Turn on"
   },
