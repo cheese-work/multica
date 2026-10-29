@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "내 결정이 필요해요",
+    "loading": "미응답 요청을 불러오는 중…",
+    "error": "요청을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "empty": "미응답 요청이 없습니다."
+  },
   "page": {
     "interactive_login_required": "채팅을 사용하려면 다시 로그인하세요",
     "interactive_login_action": "로그인",
@@ -66,6 +73,10 @@
     "copied_count_other": "메시지 {{count}}개 복사됨",
     "fork_hint": "메시지를 보내 이 분기를 시작하세요.",
     "continuation_summary": "대화 요약",
+    "earlier_dm": "이전 대화",
+    "quote_message": "인용",
+    "speaker_you": "나",
+    "load_older_messages": "이전 메시지 더 보기",
     "show_details": "세부 정보 보기",
     "replied_in": "{{elapsed}} 만에 답변",
     "failed_after": "{{elapsed}} 후 실패",
@@ -273,6 +284,7 @@
     "unarchive": "채팅 보관 해제"
   },
   "annotations": {
+    "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
     "add": "댓글 추가",
     "confirm_add": "추가",
@@ -290,5 +302,26 @@
     "selection_failed": "선택한 텍스트를 가져오지 못했습니다. 같은 답변 안에서 텍스트를 다시 선택하세요.",
     "source_changed": "원문이 변경되었거나 사용할 수 없습니다. 저장한 인용문은 유지됩니다.",
     "removed": "댓글 {{number}}을(를) 삭제했습니다"
+  },
+  "decision": {
+    "request_title": "결정 요청",
+    "request_label": "결정 요청: {{state}}",
+    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨" },
+    "answer_options": "선택지",
+    "answer_text": "또는 답변 입력",
+    "answer_send": "보내기",
+    "answer_error": "보내지 못했습니다. 다시 시도하세요.",
+    "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
+    "answer_hint": "Enter로 보내기 · Shift+Enter로 줄바꿈",
+    "answer_offline": "오프라인입니다. 답변은 유지됩니다. 다시 연결되면 보내기가 켜집니다.",
+    "answer_conflict": "이 카드는 더 이상 답변을 받을 수 없습니다(예: 먼저 답변이 있었던 경우). 초안은 게시되지 않았습니다. 초안:",
+    "answer_discard": "초안 삭제",
+    "source_comment": "원본 댓글",
+    "quoted_in": "{{issue}}에 인용됨",
+    "withdrawn_in": "{{issue}}에서 철회됨",
+    "recorded_on": "{{issue}}에 기록됨",
+    "from_original_dm": "원본 DM에서",
+    "inherited": "상속됨",
+    "message_unavailable": "더 이상 사용할 수 없는 메시지입니다"
   }
 }

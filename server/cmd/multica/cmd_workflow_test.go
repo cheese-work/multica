@@ -227,3 +227,71 @@ func TestWorkflowUpdateRejectsNonArrayFile(t *testing.T) {
 		t.Fatal("want error for non-array steps file")
 	}
 }
+
+func newWorkflowRulesCmd() *cobra.Command {
+	cmd := newWorkflowTestCmd("steps-file")
+	cmd.Flags().Int("max-runs-per-issue", 0, "")
+	cmd.Flags().Bool("include-child-prs", true, "")
+	return cmd
+}
+
+func TestWorkflowUpdateSendsOnlyTheRuleFlagsGiven(t *testing.T) {
+	var patched map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		patched = nil
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		_ = json.NewEncoder(w).Encode(workflowFixture())
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newWorkflowRulesCmd()
+	_ = cmd.Flags().Set("max-runs-per-issue", "5")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("rule flag alone: %v", err)
+	}
+	if !reflect.DeepEqual(patched, map[string]any{"max_runs_per_issue": float64(5)}) {
+		t.Fatalf("sent %v, want only max_runs_per_issue=5", patched)
+	}
+
+	cmd = newWorkflowRulesCmd()
+	_ = cmd.Flags().Set("include-child-prs", "false")
+	_ = cmd.Flags().Set("steps-file", writeTemp(t, `[{"status_key":"todo"}]`))
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("steps and rule: %v", err)
+	}
+	if patched["include_child_prs"] != false || patched["steps"] == nil || patched["max_runs_per_issue"] != nil {
+		t.Fatalf("sent %v, want steps and include_child_prs=false only", patched)
+	}
+
+	cmd = newWorkflowRulesCmd()
+	_ = cmd.Flags().Set("max-runs-per-issue", "0")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if v, ok := patched["max_runs_per_issue"]; !ok || v != float64(0) {
+		t.Fatalf("sent %v, want max_runs_per_issue=0 to clear the cap", patched)
+	}
+
+	if err := runWorkflowUpdate(newWorkflowRulesCmd(), []string{testWorkflowID}); err == nil {
+		t.Fatal("want error when neither --steps-file nor a rule flag is given")
+	}
+}
+
+func TestWorkflowTablePrintsRunRules(t *testing.T) {
+	fixture := workflowFixture()
+	fixture["max_runs_per_issue"] = float64(7)
+	fixture["include_child_prs"] = false
+	out, _ := captureStdout(t, func() error { printWorkflowTable(fixture); return nil })
+	for _, want := range []string{"max runs per issue: 7", "include child PRs: false"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table missing %q:\n%s", want, out)
+		}
+	}
+	delete(fixture, "max_runs_per_issue")
+	fixture["include_child_prs"] = true
+	out, _ = captureStdout(t, func() error { printWorkflowTable(fixture); return nil })
+	if !strings.Contains(out, "max runs per issue: 15 (default)") {
+		t.Fatalf("table missing the default cap:\n%s", out)
+	}
+}

@@ -644,3 +644,63 @@ func TestGetChatHistory_NonChatTask(t *testing.T) {
 		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 	}
 }
+
+// A web DM has no thread reader, so `chat thread` serves the stored transcript
+// instead of a dead-end note, and the transcript names each non-ordinary row's
+// kind so a decision request is recognizable.
+func TestGetChatThread_WebDMServesTranscriptWithMessageKind(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("requires test database")
+	}
+	for name, reader := range map[string]ChatChannelHistoryReader{"nil reader": nil, "no slack binding": &fakeChatHistoryReader{err: slack.ErrNoSlackSession}} {
+		t.Run(name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "ChatThreadWebDMAgent", []byte("[]"))
+			sessionID := createHandlerTestChatSession(t, agentID)
+			taskID := newChatHistoryTaskForSession(t, sessionID)
+			withSlackHistory(t, reader)
+			base := time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC)
+			insertChatMessageRole(t, sessionID, "assistant", "Waive the gate?", "decision_request", false, base)
+			insertChatVisibilityMessage(t, sessionID, "waive it", "message", false, base.Add(time.Second))
+
+			w := httptest.NewRecorder()
+			testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var resp ChatChannelHistoryResponse
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp.Note != "" || len(resp.Messages) != 2 || resp.Messages[0].Text != "Waive the gate?" || resp.Messages[0].MessageKind != "decision_request" || resp.Messages[1].MessageKind != "" {
+				t.Fatalf("web DM thread did not serve the transcript with kinds: %+v", resp)
+			}
+		})
+	}
+}
+
+// `chat thread` with no id on a web DM returned only a "no channel integration"
+// note while `chat history` held the DM's messages and ids (CHE-1958). With no
+// id it now reads the same transcript.
+func TestGetChatThread_NoIDServesWebDMTranscript(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("requires test database")
+	}
+	for name, reader := range map[string]ChatChannelHistoryReader{"nil reader": nil, "slack reader, web session": &fakeChatHistoryReader{err: slack.ErrNoSlackSession}} {
+		t.Run(name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "ChatThreadWebDMAgent", []byte("[]"))
+			sessionID := createHandlerTestChatSession(t, agentID)
+			taskID := newChatHistoryTaskForSession(t, sessionID)
+			withSlackHistory(t, reader)
+			base := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+			insertChatMessageRole(t, sessionID, "assistant", "1) Ship 2) Hold", "message", true, base)
+
+			w := httptest.NewRecorder()
+			testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
+
+			var resp ChatChannelHistoryResponse
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if w.Code != http.StatusOK || resp.Note != "" || len(resp.Messages) != 1 || resp.Messages[0].ID == "" {
+				t.Fatalf("thread without id did not serve the DM transcript: %d %+v", w.Code, resp)
+			}
+		})
+	}
+}

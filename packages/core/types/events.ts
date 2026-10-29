@@ -15,6 +15,7 @@ export type WSEventType =
   | "issue_attachments:changed"
   | "issue:deleted"
   | "comment:created"
+  | "decision_answer:updated"
   | "comment:updated"
   | "comment:deleted"
   | "comment:resolved"
@@ -169,6 +170,8 @@ export interface PropertyChangedPayload {
  */
 export interface IssueStatusChangedPayload {
   action?: "created" | "updated" | "archived" | "reordered";
+  /** True when the write moved a status to another category, which stales issue-row projections. */
+  category_changed?: boolean;
 }
 
 export interface IssueWorkflowChangedPayload {
@@ -249,6 +252,13 @@ export interface CommentResolvedPayload {
 
 export interface CommentUnresolvedPayload {
   comment: Comment;
+}
+
+/** A decision card changed state; clients refetch the affected cards. */
+export interface DecisionAnswerUpdatedPayload {
+  answer_id: string;
+  issue_id: string;
+  state: import("./decision").DecisionState;
 }
 
 export interface WorkspaceUpdatedPayload {
@@ -423,6 +433,7 @@ export interface ChatMessageEventPayload {
   content: string;
   task_id?: string;
   created_at: string;
+  message_kind?: import("./chat").ChatMessageKind;
 }
 
 export interface ChatDonePayload {
@@ -587,6 +598,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "comment:created": CommentCreatedPayload;
+  "decision_answer:updated": DecisionAnswerUpdatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;
   "comment:resolved": CommentResolvedPayload;

@@ -448,6 +448,36 @@ type TaskSupplement struct {
 	Content    string `json:"content"`
 }
 
+// TaskPREvent is a typed PR-event notice for a live run: structured fields
+// only, never PR text or a member author.
+type TaskPREvent struct {
+	EventID    string `json:"event_id"`
+	Kind       string `json:"kind"`
+	PRNumber   int32  `json:"pr_number"`
+	HeadSHA    string `json:"head_sha"`
+	OldHeadSHA string `json:"old_head_sha"`
+	BaseSHA    string `json:"base_sha"`
+	CheckName  string `json:"check_name"`
+}
+
+func (c *Client) ClaimTaskPREvent(ctx context.Context, taskID string) (*TaskPREvent, error) {
+	var event TaskPREvent
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/pr-events/claim", taskID), map[string]any{}, &event); err != nil {
+		return nil, err
+	}
+	if event.EventID == "" {
+		return nil, nil
+	}
+	return &event, nil
+}
+
+func (c *Client) AckTaskPREvent(ctx context.Context, taskID, eventID string, delivered bool, errText string) error {
+	return c.postJSONWithRetry(ctx,
+		fmt.Sprintf("/api/daemon/tasks/%s/pr-events/%s/ack", taskID, eventID),
+		map[string]any{"delivered": delivered, "error": errText}, nil,
+		[]time.Duration{0, 100 * time.Millisecond, 300 * time.Millisecond})
+}
+
 func (c *Client) ClaimTaskSupplement(ctx context.Context, taskID string) (*TaskSupplement, error) {
 	var supplement TaskSupplement
 	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/supplements/claim", taskID), map[string]any{}, &supplement); err != nil {
@@ -482,8 +512,15 @@ const (
 
 var errStartClaimRejected = errors.New("task start claim rejected")
 
-func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (bool, error) {
-	var negotiated bool
+// TaskNegotiation is what the server committed for one run, read from the
+// start response rather than from the daemon's own offer.
+type TaskNegotiation struct {
+	Supplement bool
+	PREvent    bool
+}
+
+func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
+	var negotiated TaskNegotiation
 	var decodeResponse responseDecoder = func(r io.Reader) error {
 		data, err := io.ReadAll(io.LimitReader(r, maxStartTaskResponseBytes+1))
 		if err != nil {
@@ -494,6 +531,7 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		}
 		var response struct {
 			SupplementCapability string `json:"supplement_capability"`
+			PREventCapability    string `json:"pr_event_capability"`
 		}
 		// Empty acknowledgements start the task without negotiating supplements.
 		// Invalid JSON fails without retrying; transport read failures can retry.
@@ -502,17 +540,23 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 				return fmt.Errorf("%w: task start: %w", errInvalidResponseBody, err)
 			}
 		}
-		negotiated = response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1
+		negotiated = TaskNegotiation{
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
+			PREvent:    response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+		}
 		return nil
 	}
 	path := fmt.Sprintf("/api/daemon/tasks/%s/start", task.ID)
 	if !task.StartClaimSupported {
 		// Old servers have no safe replay contract. Preserve one attempt.
 		err := c.postJSON(ctx, path, map[string]any{"capabilities": capabilities}, decodeResponse)
-		return err == nil && negotiated, err
+		if err != nil {
+			return TaskNegotiation{}, err
+		}
+		return negotiated, nil
 	}
 	if task.RuntimeID == "" || task.DispatchedAt == "" {
-		return false, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
+		return TaskNegotiation{}, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
 	}
 	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
 	defer cancel()
@@ -523,9 +567,12 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 	}, decodeResponse, startTaskRetrySchedule)
 	var reqErr *requestError
 	if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusConflict {
-		return false, fmt.Errorf("%w: %w", errStartClaimRejected, err)
+		return TaskNegotiation{}, fmt.Errorf("%w: %w", errStartClaimRejected, err)
 	}
-	return err == nil && negotiated, err
+	if err != nil {
+		return TaskNegotiation{}, err
+	}
+	return negotiated, nil
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
@@ -545,6 +592,11 @@ func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reas
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
+	// CancelAckProof is the claim-time proof the server checks before it
+	// treats this ack as confirmation that the runner stopped.
+	CancelAckProof string
+	// Nil is an older daemon with no explicit cleanup acknowledgement.
+	ProcessCleanupConfirmed *bool
 	// BranchName: a cancelled worktree task has already finalized — its
 	// partial work is committed to a branch in the user's repo. The cancel
 	// path discards the rest of the result, so this ack is the only channel
@@ -560,6 +612,10 @@ type TaskCancelAck struct {
 	// swallow it entirely.
 	ErrorMessage  string
 	FailureReason string
+	// RetiredSessionID: a resumed session this run produced no output on
+	// before the cancel landed, or one a fresh-session retry abandoned. The
+	// server retires it so later triggers start fresh (MUL-8188).
+	RetiredSessionID string
 }
 
 // AckTaskCancelled tells the server this daemon observed the task's
@@ -574,6 +630,12 @@ type TaskCancelAck struct {
 // The server never overwrites already-recorded values, so replays are safe.
 func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCancelAck) error {
 	body := map[string]any{}
+	if ack.CancelAckProof != "" {
+		body["cancel_ack_proof"] = ack.CancelAckProof
+	}
+	if ack.ProcessCleanupConfirmed != nil {
+		body["process_cleanup_confirmed"] = *ack.ProcessCleanupConfirmed
+	}
 	if ack.BranchName != "" {
 		body["branch_name"] = ack.BranchName
 	}
@@ -585,6 +647,9 @@ func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCa
 	}
 	if ack.FailureReason != "" {
 		body["failure_reason"] = ack.FailureReason
+	}
+	if ack.RetiredSessionID != "" {
+		body["retired_session_id"] = ack.RetiredSessionID
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/cancel-ack", taskID), body, nil, defaultTerminalRetrySchedule)
 }

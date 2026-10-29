@@ -149,6 +149,16 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
+	// Turns still queued in the source DM are answered in the new one.
+	if err == nil {
+		var movedTaskIDs []pgtype.UUID
+		movedTaskIDs, err = qtx.MoveUnstartedChatTasksToSession(r.Context(), db.MoveUnstartedChatTasksToSessionParams{FromSessionID: session.ID, ToSessionID: next.ID})
+		if err == nil && len(movedTaskIDs) > 0 {
+			err = qtx.MoveChatMessagesOfTasksToSession(r.Context(), db.MoveChatMessagesOfTasksToSessionParams{
+				FromSessionID: session.ID, ToSessionID: next.ID, TaskIds: movedTaskIDs, SummaryCreatedAt: summary.CreatedAt,
+			})
+		}
+	}
 	// An agent rollover archives the DM the run was replying in, so that reply
 	// cannot notify. The summary is the agent's message: notify in the new DM.
 	// A continue the DM creator submitted stays silent.

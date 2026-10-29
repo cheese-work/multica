@@ -695,6 +695,9 @@ func main() {
 		LLMMaxRetries:       llmMaxRetries,
 		LLMDisableThinking:  llmDisableThinking,
 	})
+	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
+	// stops writing it as well as sending the snapshot.
+	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -749,6 +752,7 @@ func main() {
 	// Queued work now expires on the same runtime-liveness signal as in-flight
 	// work, so there is no separate queue TTL to tune: a busy runtime keeps its
 	// backlog, and a departed one retires everything it owned at once.
+	go h.RunQoderConnections(sweepCtx, pool, "http://localhost:"+port)
 	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace)
 	if telemetryWorker != nil {
 		go telemetryWorker.Run(sweepCtx)
@@ -785,6 +789,14 @@ func main() {
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)
+	go h.RunGitHubIntakeWorker(sweepCtx)
+	// CHE-2301: relink same-repository PRs the old fork-flag check rejected.
+	go func() {
+		if _, err := h.RepairUnverifiedHeadPullRequests(sweepCtx); err != nil {
+			slog.Warn("github repair: unverified head sweep incomplete", "error", err)
+		}
+	}()
+	go h.RunGitHubIntakeReconciler(sweepCtx)
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
 	// installation and drives each channel.Channel. It is channel-agnostic,
@@ -839,6 +851,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register chat wakeups", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
@@ -858,6 +873,11 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
+	}
+	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
+	// condition is a 30-day cache; drop rows with no event for that long.
+	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
+		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)

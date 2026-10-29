@@ -71,7 +71,14 @@ func TestCommentSearchIndexStrategyChoosesOneUsableIndexPerEnvironment(t *testin
 				}
 			})
 
-			pool := openTestPoolWithSearchPath(t, schema+", public")
+			ambientSchema := createScratchSchema(t, ctx, adminPool, "migrate_comment_search_ambient_")
+			ambientPool := openTestPoolWithSearchPath(t, ambientSchema+", public")
+			if _, err := ambientPool.Exec(ctx, `CREATE TABLE comment (content TEXT NOT NULL);
+				CREATE INDEX idx_comment_content_trgm ON comment (content)`); err != nil {
+				t.Fatalf("create ambient index: %v", err)
+			}
+			pool := openTestPoolWithSearchPath(t, schema+", "+ambientSchema+", public")
+			dropPool := openTestPoolWithSearchPath(t, schema)
 			if _, err := pool.Exec(ctx, `CREATE TABLE comment (
 				id BIGSERIAL PRIMARY KEY,
 				content TEXT NOT NULL
@@ -103,18 +110,25 @@ func TestCommentSearchIndexStrategyChoosesOneUsableIndexPerEnvironment(t *testin
 				"371_comment_content_search_index_strategy": whenIndexUsable(requirement),
 			}
 			migrationsTable := schema + ".schema_migrations"
-			if err := runMigrations(ctx, pool, runOptions{
-				Direction:             "up",
-				Files:                 realMigrationFiles(t, tt.versions, "up"),
-				SchemaMigrationsTable: migrationsTable,
-				AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
-				Hooks:                 hooksForDirection("up"),
-				Conditions:            conditions,
-			}); err != nil {
-				t.Fatalf("apply search index strategy: %v", err)
+			for _, version := range tt.versions {
+				migrationPool := pool
+				if version == "371_comment_content_search_index_strategy" {
+					migrationPool = dropPool
+				}
+				if err := runMigrations(ctx, migrationPool, runOptions{
+					Direction:             "up",
+					Files:                 realMigrationFiles(t, []string{version}, "up"),
+					SchemaMigrationsTable: migrationsTable,
+					AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+					Hooks:                 hooksForDirection("up"),
+					Conditions:            conditions,
+				}); err != nil {
+					t.Fatalf("apply search index strategy: %v", err)
+				}
 			}
 
 			assertIndexExists(t, pool, schema, "idx_comment_content_trgm", tt.wantFallbackAfter)
+			assertIndexExists(t, adminPool, ambientSchema, "idx_comment_content_trgm", true)
 			if tt.createPreferred != "" {
 				assertIndexExists(t, pool, schema, "idx_comment_content_bigm", true)
 			}

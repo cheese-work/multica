@@ -235,7 +235,6 @@ describe("board drop over a column the workflow omits", () => {
             <BoardView
               issues={[issue]}
               visibleStatuses={["todo", "in_progress", "in_review"]}
-              hiddenStatuses={[]}
               onMoveIssue={onMoveIssue}
             />
           </IssueContextMenuProvider>

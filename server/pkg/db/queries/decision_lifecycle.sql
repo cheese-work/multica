@@ -2,10 +2,14 @@
 SELECT request.* FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.status IN ('open', 'answered') AND (
     issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
-    OR agent.archived_at IS NOT NULL
+    OR (agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL))
     OR NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id)
+    OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours')
 )
 ORDER BY request.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
@@ -14,12 +18,16 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 SELECT CASE
     WHEN issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved') THEN 'issue_closed'
     WHEN NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id) THEN 'human_removed'
-    WHEN agent.archived_at IS NOT NULL THEN 'agent_archived'
+    WHEN agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL) THEN 'agent_archived'
+    WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' THEN 'expired'
     ELSE ''
 END::text AS reason
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id');
 
 -- name: CancelDecisionLifecycleRequest :one

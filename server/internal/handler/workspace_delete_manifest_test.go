@@ -37,6 +37,7 @@ const (
 // teardown. Adding a table requires an explicit ownership decision here; the
 // handler deletion graph must then implement that decision before CI passes.
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+	"cloud_agent_connection":             workspaceDelete,
 	"activity_log":                       workspaceDelete,
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
@@ -71,14 +72,19 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
+	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
 	"decision_answer":                    workspaceDeleteWorker,
+	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,
+	"decision_expiry_digest":             workspaceDelete, // workspace_id FK ON DELETE CASCADE removes the day digests with the workspace.
+	"decision_expiry_digest_request":     workspaceDelete, // cascades from its digest and from decision_request (worker orphan cleanup).
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
@@ -87,12 +93,19 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
+	"github_dispatch_halt":               workspaceDelete,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
+	"github_route_grant":                 workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
+	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
+	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
+	"github_webhook_intake":              workspaceDeleteKeep,
+	"github_webhook_dispatch":            workspaceDelete,
+	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
 	"run_gate_event":                     workspaceDelete, // CHE-1918 run-gate shadow ledger; workspace-owned leaf.
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
@@ -129,6 +142,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
 	"issue_pull_request_exclusion":       workspaceDelete,
+	"issue_pr_event":                     workspaceDelete, // CHE-2298 a1 PR event store; no FKs, swept by DeleteWorkspace.
+	"issue_review_admission":             workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -146,6 +161,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"lark_user_binding":                  workspaceDelete,
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
+	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
 	"agent_mcp_server":                   workspaceDelete,
 	"wakeup_aggregate_budget":            workspaceDelete,
 	"wakeup_aggregate_reservation":       workspaceDelete,
@@ -168,6 +184,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
+	"run_budget_notice":                  workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -184,6 +201,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"task_message":                       workspaceDelete,
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
+	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
+	"task_pr_event_delivery":             workspaceDelete, // CHE-2298 a2
 	"task_token":                         workspaceDelete,
 	"task_usage":                         workspaceDelete,
 	"task_usage_hourly":                  workspaceDelete,
@@ -285,7 +304,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_answer", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}

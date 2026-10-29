@@ -1,0 +1,6 @@
+handles true true
+{"before":6,"after":7,"list":["Todo to In Progress when agent_done","Todo to Done when agent_done","In Progress to In Review when pr.ready (72h)","In Progress to Blocked when pr.checks_red (72h)","In Review to Done when pr.merged (72h)","In Review to In Progress when agent_verdict(CHANGES)","Blocked to In Progress when agent_done"],"errs":[]}
+node moved dy 92
+save enabled true
+toast [ 'Workflow saved' ]
+saves 1 {"status_key":"todo","edges":[{"to":"in_progress","guard":"agent_done"},{"to":"done","guard":"agent_done"}]}

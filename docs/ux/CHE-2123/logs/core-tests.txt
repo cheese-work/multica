@@ -1,0 +1,12 @@
+
+> @multica/core@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/core
+> vitest run paths/media.test.ts
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/core
+
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  17:49:18
+   Duration  330ms (transform 73ms, setup 0ms, import 98ms, tests 9ms, environment 0ms)

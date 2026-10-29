@@ -546,7 +546,7 @@ describe("workflow editor draft preservation during a save", () => {
 
     expect(screen.getByDisplayValue("Delivery v3")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(saveButton().disabled).toBe(false);
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
 
     apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
     await startSave();
@@ -662,4 +662,3 @@ describe("workflow editor conflict with the mapping dialog open", () => {
     expect(apiMock.updateIssueWorkflow.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-01-b" });
   });
 });
-

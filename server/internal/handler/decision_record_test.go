@@ -73,16 +73,23 @@ func TestAskedDecisionRecordRoundTrip(test *testing.T) {
 	if result.Message.MessageKind != "decision_reference" || result.Message.ChatSessionID != fixture.decision.ChatSessionID {
 		test.Fatalf("missing DM reference: %+v", result.Message)
 	}
-	_, err = testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
-	var refusal decisionIntentRefusal
-	if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
-		test.Fatalf("second answer was not refused: %v", err)
+	workspace, err := testHandler.Queries.GetWorkspace(context.Background(), fixture.issue.WorkspaceID)
+	if err != nil {
+		test.Fatal(err)
+	}
+	wantIssueLink := "/" + workspace.Slug + "/issues/" + uuidToString(fixture.issue.ID)
+	if !strings.Contains(result.Message.Content, "Open issue: "+wantIssueLink) {
+		test.Fatalf("decision note has wrong issue link: %s", result.Message.Content)
+	}
+	replay, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil || !replay.Replayed || replay.Answer.ID != result.Answer.ID || replay.Comment.ID != result.Comment.ID {
+		test.Fatalf("identical retry did not return the original answer: %+v %v", replay, err)
 	}
 	fixture.assertRecordCounts(test, 1)
 }
 
 func TestAskedDecisionRecordRefusals(test *testing.T) {
-	for _, mutation := range []string{"pat", "jwt", "issue_task", "task_completed", "task_failed", "task_cancelled", "wrong_agent", "archived_lane", "channel_lane", "intro_lane", "answered", "cancelled", "unprompted", "ambiguous_parent", "deleted_parent", "wrong_parent_issue", "wrong_human", "wrong_request_lane", "assistant_source", "task_token_source", "pat_source", "cli_source", "channel_source", "kickoff_source", "missing_source", "other_session_source", "before_ping", "after_start", "no_messages", "duplicate_messages"} {
+	for _, mutation := range []string{"pat", "jwt", "other_issue_task", "task_completed", "task_failed", "task_cancelled", "wrong_agent", "archived_lane", "channel_lane", "intro_lane", "answered", "cancelled", "unprompted", "ambiguous_parent", "deleted_parent", "wrong_parent_issue", "wrong_human", "wrong_request_lane", "assistant_source", "task_token_source", "pat_source", "cli_source", "channel_source", "kickoff_source", "missing_source", "other_session_source", "before_ping", "after_start", "no_messages", "duplicate_messages"} {
 		test.Run(mutation, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			request, input := fixture.recordRequest(), fixture.recordInput()
@@ -90,8 +97,9 @@ func TestAskedDecisionRecordRefusals(test *testing.T) {
 			switch mutation {
 			case "pat", "jwt":
 				request.Header.Set("X-Actor-Source", mutation)
-			case "issue_task":
+			case "other_issue_task":
 				request.Header.Set("X-Task-ID", fixture.taskID)
+				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "Other task issue"), fixture.taskID)
 			case "task_completed", "task_failed", "task_cancelled":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = $1 WHERE id = $2`, strings.TrimPrefix(mutation, "task_"), fixture.chatTaskID)
 			case "wrong_agent":

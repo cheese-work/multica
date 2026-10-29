@@ -105,6 +105,9 @@ func allowAllAgents(db.Agent) bool { return true }
 //     instead of a swallowed error.
 func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput, probe IssueTriggerProbe) (IssueRunTrigger, bool) {
 	issue := in.Issue
+	if err := RequireActiveProject(ctx, s.Queries, issue.WorkspaceID, issue.ProjectID); err != nil {
+		return IssueRunTrigger{}, false
+	}
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return IssueRunTrigger{}, false
 	}

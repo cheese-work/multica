@@ -2,10 +2,15 @@ package handler
 
 import (
 	"context"
-	"github.com/multica-ai/multica/server/internal/testutil"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type cancelMessages struct{ comments, dms []string }
@@ -20,7 +25,7 @@ func readCancelMessages(test *testing.T, issueID, sessionID string, dmsBefore in
 		arg  string
 	}{
 		{`SELECT content FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'cancel' ORDER BY created_at, id`, &messages.comments, issueID},
-		{`SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference' ORDER BY created_at, id OFFSET ` + strconv.Itoa(dmsBefore), &messages.dms, sessionID},
+		{`SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind IN ('decision_reference', 'decision_cancel_notice') ORDER BY created_at, id OFFSET ` + strconv.Itoa(dmsBefore), &messages.dms, sessionID},
 	} {
 		rows, err := testPool.Query(context.Background(), query.sql, query.arg)
 		if err != nil {
@@ -41,7 +46,7 @@ func readCancelMessages(test *testing.T, issueID, sessionID string, dmsBefore in
 // closeAndCancel closes the issue, runs the worker and returns the DM notes that existed before.
 func closeAndCancel(test *testing.T, fixture requestCoreFixture) int {
 	test.Helper()
-	before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_reference'`, fixture.sessionID)
+	before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind IN ('decision_reference', 'decision_cancel_notice')`, fixture.sessionID)
 	resetDecisionLease(test)
 	issueID := fixture.issueID
 	dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, issueID)
@@ -117,15 +122,74 @@ func TestDecisionCancelMessageTruncatesAsk(test *testing.T) {
 
 func TestDecisionCancelMessageAnsweredRequest(test *testing.T) {
 	fixture, _ := readyDecisionDelivery(test)
-	before := closeAndCancel(test, fixture.requestCoreFixture)
-	messages := readCancelMessages(test, fixture.issueID, fixture.sessionID, before)
-	if len(messages.comments) != 1 || len(messages.dms) != 1 {
-		test.Fatalf("comments=%d dms=%d, want 1 and 1", len(messages.comments), len(messages.dms))
-	}
-	for _, content := range []string{messages.comments[0], messages.dms[0]} {
-		if !strings.Contains(content, "answer was recorded") || strings.Contains(content, "cancelled") {
-			test.Fatalf("answered request must say the answer was recorded, not cancelled:\n%s", content)
+	before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID)
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = $1 WHERE id = $2`, time.Now().Add(-time.Hour), fixture.sessionID)
+	var updatedBefore time.Time
+	dbfx.QueryRow(test, `SELECT updated_at FROM chat_session WHERE id = $1`, fixture.sessionID).Scan(&updatedBefore)
+	handler, _ := newDecisionRunnerFixture(test)
+	var chatEvents int
+	handler.Bus.Subscribe(protocol.EventChatMessage, func(event events.Event) {
+		if event.ActorID == fixture.agentID {
+			chatEvents++
 		}
+	})
+	dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, fixture.issueID)
+	for range 2 {
+		if err := cancelDecisionForTest(handler, fixture); err != nil {
+			test.Fatal(err)
+		}
+	}
+	messages := readCancelMessages(test, fixture.issueID, fixture.sessionID, 0)
+	if len(messages.comments) != 1 {
+		test.Fatalf("comments=%d, want 1", len(messages.comments))
+	}
+	if content := messages.comments[0]; !strings.Contains(content, "answer was recorded") || strings.Contains(content, "cancelled") {
+		test.Errorf("answered request must say the answer was recorded, not cancelled:\n%s", content)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID); after != before {
+		test.Errorf("chat messages=%d, want unchanged count %d", after, before)
+	}
+	var updatedAfter time.Time
+	dbfx.QueryRow(test, `SELECT updated_at FROM chat_session WHERE id = $1`, fixture.sessionID).Scan(&updatedAfter)
+	if !updatedAfter.Equal(updatedBefore) {
+		test.Error("answered request close touched the chat session")
+	}
+	if chatEvents != 0 {
+		test.Errorf("chat events=%d, want 0", chatEvents)
+	}
+}
+
+func TestDecisionCancelMessageMixedRequests(test *testing.T) {
+	for _, first := range []string{"answered", "open"} {
+		test.Run(first+"_first", func(test *testing.T) {
+			fixture, _ := readyDecisionDelivery(test)
+			addOpenRequest(test, fixture.requestCoreFixture, "spend")
+			before := dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind IN ('decision_reference', 'decision_cancel_notice')`, fixture.sessionID)
+			dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, fixture.issueID)
+			dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details) VALUES ($1, $2, 'system', 'status_changed', '{"from":"in_progress","to":"done"}')`, testWorkspaceID, fixture.issueID)
+			requests, err := testHandler.Queries.ListDecisionCancelSiblings(context.Background(), db.ListDecisionCancelSiblingsParams{WorkspaceID: fixture.issue.WorkspaceID, IssueID: fixture.issue.ID, ChatSessionID: parseUUID(fixture.sessionID)})
+			if err != nil {
+				test.Fatal(err)
+			}
+			if len(requests) != 2 {
+				test.Fatalf("requests=%d, want 2", len(requests))
+			}
+			if requests[0].Status != first {
+				requests[0], requests[1] = requests[1], requests[0]
+			}
+			for _, request := range requests {
+				if _, err := testHandler.CancelDecisionLifecycle(context.Background(), fixture.issue.WorkspaceID, request.ID); err != nil {
+					test.Fatal(err)
+				}
+			}
+			messages := readCancelMessages(test, fixture.issueID, fixture.sessionID, before)
+			if len(messages.comments) != 2 || len(messages.dms) != 1 {
+				test.Fatalf("comments=%d dms=%d, want 2 and 1", len(messages.comments), len(messages.dms))
+			}
+			if content := messages.dms[0]; strings.Count(content, "\n- ") != 1 || !strings.Contains(content, "Extra ask for spend") || strings.Contains(content, "answer was recorded") {
+				test.Errorf("close DM must list only the open request:\n%s", content)
+			}
+		})
 	}
 }
 

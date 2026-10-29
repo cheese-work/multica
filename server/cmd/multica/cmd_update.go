@@ -32,6 +32,10 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("download timeout must be greater than zero")
 	}
 
+	if err := cli.CheckUpdateFreeze(); err != nil {
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "Current version: %s (commit: %s, built: %s)\n", version, commit, date)
 
 	// Linux/macOS update from the configured Multica server only; there is no

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,18 +21,25 @@ import (
 )
 
 type decisionRecordInput struct {
-	ParentID        pgtype.UUID
-	MessageIDs      []pgtype.UUID
-	Content         string
-	EscalationClass string
+	ParentID   pgtype.UUID
+	MessageIDs []pgtype.UUID
+	// ContextMessageID is an earlier assistant message of the same DM, quoted
+	// as the options the human's reply chose between.
+	ContextMessageID pgtype.UUID
+	Content          string
+	EscalationClass  string
+	SourceCommentID  pgtype.UUID
 }
 
 type decisionRecordResult struct {
-	Request         db.DecisionRequest
-	Answer          db.DecisionAnswer
-	Comment         db.Comment
-	Message         db.ChatMessage
+	Request db.DecisionRequest
+	Answer  db.DecisionAnswer
+	Comment db.Comment
+	Message db.ChatMessage
+	// AnswerMessage is the task-less user row a card answer writes.
+	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
+	Replayed        bool
 }
 
 func (handler *Handler) createAskedDecisionRecord(request *http.Request, issue db.Issue, input decisionRecordInput) (decisionRecordResult, error) {
@@ -99,7 +107,7 @@ func locateDecisionRecordContext(ctx context.Context, queries *db.Queries, issue
 func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue db.Issue, input decisionRecordInput) (decisionRecordResult, error) {
 	ctx := request.Context()
 	empty := decisionRecordResult{}
-	deny := decisionIntentRefusal{http.StatusForbidden, "decision record requires this DM's running chat task"}
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision record requires a running chat task or an assigned task on this issue"}
 	if request.Header.Get("X-Actor-Source") != "task_token" {
 		return empty, deny
 	}
@@ -112,7 +120,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		return empty, deny
 	}
 	task, err := handler.Queries.GetAgentTask(ctx, taskID)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && (task.AgentID != agentID || !task.ChatSessionID.Valid || task.IssueID.Valid || task.Status != "running") {
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && (task.AgentID != agentID || task.Status != "running" || task.ChatSessionID.Valid == task.IssueID.Valid || task.IssueID.Valid && task.IssueID != issue.ID) {
 		return empty, deny
 	}
 	if err != nil {
@@ -122,8 +130,11 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
-	if len(input.MessageIDs) == 0 || len(input.Content) > maxCommentContentBytes {
-		return empty, decisionIntentRefusal{http.StatusBadRequest, "a decision record requires source messages"}
+	if (len(input.MessageIDs) > 0) == input.SourceCommentID.Valid || len(input.Content) > maxCommentContentBytes || input.SourceCommentID.Valid && input.ContextMessageID.Valid {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "a decision record requires source messages or one source comment, not both"}
+	}
+	if !located.ID.Valid && (task.IssueID.Valid || input.SourceCommentID.Valid) {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "an external answer requires --parent naming the ask"}
 	}
 	if !located.ID.Valid || input.EscalationClass != "" {
 		switch input.EscalationClass {
@@ -131,6 +142,21 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		default:
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "an unprompted record requires an explicit valid escalation class"}
 		}
+	}
+	callingSessionID := task.ChatSessionID
+	if !callingSessionID.Valid {
+		callingSessionID = located.ChatSessionID
+	}
+	lockedSessionID := callingSessionID
+	if len(input.MessageIDs) > 0 {
+		first, err := handler.Queries.GetChatMessage(ctx, input.MessageIDs[0])
+		if errors.Is(err, pgx.ErrNoRows) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "source message is unavailable"}
+		}
+		if err != nil {
+			return empty, err
+		}
+		lockedSessionID = first.ChatSessionID
 	}
 	// Runtime teardown unbinds user agents before runtime detachment; user DMs survive.
 	// A comment merge can change trigger_comment_id, whose FK uses ON DELETE SET NULL.
@@ -144,16 +170,16 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		return empty, err
 	}
-	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: task.ChatSessionID}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: lockedSessionID}); errors.Is(err, pgx.ErrNoRows) {
 		return empty, deny
 	} else if err != nil {
 		return empty, err
 	}
-	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: task.ChatSessionID})
+	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: callingSessionID})
 	if err != nil {
 		return empty, err
 	}
-	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+	if task.ChatSessionID.Valid && session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return empty, deny
 	}
 	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
@@ -167,6 +193,11 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	}
 	if agent.Kind == "system" {
 		return empty, deny
+	}
+	if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: session.CreatorID}); errors.Is(err, pgx.ErrNoRows) {
+		return empty, deny
+	} else if err != nil {
+		return empty, err
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if input.ParentID.Valid && (errors.Is(err, pgx.ErrNoRows) || err == nil && root == nil) {
@@ -198,8 +229,13 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
-	if task.Status != "running" || task.AgentID != agentID || task.ChatSessionID != session.ID || task.IssueID.Valid {
+	if task.Status != "running" || task.AgentID != agentID || task.ChatSessionID.Valid && (task.ChatSessionID != callingSessionID || task.IssueID.Valid) || !task.ChatSessionID.Valid && task.IssueID != issue.ID {
 		return empty, deny
+	}
+	if task.IssueID.Valid {
+		if _, _, _, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID); err != nil {
+			return empty, err
+		}
 	}
 	current, err := locateDecisionRecordContext(ctx, queries, issue, input.ParentID)
 	if err != nil {
@@ -216,17 +252,41 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil {
 			return empty, err
 		}
-		if decision.Origin != "asked" || decision.Status != "open" {
-			return empty, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
-		}
-		if decision.ChatSessionID != session.ID || decision.HumanUserID != session.CreatorID || decision.IssueID != issue.ID {
+		if decision.HumanUserID != session.CreatorID || decision.IssueID != issue.ID {
 			return empty, deny
+		}
+		lane, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: decision.ChatSessionID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (lane.CreatorID != decision.HumanUserID || lane.AgentID != decision.AskingAgentID || lane.Status != "active" || lane.ChannelOriginAt.Valid || lane.IsAgentIntro) {
+			return empty, deny
+		}
+		if err != nil {
+			return empty, err
+		}
+		if decision.Origin != "asked" || decision.Status != "open" {
+			if decision.Origin == "asked" && decision.Status == "answered" {
+				answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
+				if err == nil && input.ParentID == decision.IssueCommentID && answer.AnsweredByTaskID == taskID && answer.SourceCommentID == input.SourceCommentID && slices.Equal(answer.ChatMessageIds, input.MessageIDs) {
+					comment, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: answer.IssueCommentID})
+					if err != nil {
+						return empty, err
+					}
+					message, err := queries.GetDecisionAnswerReference(ctx, db.GetDecisionAnswerReferenceParams{WorkspaceID: issue.WorkspaceID, AnswerID: answer.ID})
+					if err != nil {
+						return empty, err
+					}
+					return decisionRecordResult{Request: decision, Answer: answer, Comment: comment, Message: message, Replayed: true}, nil
+				}
+				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return empty, err
+				}
+			}
+			return empty, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
 		}
 		if input.EscalationClass != "" && input.EscalationClass != decision.EscalationClass {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a record cannot change the request's class"}
 		}
 		ping, err := queries.GetChatMessage(ctx, decision.PingMessageID)
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && ping.ChatSessionID != session.ID {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && ping.ChatSessionID != decision.ChatSessionID {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "decision ping is unavailable"}
 		}
 		if err != nil {
@@ -249,6 +309,46 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	}
 	seen := make(map[pgtype.UUID]bool)
 	contents := make([]string, 0, len(input.MessageIDs))
+	earliestSource := task.StartedAt.Time
+	var sourceSessionID pgtype.UUID
+	if input.SourceCommentID.Valid {
+		source, err := queries.LockDecisionSourceComment(ctx, db.LockDecisionSourceCommentParams{WorkspaceID: issue.WorkspaceID, ID: input.SourceCommentID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (source.AuthorType != "member" || source.AuthorID != decision.HumanUserID || source.Type != "comment" || !source.CreatedAt.Time.After(pingAt.Time) || !source.CreatedAt.Time.Before(task.StartedAt.Time)) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "source comment is not an eligible answer by the request's human"}
+		}
+		if err != nil {
+			return empty, err
+		}
+		if _, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: source.IssueID}); errors.Is(err, pgx.ErrNoRows) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "source issue is unavailable"}
+		} else if err != nil {
+			return empty, err
+		}
+		contents = append(contents, source.Content)
+	}
+	if len(input.MessageIDs) > 0 {
+		sourceSession, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: lockedSessionID})
+		if err != nil {
+			return empty, err
+		}
+		if sourceSession.CreatorID != decision.HumanUserID || sourceSession.ChannelOriginAt.Valid || sourceSession.IsAgentIntro || !current.ID.Valid && sourceSession.ID != session.ID {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "source DM is not eligible for this record"}
+		}
+		if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, sourceSession.ID); err == nil {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "channel messages cannot supply decision answers"}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return empty, err
+		}
+		sourceSessionID = sourceSession.ID
+		locked, err := queries.LockDecisionSourceMessages(ctx, db.LockDecisionSourceMessagesParams{WorkspaceID: issue.WorkspaceID, MessageIds: input.MessageIDs})
+		if err != nil {
+			return empty, err
+		}
+		if len(locked) != len(input.MessageIDs) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must exist and be distinct"}
+		}
+	}
+	var boundMessages []db.ChatMessage
 	for _, messageID := range input.MessageIDs {
 		if !messageID.Valid || seen[messageID] {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must be distinct"}
@@ -258,24 +358,82 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return empty, err
 		}
-		if err != nil || message.ChatSessionID != session.ID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
+		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
 		}
+		bound, err := loadDecisionAnswerBinding(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
+		if err != nil {
+			return empty, err
+		}
+		if bound.ID.Valid {
+			if bound.DecisionRequestID != decision.ID {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message explicitly selects another decision request"}
+			}
+			if !bound.DisclaimedAt.Valid {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message already answers its explicitly selected request"}
+			}
+			boundMessages = append(boundMessages, message)
+		}
 		contents = append(contents, message.Content)
+		if message.CreatedAt.Time.Before(earliestSource) {
+			earliestSource = message.CreatedAt.Time
+		}
 	}
 	snapshot := strings.Join(contents, "\n\n")
-	quote := "> " + strings.ReplaceAll(snapshot, "\n", "\n> ")
+	quote := blockQuote(snapshot)
+	if input.ContextMessageID.Valid {
+		offered, err := queries.GetChatMessage(ctx, input.ContextMessageID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return empty, err
+		}
+		if err != nil || offered.ChatSessionID != sourceSessionID || offered.Role != "assistant" || offered.MessageKind != "message" || !offered.CreatedAt.Time.Before(earliestSource) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "context message is not an earlier assistant message of this DM"}
+		}
+		quote = "Options offered:\n" + blockQuote(offered.Content) + "\n\nReply:\n" + quote
+	}
 	if input.Content != "" {
 		quote = input.Content + "\n\n" + quote
 	}
 	if len(quote) > maxCommentContentBytes {
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "decision quote is too long"}
 	}
+	result, err := handler.persistDecisionRecord(ctx, queries, issue, decision, input, decisionRecordSource{
+		TaskID: taskID, AgentID: agentID, SessionID: session.ID, SourceSessionID: sourceSessionID,
+		CommentID: commentID, Snapshot: snapshot, Quote: quote,
+	}, root)
+	if err != nil {
+		return empty, err
+	}
+	for _, message := range boundMessages {
+		if _, err := queries.BindChatMessageDecisionAnswer(ctx, db.BindChatMessageDecisionAnswerParams{
+			WorkspaceID: issue.WorkspaceID, SessionID: sourceSessionID, MessageID: message.ID, AnswerID: result.Answer.ID, PreviousAnswerID: message.DecisionAnswerID,
+		}); err != nil {
+			return empty, err
+		}
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return empty, err
+	}
+	handler.DecisionWorker.Notify()
+	return result, nil
+}
+
+type decisionRecordSource struct {
+	TaskID, AgentID, SessionID, SourceSessionID, CommentID pgtype.UUID
+	Snapshot, Quote                                        string
+}
+
+func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Queries, issue db.Issue, decision db.DecisionRequest, input decisionRecordInput, source decisionRecordSource, root *db.Comment) (decisionRecordResult, error) {
+	empty := decisionRecordResult{}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: taskID, SourceChatSessionID: session.ID, ChatMessageIds: input.MessageIDs, ContentSnapshot: snapshot, EffectiveAt: effectiveAt, IssueCommentID: commentID})
+	messageIDs := input.MessageIDs
+	if messageIDs == nil {
+		messageIDs = []pgtype.UUID{}
+	}
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID})
 	if err != nil {
 		return empty, err
 	}
@@ -286,7 +444,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, err
 		}
 	}
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: agentID, SourceTaskID: taskID, ParentID: input.ParentID, Content: quote, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: source.CommentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: source.AgentID, SourceTaskID: source.TaskID, ParentID: input.ParentID, Content: source.Quote, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -294,12 +452,12 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this DM turn finishes.\nOpen issue: /issue/%s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID), uuidToString(answer.ID))
-	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: %s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), uuidToString(answer.ID))
+	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: source.SessionID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err
 	}
-	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+	if err := queries.TouchChatSession(ctx, source.SessionID); err != nil {
 		return empty, err
 	}
 	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
@@ -310,9 +468,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: issue.WorkspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, err
-	}
-	handler.DecisionWorker.Notify()
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
+}
+
+func blockQuote(text string) string {
+	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }

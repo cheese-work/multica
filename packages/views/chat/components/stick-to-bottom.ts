@@ -95,6 +95,12 @@ export interface StickToBottom {
   /** Wire to Virtuoso's `totalListHeightChanged`: the content resized. */
   onContentHeightChanged(): void;
   /**
+   * Stop following the live end, for a navigation that lands elsewhere (a jump
+   * to an older message). The follow comes back when the reader scrolls to the
+   * bottom or the list remounts.
+   */
+  disengage(): void;
+  /**
    * False until the newest message has actually arrived at the bottom of the
    * viewport. Keep the list hidden until then: Virtuoso opens it by scrolling
    * to where it PREDICTS that message is, paints there, and only then
@@ -305,6 +311,7 @@ export function useStickToBottom(
     () => ({
       isFollowing: () => follow.isFollowing(),
       onContentHeightChanged: onResize,
+      disengage: () => follow.disengage(),
       hasReachedLiveEnd,
     }),
     [follow, onResize, hasReachedLiveEnd],

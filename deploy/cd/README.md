@@ -13,6 +13,31 @@ credentials, receive recovery private keys, or use restored production data.
 D4 (full C00 rehearsal, not yet implemented) is what actually activates
 against C00, gated on its own separate approval.
 
+## Persistent D1 build cache
+
+`cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
+Each image gets its own runner/DinD budget, rather than sharing one DinD's
+4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
+name and assembles the same `cd-build-evidence-<sha>` artifact after both
+images succeed. The web job supplies the exact optional fork entries used
+in its image, so manifest assembly cannot hash a different download.
+
+Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
+`multica-cd-web-v1` builders. They use `docker-container` for provenance and
+SBOM generation. A bounded stop releases builder memory after the job;
+the builder and its cache volume remain for later trusted main pushes.
+BuildKit GC targets at most 4 GB per builder, reserves 1 GB, and targets
+10 GB free. Each builder admits at most two build vertices at once.
+No registry cache or untrusted PR cache is imported.
+
+Go compilation uses `/root/.cache/go-build` cache mounts, including the
+four daemon targets. Unversioned utilities compile before the release
+arguments; server and daemon linking still consume the exact release
+version and commit. Web builds retain `/app/apps/web/.next/cache`.
+`NEXT_PUBLIC_*` stays after dependency installation but before compilation:
+Next.js embeds those values in client bundles, so moving them after the
+build would ship stale release metadata.
+
 ## D2: quiescence and supervised migration
 
 `quiescence.mjs` implements the two admission gates from the approved D2
@@ -279,6 +304,8 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-candidate-preflight.py
+python3 deploy/cd/test-deploy-approval.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -288,6 +315,8 @@ bash deploy/cd/test-deploy.sh
 bash deploy/cd/test-router.sh
 bash deploy/cd/test-release-packet.sh
 bash deploy/cd/test-cutover.sh
+bash deploy/cd/test-artifact-controller.sh
+node --test deploy/cd/drift-receipt.test.mjs
 (cd server && go test ./internal/dbstartup/...)
 ```
 
@@ -403,14 +432,31 @@ writes `<state-dir>/outage-alert.json` and exits 1.
 upstream `/readyz` and the public listeners must answer 2xx for the whole
 `--window`. CD runs it for 120s after every cutover (0s after a failed one).
 
+### Feature-flag runtime inputs (CHE-2348)
+
+`docker-compose.flags.yml` preserves the feature-flag file across blue/green
+recreation independently of Jev. `cutover.sh` loads this overlay for cutover
+and rollback when the compose dir's `.env` sets `MULTICA_FEATURE_FLAGS_FILE`.
+The existing `MULTICA_JEV_FLAGS_FILE` setting remains a fallback so C00 does
+not need a configuration change. The generic setting takes precedence when
+both are non-empty. With neither set, no flags overlay loads.
+
+The host path must name an absolute, readable, non-empty file admitted by
+`flagfile-check.mjs`. Validation runs before any drain, pull, migration or
+start. Both backends mount the file read-only at `/app/feature-flags.yaml`,
+with their `MULTICA_FEATURE_FLAGS_FILE` environment pointing to that mount.
+The overlay does not set flag values, a Jev key, a gateway network or a
+database hostname. A flags-only installation needs no Jev configuration.
+
 ### Scoped Jev runtime inputs (CHE-1854)
 
 A backend recreated from the base files alone loses three things a scoped Jev
 shadow runtime needs: the deployment key, the workspace-scoped feature-flag
-file and the gateway network. `docker-compose.jev.yml` keeps them. It is
-opt-in per installation: `cutover.sh` loads it only when the compose dir's
-`.env` sets `MULTICA_JEV_FLAGS_FILE` or `MULTICA_JEV_GATEWAY_NETWORK`. With
-neither set, no overlay loads and every Compose call is unchanged. Jev stays
+file and the gateway network. `docker-compose.flags.yml` keeps the flag
+file; `docker-compose.jev.yml` keeps the Jev key and network. Jev is
+opt-in per installation: `cutover.sh` loads the Jev overlay only when the
+compose dir's `.env` sets `MULTICA_JEV_GATEWAY_NETWORK`. Without that setting,
+no Jev overlay loads. Jev stays
 off everywhere else; the overlay never sets `FF_JEV_ENABLED` or `JEV_API_KEY`.
 
 Protected operator inputs, all in the C00 compose dir's `.env` (never in the
@@ -419,7 +465,8 @@ repository, CI, logs or PR evidence):
 | Variable | Meaning |
 | --- | --- |
 | `MULTICA_JEV_SECRET_KEY` | Deployment key: standard base64 of 32 bytes. Already passed through by `docker-compose.selfhost.yml`. |
-| `MULTICA_JEV_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only at `/app/feature-flags.yaml`; `MULTICA_FEATURE_FLAGS_FILE` points there. |
+| `MULTICA_FEATURE_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only by the generic overlay at `/app/feature-flags.yaml`. |
+| `MULTICA_JEV_FLAGS_FILE` | Existing host flag-path setting, used only when `MULTICA_FEATURE_FLAGS_FILE` is empty or unset. No C00 configuration change is required. |
 | `MULTICA_JEV_GATEWAY_NETWORK` | Name of the existing external network. Both backends join it next to the project network. |
 
 The flag file decides which workspace may use Jev. Shape (workspace ID is
@@ -434,10 +481,10 @@ not recover. The Go loader classifies the same corpus
 Edit the file in place: replacing it by rename leaves a running colour on the
 old inode until recreation.
 
-Once either path or network is set, all three must hold. Before the first
+Once the Jev gateway network is set, all three must hold. Before the first
 drain, pull, migration or start, `cutover` and `rollback` refuse and name the
 failing variable (never its value) when the key is not base64 of 32 bytes,
-the flag file is not an absolute readable non-empty file that
+the selected flag file is not an absolute readable non-empty file that
 `flagfile-check.mjs` admits, or the network does not exist. A refusal leaves the incumbent serving.
 
 Joining the gateway network adds a second `postgres` to the backend's DNS
@@ -449,7 +496,7 @@ the deploy lock, rollback and the one-active-backend rule are untouched.
 
 Temporary-to-durable transition (operator, on C00; no value is printed):
 1. Copy the key already in the protected backend environment into
-   `.env` as `MULTICA_JEV_SECRET_KEY`, and add the other two variables.
+   `.env` as `MULTICA_JEV_SECRET_KEY`, and configure the flag path and network.
 2. The next CD cutover recreates the candidate colour with the overlay. The
    hand-made container from the temporary recovery is replaced by it; the
    original `unless-stopped` policy comes from the base files.
@@ -499,6 +546,20 @@ assuming `deploy/cd/router/state`).
 6. If the router selects a colour whose ports differ from Compose's render,
    re-select it with the rendered ports (`BACKEND_<C>_PORT=... FRONTEND_<C>_PORT=... bash deploy/cd/router.sh select --colour <colour>`).
    Take the ports from `docker compose "${ab[@]}" port ...`, never from memory.
+
+### Deploy drift gate (CHE-2396)
+
+The cutover bundle carries the released `docker-compose.selfhost.yml` and the
+blue/green, flags and Jev overlays. Under the deploy lock, `cutover` copies
+them into `--compose-dir` (`drift-receipt.mjs sync`) before anything renders.
+After the candidate starts and before the router switches,
+`drift-receipt.mjs check` writes `<state-dir>/drift-receipt.json` and exits
+nonzero, failing the cutover (incumbent recovery), when any of these differ:
+
+- deployed compose bytes vs the released source;
+- the candidate containers' env key names vs the released compose render plus
+  the image's own env (names only, never values);
+- the candidate containers' image digests vs the manifest.
 
 ### What this unit does NOT cover
 
@@ -555,7 +616,84 @@ change as part of D2 work.
 
 `cd-deploy.yml` runs automatically after a successful `cd-qualification` run
 for a `main` commit, and can still be dispatched by hand. The automatic path
-adds one job the manual path does not: `prepare-release-candidate`.
+adds `candidate-preflight` and `prepare-release-candidate`, which the manual
+path does not need. The run title names the qualifying candidate SHA rather
+than the workflow run's default-branch SHA.
+
+`candidate-preflight` runs on X99 without the `c00-production` environment or
+C00 credentials. It uses the workflow revision's tools so an older candidate
+does not need to contain the new preflight script. Before requesting approval,
+`require-current.sh` requires the candidate to be an ancestor of (or equal to)
+`main` and a strict descendant of C00's running commit (CHE-2159). A qualified
+older `main` commit is eligible even when a newer commit has pending or passing
+checks. Same-version, downgrade, divergent and off-main candidates are skipped.
+The guard reads C00's public `/api/config` over verified HTTPS using the
+repository Actions variable `C00_CONFIG_URL`, without SSH or deployment
+credentials. Set that variable to the live C00 HTTPS `/api/config` endpoint
+reachable from the X99 runner before enabling this workflow revision. An unset
+URL fails closed; the endpoint is not embedded in the public repository. The
+reported short `server_commit` is resolved to a full SHA through GitHub; missing,
+malformed, ambiguous or unknown versions fail closed. The bounded version read
+and ancestry checks run before and after waiting for required checks. The
+recorder keeps the newest run of each check, so a green re-run replaces the
+failure it re-ran. A non-forward candidate or non-admissible check
+result leaves `eligible=false`; `prepare-release-candidate` and the automatic
+admission/deploy chain are skipped, not failed. The summary records the real
+candidate SHA and the skip reason. API or tooling errors still fail closed.
+
+`cd-qualification.yml` groups pushes by `github.ref` with
+`cancel-in-progress: false`: the running qualification build finishes, and a new
+`main` push replaces only the older pending run, so at most one build runs and
+one waits. The newest commit can wait for the running build (about 25-45 min).
+A finished older build is not wasted: `require-current.sh` accepts a qualified
+older `main` commit that is a forward move from C00. This group is separate from
+every approval and C00 mutation lock.
+
+An eligible candidate waits at `approve-c00`, the only job that asks for
+approval (CHE-2027): one prompt per version, on both the automatic and manual
+paths. It runs in the existing `c00-production` environment (required reviewer,
+wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
+`cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
+replaces an older run still waiting for approval. Once approved, a candidate
+is not superseded merely because `main` advances (CHE-2146). There is no
+post-approval `require-current.sh` guard or `deploy-gate` job. The manual path
+still names an explicit admitted manifest and may deploy a non-head ref.
+
+`prepare-release-candidate` and `deploy` use the C00 secrets from the
+`c00-runtime` environment, which has no reviewers or wait timer, so they do not
+ask again. `c00-production` keeps its protection on purpose: runs started by
+the previous workflow, and reruns of their jobs, still use that workflow and
+therefore still stop at it. Secrets are copied to `c00-runtime` and must be
+rotated in both environments until `c00-production` secrets are retired. A
+missing `c00-runtime` environment fails closed: GitHub creates it empty, the
+SSH step has no key and stops. They share the
+job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
+C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
+default queue (`single`) keeps one pending job and cancels it for any newcomer,
+whatever its version, so a stale stage joining late would evict the newest
+candidate. A freshness check made before the join cannot prevent that, because
+check and join are not atomic. `max` holds up to 100 pending jobs and evicts
+none; if the queue is full GitHub cancels the newcomer. Once `deploy` holds
+the lock, `capture-remote-baseline.sh` re-reads C00's live tuple using the same
+image-label-first capture path as preparation. `verify-deploy-baseline.mjs`
+skips only when C00's running commit already contains the candidate (equal
+or descendant). Unknown or divergent history fails closed. A newer commit
+on `main` alone does not skip an approved deploy.
+
+Before building or transferring any controller bundle, the live tuple must
+match the admitted baseline in every field except `captured_at`. Image,
+configuration, application or migration-ledger drift fails closed without
+changing the running stack or transferring the stale manifest. The operator
+must prepare and admit a fresh release candidate after such a failure; the
+workflow does not silently rebind approved evidence. Both automatic and manual
+deploys use this guard. `actionlint` does not know the `queue` key
+yet and reports it; GitHub validates it on the first run. There is no workflow-level lock, since a run waiting for approval would hold it and
+block every newer version.
+
+Preparation still records a fresh check snapshot after approval; preflight
+evidence does not replace final admission. Manual dispatch keeps its existing
+evidence and admission requirements and bypasses only the automatic
+eligibility filter.
 
 The `deploy` job does not check out the repository on C00 — it `scp`'s an
 explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
@@ -574,8 +712,8 @@ which `admission.mjs` refuses. A deployable `release-candidate` additionally
 binds the baseline tuple of the host being deployed to — the fresh Hermes
 configuration digest and migration snapshot described above — which only a
 stage with C00 access can read. `prepare-release-candidate` runs on the
-C00-reachable runner under the same `c00-production` environment as the
-deploy job, reads that baseline over SSH with `capture-tuple.sh`, re-issues
+C00-reachable runner under the same `c00-production` secrets environment as the
+deploy job, after the single `approve-c00` approval, reads that baseline over SSH with `capture-tuple.sh`, re-issues
 D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and
@@ -669,7 +807,8 @@ provable rather than asserted:
    anything, so two `deploy.sh` invocations (e.g. a manually re-triggered
    workflow run) cannot interleave their one-shot migration steps or
    container restarts against each other. `cd-deploy.yml`'s own
-   `concurrency: group: cd-deploy-c00` is the first line of defense for
+   the job-level `concurrency: group: cd-deploy-c00` (on
+   `prepare-release-candidate` and `deploy`) is the first line of defense for
    normal workflow dispatches; the lock is the second, host-local one for
    anyone driving `deploy.sh` by hand.
 
@@ -735,14 +874,22 @@ read was denied to every credential available on C00 — the org/App
 `packages: read` permission governs the GitHub API, not an unauthenticated
 `docker pull`, and there is no per-package "add an App" control for a
 private container package (only repositories can be added to that list).
-The fix is a dedicated registry credential rather than any App/org
-permission change: a `read:packages`-only classic PAT, stored as the
-`GHCR_PULL_TOKEN` environment secret on `c00-production` (scoped there, not
-as a repo secret, so D1's `cd-qualification.yml` stays credential-free).
-`deploy.sh` logs in to `ghcr.io` with it immediately before the pull step
-and logs out unconditionally on exit — success, rollback, or an early
+The fix is a registry credential rather than any App/org permission change.
+CHE-549 first used a `read:packages`-only classic PAT stored as the
+`GHCR_PULL_TOKEN` environment secret. CHE-2027 replaced it: the `deploy` job
+now has `packages: read` and passes its own `${{ github.token }}` as
+`GHCR_PULL_TOKEN`, so no PAT is stored, rotated or revoked. This needs each
+package (`multica-backend`, `multica-web`) to list `cheese-work/multica` under
+Package settings, Manage Actions access, with role Read. The token is scoped
+to the job, so D1's `cd-qualification.yml` stays credential-free.
+`deploy.sh` logs in to `ghcr.io` with that token immediately before the pull step
+and cleans up on exit — success, rollback, or an early
 argument/file-check failure — via a single EXIT trap; unset, both steps are
 skipped (local `--dry-run` runs, or a host with its own credential store).
+The login uses a private temporary Docker configuration and a credential
+helper that reads the job token from the environment. The helper never
+stores the token on disk. Exit cleanup removes only that configuration and
+helper and restores the caller's Docker configuration and executable path.
 `cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
 by exporting it inside a script piped over the session's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
@@ -750,3 +897,6 @@ command-line argument or a file written to C00, so it is not visible to
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
 scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
 GHCR is still pending the runner above).
+`deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
+on-disk credentials, cleanup after successful and failed login, and restoration
+of the caller's environment without contacting a registry.

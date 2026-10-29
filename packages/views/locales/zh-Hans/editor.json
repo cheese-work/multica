@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "新增：",
+    "removed": "删除：",
+    "revision": "修订版 {{number}}",
+    "readonly": "只读",
+    "issue": "来源任务",
+    "diff": "差异",
+    "split": "并排",
+    "unify": "合并",
+    "compare": "比较基准",
+    "choose_base": "选择基准修订版",
+    "change": "改动 {{current}} / {{total}}",
+    "previous": "上一处改动",
+    "next": "下一处改动",
+    "download": "下载",
+    "close": "关闭",
+    "more": "更多选项",
+    "base": "基准",
+    "current": "当前",
+    "loading_revisions": "正在加载修订版…",
+    "revisions_error": "无法加载修订版",
+    "no_earlier": "没有更早的修订版",
+    "loading": "正在加载文档…",
+    "current_error": "无法加载文档",
+    "loading_diff": "正在加载比较…",
+    "comparison_error": "无法加载比较",
+    "too_large": "比较内容过大。请下载文件，在本地比较。",
+    "identical": "修订版之间没有改动",
+    "empty": "此文档为空",
+    "unchanged": "{{count}} 行未改动",
+    "retry": "重试"
+  },
+  "media": {
+    "title": "媒体",
+    "more": "更多",
+    "open_in_new_window": "在新窗口中打开",
+    "open_failed": "无法打开媒体页面",
+    "loading": "正在加载媒体…",
+    "load_failed": "无法加载媒体",
+    "offline": "离线 — 正在显示上次加载的内容。",
+    "retry": "重试"
+  },
   "bubble_menu": {
     "bold": "加粗",
     "italic": "斜体",
@@ -185,5 +227,8 @@
     "clear_filter": "清除筛选",
     "no_matches": "没有匹配的行",
     "close": "关闭"
+  },
+  "next_self_mention": {
+    "label": "下一个提到我的"
   }
 }

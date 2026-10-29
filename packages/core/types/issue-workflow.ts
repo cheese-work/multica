@@ -16,7 +16,8 @@ export type IssueWorkflowHandlerType =
   | "squad"
   | "member"
   | "project_lead"
-  | "creator";
+  | "creator"
+  | "human_by_role";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;
@@ -35,6 +36,16 @@ export interface IssueWorkflowStep {
   back_status_key?: string;
   /** Move an issue on this step to its next status when a linked PR's checks pass. */
   advance_on_ci_green?: boolean;
+  /** Guarded exits; the first whose guard holds is taken. */
+  edges?: IssueWorkflowEdge[];
+}
+
+/** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
+export interface IssueWorkflowEdge {
+  to: string;
+  guard: string;
+  timeout?: string;
+  on_timeout?: string;
 }
 
 export interface IssueWorkflow {
@@ -44,7 +55,16 @@ export interface IssueWorkflow {
   description: string;
   /** The workspace Default: used by every project that names no workflow. */
   is_default: boolean;
+  /** The member who owns the workflow and may edit it; null for Default. */
+  owner_id: string | null;
   steps: IssueWorkflowStep[];
+  /**
+   * Most runs one issue may start before the workflow blocks it. Null when the
+   * workflow keeps the platform default (15).
+   */
+  max_runs_per_issue?: number | null;
+  /** Whether a child issue's PRs count for the parent's PR edges. Default true. */
+  include_child_prs?: boolean;
   /** Projects currently using this workflow. */
   project_ids: string[];
   created_at: string;
@@ -78,6 +98,9 @@ export interface IssueWorkflowWriteRequest {
    * only when included.
    */
   steps?: IssueWorkflowStepInput[];
+  /** 1 to 1000 sets the run budget, 0 restores the default; omit to keep it. */
+  max_runs_per_issue?: number;
+  include_child_prs?: boolean;
   /** Destination for issues on statuses an edit removes, keyed by removed status. */
   status_mapping?: Record<string, string>;
   dry_run?: boolean;
@@ -154,4 +177,5 @@ export interface SetWorkflowHandoffRequest {
   next_status_key?: string;
   back_status_key?: string;
   advance_on_ci_green?: boolean;
+  edges?: IssueWorkflowEdge[];
 }

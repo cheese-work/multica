@@ -9,6 +9,7 @@ Product contracts the runtime brief does not fully encode.
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
 - [Per-issue token usage](#per-issue-token-usage)
+- [Resolve the thread you answered](#resolve-the-thread-you-answered)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
 
@@ -151,27 +152,36 @@ multica issue property unset <issue-id> --name Environment
 ```bash
 multica issue list --property "Impact=High" --property "Impact=Medium" --output json
 multica issue list --property "QA Status=__none__" --status in_review --output json
+multica issue list --property "Effort>=3" --property "Due<2026-10-01" --output json
 multica issue list --sort property:Impact --direction desc --output json
 ```
 
 - `--property` takes one `Name=Value` per flag. Repeating the same property
-  matches ANY of its values; different properties must ALL match. Values are
+  matches ANY of its members; different properties must ALL match. Values are
   option names or ids (select types), `true`/`false` (checkbox), a member
-  name/email/id (actor types), or the value itself for text, url, number and
-  date (`YYYY-MM-DD`); for `multi_text` / `multi_url` the value matches any
-  single element of the list exactly. The reserved `__none__` matches issues
-  where the property is unset (every type; not index-backed, so use it for
-  targeted audits rather than a default listing filter). Only `=` is supported
-  today — `>=`, `<=` and `!=` are reserved for comparison filters and rejected.
-- `--sort property:<name-or-id>` orders select properties by option order — an
-  ordinal scale (Low < Medium < High) sorts by meaning — and number/date/text/
-  url by value; issues without the property sort last either way. Archived
-  properties and unordered types (multi_select, checkbox, actor kinds, list
-  types) are rejected up front.
-- `issue list` and `issue get` return `properties` as a map of definition id to
-  stored value. Add `--resolve-properties` in JSON mode for the rows `issue
-  property list` prints (name, type, stored value, display names); the CLI makes
-  at most one catalog request per page, so no `property list` call is needed:
+  name/email/id (actor types), or the value itself for text, url, number,
+  and date (`YYYY-MM-DD`); for `multi_text` / `multi_url` the value matches
+  any single element of the list exactly. The reserved value `__none__` matches
+  issues where the property is unset (works for every type; it is not
+  index-backed, so use it for targeted audits rather than as a default
+  listing filter).
+- Comparisons use the same flag: `>`, `>=`, `<`, `<=` on number; `>` (after)
+  and `<` (before) on date; `~=` (contains, case-insensitive) on text and
+  url. Quote the flag so the shell does not read `<` or `>` as redirection.
+  `!=` is rejected (the server has no not-equal filter); `>=` and `<=` on a
+  date are rejected with an error naming the strict form to use. Two
+  comparisons on one property OR, so they do not form a range. Number and
+  date comparisons are not index-backed.
+- `--sort property:<name-or-id>` orders select properties by option order —
+  an ordinal scale (Low < Medium < High) sorts by meaning — and number/date/
+  text/url by value; issues without the property sort last either way.
+  Archived properties and types without an order (multi_select, checkbox,
+  actor kinds, list types) are rejected up front.
+- `issue list` and `issue get` return `properties` as a map of definition id
+  to stored value. Add `--resolve-properties` in JSON mode to get the rows
+  `issue property list` prints instead (name, type, stored value, display
+  names); the CLI makes at most one catalog request for the whole page, so
+  no `property list` call is needed:
 
 ```bash
 multica issue list --status in_progress --output json --resolve-properties
@@ -383,6 +393,21 @@ prefixed with `>=` is a lower bound, not the real total: one or more terminal
 runs did not report usage (aborted or infra-failed), so the true figure is at
 least that but unknown above it. Do not compare an unprefixed total with a
 `>=`-prefixed one without checking which you have.
+## Resolve the thread you answered
+
+An answered thread left open keeps reading as pending work. When your reply
+settles the thread, post it with `--resolve-thread`:
+
+```bash
+multica issue comment add <issue-id> --parent <comment-id> --content-file ./reply.md --resolve-thread
+```
+
+- It needs `--parent`: it resolves the thread that reply belongs to.
+- Leave it off while the thread still waits on someone: a question to the
+  asker, a pending review, follow-up work.
+- The comment is posted first. If resolving then fails, the CLI says so; run
+  `multica issue comment resolve <comment-id>` and do not repost.
+
 ## Charts and files in a comment
 
 Where content goes decides how it shows:

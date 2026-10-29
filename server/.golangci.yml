@@ -85,6 +85,41 @@ linters:
       - path: pkg/db/generated/
         linters: [errcheck, gocritic, revive, staticcheck, unused]
 
+      - path: '^(cmd/qoder-runtime/main\.go|internal/integrations/wecom/media_temp_test\.go)$'
+        linters: [gocritic]
+        text: '^exitAfterDefer:'
+        source: 'os\.Exit\((1|43)\)'
+
+      - path: '^internal/(handler/qoder_cleanup\.go|qoderruntime/(bridge|state)\.go)$'
+        linters: [gocritic]
+        text: '^sloppyReassign:'
+        source: 'if err = (h\.DB\.QueryRow|json\.Unmarshal|tx\.Commit|os\.MkdirAll|b\.register|b\.persist|f\.Close|os\.Rename)'
+
+      - path: '^internal/handler/qoder_connection_test\.go$'
+        linters: [gocritic]
+        text: '^mapKey: suspicious whitespace'
+        source: '" https://api\.qoder\.com\.cn/api/v1/cloud"'
+
+      - path: '^internal/qoderruntime/concurrency_test\.go$'
+        linters: [gocritic]
+        text: '^offBy1:'
+        source: 'return rest\[:strings\.Index\(rest, "/"\)\]'
+
+      - path: '^pkg/agent/(acp_panic|hermes_depsync)\.go$'
+        linters: [gocritic]
+        text: '^appendAssign:'
+        source: 'data := append\([dw]\.remains, p\.\.\.\)'
+
+      - path: '^internal/(handler/qoder_catalog\.go|qoderruntime/(bridge|events|prompt)\.go|service/issue_wakeup_condition\.go)$'
+        linters: [staticcheck]
+        text: '^ST1005:'
+        source: '(fmt\.Errorf|errors\.New)\("(Qoder|Multica|Merge conflicts)'
+
+      - path: '^internal/(handler/qoder_catalog_test\.go|qoderruntime/bridge_test\.go)$'
+        linters: [staticcheck]
+        text: '^ST1013:'
+        source: '(401|502)'
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

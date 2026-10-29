@@ -53,6 +53,7 @@ func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, reque
 		handler.publish(protocol.EventCommentCreated, workspaceID, "member", uuidToString(userID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "member", uuidToString(userID))
+	handler.publishDecisionAnswerUpdated(workspaceID, "member", uuidToString(userID), result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	writeJSON(writer, http.StatusOK, result.Answer)
 }
 

@@ -20,7 +20,7 @@ func TestDecisionRequestNewDMCommand(test *testing.T) {
 		test.Cleanup(func() { _ = command.Flags().Set(name, original) })
 	}
 	askPath := filepath.Join(test.TempDir(), "ask.txt")
-	if err := os.WriteFile(askPath, []byte("Pick a new DM"), 0600); err != nil {
+	if err := os.WriteFile(askPath, []byte(structuredAskJSON(test, "Pick a new DM")), 0600); err != nil {
 		test.Fatal(err)
 	}
 	posted := false
@@ -82,7 +82,7 @@ func TestDecisionRequestSingleCallBody(test *testing.T) {
 	}
 	dir := test.TempDir()
 	askPath, footerPath := filepath.Join(dir, "ask.txt"), filepath.Join(dir, "footer.txt")
-	for path, text := range map[string]string{askPath: "Single ask", footerPath: "Next owner: none"} {
+	for path, text := range map[string]string{askPath: structuredAskJSON(test, "Single ask"), footerPath: "Next owner: none"} {
 		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 			test.Fatal(err)
 		}
@@ -108,7 +108,8 @@ func TestDecisionRequestSingleCallBody(test *testing.T) {
 	if _, err := captureStdout(test, func() error { return runDecisionRequest(command, nil) }); err != nil {
 		test.Fatal(err)
 	}
-	if body["for"] != "human-id" || body["new_dm"] != false || body["session_id"] != "" || body["ask"] != "Single ask" || body["footer"] != "Next owner: none" || body["parent_id"] != "comment-id" {
+	structured, ok := body["ask"].(map[string]any)
+	if !ok || body["for"] != "human-id" || body["new_dm"] != false || body["session_id"] != "" || structured["decision"] != "Single ask" || body["footer"] != "Next owner: none" || body["parent_id"] != "comment-id" {
 		test.Fatalf("wrong single-call body: %+v", body)
 	}
 }

@@ -27,6 +27,7 @@ import {
   applyChatMessageToCache,
   applyChatQuickActionsToCache,
   applyChatSessionUpdatedToCache,
+  applyDecisionAnswerUpdated,
   applyWorkspaceUpdatedToCache,
   handleInboxNew,
   invalidateChatMessageQueries,
@@ -1309,5 +1310,17 @@ describe("applyChatMessageToCache", () => {
     applyChatMessageToCache(qc, messagePayload());
     expect(qc.getQueryData<ChatMessage[]>(messagesKey)).toBeUndefined();
     expect(qc.getQueryData(chatKeys.messagesPage(sessionId))).toBeUndefined();
+  });
+});
+
+describe("applyDecisionAnswerUpdated", () => {
+  it("refreshes the issue timeline and every DM message list", () => {
+    const qc = createQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyDecisionAnswerUpdated(qc, { answer_id: "answer", issue_id: "issue-1", state: "disclaimed" });
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toContainEqual(issueKeys.timeline("issue-1"));
+    expect(keys).toContainEqual(chatKeys.messagesAll());
+    expect(keys).toContainEqual(chatKeys.messagesPageAll());
   });
 });

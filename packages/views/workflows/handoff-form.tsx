@@ -43,7 +43,7 @@ type HandoffMode = "none" | "agent" | "member";
 
 function modeOf(handler: IssueWorkflowStep["handler"]): HandoffMode {
   if (handler.type === "agent") return "agent";
-  if (handler.type === "member" || handler.type === "project_lead") return "member";
+  if (handler.type === "member" || handler.type === "project_lead" || handler.type === "human_by_role") return "member";
   return "none";
 }
 
@@ -105,12 +105,18 @@ export function WorkflowHandoffForm({
   workflow,
   statusKey,
   canEdit,
+  canCopyForProject = true,
   project,
   onSaved,
 }: {
   workflow: IssueWorkflow;
   statusKey: string;
   canEdit: boolean;
+  /**
+   * Whether saving for this project only is offered: the copy switches the
+   * project's workflow, which only admins and the project's lead may do.
+   */
+  canCopyForProject?: boolean;
   /** The project the form is opened from: the brief preview is for it. */
   project?: Pick<Project, "id" | "title">;
   onSaved?: () => void;
@@ -135,7 +141,7 @@ export function WorkflowHandoffForm({
   const handler = draft.handler;
   const needsTarget = (handler.type === "agent" || handler.type === "member") && !handler.id;
   const dirty = !sameStep(savedHandoff(draft), savedHandoff(saved));
-  const askScope = canEdit && dirty && !!project && !workflow.is_default && sharing.others.length > 0;
+  const askScope = canEdit && canCopyForProject && dirty && !!project && !workflow.is_default && sharing.others.length > 0;
   useEffect(() => {
     if (!dirty) setScope("all");
   }, [dirty]);
@@ -354,6 +360,11 @@ export function HandoffFields({
                       {t(($) => $.workflows.handoff.project_lead_hint)}
                     </p>
                   )}
+                  {step.handler.type === "human_by_role" && (
+                    <p className="mt-1.5 text-caption leading-5 text-muted-foreground">
+                      {t(($) => $.workflows.handoff.human_by_role_hint)}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -418,6 +429,7 @@ function HandlerPicker({
   const agentRows = kind === "agent" ? agents.filter((a) => !a.archived_at && matches(a.name)) : [];
   const memberRows = kind === "member" ? members.filter((m) => matches(m.name)) : [];
   const leadLabel = t(($) => $.workflows.handler.project_lead);
+  const humanLabel = t(($) => $.workflows.handler.human_by_role);
   const pick = (handler: IssueWorkflowStep["handler"]) => {
     onChange(handler);
     setOpen(false);
@@ -426,7 +438,9 @@ function HandlerPicker({
   const current =
     value.type === "project_lead"
       ? leadLabel
-      : value.id
+      : value.type === "human_by_role"
+        ? humanLabel
+        : value.id
         ? (value.type === "agent" ? agents.find((a) => a.id === value.id)?.name : members.find((m) => m.user_id === value.id)?.name) ?? ""
         : "";
   const placeholder = kind === "agent" ? t(($) => $.workflows.handoff.pick_agent) : t(($) => $.workflows.handoff.pick_member);
@@ -461,6 +475,11 @@ function HandlerPicker({
       {kind === "member" && !q && (
         <PickerItem selected={is("project_lead")} onClick={() => pick({ type: "project_lead" })}>
           <span className="truncate">{leadLabel}</span>
+        </PickerItem>
+      )}
+      {kind === "member" && !q && (
+        <PickerItem selected={is("human_by_role")} onClick={() => pick({ type: "human_by_role" })}>
+          <span className="truncate">{humanLabel}</span>
         </PickerItem>
       )}
       {agentRows.map((agent) => (

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -18,7 +19,7 @@ import (
 
 // Decision messages are announced by the decision ping, which already records
 // one item linked to the DM; notifying here would count them twice.
-var skippedKinds = map[string]bool{"decision_request": true, "decision_reference": true}
+var skippedKinds = map[string]bool{"decision_request": true, "decision_reference": true, protocol.ChatMessageKindDecisionCancelNotice: true}
 
 // Notified is the record a reply created or updated.
 type Notified struct {
@@ -51,6 +52,10 @@ func Reply(ctx context.Context, q *db.Queries, sessionID pgtype.UUID, message db
 	}
 	switches, err := q.GetDMChannelSwitches(ctx, db.GetDMChannelSwitchesParams{WorkspaceID: session.WorkspaceID, UserID: session.CreatorID})
 	if err != nil || (!switches.InApp && !switches.Push) {
+		return nil, err
+	}
+	allowed, err := inbox.AllowsDelivery(ctx, q, session.WorkspaceID, session.CreatorID, pgtype.UUID{}, false)
+	if err != nil || !allowed {
 		return nil, err
 	}
 	item, err := q.UpsertDMReplyInboxItem(ctx, db.UpsertDMReplyInboxItemParams{

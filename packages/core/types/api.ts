@@ -111,6 +111,13 @@ export interface IssueDuplicates {
   duplicates: Issue[];
 }
 
+export interface IssueRelations {
+  nodes: { id: string; identifier: string; title: string; status: string }[];
+  edges: { source: string; target: string; type: "parent" | "duplicate" | "wakeup" | "children_done" | "mention" | "shared_pr" | "unknown" }[];
+  omitted_count: number;
+  depth: 1 | 2;
+}
+
 /**
  * Server-owned drag intent. The client may use a provisional position for its
  * optimistic animation, but the canonical position is derived from these

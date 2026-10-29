@@ -14,9 +14,9 @@ Each user who runs AI agents locally also installs the **`multica` CLI** and run
 
 ## Anonymous Deployment Telemetry
 
-The self-hosted API server sends one first-party, deployment-level anonymous snapshot per UTC day to the fixed Multica endpoint `https://telemetry.multica.ai/v1/telemetry/events`. This helps maintainers understand which release versions are in use, deployment-size ranges, and aggregate run volume. The endpoint is compiled into the server and cannot be redirected through configuration.
+The self-hosted API server sends one first-party, deployment-level anonymous snapshot per UTC day to the fixed Multica endpoint `https://telemetry.multica.ai/v1/telemetry/events`. This helps maintainers understand which release versions are in use, deployment-size ranges, aggregate run volume, and how many members actively use a deployment. The endpoint is compiled into the server and cannot be redirected through configuration.
 
-The snapshot contains only the release version; bucketed counts of workspaces, distinct human members, active agents, and daemons seen in the previous 24 hours; and aggregate counts of runs started, completed, failed, and cancelled in that window. It does not include names, email addresses or domains, IP addresses, business IDs, host/device details, repository or organization details, model/plugin data, prompts or output, comments or chats, paths, token/cost data, credentials, errors, stacks, or logs. This telemetry is not used for billing, licensing, authentication, or security decisions.
+The snapshot contains only the release version; bucketed counts of workspaces, distinct human members, active agents, and daemons seen in the previous 24 hours; aggregate counts of runs started, completed, failed, and cancelled in that window; and bucketed counts of members who opened the signed-in web or desktop app, and of members who personally started an agent run (assign, mention, comment, chat, manual run, or rerun — not autopilot or agent-to-agent delegation), in the previous 1, 7, and 28 complete UTC days. Members are counted per deployment and are never identified. It does not include names, email addresses or domains, IP addresses, business IDs, host/device details, repository or organization details, model/plugin data, prompts or output, comments or chats, paths, token/cost data, credentials, errors, stacks, or logs. This telemetry is not used for billing, licensing, authentication, or security decisions.
 
 Telemetry is enabled by default. To stop both collection and network delivery, set `DO_NOT_TRACK=1` or `DO_NOT_TRACK=true` on the API server and recreate/restart the backend. The deployment identity remains in PostgreSQL, so enabling it again does not create a new identity. `ANALYTICS_DISABLED` controls the separate PostHog integration and does not disable this first-party telemetry.
 
@@ -102,7 +102,7 @@ Open http://localhost:3000 in your browser. The Docker self-host stack defaults 
 - **Without email configured:** the verification code is generated server-side and printed to the backend container logs (look for `[DEV] Verification code for ...:`). Useful for one-off testing on a single machine.
 - **Deterministic local/private testing:** set `APP_ENV=development` and `MULTICA_DEV_VERIFICATION_CODE=888888` in `.env`, then restart the backend. This fixed code is ignored when `APP_ENV=production`.
 
-Changes to `ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` also take effect after restarting the backend / compose stack. The web UI reads all three from `/api/config` at runtime, so no web rebuild is needed. See [Advanced Configuration → Signup Controls](SELF_HOSTING_ADVANCED.md#signup-controls-optional) for the recommended sequence to lock down workspace creation.
+Changes to `ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, `WORKSPACE_CREATION_ALLOWED_EMAILS`, and `GOOGLE_CLIENT_ID` also take effect after restarting the backend / compose stack. The web UI reads `ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` from `/api/config` at runtime, so no web rebuild is needed. `WORKSPACE_CREATION_ALLOWED_EMAILS` is read only by the backend and is not exposed through `/api/config`. See [Advanced Configuration → Signup Controls](SELF_HOSTING_ADVANCED.md#signup-controls-optional) for the recommended sequence to lock down workspace creation, or to limit it to selected users.
 
 > **Warning:** do **not** set `MULTICA_DEV_VERIFICATION_CODE` on a publicly reachable instance — anyone who knows an email address can then log in with that fixed code.
 
@@ -312,7 +312,7 @@ The chart defaults to `APP_ENV=production` (set in `values.yaml` under `backend.
   kubectl -n multica rollout restart deploy/multica-backend
   ```
 
-`ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` likewise live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, and `googleClientId`). After `helm upgrade`, the backend pod will roll automatically because the ConfigMap hash changes; the web UI reads all three from `/api/config` at runtime, so no web rebuild is needed.
+`ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, `WORKSPACE_CREATION_ALLOWED_EMAILS`, and `GOOGLE_CLIENT_ID` likewise live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, `workspaceCreationAllowedEmails`, and `googleClientId`). After `helm upgrade`, the backend pod will roll automatically because the ConfigMap hash changes; the web UI reads `allowSignup`, `disableWorkspaceCreation`, and `googleClientId` from `/api/config` at runtime, so no web rebuild is needed. `workspaceCreationAllowedEmails` is read only by the backend and is not exposed through `/api/config`.
 
 > **Warning:** do **not** set `MULTICA_DEV_VERIFICATION_CODE` on a publicly reachable instance — anyone who knows an email address can then log in with that fixed code.
 
@@ -535,3 +535,40 @@ multica daemon start
 ## Advanced Configuration
 
 For environment variables, manual setup (without Docker), reverse proxy configuration, database setup, and more, see the [Advanced Configuration Guide](SELF_HOSTING_ADVANCED.md).
+## Address-bar suggestions
+
+Each workspace publishes `/<workspace-slug>/opensearch.xml`. Its authenticated suggestions URL is `/api/search/suggestions?workspace_slug=<slug>&q=<typed-text>` on the web origin. To discover the matching engine in a signed-in self-hosted app, open the intended workspace once to set `last_workspace_slug`. Then type the exact web-origin root `/` in the address bar (for example, `https://multica.example/`), follow its redirect to that workspace, and activate the matching workspace engine in the browser's search-engine settings. This app-root flow applies to the self-hosted application, not the official marketing root, and does not guarantee Brave registration. Existing entries must be deleted, re-discovered and activated after upgrading; browsers can retain an old template.
+
+In Brave, turn **Improve search suggestions** on at `brave://settings/search`. Type your Multica keyword, press Tab, and type at least two characters. Suggestions contain up to five issue identifiers/titles and three project titles. Only title or identifier matches appear, including closed issues. Choosing an issue row opens that issue; choosing a project row searches its title. A query or project title that starts with this workspace's issue identifier also opens that issue instead of the palette.
+
+Suggestions require a valid human session and workspace membership. Logged-out requests receive no titles. Human personal access tokens remain supported through the Authorization header; agent task tokens are refused. No tokens or credentials belong in the URL. Cookie attributes are unchanged.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `SEARCH_SUGGESTIONS_ENABLED` | `true` | Set to `false` to return empty suggestions before authentication or database work. |
+| `RATE_LIMIT_SEARCH_SUGGESTIONS` | `120` | Requests per signed-in user per sliding minute. |
+| `SEARCH_SUGGESTIONS_MAX_CONCURRENT` | `4` | Suggestions requests in flight per backend process. |
+
+Set these in the self-hosting Compose environment and recreate the backend container. The limiter works in memory without Redis and uses Redis when configured. Redis failure is fail-open; the process cap and 1500 ms request/database timeout remain active. The cap is shared by all users of one process, so one fast typist can briefly occupy every slot. No global IP limiter is changed. Each request runs the existing issue and project searches sequentially; the palette keeps its 8-second database timeout.
+
+Responses have `Cache-Control: no-store`, `Vary: Cookie`, and `X-Content-Type-Options: nosniff`. Cross-origin pages receive no CORS read permission. A request's outcome appears in `X-Search-Suggestions-Outcome` and a log line containing only outcome and duration. When metrics are enabled, `multica_search_suggestions_requests_total` and `multica_search_suggestions_duration_seconds` use outcome labels only. Typed text is never written to suggestions, search-failure or router access logs. Next.js development logging suppresses address-bar request URLs. Suggestions send each keystroke's text to your server; selected text enters browser history and may sync with Brave Sync.
+
+Reverse proxies must preserve the browser-visible scheme, hostname and port in forwarded headers. Set `MULTICA_APP_URL` to the public web origin if the proxy cannot do this. Verify both templates in the served OpenSearch XML. Use path-only access logging without query strings or referrers. The supplied C00 router template does this in both server blocks; it takes effect only through the normal release, not an agent's live change.
+
+| Symptom / outcome | Cause | Action |
+| --- | --- | --- |
+| No requests at all | Brave setting off or stale engine entry | Turn Improve search suggestions on; delete and re-discover the engine. |
+| Wrong host/scheme/port | Reverse-proxy origin mismatch | Correct forwarded headers or `MULTICA_APP_URL`; re-discover. |
+| `unauthenticated` | Missing, expired or invalid session | Sign in on the engine's web origin. |
+| `not_member` | Unknown workspace or missing membership | Use an accessible workspace's engine. |
+| `forbidden` | Agent credentials or denied human access | Use a valid human session. |
+| `bad_request` | Missing workspace slug | In the signed-in self-hosted app, open the intended workspace once, type its web-origin root `/`, follow the redirect, and activate the matching engine. |
+| `throttled` | Per-user budget exceeded | Wait for `Retry-After`. |
+| `over_cap` | All process slots are occupied | Retry after load falls. |
+| `timeout`, `cancelled`, `error` | Slow, abandoned or failed search | Empty suggestions preserve plain site search; inspect query-free outcomes. |
+| `disabled` | Operator switch off | Enable the setting and recreate the container. |
+| `too_short`, `too_long`, `empty` | Outside 2–200 trimmed characters or no visible match | Refine the typed text. |
+
+Contributors can run `make up`, sign in with the development email/code shown by the managed environment, and discover the engine on its localhost web port. Plain localhost HTTP is enough for local Chromium testing; reproducing the production Secure cookie needs an HTTPS preview. A browser's own suggestion setting disables fetches independently of the operator switch.
+
+Before merge, record a real Brave preview screenshot and an issue-selection round trip. After Cheese merges and the normal C00 release runs, verify both served templates, re-discover the C00 engine, and record Cheese's screenshot/selection plus query-free outcomes and latency. Agents never merge or deploy production for this check.

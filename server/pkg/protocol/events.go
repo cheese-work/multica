@@ -20,6 +20,10 @@ const (
 	EventIssueReactionAdded   = "issue_reaction:added"
 	EventIssueReactionRemoved = "issue_reaction:removed"
 
+	// Decision events. The payload carries answer_id, issue_id and state
+	// (pending | effective | disclaimed); clients refetch the affected cards.
+	EventDecisionAnswerUpdated = "decision_answer:updated"
+
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { parse } from "yaml";
 
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
@@ -14,11 +15,27 @@ vi.mock("./code-block-static", () => ({
   ),
 }));
 
+const orientationSetting = vi.hoisted(() => ({ value: "auto" as "auto" | "author" }));
+vi.mock("@multica/core/workspace/mermaid-orientation", () => ({
+  useMermaidOrientationSetting: () => orientationSetting.value,
+}));
+
 const copyTextMock = vi.hoisted(() => vi.fn().mockResolvedValue(true));
 vi.mock("@multica/ui/lib/clipboard", () => ({ copyText: copyTextMock }));
 
 const mermaidRenderMock = vi.hoisted(() => vi.fn());
 const mermaidInitializeMock = vi.hoisted(() => vi.fn());
+const viewerPropsMock = vi.hoisted(() => vi.fn());
+vi.mock("./mermaid-viewer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mermaid-viewer")>();
+  return {
+    ...actual,
+    MermaidViewer: (props: Parameters<typeof actual.MermaidViewer>[0]) => {
+      viewerPropsMock(props);
+      return <actual.MermaidViewer {...props} />;
+    },
+  };
+});
 vi.mock("mermaid", () => ({
   default: { initialize: mermaidInitializeMock, render: mermaidRenderMock },
 }));
@@ -26,6 +43,7 @@ vi.mock("mermaid", () => ({
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
 import { MermaidDiagram } from "./mermaid-diagram";
+import { hashSource } from "./utils/source-hash";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
 const VIEWPORT = { width: 800, height: 400 };
@@ -52,8 +70,10 @@ beforeEach(() => {
   // and an unconsumed *Once implementation would leak into the next test.
   mermaidRenderMock.mockReset();
   mermaidRenderMock.mockResolvedValue({ svg: MOCK_SVG });
-  mermaidInitializeMock.mockClear();
+  viewerPropsMock.mockClear();
   copyTextMock.mockClear();
+  orientationSetting.value = "auto";
+  window.sessionStorage.clear();
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
     value: () => ({
@@ -139,6 +159,54 @@ async function expectViewerStaysClosed() {
   });
   expect(screen.queryByRole("application")).toBeNull();
 }
+
+describe("MermaidDiagram lifecycle", () => {
+  it("initializes Mermaid once across diagrams and theme changes", async () => {
+    render(<><MermaidDiagram chart={CHART} /><MermaidDiagram chart="graph TD\n X --> Y" /></>);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+    act(() => document.documentElement.classList.add("dark"));
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(4));
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds the viewer document only while the viewer is open", async () => {
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toBeNull();
+    await openViewer();
+    expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain(MOCK_SVG);
+  });
+
+  it("keeps frontmatter and supplies theme colors per render", async () => {
+    render(<MermaidDiagram chart={`---\ntitle: Preserved title\nconfig:\n  flowchart:\n    curve: linear\n---\n${CHART}`} />);
+    await findFrame();
+    const source = mermaidRenderMock.mock.lastCall?.[1];
+    expect(source).toContain("Preserved title");
+    expect(source).toContain("linear");
+    expect(source).toContain("rgb(12, 34, 56)");
+  });
+
+  it.each([
+    { name: "without frontmatter", chart: CHART, theme: "base" },
+    {
+      name: "with unthemed frontmatter",
+      chart: `---\nconfig:\n  flowchart:\n    curve: linear\n---\n${CHART}`,
+      theme: "base",
+    },
+    {
+      name: "with an explicit author theme",
+      chart: `---\nconfig:\n  theme: neutral\n---\n${CHART}`,
+      theme: "neutral",
+    },
+  ])("sets the render theme $name", async ({ chart, theme }) => {
+    render(<MermaidDiagram chart={chart} />);
+    await findFrame();
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
+    expect(frontmatter).not.toBeNull();
+    expect(parse(frontmatter![1]!).config.theme).toBe(theme);
+  });
+});
 
 describe("MermaidDiagram theme changes", () => {
   it(
@@ -558,6 +626,140 @@ describe("MermaidDiagram error state", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy diagram source" }));
     await waitFor(() => {
       expect(copyTextMock).toHaveBeenCalledWith(CHART);
+    });
+  });
+});
+
+describe("MermaidDiagram orientation", () => {
+  const renderedSources = () => mermaidRenderMock.mock.calls.map((call) => call[1] as string);
+
+  /** Width per surface: the inline column, and the viewer's canvas. */
+  function stubWidths({ inline, viewer = inline }: { inline: number; viewer?: number }) {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = this.classList.contains("zoom-canvas") ? viewer : inline;
+      return {
+        bottom: 400, height: 400, left: 0, right: width, top: 0, width, x: 0, y: 0,
+        toJSON: () => ({}),
+      };
+    });
+  }
+
+  function stubResizeObserver() {
+    const callbacks = new Set<(entries: unknown[]) => void>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private callback: (entries: unknown[]) => void) {}
+        observe() { callbacks.add(this.callback); }
+        unobserve() {}
+        disconnect() { callbacks.delete(this.callback); }
+      },
+    );
+    return () => act(() => callbacks.forEach((callback) => callback([])));
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("measures before the first render and draws a narrow column top-down", async () => {
+    stubWidths({ inline: 400 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+    expect(renderedSources()[0]).toContain("graph TD");
+  });
+
+  it("leaves a wide column as the author wrote it", async () => {
+    stubWidths({ inline: 800 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(renderedSources()[0]).toContain("graph LR");
+  });
+
+  it("splits at 640 px on the first measure", async () => {
+    stubWidths({ inline: 630 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(renderedSources()[0]).toContain("graph TD");
+  });
+
+  it("draws the author's direction when the workspace setting is author", async () => {
+    orientationSetting.value = "author";
+    stubWidths({ inline: 400 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(renderedSources()[0]).toContain("graph LR");
+  });
+
+  it("records the orientation in the chart-keyed layout cache entry", async () => {
+    stubWidths({ inline: 400 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    await waitFor(() => {
+      const raw = window.sessionStorage.getItem(`multica:mermaid:layout:${hashSource(CHART)}`);
+      expect(JSON.parse(raw ?? "{}")).toMatchObject({ orientation: "vertical" });
+    });
+  });
+
+  it("re-renders once when the width leaves the band, and not inside it", async () => {
+    const resize = stubResizeObserver();
+    stubWidths({ inline: 800 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+
+    stubWidths({ inline: 650 });
+    resize();
+    await act(async () => {});
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+
+    stubWidths({ inline: 500 });
+    resize();
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(renderedSources()[1]).toContain("graph TD");
+
+    stubWidths({ inline: 640 });
+    resize();
+    await act(async () => {});
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders the viewer in its own orientation when its width differs", async () => {
+    mermaidRenderMock.mockImplementation(async (_id: string, source: string) => ({
+      svg: `<svg viewBox="0 0 1000 500"><text>${source.includes("graph LR") ? "variant-LR" : "variant-TD"}</text></svg>`,
+    }));
+    stubWidths({ inline: 400, viewer: 1200 });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+
+    await openViewer();
+    await waitFor(() => {
+      expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-LR");
+    });
+    expect(viewerPropsMock.mock.lastCall?.[0].chart).toBe(CHART);
+    expect(document.querySelector(".mermaid-diagram-frame")?.getAttribute("srcdoc")).toContain(
+      "variant-TD",
+    );
+  });
+
+  it("drops the viewer variant when the setting changes to author with the viewer open", async () => {
+    mermaidRenderMock.mockImplementation(async (_id: string, source: string) => ({
+      svg: `<svg viewBox="0 0 1000 500"><text>${source.includes("graph LR") ? "variant-LR" : "variant-TD"}</text></svg>`,
+    }));
+    stubWidths({ inline: 1200, viewer: 400 });
+    const { rerender } = render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    await openViewer();
+    await waitFor(() => {
+      expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-TD");
+    });
+
+    orientationSetting.value = "author";
+    rerender(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => {
+      expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-LR");
     });
   });
 });

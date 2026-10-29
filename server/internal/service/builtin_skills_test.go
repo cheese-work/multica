@@ -498,6 +498,13 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				// the routing rule they encoded.
 				"workflow state a human should see and filter by goes in",
 				"goes in the result comment",
+				// #8001: --property comparisons. The op-by-type table is the
+				// only thing between an agent and a silently empty page, and
+				// the two rejections are the cases it would otherwise retry.
+				"Comparisons use the same flag",
+				"`~=` (contains, case-insensitive)",
+				"`!=` is rejected (the server has no not-equal filter)",
+				"so they do not form a range",
 				// #7768: nothing about concurrent runs is pushed into the
 				// prompt any more (MUL-6984), so the skill has to carry the
 				// pull path itself. All three anchors are load-bearing — the
@@ -529,6 +536,9 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"High-signal keys",
 				"reuse these names so queries stay consistent",
 				"scratchpad for run state",
+				// #8001 replaced the reservation with the operators; a bullet
+				// that says only `=` works would contradict the one below it.
+				"Only `=` is supported today",
 				// Per-turn workflow the runtime brief owns; duplicating it here
 				// is how the two drift apart.
 				"Start from the trigger, not from memory",
@@ -894,4 +904,18 @@ func splitFrontmatter(content string) (map[string]string, string, bool) {
 		fm[strings.TrimSpace(key)] = value
 	}
 	return fm, body, true
+}
+
+// CHE-2070: agents learn the resolve step from the platform skill, not only
+// from the brief.
+func TestPlatformSkillTeachesResolveThread(t *testing.T) {
+	data, err := builtinSkillsFS.ReadFile("builtin_skills/multica-platform/references/issues.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--resolve-thread"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("issues.md does not mention %s", want)
+		}
+	}
 }

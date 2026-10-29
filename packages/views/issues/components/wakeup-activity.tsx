@@ -151,7 +151,11 @@ export function formatWakeupActivity(
     t(($) => $.activity.wakeup_assignee);
   switch (entry.action) {
     case "wakeup_created":
-      return t(($) => $.activity.wakeup_created, { condition, agent });
+      // A time rule's label already says "wake at ...", so the sentence names
+      // the agent up front instead of repeating "wake" after it.
+      return preview && !preview.condition && preview.kind !== "event"
+        ? t(($) => $.activity.wakeup_created_scheduled, { condition, agent })
+        : t(($) => $.activity.wakeup_created, { condition, agent });
     case "wakeup_triggered": {
       if (details.rule === "child_done") {
         const count = details.total ?? 1;
@@ -183,6 +187,10 @@ export function formatWakeupActivity(
       const fired = triggerOf(details, preview, t, text, getActorName);
       if (details.outcome === "merged") return t(($) => $.activity.wakeup_triggered_merged, { condition: fired, agent: woken });
       if (details.outcome === "acknowledged") return t(($) => $.activity.wakeup_triggered_acknowledged, { condition: fired, agent: woken });
+      if (details.rule === "pr_needs_attention" || details.rule === "pr_checks_failed") {
+        if (details.outcome === "notified") return fired + t(($) => $.activity.wakeup_child_done_notified, { name: woken });
+        if (details.outcome === "none") return fired;
+      }
       return t(($) => $.activity.wakeup_triggered, { condition: fired, agent: woken });
     }
     case "wakeup_skipped": {

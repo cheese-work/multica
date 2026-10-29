@@ -11,6 +11,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useIssueWorkflows, useProjectWithWorkflow, useSetIssueWorkflow } from "@multica/core/issue-workflows";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../common/actor-avatar";
@@ -20,6 +21,7 @@ import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
 import { useWorkflowPermissions } from "./permissions";
 import { stepHandlerActor, useStepHandlerLabel } from "./step-handler";
+import { WorkflowGraph } from "./workflow-graph";
 
 /** Whether the issue's workflow row has anything to show: a workflow, or a switch for its managers. */
 export function useIssueFlowVisible(projectId: string | null, workflowId: string | null | undefined): boolean {
@@ -55,11 +57,12 @@ export function IssueFlowCard({
   const catalog = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
   const { project, workflow } = useProjectWithWorkflow(wsId, projectId, workflowId);
-  const { isAdmin, canManageProject } = useWorkflowPermissions(project);
+  const { canCreateWorkflow, canManageProject } = useWorkflowPermissions(project);
   const { workflows } = useIssueWorkflows(wsId);
   const setWorkflow = useSetIssueWorkflow();
   const handlerLabel = useStepHandlerLabel(project);
   const [open, setOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
   const canSwitch = enabled && canManageProject;
   if (!workflow && !canSwitch) return null;
 
@@ -73,6 +76,7 @@ export function IssueFlowCard({
     );
 
   return (
+    <>
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
@@ -127,8 +131,19 @@ export function IssueFlowCard({
             );
           })}
         </ol>
-        {workflow && !workflowId && (
-          <p className="mt-2 text-caption text-muted-foreground">{t(($) => $.workflows.detail.card_hint)}</p>
+        {workflow && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-1 w-full justify-start"
+            onClick={() => {
+              setOpen(false);
+              setGraphOpen(true);
+            }}
+          >
+            <Workflow aria-hidden className="size-3.5" />
+            {t(($) => $.workflows.detail.flowchart)}
+          </Button>
         )}
         {canSwitch && (
           <div className="-mx-3 mt-2 border-t border-surface-border px-1 pt-1">
@@ -160,8 +175,8 @@ export function IssueFlowCard({
             ))}
           </div>
         )}
-        {isAdmin && enabled && (
-          <div className="-mx-3 -mb-3 mt-1 border-t border-surface-border p-1">
+        {canCreateWorkflow && enabled && (
+          <div className="-mx-3 -mb-3 mt-2 border-t border-surface-border p-1">
             <Button
               variant="ghost"
               size="sm"
@@ -178,5 +193,16 @@ export function IssueFlowCard({
         )}
       </PopoverContent>
     </Popover>
+    {workflow && (
+      <Dialog open={graphOpen} onOpenChange={setGraphOpen}>
+        <DialogContent className="sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>{workflow.name}</DialogTitle>
+          </DialogHeader>
+          <WorkflowGraph workflow={workflow} currentStatus={currentStatus} project={project} />
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 }

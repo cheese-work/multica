@@ -140,6 +140,18 @@ in transit, not a compromised server.
 **macOS limitation.** The darwin builds are cross-compiled on Linux and are
 not signed or notarized. Running one on a Mac is not covered by CI.
 
+### Freezing updates (CHE-2056)
+
+Create `~/.multica/UPDATE_FREEZE` (contents = the reason, e.g. the pending
+owner packet) to stop `multica update`, the daemon auto-update poller and the
+Runtimes-page updater. Each refuses with the file path and reason, and the
+daemon reports the refusal to the server. Delete the file when the packet
+closes; the next poll resumes. `MULTICA_UPDATE_FREEZE_FILE` overrides the path.
+
+The freeze does not stop `scripts/install-cli-from-ref.sh` or any other out of
+band binary replacement; the daemon's auto-reload still follows such a binary.
+Do not run either while the file exists.
+
 ## Quick Start
 
 ```bash
@@ -417,6 +429,7 @@ The daemon auto-detects these AI CLIs on your PATH:
 | Kimi | `kimi` | Moonshot coding agent |
 | [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) | `reasonix` | DeepSeek-focused ACP coding agent (run `reasonix setup` first) |
 | Dim | `dim` | DimCode ACP coding agent (speaks the ACP protocol via `dim acp`) |
+| [Devin CLI](https://docs.devin.ai/cli/quickstart) | `devin` | Version 3000.3.22+. Host-local ACP (`devin acp`), not cloud Devin VMs. Run `devin auth login` first. |
 | Kiro CLI | `kiro-cli` | Kiro ACP coding agent |
 | [Qoder CLI](https://docs.qoder.com/) | `qodercli` | Qoder ACP coding agent |
 | [Qoder CN CLI](https://help.aliyun.com/en/lingma/qodercli-cn/product-overview/what-is-qoder-cli-cn) | `qoderclicn` | Qoder CN ACP coding agent |
@@ -520,7 +533,7 @@ Agent-specific overrides:
 | `MULTICA_OPENCODE_PATH` | Custom path to the `opencode` binary |
 | `MULTICA_OPENCODE_MODEL` | Override the OpenCode model used |
 | `MULTICA_OPENCLAW_PATH` | Custom path to the `openclaw` binary |
-| `MULTICA_OPENCLAW_MODEL` | Override the OpenClaw model used |
+| `MULTICA_OPENCLAW_MODEL` | Select the registered OpenClaw agent ID used by default; the agent's `runtime_config.model_override` persistently overrides its underlying model for all newly claimed runs until changed or cleared |
 | `MULTICA_OPENCLAW_CLI_TIMEOUT` | Deadline for each `openclaw config ...` call during task preparation (default 30s; accepts `45s` or `45`). Raise it when the local CLI is slow to start; the daemon also reads it from `backends.openclaw.cli_timeout` in the CLI config |
 | `MULTICA_HERMES_PATH` | Custom path to the `hermes` binary |
 | `MULTICA_HERMES_MODEL` | Override the Hermes model used |
@@ -534,6 +547,8 @@ Agent-specific overrides:
 | `MULTICA_REASONIX_MODEL` | Override the Reasonix model used |
 | `MULTICA_DIM_PATH` | Custom path to the `dim` binary |
 | `MULTICA_DIM_MODEL` | Override the Dim model used |
+| `MULTICA_DEVIN_PATH` | Custom path to the `devin` binary |
+| `MULTICA_DEVIN_MODEL` | Override the Devin model used |
 | `MULTICA_KIRO_PATH` | Custom path to the `kiro-cli` binary |
 | `MULTICA_KIRO_MODEL` | Override the Kiro model used |
 | `MULTICA_QODER_PATH` | Custom path to the `qodercli` binary |
@@ -724,13 +739,23 @@ multica issue list --metadata pipeline_status=waiting_review
 multica issue list --metadata pr_number=482 --metadata is_blocked=true
 ```
 
-Use `--property "Name=Value"` (repeatable; one value per flag) to filter by custom property. Names and select option values are case-insensitive and resolve to ids; repeating the same property matches any of its values, different properties must all match. Values are option names or ids (select types), `true`/`false` (checkbox), a member name, email, or id (actor types), or the stored value itself for `text`, `url`, `number`, and `date` (`YYYY-MM-DD`). Only `=` is supported today; the `>=`, `<=` and `!=` spellings are reserved for comparison filters and are rejected. The reserved value `__none__` matches issues where the property is unset:
+Use `--property "Name=Value"` (repeatable; one member per flag) to filter by custom property. Names and select option values are case-insensitive and resolve to ids; repeating the same property matches any of its members, different properties must all match. Values are option names or ids (select types), `true`/`false` (checkbox), a member name, email, or id (actor types), or the stored value itself for `text`, `url`, `number`, and `date` (`YYYY-MM-DD`). The reserved value `__none__` matches issues where the property is unset:
 
 ```bash
 multica issue list --property "Impact=High" --property "Impact=Medium"
 multica issue list --property "Impact=__none__" --status in_review
 multica issue list --property "Score=42" --property "Ship Date=2026-08-28"
 ```
+
+Comparisons go in the same flag. `number` takes `>`, `>=`, `<` and `<=`; `date` takes `>` (after) and `<` (before); `text` and `url` take `~=` (contains, case-insensitive, matched exactly as typed). Quote the flag so the shell does not read `<` and `>` as redirection:
+
+```bash
+multica issue list --property "Score>=3" --property "Impact=High"
+multica issue list --property "Ship Date<2026-09-01" --status todo
+multica issue list --property "Notes~=follow up"
+```
+
+A comparison on a type that cannot honour it is rejected with an error naming the type. So is `!=` (the server has no not-equal filter), and so are `>=` and `<=` on a date: the server only compares dates strictly, and the error names the strict form to use instead. Repeating a property ORs its members, so `"Score>1"` plus `"Score<10"` is not a range. A property whose name contains `=`, `<`, `>`, `!` or `~` has to be given by its UUID.
 
 In JSON output, `properties` is a map from definition id to the stored value: an option id for `select`, a list of option ids for `multi_select`, a `member:<uuid>` reference for the actor types, and the value itself otherwise. Pass `--resolve-properties` to replace that map with the rows `issue property list` prints, one per set property, in catalog order: `property_id`, `name`, `type`, the stored `value`, a human `display`, `display_values` (the per-item names of a `multi_select` or `multi_actor` value) and `archived` when the definition is archived. Archived definitions still resolve, since their values stay on the issue. An option that is no longer in the definition, or a member who has left the workspace, keeps its raw id in `display`. The flag adds at most two requests: the catalog, shared with `--property` and `--sort property:`, and the member list, fetched only when an actor `--property` filter or an actor value on the page needs it and shared between the two. If either request fails the command fails rather than printing ids. In JSON output it combines with `--fields` only when that list keeps `properties`; a `--fields` list without it is rejected rather than resolving a key the same command would delete. The flag has no effect on `--output table`, where it and `--fields` are both ignored and neither is rejected.
 
@@ -745,6 +770,15 @@ multica issue get <id>
 multica issue get <id> --output json
 multica issue get <id> --resolve-properties   # property names beside the ids, as in issue list
 ```
+
+### Issue Relations
+
+```bash
+multica issue relations <id> --output json
+multica issue relations <id> --depth 2 --output json
+```
+
+Returns the same `nodes`, typed `edges`, `depth` and `omitted_count` as the sidebar graph. Traversal includes both directions: issues this issue references and issues that wait on or mention it. Depth defaults to 1; only 1 and 2 are accepted. The response contains at most 40 nodes, restricted to the issue's workspace and the caller's access. No issue state is changed. See [issue relations](docs/engineering/issue-relations.md) for edge directions and sources.
 
 ### Create Issue
 
@@ -1045,7 +1079,7 @@ multica issue list --project <project-id>
 
 Read and edit project workflows (the per-status handler and `instructions` an
 issue gets when it enters a status). Any member can read; the server allows
-writes only to workspace owners and admins, and a `403` is reported as such.
+writes only to workspace owners and admins using a human credential (an agent task token gets `403`), and a `403` is reported as such.
 
 ```bash
 multica workflow list                          # table; --output json for the raw array

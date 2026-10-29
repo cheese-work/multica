@@ -39,7 +39,12 @@ type TimelineEntry struct {
 	CommentType *string `json:"comment_type,omitempty"`
 	// Set only on comments produced by a quick action run. Unforgeable: there
 	// is no request field for it on the generic comment endpoint.
-	QuickActionID  *string              `json:"quick_action_id,omitempty"`
+	QuickActionID *string `json:"quick_action_id,omitempty"`
+	// Set only on comments stamped by the decision flow. The card fields mirror
+	// CommentResponse; DM pointers appear only for the request's human.
+	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
+	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
+	DecisionCommentFields
 	Reactions      []ReactionResponse   `json:"reactions,omitempty"`
 	Attachments    []AttachmentResponse `json:"attachments,omitempty"`
 	ResolvedAt     *string              `json:"resolved_at,omitempty"`
@@ -291,6 +296,8 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 	reactions := h.groupReactions(r, ids)
 	attachments := h.groupAttachments(r, ids)
 	supplements := h.listCommentSupplements(r.Context(), comments[0].WorkspaceID, ids)
+	viewer := decisionViewer(r)
+	decisions := h.decisionCommentFields(r.Context(), comments[0].WorkspaceID, comments, viewer)
 
 	out := make([]TimelineEntry, len(comments))
 	for i, c := range comments {
@@ -317,6 +324,10 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 			ResolvedByID:   uuidToPtr(c.ResolvedByID),
 			SourceTaskID:   uuidToPtr(c.SourceTaskID),
 			DeletedAt:      timestampToPtr(c.DeletedAt),
+
+			DecisionCommentKind:   textToPtr(c.DecisionCommentKind),
+			DecisionAnswerID:      uuidToPtr(c.DecisionAnswerID),
+			DecisionCommentFields: decisions[cid],
 		}
 		if receipts := supplements[cid]; len(receipts) > 0 {
 			out[i].Supplements = receipts

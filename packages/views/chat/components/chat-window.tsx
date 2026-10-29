@@ -26,6 +26,8 @@ import {
   useWorkspaceAgentAvailability,
 } from "@multica/core/agents";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { DeferredTooltip } from "../../common/deferred-tooltip";
+import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useAppForeground } from "../../common/use-app-foreground";
 import {
   RowActionsMenu,
@@ -67,6 +69,7 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatTaskActions } from "./use-chat-task-actions";
 import { useChatInputFocus } from "./use-chat-input-focus";
+import { useQuoteRequest } from "./use-quote-request";
 import { ChatWindowMessages } from "./chat-window-messages";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 import { useChatAnnotations } from "./use-chat-annotations";
@@ -162,6 +165,7 @@ export function ChatWindow() {
   // chat starts (⊕ or switching agent), and whenever the window itself opens.
   const windowRef = useRef<HTMLDivElement>(null);
   const { focusRequest, requestInputFocus } = useChatInputFocus(isOpen, windowRef);
+  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const [conversationStarterRequest, setConversationStarterRequest] = useState<{
     id: number;
     content: string;
@@ -409,6 +413,7 @@ export function ChatWindow() {
       attachmentIds?: string[],
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
+      decisionRequestId?: string,
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -487,7 +492,7 @@ export function ChatWindow() {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, ...(decisionRequestId ? [decisionRequestId] as const : []));
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         const reason = dispatchReasonCode(err);
@@ -899,7 +904,10 @@ export function ChatWindow() {
             >
               <Minus />
             </TooltipTrigger>
-            <TooltipContent side="top">{t(($) => $.window.minimize_tooltip)}</TooltipContent>
+            <TooltipContent side="top">
+              {t(($) => $.window.minimize_tooltip)}
+              <ActionShortcutKeycaps action="toggleChat" />
+            </TooltipContent>
           </Tooltip>
         </div>
       </div>
@@ -930,6 +938,7 @@ export function ChatWindow() {
               noAgent
             }
             quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+            onQuoteMessage={quote}
           >
             <EmptyState
               agent={activeAgent}
@@ -983,6 +992,8 @@ export function ChatWindow() {
         onRename={handleRename}
         onFork={canForkSession(currentSession) ? handleFork : undefined}
         restoreDraftRequest={restoreDraftRequest}
+        quoteRequest={quoteRequest}
+        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
         onRestoreDraftApplied={handleRestoreDraftApplied}
@@ -1544,31 +1555,33 @@ function SessionDropdown({
                 groups={[rowActions]}
               />
               <div className="hidden h-7 items-center gap-0.5 [@media(hover:hover)]:group-hover/history-row:flex [@media(hover:hover)]:group-focus-within/history-row:flex">
-                {rowActions.map((action) => (
-                  <button
-                    key={action.key}
-                    type="button"
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      action.onSelect();
-                    }}
-                    className={
-                      action.danger
-                        ? "inline-flex h-7 items-center gap-1 rounded-xs px-1.5 text-micro font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus-visible:outline-none"
-                        : "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
-                    }
-                    aria-label={action.label}
-                    title={action.label}
-                  >
-                    {action.icon}
-                    {action.stripText}
-                  </button>
-                ))}
+                {rowActions.map((action) => {
+                  const button = (
+                    <button
+                      key={action.key}
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        action.onSelect();
+                      }}
+                      className={
+                        action.danger
+                          ? "inline-flex h-7 items-center gap-1 rounded-xs px-1.5 text-micro font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus-visible:outline-none"
+                          : "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+                      }
+                      aria-label={action.label}
+                    >
+                      {action.icon}
+                      {action.stripText}
+                    </button>
+                  );
+                  return <DeferredTooltip key={action.key} content={action.label} trigger={button} />;
+                })}
               </div>
             </div>
           )

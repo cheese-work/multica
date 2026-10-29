@@ -61,9 +61,8 @@ func TestCompleteTask_PersistsProtocolLintRun_WithViolation(t *testing.T) {
 	dbfx.Cleanup(t, `DELETE FROM protocol_lint_run WHERE task_id = $1`, taskID)
 
 	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
-		map[string]any{"output": "Done."},
-		testWorkspaceID, "legit-daemon")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
+		map[string]any{"output": "Done."})
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -118,9 +117,8 @@ func TestCompleteTask_PersistsProtocolLintRun_Clean(t *testing.T) {
 	dbfx.Cleanup(t, `DELETE FROM protocol_lint_run WHERE task_id = $1`, taskID)
 
 	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
-		map[string]any{"output": "Done."},
-		testWorkspaceID, "legit-daemon")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
+		map[string]any{"output": "Done."})
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))

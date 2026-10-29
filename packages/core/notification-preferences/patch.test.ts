@@ -6,6 +6,31 @@ import {
 } from "./patch";
 
 describe("notification preference patches", () => {
+  it("patches the focused delivery setting without changing event mutes", () => {
+    expect(
+      deriveNotificationPreferencePatch(
+        { comments: "muted" },
+        { comments: "muted", unassigned_activity: "muted" },
+      ),
+    ).toEqual({ unassigned_activity: "muted" });
+    expect(
+      applyNotificationPreferencePatch(
+        { comments: "muted", system_notifications: "muted" },
+        { unassigned_activity: "muted" },
+      ),
+    ).toEqual({ comments: "muted", system_notifications: "muted", unassigned_activity: "muted" });
+    expect(
+      deriveNotificationPreferencePatch({ unassigned_activity: "muted" }, {}),
+    ).toEqual({ unassigned_activity: "all" });
+    expect(
+      rollbackNotificationPreferencePatch(
+        { unassigned_activity: "muted", comments: "muted" },
+        { unassigned_activity: "muted" },
+        {},
+      ),
+    ).toEqual({ comments: "muted" });
+  });
+
   it("sends only the changed key when another muted preference is present", () => {
     expect(
       deriveNotificationPreferencePatch(

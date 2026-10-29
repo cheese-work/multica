@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"log/slog"
 	"sort"
 	"time"
@@ -76,7 +77,10 @@ type IssueCreateParams struct {
 	ParentIssueID pgtype.UUID
 	ProjectID     pgtype.UUID
 	// WorkflowID is the issue's workflow override; invalid inherits the project's.
-	WorkflowID    pgtype.UUID
+	WorkflowID pgtype.UUID
+	// RequestedByID is the member this issue was created for; the "human by
+	// role" handler hands the issue to them first. Invalid when none.
+	RequestedByID pgtype.UUID
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
@@ -201,6 +205,8 @@ func (e *IssuePropertyValidationError) Error() string { return e.Message }
 // it arrived, so retrying against the refreshed catalog is the remedy.
 var ErrIssueStatusUnavailable = errors.New("issue status is no longer available")
 
+var ErrAgentIssueApproval = errors.New("only members can set approved")
+
 var ErrSourceContextAlreadyAttached = errors.New("source context is already attached")
 
 // IssueCreateResult is the typed return from IssueService.Create.
@@ -248,6 +254,9 @@ type IssueCreateResult struct {
 // Caller-owned validation is limited to transport-shaped checks: title
 // required, RFC3339 date format, assignee pair sanity.
 func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
+	if p.CreatorType == "agent" && p.Status == "approved" {
+		return IssueCreateResult{}, ErrAgentIssueApproval
+	}
 	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, p.WorkspaceID)
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -255,6 +264,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if p.CreatorType == "agent" {
+		if _, err := qtx.LockWorkspaceForChatSessionCreate(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 
 	properties, err := validateIssueCreateProperties(ctx, tx, qtx, p.WorkspaceID, p.Properties)
 	if err != nil {
@@ -293,6 +307,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// (MUL-6243, MUL-7420)
 	if projectID.Valid || p.WorkflowID.Valid || !issuestatus.IsBuiltIn(p.Status) {
 		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
+	if p.CreatorType == "agent" {
+		if err := RequireActiveProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}
@@ -448,6 +467,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 			Stage:         p.Stage,
@@ -472,6 +492,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			Number:        issueNumber,
 			ProjectID:     projectID,
 			WorkflowID:    p.WorkflowID,
+			RequestedByID: p.RequestedByID,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})
@@ -607,6 +628,13 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	s.captureCreatedAnalytics(issue, p.CreatorType, actorID, opts)
 	if opts.AssignedAgentRunFireAt.IsZero() {
 		assignedTaskID = s.maybeEnqueueOnAssign(ctx, issue, p.CreatorType, actorID, opts.AssignedAgentRunFireAt)
+	}
+	// Creating an issue already assigned to an agent is the member delegating
+	// work. The run itself is attributed through the creator fallback, which
+	// system wakeups share, so record the action here, at the create, for both
+	// the immediate and the deferred (channel media) path.
+	if assignedTaskID.Valid && p.CreatorType == "member" {
+		s.TaskService.RecordHumanDelegation(ctx, attribution.DirectHumanRun(p.CreatorID, attribution.EvidenceIssueAssignment, issue.ID))
 	}
 
 	return IssueCreateResult{Issue: issue, Attachments: attachments, Labels: labels, AssignedTaskID: assignedTaskID}, nil
@@ -1040,5 +1068,12 @@ func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issu
 			"squad_id", util.UUIDToString(squad.ID),
 			"leader_id", util.UUIDToString(squad.LeaderID),
 			"error", err)
+		return
+	}
+	// A member creating an issue assigned to a squad delegates the same way as
+	// one assigned to an agent (see Create). A trigger comment, when present,
+	// already recorded its author at enqueue.
+	if !triggerCommentID.Valid && authorType == "member" {
+		s.TaskService.RecordHumanDelegation(ctx, attribution.DirectHumanRun(issue.CreatorID, attribution.EvidenceIssueAssignment, issue.ID))
 	}
 }

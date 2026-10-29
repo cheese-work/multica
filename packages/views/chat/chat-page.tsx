@@ -47,6 +47,7 @@ import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
+import { useQuoteRequest } from "./components/use-quote-request";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -101,6 +102,13 @@ export function ChatPage() {
   const urlAgent = searchParams.get("agent") || null;
   // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
   const urlNew = searchParams.get("new") === "1";
+  // `?message=` is a one-shot jump from a decision card; it only applies once
+  // the list shows the session named beside it.
+  const urlMessage = searchParams.get("message") || null;
+  const settleJump = (outcome: "landed" | "missing") => {
+    if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
+    replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
+  };
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -324,6 +332,7 @@ export function ChatPage() {
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
   const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const annotation = useChatAnnotations({
     sessionId: c.activeSessionId,
     messages: c.messages,
@@ -358,6 +367,7 @@ export function ChatPage() {
       ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id || c.currentSession?.forked_from_session_id ? (
         <ChatMessageList
           key={c.activeSessionId}
+          onQuoteMessage={quote}
           messages={c.messages}
           continuedFromSessionId={c.currentSession?.continued_from_session_id}
           continuedIntoSessionId={c.currentSession?.continued_into_session_id}
@@ -372,6 +382,8 @@ export function ChatPage() {
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
+          jumpToMessageId={urlSession === c.activeSessionId ? urlMessage : null}
+          onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
             !!c.pendingTaskId ||
@@ -430,6 +442,8 @@ export function ChatPage() {
         onRename={handleRename}
         onFork={canForkSession(c.currentSession) ? handleFork : undefined}
         restoreDraftRequest={c.restoreDraftRequest}
+        quoteRequest={quoteRequest}
+        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={c.conversationStarterRequest}
         onConversationStarterApplied={c.handleConversationStarterApplied}
         onRestoreDraftApplied={c.handleRestoreDraftApplied}

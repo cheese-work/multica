@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -265,5 +268,18 @@ func TestAutoUpdateLoop_EarlyExits(t *testing.T) {
 			}()
 			<-done
 		})
+	}
+}
+
+func TestRunUpdate_RefusesWhenFrozen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "UPDATE_FREEZE")
+	if err := os.WriteFile(file, []byte("owner packet pending"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cli.UpdateFreezeFileEnv, file)
+	d := &Daemon{logger: slog.Default()}
+
+	if _, err := d.runUpdate("v9.9.9"); err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("runUpdate with freeze file: want frozen error, got %v", err)
 	}
 }

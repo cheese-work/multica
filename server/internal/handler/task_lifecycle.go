@@ -213,6 +213,9 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	if writeProjectAdmissionError(w, err) {
+		return
+	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
@@ -223,6 +226,15 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
+		return
+	}
+	if errors.Is(err, service.ErrRunBudgetExhausted) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
+		return
+	}
+	var notConfirmed *service.StopNotConfirmedError
+	if errors.As(err, &notConfirmed) {
+		writeError(w, http.StatusConflict, notConfirmed.Error())
 		return
 	}
 	// Not a dispatch refusal: the issue may well be runnable, and only the named

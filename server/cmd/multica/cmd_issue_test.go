@@ -561,6 +561,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringSlice("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
+	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -842,6 +843,7 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
@@ -987,6 +989,34 @@ func TestRunIssueCreateRejectsDuplicateAndFilterPropertySyntaxBeforePost(t *test
 	}
 	if posts != 0 {
 		t.Fatalf("invalid property flags sent %d create POST(s)", posts)
+	}
+}
+
+func TestRunIssueCreateSendsOnBehalfOfAsRequestedByID(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "issue-1", "identifier": "MUL-1", "title": "For a member", "status": "todo", "priority": "none",
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueCreateTestCmd()
+	_ = cmd.Flags().Set("title", "For a member")
+	_ = cmd.Flags().Set("on-behalf-of", "user-42")
+	if err := runIssueCreate(cmd, nil); err != nil {
+		t.Fatalf("runIssueCreate: %v", err)
+	}
+	if got := body["requested_by_id"]; got != "user-42" {
+		t.Fatalf("requested_by_id = %#v, want user-42 in request body", got)
 	}
 }
 

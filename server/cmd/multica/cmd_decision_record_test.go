@@ -10,7 +10,7 @@ import (
 )
 
 func TestIssueCommentDecisionRecordFlags(test *testing.T) {
-	for _, flag := range []string{"decision-record", "message", "class"} {
+	for _, flag := range []string{"decision-record", "message", "source-comment", "context-message", "class"} {
 		if issueCommentAddCmd.Flags().Lookup(flag) == nil {
 			test.Fatalf("comment add lacks --%s", flag)
 		}
@@ -19,6 +19,7 @@ func TestIssueCommentDecisionRecordFlags(test *testing.T) {
 
 func TestIssueCommentDecisionRecordBody(test *testing.T) {
 	const issueID = "11111111-1111-4111-8111-111111111111"
+	const contextID = "44444444-4444-4444-8444-444444444444"
 	messageIDs := []string{"22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"}
 	for _, asked := range []bool{false, true} {
 		test.Run(map[bool]string{false: "unprompted", true: "asked"}[asked], func(test *testing.T) {
@@ -41,6 +42,8 @@ func TestIssueCommentDecisionRecordBody(test *testing.T) {
 			command.Flags().Bool("decision-record", true, "")
 			command.Flags().StringArray("message", messageIDs, "")
 			command.Flags().String("class", "", "")
+			command.Flags().String("context-message", "", "")
+			_ = command.Flags().Set("context-message", contextID)
 			if asked {
 				_ = command.Flags().Set("parent", issueID)
 				_ = command.Flags().Set("content", "Agent text")
@@ -52,6 +55,9 @@ func TestIssueCommentDecisionRecordBody(test *testing.T) {
 			}
 			if body["decision_record"] != true || !reflect.DeepEqual(body["message_ids"], []any{messageIDs[0], messageIDs[1]}) {
 				test.Fatalf("missing ordered record inputs: %+v", body)
+			}
+			if body["context_message_id"] != contextID {
+				test.Fatalf("missing offered-options message: %+v", body)
 			}
 			if asked && (body["parent_id"] != issueID || body["content"] != "Agent text") || !asked && body["escalation_class"] != "deploy" {
 				test.Fatalf("wrong context/class: %+v", body)

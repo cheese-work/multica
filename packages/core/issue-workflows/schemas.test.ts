@@ -37,6 +37,34 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(parsed.workflows[0]?.project_ids).toEqual(["project-1"]);
   });
 
+  it("keeps step edges so a save does not drop them (CHE-2030)", () => {
+    const edges = [{ to: "done", guard: "pr.merged", timeout: "72h", on_timeout: "blocked" }];
+    const parsed = IssueWorkflowSchema.parse({
+      ...baseWorkflow,
+      steps: [{ status_key: "code_review", handler: { type: "none" }, instructions: "", edges }],
+    });
+    expect(parsed.steps[0]?.edges).toEqual(edges);
+  });
+
+  it("reads the run rules and defaults them for an older server (CHE-2152)", () => {
+    const set = IssueWorkflowSchema.parse({ ...baseWorkflow, max_runs_per_issue: 8, include_child_prs: false });
+    expect(set.max_runs_per_issue).toBe(8);
+    expect(set.include_child_prs).toBe(false);
+    const older = IssueWorkflowSchema.parse(baseWorkflow);
+    expect(older.max_runs_per_issue).toBeNull();
+    expect(older.include_child_prs).toBe(true);
+  });
+
+  it("falls back to an empty workflow list when run rules are malformed (CHE-2152)", () => {
+    const parsed = parseWithFallback(
+      { workflows: [{ ...baseWorkflow, max_runs_per_issue: "many" }], total: 1 },
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { endpoint: "GET /api/workflows" },
+    );
+    expect(parsed).toEqual({ workflows: [], total: 0 });
+  });
+
   it("degrades an unknown handler type to a manual step", () => {
     const parsed = IssueWorkflowSchema.parse({
       ...baseWorkflow,

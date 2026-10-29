@@ -12,6 +12,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
+import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -82,6 +83,7 @@ import type {
   WorkspaceDeletedPayload,
   WorkspaceUpdatedPayload,
   MemberRemovedPayload,
+  IssueStatusChangedPayload,
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
@@ -97,6 +99,7 @@ import type {
   CommentDeletedPayload,
   CommentResolvedPayload,
   CommentUnresolvedPayload,
+  DecisionAnswerUpdatedPayload,
   ActivityCreatedPayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
@@ -168,6 +171,19 @@ export function refetchPendingChatAggregate(
 ) {
   if (!wsId) return;
   qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+}
+
+/**
+ * A decision card changed state. Both surfaces render the same state, so
+ * refresh the issue's quote card and every DM message list.
+ */
+export function applyDecisionAnswerUpdated(
+  qc: QueryClient,
+  payload: DecisionAnswerUpdatedPayload,
+) {
+  qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }
 
 /**
@@ -1053,7 +1069,7 @@ export function useRealtimeSync(
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
-      "comment:resolved", "comment:unresolved",
+      "comment:resolved", "comment:unresolved", "decision_answer:updated",
       "activity:created",
       "reaction:added", "reaction:removed",
       "issue_reaction:added", "issue_reaction:removed",
@@ -1083,6 +1099,16 @@ export function useRealtimeSync(
       }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
+      // A category move is the one catalog edit that does reach issue caches:
+      // rows carry the server-resolved status_category, and groups, facets and
+      // category-scoped lists are bucketed by it. Presentation-only edits keep
+      // the catalog-only path above.
+      if (msg.type === "issue_status:changed" && (msg.payload as IssueStatusChangedPayload | undefined)?.category_changed) {
+        debouncedRefresh("issue_status:category", () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        });
+      }
     });
 
     // --- Specific event handlers (granular cache updates) ---
@@ -1220,6 +1246,9 @@ export function useRealtimeSync(
       // updated_at, so the other comment events below deliberately do not.
       const wsId = getCurrentWsId();
       if (wsId) {
+        if (comment.decision_request_id || comment.decision_answer_id) {
+          qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
         // A comment carries only the aggregate owner revision, not a full
@@ -1231,6 +1260,12 @@ export function useRealtimeSync(
           invalidateIssueOwnerProjections(qc, wsId, comment.issue_id);
         }
       }
+    });
+
+    const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
+      applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
+      const wsId = getCurrentWsId();
+      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1563,6 +1598,10 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const invalidateOpenDecisions = () => {
+      const id = getCurrentWsId();
+      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+    };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as ChatMessageEventPayload;
@@ -1573,7 +1612,10 @@ export function useRealtimeSync(
       // Write the user turn before invalidating so the prompt does not depend
       // on the refetch surviving (MUL-5711) — same shape as chat:done.
       applyChatMessageToCache(qc, payload);
-      if (payload.role !== "user") invalidateSessionLists();
+      if (payload.role !== "user") {
+        invalidateOpenDecisions();
+        if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
+      }
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
@@ -1604,7 +1646,8 @@ export function useRealtimeSync(
       // chat:done no longer invalidates it, so a chatty session doesn't refetch
       // the aggregate on every turn (MUL-4159).
       // Assistant message just landed → has_unread may have flipped to true.
-      invalidateSessionLists();
+      invalidateOpenDecisions();
+      if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
     });
 
     // Late quick-actions supplement from the daemon's background suggestion
@@ -1853,6 +1896,7 @@ export function useRealtimeSync(
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();
+      unsubDecisionAnswerUpdated();
       unsubActivityCreated();
       unsubReactionAdded();
       unsubReactionRemoved();

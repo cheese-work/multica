@@ -1,4 +1,14 @@
 export {
+  defaultPlanBase,
+  diffRevisionLines,
+  earlierPlanRevisions,
+  planRevisionNumber,
+  revisionSegments,
+  type PlanRevision,
+  type RevisionLine,
+  type RevisionSegment,
+} from "./plan-revisions";
+export {
   collectDeliverableFiles,
   deliverableKey,
   findDeliverableVersion,

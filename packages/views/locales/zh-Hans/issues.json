@@ -1,4 +1,23 @@
 {
+  "relations": {
+    "title": "任务关系图",
+    "direction": "箭头从父任务指向子任务，从被监测的任务指向待唤醒的任务，从提及来源指向目标。当前任务以粗边框标出。",
+    "depth": "深度",
+    "loading": "正在加载关系...",
+    "load_failed": "无法加载关系。",
+    "render_failed": "无法显示关系图。",
+    "filter_label": "显示的关系类型",
+    "retry": "重试",
+    "empty": "没有关联任务。",
+    "omitted": "另有 {{count}} 个任务未显示（最多 40 个节点）。",
+    "parent": "父任务 → 子任务",
+    "duplicate": "重复目标",
+    "wakeup": "唤醒",
+    "children_done": "子任务完成 → 唤醒",
+    "mention": "提及",
+    "shared_pr": "共享 PR",
+    "unknown": "关联"
+  },
   "inline_run": {
     "label": "{{name}} 的运行",
     "stop": "停止",
@@ -202,6 +221,8 @@
     "grouping_section": "分组",
     "ordering_section": "排序",
     "card_properties_section": "卡片属性",
+    "columns_section": "列",
+    "columns_locked_by_filter": "清除状态筛选后才能显示或隐藏列。",
     "ascending_title": "升序",
     "descending_title": "降序",
     "newest_first": "最新优先",
@@ -359,18 +380,13 @@
     "toggle_collapse": "切换泳道"
   },
   "board": {
-    "hidden_columns_label": "隐藏的列",
     "hide_column": "隐藏列",
-    "show_column": "显示列",
     "add_issue_tooltip": "新建任务",
     "empty_column": "无任务",
     "empty_grouping": "没有匹配的任务",
     "no_value": "未设置",
     "ordered_by": "按{{field}}排序",
-    "manual_reorder_hint": "切换到“手动”排序后，才能调整同一列内的顺序。",
-    "filter_to_status": "按此状态筛选",
-    "outside_workflow": "不在当前看板的工作流里",
-    "workflow_columns_note": "看板的列由工作流决定，项目外的视图使用 Default 工作流。"
+    "manual_reorder_hint": "切换到“手动”排序后，才能调整同一列内的顺序。"
   },
   "peek": {
     "panel_label": "任务预览",
@@ -380,6 +396,15 @@
     "close": "关闭预览"
   },
   "detail": {
+    "metadata_close": "关闭元数据",
+    "metadata_copy": "复制元数据",
+    "metadata_view": "放大查看元数据",
+    "metadata_expand": "放大弹窗",
+    "metadata_restore": "恢复弹窗大小",
+    "metadata_copy_failed": "复制元数据失败",
+    "metadata_description": "智能体和集成记录的键值数据，用于衔接工作流程。",
+
+    "section_load_failed_retry": "加载失败，点击重试",
     "not_found": "这个任务不存在或已在该工作区被删除。",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",
@@ -402,6 +427,7 @@
     "section_parent_issue": "父任务",
     "section_pull_requests": "Pull Request",
     "section_metadata": "元数据",
+    "status_summary_label": "状态摘要",
     "section_details": "详情",
     "section_quick_actions": "快捷操作",
     "quick_actions_more": "显示其余 {{count}} 条",
@@ -446,6 +472,7 @@
     "prop_labels": "标签",
     "add_property_action": "添加字段",
     "prop_created_by": "创建者",
+    "prop_requested_by": "请求人",
     "prop_created": "创建时间",
     "prop_updated": "更新时间",
     "activity_section": "动态",
@@ -465,6 +492,9 @@
     "archive_tooltip": "归档",
     "pin_tooltip": "固定到侧边栏",
     "unpin_tooltip": "从侧边栏取消固定",
+    "quick_jump_label": "快捷跳转",
+    "description_nav_label": "任务描述",
+    "sub_issues_nav_progress": "已完成 {{done}}/{{total}}",
     "thread_nav_label": "快速跳转到讨论",
     "thread_nav_resolved_label": "{{title}}（已解决）",
     "thread_nav_reply_label": "{{author}}：{{title}}",
@@ -518,6 +548,7 @@
     "squad_leader_no_action_reason": "已评估：无需操作（{{reason}}）",
     "squad_leader_failed": "评估失败",
     "squad_leader_failed_reason": "评估失败：{{reason}}",
+    "stop_not_confirmed": "未确认已停止运行 {{taskId}}",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "{{count}} 条动态",
     "show_more_activities_other": "展开更早 {{count}} 条动态",
@@ -531,6 +562,7 @@
     "pr_auto_complete_disabled": "设置此任务合并后不改状态",
     "pr_auto_complete_enabled": "恢复了此任务合并后改状态",
     "wakeup_created": "添加了唤醒：{{condition}}唤醒 {{agent}}",
+    "wakeup_created_scheduled": "为 {{agent}} 添加了唤醒：{{condition}}",
     "wakeup_triggered": "{{condition}}，唤醒了 {{agent}}",
     "wakeup_triggered_merged": "{{condition}}，并入了 {{agent}} 待开始的运行",
     "wakeup_triggered_acknowledged": "{{condition}}，由 {{agent}} 自己触发，未重复唤醒",
@@ -563,6 +595,7 @@
     "wakeup_link_run": "查看运行"
   },
   "comment": {
+    "you": "你",
     "add_reaction": "添加表情回应",
     "collapse_thread": "收起讨论",
     "expand_thread": "展开讨论",
@@ -721,6 +754,7 @@
     "retry_failed": "重试运行失败",
     "retry_blocked": "未重试——你没有该智能体的使用权限",
     "transcript_tooltip": "查看记录",
+    "jump_to_run": "跳转到运行",
     "cancel_failed": "取消运行失败",
     "trigger_retry": "重试",
     "trigger_retry_attempt": "重试 #{{attempt}}",
@@ -755,7 +789,7 @@
     "summary_runs_other": "{{count}} 次运行",
     "latest": "最近",
     "open_timeline": "打开时间线",
-    "more_runs_other": "还有 {{count}} 次",
+    "more_runs_other": "显示其余 {{count}} 次运行",
     "strip_aria": "每次运行的费用——打开运行时间线",
     "strip_no_usage": "没有用量记录",
     "sparkline_now": "现在"
@@ -1093,7 +1127,7 @@
     "wake_agent": "唤醒 {{agent}}",
     "needs_attention": "需要处理",
     "turn_off": "关闭",
-    "ended": "历史唤醒 {{count}}",
+    "ended": "历史唤醒 · {{count}}",
     "waiting_event": "等待触发",
     "triggered_by_wakeup": "由唤醒触发",
     "upcoming": "已开启 {{count}} 条唤醒规则",
@@ -1277,12 +1311,14 @@
       "children_stage": "第 {{stage}} 阶段",
       "pr_checks": "CI 结束",
       "pr_merged": "合并",
+      "pr_conflicts": "出现合并冲突",
       "choose_issue": "选择任务",
       "pick_issue_title": "选择要关注的任务",
       "pick_issue_description": "该任务达到所选状态时唤醒智能体。",
       "other_done": "完成",
       "other_ended": "完成或取消",
       "other_in_review": "进入审核中",
+      "other_blocked": "进入 blocked",
       "max_fires": "最多触发",
       "max_fires_times_other": "{{count}} 次",
       "missing_value": "请选择一个值。",
@@ -1332,9 +1368,15 @@
       "children_stage": "当第 {{stage}} 阶段的子任务全部结束时",
       "pr_checks": "当关联 PR 的 CI 结束时",
       "pr_merged": "当关联 PR 合并时",
+      "pr_conflicts": "当关联 PR 出现合并冲突时",
       "other_done": "当 {{issue}} 完成时",
       "other_ended": "当 {{issue}} 完成或取消时",
       "other_in_review": "当 {{issue}} 进入审核中时",
+      "gh_run_id": "{{repo}} 的运行 {{id}}",
+      "gh_run_sha": "{{repo}} 的 {{workflow}}（{{sha}}）",
+      "gh_run_completed": "当 {{run}} 结束时",
+      "gh_run_waiting": "当 {{run}} 在审批关卡等待时",
+      "other_blocked": "当 {{issue}} 进入 blocked 时",
       "another_issue": "另一个任务",
       "unknown_label": "已删除的标签",
       "unknown_property": "已删除的属性",
@@ -1354,9 +1396,13 @@
       "children_stage": "等第 {{stage}} 阶段完成",
       "pr_checks": "等 CI 结束",
       "pr_merged": "等 PR 合并",
+      "pr_conflicts": "监视合并冲突",
       "other_done": "等 {{issue}} 完成",
       "other_ended": "等 {{issue}} 结束",
       "other_in_review": "等 {{issue}} 进入审核",
+      "gh_run_completed": "等待 {{run}} 结束",
+      "gh_run_waiting": "等待 {{run}} 到达审批关卡",
+      "other_blocked": "等 {{issue}} 进入 blocked",
       "time": "{{time}} 唤醒 {{agent}}",
       "header": "{{agent}} 在{{what}}",
       "paused": "唤醒已自动暂停",
@@ -1426,6 +1472,7 @@
     "not_merged": "{{prs}} 已关闭，未合并",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合并。之后有新 PR 合并时会改为 {{status}}。",
+    "workflow_owned": "PR 合并后由工作流移动此任务",
     "issue_disabled": "此任务合并后不改状态",
     "issue_disabled_action": "恢复"
   },
@@ -1477,7 +1524,8 @@
       "member": "成员",
       "project_lead": "项目负责人",
       "creator": "任务创建者",
-      "project_lead_named": "{{name}}（项目负责人）"
+      "project_lead_named": "{{name}}（项目负责人）",
+      "human_by_role": "按角色指派给人"
     },
     "settings": {
       "title": "工作流",
@@ -1520,7 +1568,7 @@
       "instructions": "交接说明",
       "instructions_placeholder": "这一步要做什么？",
       "next": "完成后进入",
-      "back": "需要修改时退回",
+      "back": "打回时退回到",
       "none_option": "不指定",
       "save": "保存",
       "create": "创建",
@@ -1534,6 +1582,7 @@
       "copy_name": "{{name}} 副本",
       "more": "更多操作",
       "steps_hint": "拖动调整中间列的顺序。Backlog 和 Blocked 可以关闭。新建的状态会在保存时创建。",
+      "status_needs_admin": "{{names}} 是新的状态。只有工作区管理员可以添加状态：请移除这些列，或请管理员先添加这些状态。",
       "reorder": "调整「{{name}}」的顺序",
       "card_hand_to": "交给",
       "card_then": "完成后 → {{status}}",
@@ -1548,7 +1597,7 @@
       "target_member": "成员",
       "instructions_hint": "作为这次运行的说明发给处理人，和任务描述、评论一起作为上下文。",
       "advance_on_ci_green": "关联 PR 的检查通过后，自动移到下一列",
-      "next_hint": "写进处理人收到的说明里，告诉它下一步该把状态改成什么。系统不会在运行结束后自动推进状态。",
+      "next_hint": "由处理人自己改状态，只有需要返工时才退回，受阻不用退回。运行结束不会自动改状态。",
       "preview_brief": "预览智能体收到的说明",
       "preview_title": "「{{status}}」这一步的说明",
       "preview_description": "任务进入这一步时，处理人的运行会收到这段说明。预览不需要先保存。",
@@ -1655,7 +1704,7 @@
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
       "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",
-      "card_hint": "这些列和交接由项目的工作流决定。"
+      "flowchart": "流程图"
     },
     "list_separator": "、",
     "handoff": {
@@ -1664,7 +1713,7 @@
       "next_default": "下一列（{{status}}）",
       "saved": "交接已保存",
       "error": "无法保存交接",
-      "read_only": "交接属于工作流，由工作区管理员修改。",
+      "read_only": "交接属于工作流，由工作流所有者和工作区管理员修改。",
       "to": "交给谁",
       "members": "成员",
       "mode_none": "不交接",
@@ -1674,6 +1723,7 @@
       "mode_member": "交给成员",
       "mode_member_hint": "只改负责人，不会自动运行",
       "project_lead_hint": "项目负责人是智能体时，会开始运行。",
+      "human_by_role_hint": "先请求人，再项目负责人，最后工作区所有者。",
       "pick_agent": "选择智能体",
       "pick_member": "选择成员",
       "search_agents": "搜索智能体",
@@ -1702,7 +1752,30 @@
       "title": "「{{workflow}}」工作流",
       "scope_own": "只有这个项目使用这个工作流。",
       "no_handoff_here": "不交接",
-      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。"
+      "scope_shared_other": "{{count}} 个项目使用这个工作流，它的交接对这些项目都生效。",
+      "graph_label": "工作流图",
+      "exits_label": "工作流出口",
+      "exit_item": "{{guard}} 时，从 {{from}} 到 {{to}}",
+      "edit": {
+        "title": "{{step}} 的出口",
+        "pick": "选择一个步骤以编辑其出口。",
+        "empty": "没有出口。",
+        "group": "出口 {{n}}：{{to}}",
+        "guard": "条件",
+        "target": "前往",
+        "timeout": "超时",
+        "on_timeout": "超时后",
+        "add": "添加出口",
+        "remove": "删除出口",
+        "issues": {
+          "too_many_edges": "{{from}} 的出口超过 {{max}} 个。",
+          "missing_target": "{{from}} 的某个出口指向不存在的步骤。",
+          "bad_guard": "{{from}} 的某个出口含有未知条件。",
+          "bad_timeout": "{{from}} 的某个出口需要 1m 到 720h 之间的超时，例如 72h。",
+          "bad_on_timeout": "{{from}} 的某个出口需要有效的超时后步骤。",
+          "ci_green_source": "{{from}} 不能在 CI 通过时推进。"
+        }
+      }
     },
     "templates": {
       "delivery": {
@@ -1734,5 +1807,38 @@
   },
   "hover_card": {
     "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
+  },
+  "decision": {
+    "class": {
+      "reversible": "可撤销",
+      "spend": "支出",
+      "deploy": "部署",
+      "publish": "发布",
+      "irreversible": "不可撤销",
+      "product_direction": "产品方向"
+    },
+    "state": {
+      "pending": "待生效",
+      "effective": "已生效",
+      "disclaimed": "已撤回"
+    },
+    "via_dm": "来自私信",
+    "recorded_by": "由 {{name}} 记录",
+    "asked_in_dm": "私信中的提问",
+    "answered_in_dm": "私信中的回答",
+    "private_dm": "来自私人私信",
+    "disclaim_action": "撤回",
+    "disclaiming": "正在撤回…",
+    "disclaim_title": "撤回这个决定？",
+    "disclaim_desc": "智能体会收到该决定已撤回的通知，请求会重新打开。此操作无法撤销。",
+    "keep_action": "保留决定",
+    "changed_title": "你阅读期间这个决定已发生变化。",
+    "changed_body": "请先刷新查看当前状态，再决定是否撤回。未撤回任何内容。",
+    "refresh_action": "刷新",
+    "withdrawn_title": "已被撤回。",
+    "withdrawn_body": "此次点击未更改任何内容。",
+    "review_action": "查看",
+    "failed_notice": "无法撤回，决定保持不变。",
+    "try_again_action": "重试"
   }
 }

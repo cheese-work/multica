@@ -8,9 +8,10 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { X } from "lucide-react";
+import { RotateCw, X } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 /**
  * A native top-layer dialog keeps the preview in its original DOM parent.
@@ -22,14 +23,18 @@ export function HtmlPreviewSurface({
   open,
   inlineHeight,
   onOpenChange,
+  onReload,
   title,
+  mediaContent,
   children,
 }: {
   open: boolean;
   /** The inline body's height, or zero when its preview is hidden. */
   inlineHeight: number;
   onOpenChange: (open: boolean) => void;
+  onReload?: () => void;
   title: string;
+  mediaContent?: string;
   children: ReactNode;
 }) {
   const { t } = useT("editor");
@@ -102,17 +107,33 @@ export function HtmlPreviewSurface({
             <span id={titleId} className="sr-only">
               {title}
             </span>
-            <Button
-              ref={closeRef}
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="absolute top-2 right-2"
-              aria-label={t(($) => $.code_block.close_preview)}
-              onClick={() => dialogRef.current?.close()}
-            >
-              <X />
-            </Button>
+            <div className="absolute top-2 right-2 flex gap-1">
+              <ViewerActions>
+              {onReload && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  title={t(($) => $.attachment.reload)}
+                  aria-label={t(($) => $.attachment.reload)}
+                  onClick={onReload}
+                >
+                  <RotateCw />
+                </Button>
+              )}
+              {mediaContent != null && <MediaLinkAction kind="html" content={mediaContent} />}
+              </ViewerActions>
+              <Button
+                ref={closeRef}
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t(($) => $.code_block.close_preview)}
+                onClick={() => dialogRef.current?.close()}
+              >
+                <X />
+              </Button>
+            </div>
           </>
         )}
       </dialog>

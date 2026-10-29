@@ -23,7 +23,10 @@ export type ChatMessageKind =
   | "onboarding_kickoff"
   | "onboarding_opening"
   | "continuation_summary"
-  | "compact_notice";
+  | "compact_notice"
+  | "decision_request"
+  | "decision_cancel_notice"
+  | "decision_reference";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in
@@ -245,6 +248,12 @@ export interface ChatMessage {
   message_kind?: ChatMessageKind;
   /** Up to three server-validated follow-ups generated with this reply. */
   quick_actions?: ChatQuickAction[];
+  /** Decision records made from this user bubble; empty on older servers. */
+  decision_quotes?: import("./decision").DecisionCard[];
+  /** The card a `decision_reference` message announces. */
+  decision_ref?: import("./decision").DecisionCard;
+  decision_request?: import("./decision").DecisionRequestCard;
+  decision_requests?: import("./decision").DecisionRequestCard[];
 }
 
 export interface ChatMessagesCursor {
@@ -257,6 +266,8 @@ export interface ChatMessagesPage {
   limit: number;
   has_more: boolean;
   next_cursor?: ChatMessagesCursor | null;
+  /** Set on `?around=` windows: messages exist after the window. */
+  has_newer?: boolean;
 }
 
 export interface SendChatMessageResponse {

@@ -17,15 +17,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useModalStore } from "@multica/core/modals";
 import { useConfigStore } from "@multica/core/config";
+import { normalizeCommandURL } from "@multica/core/runtimes";
 import { isDesktopShell } from "../platform/local-directory";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
 import { docsLocalePrefix } from "../common/docs-locale";
 
 const DOCS_URL = "https://multica.ai/docs";
-const CHANGELOG_URL = "https://multica.ai/changelog";
+const BRAND_URL = "https://multica.ai";
 // Absolute, including on self-hosted deployments: the installers we ship are
 // the same binaries either way, and the desktop client can point at a
 // self-hosted backend once installed. A self-host-relative /download would
@@ -36,6 +38,10 @@ export function HelpLauncher() {
   const { t, i18n } = useT("layout");
   const serverVersion = useConfigStore((state) => state.serverVersion);
   const serverBuild = useConfigStore((state) => state.serverBuild);
+  // Self-hosted instances serve their own /changelog; `daemon_app_url` is
+  // omitted for the managed cloud, which keeps the brand site.
+  const appUrl = useConfigStore((state) => state.daemonAppUrl);
+  const changelogUrl = `${normalizeCommandURL(appUrl) || BRAND_URL}/changelog`;
   const displayVersion = serverVersion
     ? serverBuild
       ? `${serverVersion}-${serverBuild}`
@@ -53,13 +59,14 @@ export function HelpLauncher() {
   const desktop = isDesktopShell();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={t(($) => $.help.trigger)}
-        title={t(($) => $.help.trigger)}
-        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
-      >
-        <CircleHelp className="size-4" />
-      </DropdownMenuTrigger>
+      <TooltipHint label={t(($) => $.help.trigger)}>
+        <DropdownMenuTrigger
+          aria-label={t(($) => $.help.trigger)}
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+        >
+          <CircleHelp className="size-4" />
+        </DropdownMenuTrigger>
+      </TooltipHint>
       <DropdownMenuContent
         align="end"
         side="top"
@@ -100,7 +107,7 @@ export function HelpLauncher() {
         <DropdownMenuItem
           render={
             <a
-              href={CHANGELOG_URL}
+              href={changelogUrl}
               target="_blank"
               rel="noopener noreferrer"
             />

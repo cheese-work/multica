@@ -588,6 +588,37 @@ describe("ChatInput rename command", () => {
   });
 });
 
+describe("ChatInput quote request", () => {
+  beforeEach(() => insertMarkdownSpy.mockClear());
+
+  it("inserts the quoted text verbatim as a blockquote, once, without sending", async () => {
+    const onSend = vi.fn();
+    const onQuoteApplied = vi.fn();
+    const request = { id: 1, content: "Line one\nLine two with `code`" };
+    const { rerender } = renderInput({ onSend });
+
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledTimes(1);
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Line one\n> Line two with `code`");
+    expect(editorState.focused).toBe(1);
+    expect(onQuoteApplied).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("appends to a draft in progress instead of replacing it", () => {
+    const { rerender } = renderInput();
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "my own words" } });
+
+    rerender(element({ quoteRequest: { id: 1, content: "Earlier reply" } }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Earlier reply");
+    expect((screen.getByTestId("editor") as HTMLTextAreaElement).value).toBe("my own words");
+    expect(editorState.adopted).toEqual([]);
+  });
+});
+
 describe("ChatInput conversation starter send", () => {
   it("sends the chosen prompt immediately from an empty draft", async () => {
     const onSend = vi.fn().mockResolvedValue(false);
@@ -1094,12 +1125,19 @@ describe("ChatInput attachment wiring", () => {
 
     // While the upload is pending the SubmitButton must be disabled.
     // Bypassing this would send the message with the attachment id
-    // missing from the body.
+    // missing from the body. It is aria-disabled rather than natively
+    // disabled so its "uploading" tooltip stays reachable.
     await waitFor(() => {
       const buttons = screen.getAllByRole("button");
       const sendButton = buttons[buttons.length - 1]!;
-      expect(sendButton).toBeDisabled();
+      expect(sendButton).toHaveAttribute("aria-disabled", "true");
+      expect(sendButton).toHaveAttribute("aria-busy", "true");
     });
+    {
+      const buttons = screen.getAllByRole("button");
+      fireEvent.click(buttons[buttons.length - 1]!);
+    }
+    expect(onSend).not.toHaveBeenCalled();
 
     await act(async () => {
       resolveUpload!(makeUpload({ id: "att-slow", link: "https://cdn.example/att-slow.png", filename: "slow.png" }));
@@ -1849,6 +1887,31 @@ describe("ChatInput DM comments", () => {
     expect(onSend.mock.calls[0]![0]).not.toContain("---");
   });
 
+  it("sends ordered plain-text notes with the selected request id", async () => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1, "C. CHE-2162"), sourceCommentId: "decision-request:request-2", note: "1" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2, "D. Start one at a time."), sourceCommentId: "decision-request:request-2", note: "done" });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("> C. CHE-2162\n\n1\n\n&nbsp;\n\n> D. Start one at a time.\n\ndone");
+    expect(onSend.mock.calls[0]![4]).toBe("request-2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("&#46;");
+  });
+
+  it.each(["decision-request:request-1", "m1"])("keeps the draft and refuses a mixed request/source %s", async (sourceCommentId) => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1), sourceCommentId: "decision-request:request-2" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2), sourceCommentId });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => {});
+    expect(onSend).not.toHaveBeenCalled();
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
   it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
     const rejected = vi.fn().mockResolvedValue(false);
     const { unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
@@ -1967,5 +2030,33 @@ describe("ChatInput DM comments", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove comment 1" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "1 comment" })).not.toBeInTheDocument());
     expect(editorState.focused).toBeGreaterThan(0);
+  });
+});
+
+// A natively disabled send button takes no hover or focus, so the reason it is
+// blocked would never reach its tooltip; the blocked composer keeps it
+// aria-disabled and names the same reason as the placeholder.
+describe("ChatInput send disabled reason", () => {
+  function sendButton() {
+    const buttons = screen.getAllByRole("button");
+    return buttons[buttons.length - 1]!;
+  }
+
+  it("keeps the send button reachable and describes why it is blocked", () => {
+    const onSend = vi.fn();
+    renderInput({ disabled: true, agentArchived: true, onSend });
+
+    const button = sendButton();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("stays natively disabled when the composer is only empty", () => {
+    renderInput({ agentName: "Multica" });
+
+    expect(sendButton()).toBeDisabled();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
   });
 });

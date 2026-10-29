@@ -125,6 +125,8 @@ interface ThreadMinimapProps {
   scrollContainerEl: HTMLElement | null;
   /** Called with a thread root id or a reply id. */
   onJump: (commentId: string) => void;
+  /** Lets the rail read only rows that exist; without it every tick's row is looked up. */
+  mountedRows?: MountedRows;
   /** Positioning within the page (e.g. `absolute right-3 top-12 bottom-0`) — owned by the caller, like FindBar. */
   className?: string;
 }
@@ -172,7 +174,50 @@ function flattenThreads(
 // because Virtuoso mounts/unmounts rows while scrolling — an observer would
 // lose its targets. Unmounted rows are by definition outside the (overscanned)
 // viewport, and replies of a folded thread have no row at all, so "no element"
-// correctly counts as not visible.
+// correctly counts as not visible. With `mountedRows`, only the rows in
+// Virtuoso's current range are looked up, so a frame costs the window, not the
+// whole conversation.
+
+/** Indexes of the timeline rows Virtuoso currently has mounted. */
+export interface RowRange {
+  start: number;
+  end: number;
+}
+
+export interface RowRangeSource {
+  get(): RowRange | null;
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * A store the timeline writes on every Virtuoso `rangeChanged` and the rail
+ * reads, so a scroll never re-renders the issue page to tell the rail which
+ * rows exist.
+ */
+export function createRowRangeSource(): RowRangeSource & { set(range: RowRange): void } {
+  let current: RowRange | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    set(range) {
+      if (current?.start === range.start && current.end === range.end) return;
+      current = range;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+/** The timeline's row ids in order, and which of them are mounted. */
+export interface MountedRows {
+  rowIds: readonly string[];
+  range: RowRangeSource;
+}
 
 function sameIdSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
@@ -183,6 +228,7 @@ function sameIdSet(a: Set<string>, b: Set<string>): boolean {
 function useVisibleCommentIds(
   commentIds: readonly string[],
   scrollContainerEl: HTMLElement | null,
+  mountedRows?: MountedRows,
 ): Set<string> {
   const [visibleIds, setVisibleIds] = useState<Set<string>>(() => new Set());
 
@@ -190,12 +236,19 @@ function useVisibleCommentIds(
     const container = scrollContainerEl;
     if (!container) return;
 
+    const railIds = new Set(commentIds);
+    const candidates = (): Iterable<string> => {
+      const range = mountedRows?.range.get();
+      if (!mountedRows || !range) return commentIds;
+      return mountedRows.rowIds.slice(range.start, range.end + 1).filter((id) => railIds.has(id));
+    };
+
     let raf = 0;
     const compute = () => {
       raf = 0;
       const rect = container.getBoundingClientRect();
       const next = new Set<string>();
-      for (const id of commentIds) {
+      for (const id of candidates()) {
         const el = document.getElementById(`comment-${id}`);
         if (!el) continue;
         const r = el.getBoundingClientRect();
@@ -214,12 +267,14 @@ function useVisibleCommentIds(
     const ro = new ResizeObserver(schedule);
     ro.observe(container);
     if (container.firstElementChild) ro.observe(container.firstElementChild);
+    const unsubscribeRange = mountedRows?.range.subscribe(schedule);
     return () => {
       container.removeEventListener("scroll", schedule);
       ro.disconnect();
+      unsubscribeRange?.();
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [commentIds, scrollContainerEl]);
+  }, [commentIds, scrollContainerEl, mountedRows]);
 
   return visibleIds;
 }
@@ -299,6 +354,7 @@ export function ThreadMinimap({
   threads,
   scrollContainerEl,
   onJump,
+  mountedRows,
   className,
 }: ThreadMinimapProps) {
   const { t } = useT("issues");
@@ -328,7 +384,7 @@ export function ThreadMinimap({
     [items],
   );
   const railIds = useMemo(() => railIndexes.map((i) => items[i]!.id), [items, railIndexes]);
-  const visibleIds = useVisibleCommentIds(railIds, scrollContainerEl);
+  const visibleIds = useVisibleCommentIds(railIds, scrollContainerEl, mountedRows);
 
   // Flattened previews, cached per comment by content so an unrelated timeline
   // update (reaction, new reply elsewhere) doesn't re-flatten every comment.

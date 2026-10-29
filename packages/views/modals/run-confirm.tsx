@@ -71,6 +71,8 @@ interface RunConfirmData {
    *  carries its stop choice and the preview it was confirmed against. */
   stopPreviousAssigneeRuns?: boolean;
   handoffPreview?: HandoffPreviewBinding;
+  /** Runs after every write applies; never on dismiss, failure, or a partial batch. */
+  onApplied?: () => void;
 }
 
 /**
@@ -86,7 +88,8 @@ interface RunConfirmData {
  *
  * Completion is silent: the assignee/status change and any run it starts
  * surface through the issue's normal updates, so the confirm adds no result
- * toast. Whether a run starts stays the server's existing decision at write
+ * toast; only a batch the server applied partially warns with the real count.
+ * Whether a run starts stays the server's existing decision at write
  * time. Dismissing the dialog (X / Esc / click-outside) cancels without any
  * write. Shared by single assign (1 id), batch assign (N ids), and the
  * single-issue promotion out of backlog.
@@ -158,8 +161,19 @@ export function RunConfirmModal({
           ...payload,
         });
       } else {
-        await batchUpdate.mutateAsync({ ids: issueIds, updates: payload });
+        const { updated } = await batchUpdate.mutateAsync({ ids: issueIds, updates: payload });
+        // A partial batch still closes (the applied writes are real), but it
+        // warns with the real count and skips onApplied so the caller keeps
+        // its selection for a retry.
+        if (updated < issueIds.length) {
+          toast.warning(
+            tIssues(($) => $.batch.update_partial, { updated, count: issueIds.length }),
+          );
+          onClose();
+          return;
+        }
       }
+      d.onApplied?.();
       onClose();
     } catch (err) {
       toast.error(

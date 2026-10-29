@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -216,6 +217,25 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Self-host allowlist (#9400): when WORKSPACE_CREATION_ALLOWED_EMAILS is
+	// set, only those accounts may create workspaces. The UI does not hide
+	// the entry points for other users; this 403 is the enforcement point.
+	if len(h.cfg.WorkspaceCreationAllowedEmails) > 0 {
+		user, err := h.Queries.GetUser(r.Context(), parseUUID(userID))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusUnauthorized, "user not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to load user")
+			return
+		}
+		if !contains(h.cfg.WorkspaceCreationAllowedEmails, strings.TrimSpace(user.Email)) {
+			writeError(w, http.StatusForbidden, "workspace creation is restricted to selected users on this instance")
+			return
+		}
+	}
+
 	var req CreateWorkspaceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -343,6 +363,10 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
+	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
+	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
+	GitHubReviewAuthors json.RawMessage `json:"github_review_authors"`
 
 	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
 	// exception (hermesExceptionMatchesWorkspaceContext: this exact
@@ -545,6 +569,29 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.AutoCompact = req.AutoCompact
 		}
+	}
+	for _, mapping := range []struct {
+		field string
+		raw   json.RawMessage
+		dest  *[]byte
+	}{
+		{"github_review_members", req.GitHubReviewMembers, &params.GithubReviewMembers},
+		{"github_review_authors", req.GitHubReviewAuthors, &params.GithubReviewAuthors},
+	} {
+		if mapping.raw == nil {
+			continue
+		}
+		clean, err := h.validateGitHubReviewMapping(r.Context(), idUUID, mapping.field, mapping.raw)
+		var invalid reviewMappingError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate "+mapping.field)
+			return
+		}
+		*mapping.dest = clean
 	}
 	if req.Repos != nil {
 		reposJSON, err := validateAndNormalizeWorkspaceRepos(req.Repos)
@@ -1224,6 +1271,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stop remote work before deleting the only durable session journal.
+	// A pending step/cancellation leaves the workspace intact for a safe retry.
+	if err := h.prepareQoderWorkspaceDeletion(r.Context(), uuidToString(requester.WorkspaceID)); err != nil {
+		writeError(w, http.StatusConflict, "Qoder cleanup is pending; retry workspace deletion shortly")
+		return
+	}
+
 	// Invalidate membership cache for all workspace members before deletion.
 	// After CASCADE deletes the member rows, cache entries become harmless
 	// orphans (downstream lookups for the deleted workspace will fail), but
@@ -1363,6 +1417,16 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// data statement and the separate whole-workspace task delete.
 			name: "delete tasks",
 			run:  func() error { return deleteWorkspaceTasks(ctx, qtx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete Qoder Cloud Agents connection",
+			run: func() error {
+				if _, err := tx.Exec(ctx, `DELETE FROM daemon_token WHERE id IN (SELECT token_id FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1)`, requester.WorkspaceID); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, requester.WorkspaceID)
+				return err
+			},
 		},
 		{
 			name: "delete leaf data",

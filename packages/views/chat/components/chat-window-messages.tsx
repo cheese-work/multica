@@ -27,6 +27,7 @@ export function ChatWindowMessages({
   onQuickAction,
   quickActionsDisabled,
   quickActionsPendingMessageId,
+  onQuoteMessage,
   children,
 }: {
   sessionId: string | null;
@@ -48,6 +49,7 @@ export function ChatWindowMessages({
   onQuickAction: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
   quickActionsPendingMessageId: string | null;
+  onQuoteMessage?: (content: string) => void;
   children: ReactNode;
 }) {
   const isPresent = useIsPresent();
@@ -126,6 +128,7 @@ export function ChatWindowMessages({
             ? regenerateQuickActions.mutateAsync({ sessionId, messageId: message.id })
             : undefined}
           quickActionsPendingMessageId={quickActionsPendingMessageId}
+          onQuoteMessage={onQuoteMessage}
         />
       ) : children}
     </motion.div>

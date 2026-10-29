@@ -28,6 +28,7 @@ import {
 import { useChatStore } from "@multica/core/chat";
 import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
   RowActionsMenu,
   handleRowActivationKey,
@@ -38,6 +39,7 @@ import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { formatElapsedSecs } from "../lib/format";
+import { NeedsYouList } from "./needs-you-list";
 import { useResolveStage } from "./task-status-pill";
 
 const apiLogger = createLogger("chat.api");
@@ -116,13 +118,20 @@ export function ChatThreadList({
   // archived chats fill the "Archived" view. Both sorted pinned-first (then by
   // activity) so the list stays ordered even after an optimistic pin/archive or
   // a WS patch mutates the flat cache in place.
+  // A continued DM lives on in its successor's transcript, so only the newest
+  // DM of a chain gets a row. A successor missing from the cache leaves its
+  // source listed rather than lost.
+  const rows = useMemo(() => {
+    const ids = new Set(sessions.map((s) => s.id));
+    return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
+  }, [sessions]);
   const historySessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status !== "archived")),
-    [sessions],
+    () => sortChatSessions(rows.filter((s) => s.status !== "archived")),
+    [rows],
   );
   const archivedSessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status === "archived")),
-    [sessions],
+    () => sortChatSessions(rows.filter((s) => s.status === "archived")),
+    [rows],
   );
 
   // Which view is showing. Falls back to history when the archived list drains
@@ -505,6 +514,7 @@ export function ChatThreadList({
   if (view === "archived") {
     return (
       <>
+        <NeedsYouList />
         <button
           type="button"
           onClick={() => setView("history")}
@@ -540,6 +550,7 @@ export function ChatThreadList({
   if (historySessions.length === 0) {
     return (
       <>
+        <NeedsYouList />
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
@@ -550,6 +561,7 @@ export function ChatThreadList({
 
   return (
     <>
+      <NeedsYouList />
       {historySessions.map(renderRow)}
       {archivedEntry}
     </>
@@ -568,28 +580,32 @@ function RowAction({
   danger?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onPointerDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        onClick();
-      }}
-      className={cn(
-        "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
-        danger
-          ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
-          : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
-      )}
-    >
-      {icon}
-    </button>
+    <DeferredTooltip
+      content={label}
+      trigger={
+        <button
+          type="button"
+          aria-label={label}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onClick();
+          }}
+          className={cn(
+            "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
+            danger
+              ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+              : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
+          )}
+        >
+          {icon}
+        </button>
+      }
+    />
   );
 }
 

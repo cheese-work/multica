@@ -98,7 +98,7 @@ func (s *IssueWakeupService) Trigger(ctx context.Context, issueID, id, member pg
 	}
 	// Dispatch now rather than on the next tick; the scheduler retries if
 	// this attempt loses a lock race.
-	_ = s.dispatch(ctx, w)
+	s.dispatchFromTick(ctx, w)
 	return nil
 }
 

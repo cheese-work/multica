@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -29,10 +30,11 @@ import (
 //   - A PR whose title or branch name carries an issue identifier is linked to
 //     that issue, and so is one whose title or body puts it after a closing
 //     keyword ("Closes MUL-1"). A member can also link or remove a PR by hand.
-//     The keyword only links; it has no say in what the merge does.
+//     GitHub body references ("Refs" / "Part of") remain visible but are not
+//     delivery links. A title, branch, or closing keyword takes precedence.
 //   - The workspace picks what a merge does: move the issue to one status (Done
 //     by default, or any started or done status, custom ones included) or leave
-//     it alone. When every PR linked to an issue is merged, the issue moves to
+//     it alone. When every delivery PR linked to an issue is merged, the issue moves to
 //     that status, unless someone turned the automation off for that one issue.
 //
 // The decision is evaluated only when a PR event touches the issue: a linked PR
@@ -53,6 +55,7 @@ const (
 	prAutoCompleteWaiting           = "waiting"            // some PRs still open / draft
 	prAutoCompleteNotMerged         = "not_merged"         // some PRs closed without merging
 	prAutoCompleteAllMerged         = "all_merged"         // every linked PR merged
+	prAutoCompleteWorkflowOwned     = "workflow_owned"     // the issue's workflow step routes the merge
 )
 
 // Workspace settings keys. pr_auto_complete_enabled is the switch desktop
@@ -206,6 +209,17 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteAtTarget
 		return d, nil
 	}
+	// A step with a pr.merged edge is routed by the workflow, which also hands
+	// the issue to the target step's handler (CHE-2398). Moving it here would
+	// skip that handoff and leave the edge nothing to do.
+	owned, err := h.workflowRoutesPRMerge(ctx, issue)
+	if err != nil {
+		return prAutoCompleteDecision{}, err
+	}
+	if owned {
+		d.State = prAutoCompleteWorkflowOwned
+		return d, nil
+	}
 	var open, closed []db.ListIssueLinkedPullRequestStatesRow
 	for _, pr := range prs {
 		switch pr.State {
@@ -226,8 +240,22 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 	return d, nil
 }
 
+// workflowRoutesPRMerge reports whether the workflow step the issue sits on has
+// a pr.merged edge.
+func (h *Handler) workflowRoutesPRMerge(ctx context.Context, issue db.Issue) (bool, error) {
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil && !errors.Is(err, issueworkflow.ErrOverrideMissing) {
+		return false, err
+	}
+	if def == nil {
+		return false, nil
+	}
+	step, ok := def.Step(issue.Status)
+	return ok && step.HasGuard(issueworkflow.GuardPRMerged), nil
+}
+
 // maybeAutoCompleteIssue runs the decision for one issue after a PR event and
-// moves it to the workspace's target status when every linked PR is merged.
+// moves it to the workspace's target status when every delivery PR is merged.
 // Safe to call for any issue: every guard lives in decidePRAutoComplete, and
 // the status write is conditional on the status the decision saw, so
 // concurrent merges move the issue once. It starts no agent run: a merge is not

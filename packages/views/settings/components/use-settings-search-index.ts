@@ -89,6 +89,11 @@ export function useSettingsSearchIndex(
         title: t(($) => $.preferences.issue_fields_title),
         description: t(($) => $.issue.description),
       },
+      {
+        tab: "notifications",
+        anchor: "unassigned_activity",
+        title: t(($) => $.notifications.focused_delivery),
+      },
       ...NOTIFICATION_GROUPS.map((group) => ({
         tab: "notifications",
         anchor: group,
@@ -99,7 +104,6 @@ export function useSettingsSearchIndex(
         tab: "notifications",
         anchor: "system",
         title: t(($) => $.notifications.system.label),
-        description: t(($) => $.notifications.system.description),
       },
       {
         tab: "notifications",
@@ -212,6 +216,19 @@ export function useSettingsSearchIndex(
         tab: "code",
         anchor: "co-author",
         title: t(($) => $.github.feature_co_author_label),
+      },
+      { tab: "code", anchor: "github-review", title: t(($) => $.github_review.section_title) },
+      {
+        tab: "code",
+        anchor: "github-review-members",
+        title: t(($) => $.github_review.members_label),
+        description: t(($) => $.github_review.members_description),
+      },
+      {
+        tab: "code",
+        anchor: "github-review-authors",
+        title: t(($) => $.github_review.authors_label),
+        description: t(($) => $.github_review.authors_description),
       },
       {
         tab: "code",

@@ -31,9 +31,20 @@ vi.mock("./components/chat-message-list", async () => {
   return {
     // Only the divider link is real: AppLink pushes through the adapter, as
     // the "continued from" link in the transcript does.
-    ChatMessageList: ({ continuedIntoSessionId }: { continuedIntoSessionId?: string | null }) => (
+    ChatMessageList: ({
+      continuedIntoSessionId,
+      jumpToMessageId,
+      onJumpSettled,
+    }: {
+      continuedIntoSessionId?: string | null;
+      jumpToMessageId?: string | null;
+      onJumpSettled?: (outcome: "landed" | "missing") => void;
+    }) => (
       <div>
         chat-message-list
+        <span data-testid="jump-target">{jumpToMessageId ?? ""}</span>
+        <button type="button" onClick={() => onJumpSettled?.("landed")}>settle-landed</button>
+        <button type="button" onClick={() => onJumpSettled?.("missing")}>settle-missing</button>
         {continuedIntoSessionId && (
           <AppLink href={`/acme/chat?session=${continuedIntoSessionId}`}>continued-link</AppLink>
         )}
@@ -100,13 +111,15 @@ vi.mock("@multica/ui/components/ui/resizable", () => ({
 // Same width-driven layout mock the inbox page tests use: the deep-link tests
 // all want the desktop two-pane layout, the breakpoint tests at the bottom set
 // their own width.
-const FOLD_INNER = 851;
-const TABLET = 1024;
+// iPhone Duo's inner screen: 669px wide held upright, 951px held sideways.
+const FOLD_INNER_PORTRAIT = 669;
+const FOLD_INNER_LANDSCAPE = 951;
+const TABLET = 768;
 const DESKTOP = 1440;
 const layout = vi.hoisted(() => ({ width: 1440 }));
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
-  useIsCompact: () => layout.width < 1024,
+  useIsCompact: () => layout.width < 768,
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
@@ -301,6 +314,29 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+  it("hands ?message= to the list for the session it names, then drops it once landed", () => {
+    seedSession("session-9");
+    const { replace } = renderPage("session=session-9&message=msg-7");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-7");
+    fireEvent.click(screen.getByText("settle-landed"));
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("toasts and drops ?message= when the message cannot be found", () => {
+    seedSession("session-9");
+    const { replace } = renderPage("session=session-9&message=gone");
+    fireEvent.click(screen.getByText("settle-missing"));
+    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("passes no jump target without ?message=", () => {
+    seedSession("session-9");
+    renderPage("session=session-9");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("");
+  });
+
 
   it("prompts for interactive re-login without navigating or clearing the session", () => {
     interactiveLoginRequiredRef.current = true;
@@ -523,11 +559,10 @@ describe("ChatPage ?agent= deep link", () => {
 describe("ChatPage responsive layout", () => {
   const SELECT_PROMPT = "Pick a conversation, or start a new one with +";
 
-  it("folds to a single column on a folded inner screen", () => {
-    // 851px — the reported Pixel Fold inner screen. Too narrow for nav + thread
-    // list + conversation, so with nothing open it spends the whole width on
-    // the list instead of an empty conversation pane.
-    layout.width = FOLD_INNER;
+  it("folds to a single column on a foldable's inner screen held upright", () => {
+    // Below the compact breakpoint, with nothing open, the page spends the
+    // whole width on the thread list instead of an empty conversation pane.
+    layout.width = FOLD_INNER_PORTRAIT;
     renderPage("");
 
     expect(
@@ -536,10 +571,10 @@ describe("ChatPage responsive layout", () => {
     expect(screen.queryByText(SELECT_PROMPT)).not.toBeInTheDocument();
   });
 
-  it("gives the open conversation the whole folded inner screen", () => {
+  it("gives the open conversation the whole upright inner screen", () => {
     // Opening a thread replaces the list, so the way back has to travel with
     // the conversation — same trip the phone layout already had.
-    layout.width = FOLD_INNER;
+    layout.width = FOLD_INNER_PORTRAIT;
     // The page reconciles the store against `?session=`, so the open thread has
     // to be in the URL too — otherwise the sync effect closes it.
     seedSession("session-1");
@@ -552,11 +587,11 @@ describe("ChatPage responsive layout", () => {
     expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
   });
 
-  it("keeps both panes at the compact breakpoint", () => {
-    // 1024px is the first width that keeps two panes. The nav auto-collapses
+  it.each([TABLET, FOLD_INNER_LANDSCAPE])("keeps both panes at %spx", (width) => {
+    // 768px is the first width that keeps two panes. The nav auto-collapses
     // there instead (see the sidebar), so the thread list stays on screen next
     // to an open conversation.
-    layout.width = TABLET;
+    layout.width = width;
     seedSession("session-1");
     renderPage("session=session-1");
 
@@ -1016,7 +1051,7 @@ describe("ChatPage back stack", () => {
 
   describe("compact back button", () => {
     beforeEach(() => {
-      layout.width = FOLD_INNER;
+      layout.width = FOLD_INNER_PORTRAIT;
     });
 
     it("steps back to the previous session, then to the list", () => {

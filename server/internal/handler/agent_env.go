@@ -231,6 +231,9 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	merged, audit := mergeAgentEnv(unmarshalCustomEnv(locked), req.CustomEnv)
+	if len(merged) > 0 && h.rejectQoderOverrides(w, r, locked, qoderOverrides{customEnv: len(merged)}) {
+		return
+	}
 	envBytes, err := json.Marshal(merged)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to encode env")

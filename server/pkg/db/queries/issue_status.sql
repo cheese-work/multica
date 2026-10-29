@@ -71,15 +71,28 @@ VALUES (
 RETURNING *;
 
 -- name: UpdateIssueStatusEntry :one
--- key and category are absent on purpose: both are immutable after create.
+-- key is absent on purpose: it is immutable after create. category changes
+-- only when the handler passes it, after the owner/admin and confirmation
+-- checks; a moved status lands last in its new category unless the caller
+-- supplies a position.
 -- The is_system guard is what enforces "built-in name and color are locked" at
 -- the storage layer, so a handler bug cannot rename a built-in.
 UPDATE issue_status SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
+    category = COALESCE(sqlc.narg('category'), category),
     color = COALESCE(sqlc.narg('color'), color),
     icon = COALESCE(sqlc.narg('icon'), icon),
-    position = COALESCE(sqlc.narg('position'), position),
+    position = COALESCE(
+        sqlc.narg('position'),
+        CASE WHEN sqlc.narg('category')::text IS NOT NULL AND sqlc.narg('category')::text <> category
+            THEN COALESCE(
+                (SELECT MAX(s.position) + 1 FROM issue_status s
+                 WHERE s.workspace_id = sqlc.arg('workspace_id')::uuid
+                   AND s.category = sqlc.narg('category')::text),
+                0)
+            ELSE position
+        END),
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid

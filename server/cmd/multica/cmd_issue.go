@@ -226,7 +226,20 @@ var issueCmd = &cobra.Command{
 var issueListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List issues in the workspace",
-	RunE:  runIssueList,
+	Long: "List issues in the workspace.\n\n" +
+		"--property filters by a custom property, one member per flag. \"Name=Value\" is\n" +
+		"equality; the value is an option name or id (select, multi_select), true or\n" +
+		"false (checkbox), a member name, email or id (actor types), one list entry\n" +
+		"(multi_text, multi_url), or the stored value itself (text, url, number, date as\n" +
+		"YYYY-MM-DD). Comparisons use the same flag:\n" +
+		"  number    \"Score>3\"  \"Score>=3\"  \"Score<3\"  \"Score<=3\"\n" +
+		"  date      \"Ship Date>2026-01-01\" (after)  \"Ship Date<2026-01-01\" (before)\n" +
+		"  text/url  \"Notes~=review\" (contains, case-insensitive; the needle is sent as typed)\n" +
+		"A comparison on any other type is rejected, as is != (the server has no not-equal\n" +
+		"filter) and >= or <= on a date (the error names the strict form to use instead).\n" +
+		"Repeating a property matches ANY of its members, so \"Score>1\" plus \"Score<10\"\n" +
+		"is not a range.",
+	RunE: runIssueList,
 }
 
 var issueGetCmd = &cobra.Command{
@@ -523,7 +536,7 @@ var validIssueFields = []string{
 	"id", "workspace_id", "number", "identifier", "title", "description",
 	"status", "status_category", "status_name", "priority", "assignee_type",
 	"assignee_id", "creator_type", "creator_id", "parent_issue_id",
-	"duplicate_of", "project_id", "workflow_id", "position", "stage", "start_date", "due_date", "created_at",
+	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "position", "stage", "start_date", "due_date", "created_at",
 	"updated_at", "revision", "last_activity_at", "metadata", "properties",
 	"labels",
 }
@@ -621,7 +634,7 @@ func init() {
 	issueListCmd.Flags().String("assignee-id", "", "Filter by assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueListCmd.Flags().String("project", "", "Filter by project ID")
 	issueListCmd.Flags().StringSlice("metadata", nil, "Filter by metadata key=value (repeatable; combined with AND). Value is JSON-parsed: 'true'/'false' → bool, numbers → number, otherwise string. Wrap as '\"42\"' to force a string when the value would otherwise sniff as a number.")
-	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" (repeatable, one value per flag). Name is a property name (case-insensitive) or its UUID. Value depends on the type: an option name or id for select and multi_select, true or false for checkbox, a member name, email, or id for actor types, and the value itself for text, url, number, and date (YYYY-MM-DD). Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id, as does a property whose name contains "=" or ends in <, > or ! (the >=, <=, and != spellings are reserved for comparison filters). Repeating a property matches ANY of its values; different properties must ALL match.`)
+	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" or as a comparison such as "Score>=3", "Ship Date<2026-01-01" or "Notes~=review" (repeatable, one member per flag; quote it so the shell does not read < and > as redirection). Name is a property name (case-insensitive) or its UUID; a name containing =, <, >, ! or ~ has to be given by UUID. Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id. Repeating a property matches ANY of its members; different properties must ALL match. The per-type value forms and comparisons are in the command description above.`)
 	issueListCmd.Flags().Int("limit", 50, fmt.Sprintf("Page size, 1 to %d (the server returns at most %d issues per request; use --offset to page through more)", issueListMaxPageSize, issueListMaxPageSize))
 	issueListCmd.Flags().Int("offset", 0, "Number of issues to skip (for pagination; while --output json reports has_more, advance it by the number of issues in that same response)")
 	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
@@ -654,6 +667,7 @@ func init() {
 	issueCreateCmd.Flags().String("parent", "", "Parent issue ID")
 	issueCreateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) grouping this sub-issue into an ordered barrier group under its parent; omit for unstaged. The parent assignee is woken only when every sub-issue in a stage finishes.")
 	issueCreateCmd.Flags().String("project", "", "Project ID")
+	issueCreateCmd.Flags().String("on-behalf-of", "", "Member (user ID) you are creating the issue for; defaults to the person your run acts for")
 	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
@@ -736,15 +750,18 @@ func init() {
 
 	// issue comment add
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
-	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record this DM human's decision from attested messages (running chat tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's decision from attested DM messages or a member comment")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
+	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
+	issueCommentAddCmd.Flags().String("context-message", "", "Earlier assistant DM message UUID that offered the options; quoted as \"Options offered\" above the reply (requires --decision-record)")
 	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueCommentAddCmd.Flags().Bool("allow-external-file", false, "Allow --content-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent run must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
+	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -1831,6 +1848,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetString("workflow"); v != "" && v != "none" {
 		body["workflow_id"] = v
 	}
+	if v, _ := cmd.Flags().GetString("on-behalf-of"); v != "" {
+		body["requested_by_id"] = v
+	}
 	if cmd.Flags().Changed("stage") {
 		stage, _ := cmd.Flags().GetInt("stage")
 		if stage < 1 {
@@ -2906,8 +2926,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
-	if decisionRecord && (decisionIntent || len(messageIDs) == 0) || !decisionRecord && (len(messageIDs) > 0 || escalationClass != "") {
-		return fmt.Errorf("--decision-record requires --message and cannot combine with --decision-intent; --message and --class require --decision-record")
+	contextMessage, _ := cmd.Flags().GetString("context-message")
+	sourceComment, _ := cmd.Flags().GetString("source-comment")
+	parent, _ := cmd.Flags().GetString("parent")
+	if decisionRecord && (decisionIntent || (len(messageIDs) > 0) == (sourceComment != "") || sourceComment != "" && (parent == "" || contextMessage != "")) || !decisionRecord && (len(messageIDs) > 0 || sourceComment != "" || escalationClass != "" || contextMessage != "") {
+		return fmt.Errorf("--decision-record requires --message or --source-comment, not both; --source-comment requires --parent and excludes --context-message; decision sources and --class require --decision-record, not --decision-intent")
 	}
 	content, hasContent, err := resolveTextFlag(cmd, "content")
 	if err != nil {
@@ -2923,6 +2946,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
+	}
+	resolveThread, _ := cmd.Flags().GetBool("resolve-thread")
+	if parent, _ := cmd.Flags().GetString("parent"); resolveThread && parent == "" {
+		return fmt.Errorf("--resolve-thread requires --parent: it resolves the thread the reply belongs to")
 	}
 	if err := guardLocalPathLinks(content, "comment body",
 		"Deliver the file itself with `multica issue comment add <issue-id> --attachment <path>` (repeatable) and drop the link."); err != nil {
@@ -2982,6 +3009,12 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionRecord {
 		body["decision_record"] = true
 		body["message_ids"] = messageIDs
+		if sourceComment != "" {
+			body["source_comment_id"] = sourceComment
+		}
+		if contextMessage != "" {
+			body["context_message_id"] = contextMessage
+		}
 		if escalationClass != "" {
 			body["escalation_class"] = escalationClass
 		}
@@ -3002,6 +3035,22 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	if hints, ok := result["hints"].([]any); ok {
+		for _, value := range hints {
+			if hint, ok := value.(string); ok && hint != "" {
+				fmt.Fprintln(os.Stderr, "Hint: "+hint)
+			}
+		}
+	}
+
+	if resolveThread {
+		newID, _ := result["id"].(string)
+		var resolved map[string]any
+		if err := client.PostJSON(ctx, "/api/comments/"+url.PathEscape(newID)+"/resolve", nil, &resolved); err != nil {
+			return fmt.Errorf("comment %s was posted but resolving its thread failed (do not repost; run `multica issue comment resolve %s`): %w", newID, newID, err)
+		}
+		fmt.Fprintf(os.Stderr, "Thread resolved.\n")
+	}
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {

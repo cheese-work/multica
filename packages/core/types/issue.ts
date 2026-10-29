@@ -195,6 +195,11 @@ export interface Issue {
   assignee_id: string | null;
   creator_type: IssueAssigneeType;
   creator_id: string;
+  /**
+   * The member this issue was created for: set when an agent creates it on
+   * their behalf. The "human by role" workflow handler hands to them first.
+   */
+  requested_by_id?: string | null;
   parent_issue_id: string | null;
   /**
    * The original this issue duplicates (MUL-7349): present only while the

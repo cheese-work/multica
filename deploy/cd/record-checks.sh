@@ -43,18 +43,21 @@ while :; do
   # runs — the same source a human reading the PR would use — rather than
   # asserting them here. A running check has a null conclusion.
   gh api "repos/${GITHUB_REPOSITORY}/commits/${source_sha}/check-runs?per_page=100" \
-    --paginate --jq '.check_runs[] | {name, conclusion}' > "$work_dir/check-runs.jsonl"
+    --paginate --jq '.check_runs[] | {name, conclusion, id}' > "$work_dir/check-runs.jsonl"
 
   SOURCE_SHA="$source_sha" node -e '
     const fs = require("node:fs");
     const [dir, output] = process.argv.slice(1);
 
-    const contexts = {};
+    // A re-run adds a check run under the same name. The newest one (highest
+    // id) is the result; the API lists newest first, so order cannot be used.
+    const latest = {};
     for (const line of fs.readFileSync(`${dir}/check-runs.jsonl`, "utf8").split("\n")) {
       if (!line.trim()) continue;
       const run = JSON.parse(line);
-      contexts[run.name] = run.conclusion;
+      if (!latest[run.name] || run.id > latest[run.name].id) latest[run.name] = run;
     }
+    const contexts = Object.fromEntries(Object.entries(latest).map(([name, run]) => [name, run.conclusion]));
 
     const commit = JSON.parse(fs.readFileSync(`${dir}/commit-files.json`, "utf8"));
     const pathFilters = JSON.parse(fs.readFileSync(`${dir}/path-filters.json`, "utf8"));
