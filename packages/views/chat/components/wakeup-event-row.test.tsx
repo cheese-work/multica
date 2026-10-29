@@ -9,11 +9,6 @@ import { RESOURCES } from "../../locales";
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: () => "x99-claude-opus" }),
 }));
-vi.mock("../../issues/components/issue-chip", () => ({
-  IssueChip: ({ issueId, fallbackLabel }: { issueId: string; fallbackLabel?: string }) => (
-    <span data-testid="issue-chip" data-issue-id={issueId}>{fallbackLabel}</span>
-  ),
-}));
 vi.mock("../../navigation", async (importActual) => ({
   ...(await importActual<typeof import("../../navigation")>()),
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
@@ -95,14 +90,35 @@ describe("WakeupEventRow", () => {
     expect(region.textContent).toContain("and CHE-2321 again");
   });
 
-  it("renders mention links through the shared issue chip, not as raw markdown", () => {
+  it("renders mention links as identifier-only chips, never raw markdown or a UUID", () => {
     const id = "0199c0de-0000-4000-8000-000000000001";
-    renderRow(wakeup({ title: "T", instruction: `Check [CHE-9](mention://issue/${id}) now.` }));
+    renderRow(wakeup({
+      title: "T",
+      instruction: `Check [CHE-9](mention://issue/${id}) now, then [CHE-9](mention://issue/${id}) and CHE-9 again.`,
+    }));
     fireEvent.click(screen.getByRole("button", { name: "Show instruction" }));
-    const chip = screen.getByTestId("issue-chip");
-    expect(chip).toHaveAttribute("data-issue-id", id);
-    expect(chip).toHaveTextContent("CHE-9");
-    expect(screen.getByRole("region").textContent).not.toContain("mention://");
+    const region = screen.getByRole("region");
+    const links = within(region).getAllByRole("link");
+    expect(links.map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
+      ["CHE-9", `/acme/issues/${id}`],
+    ]);
+    expect(region.textContent).toContain("Check CHE-9 now, then CHE-9 and CHE-9 again.");
+    expect(region.textContent).not.toContain("mention://");
+    expect(region.textContent).not.toContain(id);
+  });
+
+  it("counts a bare identifier after its mention once, and keeps non-identifier labels readable", () => {
+    const id = "0199c0de-0000-4000-8000-000000000002";
+    const other = "0199c0de-0000-4000-8000-000000000003";
+    renderRow(wakeup({
+      title: "T",
+      instruction: `See CHE-5 and [CHE-5](mention://issue/${id}); also [the plan](mention://issue/${other}) and [the plan](mention://issue/${other}).`,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Show instruction" }));
+    const region = screen.getByRole("region");
+    expect(within(region).getAllByRole("link").map((l) => l.textContent)).toEqual(["CHE-5", "the plan"]);
+    expect(region.textContent).toContain("See CHE-5 and CHE-5; also the plan and the plan.");
+    expect(region.textContent).not.toContain(other);
   });
 
   it("keeps a zero-title, single-line instruction usable", () => {

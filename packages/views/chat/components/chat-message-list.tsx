@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -68,7 +68,7 @@ import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
 import { DecisionRequestCard } from "./decision-request-card";
 import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
-import { WakeupEventRow } from "./wakeup-event-row";
+import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
 import { stripWakeupHeader } from "@multica/core/chat/wakeup";
 import { PredecessorDms } from "./predecessor-dms";
 import { predecessorChain } from "../lib/predecessor-chain";
@@ -161,6 +161,8 @@ interface ChatListContext {
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
   availability: AgentAvailability | undefined;
+  /** Agent behind each fired-wakeup task, so its running pill joins the rail. */
+  wakeupAgentByTask: ReadonlyMap<string, string>;
 }
 
 /**
@@ -229,14 +231,20 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
       {context?.showStatusPill && context.pendingTask ? (
-        <TaskStatusPill
-          pendingTask={context.pendingTask}
-          taskMessages={context.liveTaskMessages ?? []}
-          availability={context.availability}
-        />
+        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")}>
+          <TaskStatusPill
+            pendingTask={context.pendingTask}
+            taskMessages={context.liveTaskMessages ?? []}
+            availability={context.availability}
+          />
+        </WithWakeupRail>
       ) : null}
     </div>
   );
+}
+
+function WithWakeupRail({ agentId, children }: { agentId?: string; children: ReactNode }) {
+  return agentId ? <WakeupReplyRail agentId={agentId}>{children}</WakeupReplyRail> : <>{children}</>;
 }
 
 function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
@@ -591,6 +599,14 @@ export function ChatMessageList({
     [],
   );
 
+  const wakeupAgentByTask = useMemo(() => {
+    const byTask = new Map<string, string>();
+    for (const m of messages) {
+      if (m.scheduled_wakeup && m.task_id) byTask.set(m.task_id, m.scheduled_wakeup.agent_id);
+    }
+    return byTask;
+  }, [messages]);
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
@@ -602,6 +618,7 @@ export function ChatMessageList({
     pendingTask,
     liveTaskMessages,
     availability,
+    wakeupAgentByTask,
   };
 
   // Every previewable file in this session, in message order, so opening one
@@ -714,6 +731,7 @@ export function ChatMessageList({
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
+              wakeupAgentId={item.taskId ? wakeupAgentByTask.get(item.taskId) : undefined}
               transformContent={transformContent}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
@@ -795,6 +813,7 @@ function ChatSkeletonBody() {
 const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
+  wakeupAgentId,
   transformContent,
   onQuickAction,
   quickActionsDisabled,
@@ -805,6 +824,7 @@ const MessageBubble = memo(function MessageBubble({
 }: {
   item: ChatRenderItem;
   isPending: boolean;
+  wakeupAgentId?: string;
   transformContent?: (content: string) => string;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
@@ -818,13 +838,15 @@ const MessageBubble = memo(function MessageBubble({
   // so React reconciles rather than remounts at task completion.
   if (item.kind === "live") {
     return (
-      <AssistantMessage
-        taskId={item.taskId}
-        isPending={isPending}
-        transformContent={transformContent}
-        onQuickAction={onQuickAction}
-        quickActionsDisabled={quickActionsDisabled}
-      />
+      <WithWakeupRail agentId={wakeupAgentId}>
+        <AssistantMessage
+          taskId={item.taskId}
+          isPending={isPending}
+          transformContent={transformContent}
+          onQuickAction={onQuickAction}
+          quickActionsDisabled={quickActionsDisabled}
+        />
+      </WithWakeupRail>
     );
   }
 
@@ -890,18 +912,20 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   return (
-    <AssistantMessage
-      taskId={message.task_id ?? null}
-      message={message}
-      isPending={isPending}
-      transformContent={transformContent}
-      onQuickAction={onQuickAction}
-      quickActionsDisabled={quickActionsDisabled}
-      onRegenerateQuickActions={onRegenerateQuickActions}
-      canRegenerateQuickActions={message.id === latestAssistantMessageId}
-      quickActionsPending={quickActionsPendingMessageId === message.id}
-      showStarterCards={message.id === starterCardsMessageId}
-    />
+    <WithWakeupRail agentId={wakeupAgentId}>
+      <AssistantMessage
+        taskId={message.task_id ?? null}
+        message={message}
+        isPending={isPending}
+        transformContent={transformContent}
+        onQuickAction={onQuickAction}
+        quickActionsDisabled={quickActionsDisabled}
+        onRegenerateQuickActions={onRegenerateQuickActions}
+        canRegenerateQuickActions={message.id === latestAssistantMessageId}
+        quickActionsPending={quickActionsPendingMessageId === message.id}
+        showStarterCards={message.id === starterCardsMessageId}
+      />
+    </WithWakeupRail>
   );
 });
 

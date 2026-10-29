@@ -340,6 +340,7 @@
     "show_instruction": "Show instruction",
     "hide_instruction": "Hide instruction",
     "instruction_region": "Instruction for the agent",
-    "instruction_note": "Instruction for the agent, verbatim. The agent receives all of this."
+    "instruction_note": "Instruction for the agent, verbatim. The agent receives all of this.",
+    "issue_fallback": "issue"
   }
 }

@@ -341,6 +341,7 @@
     "show_instruction": "查看指令",
     "hide_instruction": "收合指令",
     "instruction_region": "給智慧體的指令",
-    "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。"
+    "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。",
+    "issue_fallback": "事項"
   }
 }

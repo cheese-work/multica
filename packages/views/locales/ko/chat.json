@@ -334,6 +334,7 @@
     "show_instruction": "지시 보기",
     "hide_instruction": "지시 숨기기",
     "instruction_region": "에이전트에게 보낸 지시",
-    "instruction_note": "에이전트에게 보낸 지시(원문). 에이전트는 이 내용을 모두 받습니다."
+    "instruction_note": "에이전트에게 보낸 지시(원문). 에이전트는 이 내용을 모두 받습니다.",
+    "issue_fallback": "이슈"
   }
 }

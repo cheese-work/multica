@@ -22,7 +22,12 @@ vi.mock("react-virtuoso", () => ({
   ),
 }));
 vi.mock("@multica/core/workspace/hooks", () => ({
-  useActorName: () => ({ getActorName: () => "Terra" }),
+  useActorName: () => ({
+    getActorName: () => "Terra",
+    getActorInitials: () => "T",
+    getActorAvatarUrl: () => null,
+    hasActor: () => true,
+  }),
 }));
 
 import { ChatMessageList } from "./chat-message-list";
@@ -72,5 +77,19 @@ describe("ChatMessageList fired wakeups", () => {
     renderList([{ ...base, id: "m1", content: "hello" }]);
     expect(screen.getByTestId("chat-user-message")).toHaveTextContent("hello");
     expect(screen.queryByRole("img", { name: "Scheduled wakeup fired" })).not.toBeInTheDocument();
+  });
+
+  it("continues the rail into the replying agent's avatar for a wakeup task, and only for it", () => {
+    const wakeup = { id: "w1", agent_id: "a1", title: "Report", instruction: "report", fire_at: "2026-10-29T10:00:00Z", created_at: "2026-10-29T03:10:00Z" };
+    renderList([
+      { ...base, id: "m1", content: "hello", task_id: "t0" },
+      { ...base, id: "m2", content: `${HEADER}\nInstruction: report`, task_id: "t1", scheduled_wakeup: wakeup },
+      { ...base, id: "m3", role: "assistant", content: "Here is the report", task_id: "t1" },
+      { ...base, id: "m4", role: "assistant", content: "Unrelated reply", task_id: "t0" },
+    ]);
+    const replies = screen.getAllByTestId("wakeup-reply");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toHaveTextContent("Here is the report");
+    expect(screen.getByText("Unrelated reply").closest('[data-testid="wakeup-reply"]')).toBeNull();
   });
 });
