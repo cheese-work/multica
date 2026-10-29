@@ -29,13 +29,14 @@ export function readMermaidOrientationSetting(
 
 // Diagrams also render where no workspace or QueryClient exists (the
 // standalone media page, SSR). `useQuery` needs some client, so those callers
-// get a disabled query on this one.
-const detachedClient = new QueryClient();
+// get a disabled query on this one, built on first use so importing this
+// module touches no react-query export.
+let detachedClient: QueryClient | undefined;
 
 /** The current workspace's setting, or `auto` outside a workspace route. */
 export function useMermaidOrientationSetting(): MermaidOrientationSetting {
   const slug = useWorkspaceSlug();
-  const client = use(QueryClientContext) ?? detachedClient;
+  const client = use(QueryClientContext) ?? (detachedClient ??= new QueryClient());
   const { data } = useQuery({ ...workspaceListOptions(), enabled: !!slug }, client);
   const workspace = slug ? data?.find((w) => w.slug === slug) : undefined;
   return readMermaidOrientationSetting(workspace?.settings);

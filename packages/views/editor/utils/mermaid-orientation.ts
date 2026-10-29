@@ -8,7 +8,7 @@ const FIXED_DIRECTION_MARKER = "%% multica:fixed-direction";
 
 const FLOWCHART_HEADER = /^(\s*)(flowchart-elk|flowchart|graph)(?:[ \t]+(TD|TB|BT|LR|RL))?(?=[\s;]|$)(.*)$/;
 const STATE_HEADER = /^\s*stateDiagram(?:-v2)?\s*$/;
-const STATE_DIRECTION = /^(\s*direction\s+)(TB|BT|LR|RL)(\s*)$/;
+const STATE_DIRECTION = /^(\s*direction\s+)(TB|BT|LR|RL)(\s*(?:%%.*)?)$/;
 
 /**
  * Wide below this width a diagram reads better left-to-right; narrow, top-down.
@@ -81,7 +81,8 @@ export function orientChart(source: string, orientation: Orientation): string {
       lines[i] = `${direction[1]}${next}${direction[3]}`;
       return lines.join("\n");
     }
-    depth += (text.match(/\{/g)?.length ?? 0) - (text.match(/\}/g)?.length ?? 0);
+    const code = text.replace(/%%.*$/, "");
+    depth += (code.match(/\{/g)?.length ?? 0) - (code.match(/\}/g)?.length ?? 0);
   }
   if (orientation === "vertical") return source;
   lines.splice(header + 1, 0, "  direction LR");

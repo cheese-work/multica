@@ -743,4 +743,23 @@ describe("MermaidDiagram orientation", () => {
       "variant-TD",
     );
   });
+
+  it("drops the viewer variant when the setting changes to author with the viewer open", async () => {
+    mermaidRenderMock.mockImplementation(async (_id: string, source: string) => ({
+      svg: `<svg viewBox="0 0 1000 500"><text>${source.includes("graph LR") ? "variant-LR" : "variant-TD"}</text></svg>`,
+    }));
+    stubWidths({ inline: 1200, viewer: 400 });
+    const { rerender } = render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    await openViewer();
+    await waitFor(() => {
+      expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-TD");
+    });
+
+    orientationSetting.value = "author";
+    rerender(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => {
+      expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-LR");
+    });
+  });
 });

@@ -76,3 +76,24 @@ describe("pickOrientation", () => {
     expect(pickOrientation(640)).toBe("horizontal");
   });
 });
+
+describe("orientChart state-diagram comments", () => {
+  it("rewrites a direction that carries an inline comment", () => {
+    expect(
+      orientChart("stateDiagram-v2\n  direction LR %% author direction\n  [*] --> A", "vertical"),
+    ).toBe("stateDiagram-v2\n  direction TB %% author direction\n  [*] --> A");
+  });
+
+  it("ignores braces inside comments when tracking block depth", () => {
+    expect(
+      orientChart("stateDiagram-v2\n  %% { note\n  direction TB\n  [*] --> A", "horizontal"),
+    ).toBe("stateDiagram-v2\n  %% { note\n  direction LR\n  [*] --> A");
+  });
+
+  it("ignores a closing brace in a trailing comment", () => {
+    const source = "stateDiagram-v2\n  state X { %% }\n    direction LR\n  }\n  direction LR\n  [*] --> A";
+    expect(orientChart(source, "vertical")).toBe(
+      "stateDiagram-v2\n  state X { %% }\n    direction LR\n  }\n  direction TB\n  [*] --> A",
+    );
+  });
+});

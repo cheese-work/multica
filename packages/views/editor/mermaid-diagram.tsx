@@ -548,7 +548,7 @@ export function MermaidDiagram({
 
   // The viewer's variant, drawn only while it is open and wants the other direction.
   const variantOrientation =
-    viewerOpen && rendered && viewerOrientation && viewerOrientation !== rendered.orientation
+    auto && viewerOpen && rendered && viewerOrientation && viewerOrientation !== rendered.orientation
       ? viewerOrientation
       : null;
   useEffect(() => {
