@@ -125,6 +125,43 @@ Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramèt
 
 Pour révoquer l'autorisation d'accès aux dépôts côté GitHub, désinstallez l'App ou ajustez son périmètre de dépôts depuis la page des installations de GitHub Apps de votre compte personnel ou de votre organisation. Après la désinstallation, tous les espaces de travail Multica liés à cette installation cessent de recevoir des événements.
 
+## Attendre une exécution GitHub Actions
+
+Un réveil (wakeup) peut attendre une exécution GitHub Actions, par exemple un déploiement qui s'arrête à une porte d'approbation d'environnement, sans interrogation périodique. L'exécution n'a pas besoin de PR liée.
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` accepte l'une des trois formes suivantes :
+
+| Forme | Sélectionne |
+|---|---|
+| `owner/repo:RUN_ID` | L'exécution portant cet ID |
+| `owner/repo:WORKFLOW_FILE@SHA` | L'exécution de ce fichier de workflow dont le `head_sha` propre est le SHA complet de 40 caractères |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | L'exécution portant cet ID |
+
+`--until-gh-run-state` vaut `completed` (par défaut) ou `waiting`. `waiting` se déclenche chaque fois qu'un job de l'exécution se met en attente à une porte d'environnement. Consultez `waiting_now` dans les facts avant de demander à une personne d'approuver une porte : il vaut `false` lorsque la porte est déjà fermée. La forme `SHA` correspond au commit propre de l'exécution. Une exécution de déploiement qui déploie un autre commit, comme `cd-deploy.yml`, exige son ID d'exécution.
+
+L'App doit être installée pour le propriétaire du dépôt dans cet espace de travail. Elle doit aussi être abonnée aux événements **Workflow run** et **Workflow job**, qui exigent la permission **Actions: read**. Les enregistrements sont conservés 30 jours.
+
+### Limite : événements observés uniquement
+
+La règle est satisfaite par les événements webhook que Multica a reçus après l'abonnement de l'App. Ce n'est pas une lecture de l'état actuel d'une exécution.
+
+- GitHub ne renvoie pas de lui-même une livraison échouée. Un événement `completed` perdu laisse l'exécution enregistrée à `in_progress`.
+- Une exécution ou une porte commencée avant l'abonnement de l'App reste invisible.
+- Pour récupérer, renvoyez l'événement à la main depuis la page **Advanced → Recent Deliveries** de l'App.
+- Définissez toujours `--expires-in` avec `--on-timeout wake`. À l'échéance, la valeur par défaut est `end`, qui ne lance aucune exécution.
+
+### Recette : attendre un déploiement après une fusion
+
+1. Attendez l'exécution de qualification du commit de fusion `M` :
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. L'exécution réveillée trouve l'ID de l'exécution de déploiement : `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`. Choisissez l'exécution dont le titre contient `M`.
+3. Attendez la porte d'approbation : `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. Après l'approbation, attendez la fin avec la même règle et `--until-gh-run-state completed`.
+
 ## Configuration en auto-hébergement
 
 Multica Cloud n'a pas besoin de cette section. En auto-hébergement, vous devez d'abord créer votre propre GitHub App.

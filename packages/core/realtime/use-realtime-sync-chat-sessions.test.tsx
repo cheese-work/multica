@@ -78,19 +78,20 @@ describe("useRealtimeSync — chat message session list refresh", () => {
     );
     await waitFor(() => expect(sessionList.result.current.data).toEqual([readSession]));
     expect(listChatSessions).toHaveBeenCalledTimes(1);
-    const emitMessage = async (sessionId: string, role: ChatMessageEventPayload["role"]) => {
+    const emitMessage = async (sessionId: string, role: ChatMessageEventPayload["role"], kind?: ChatMessageEventPayload["message_kind"]) => {
       const payload: ChatMessageEventPayload = {
         chat_session_id: sessionId,
         message_id: "message-1",
         role,
         content: "A decision is needed",
         created_at: "2026-10-14T00:01:00Z",
+        ...(kind ? { message_kind: kind } : {}),
       };
       await act(async () => {
         handlers["chat:message"]!(payload);
       });
     };
-    return { sessionList, listChatSessions, emitMessage };
+    return { sessionList, listChatSessions, emitMessage, handlers };
   }
 
   it("refetches a cached DM and shows unread when an assistant ping arrives", async () => {
@@ -125,5 +126,31 @@ describe("useRealtimeSync — chat message session list refresh", () => {
     expect(listChatSessions).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryState(chatKeys.sessions("ws-1"))?.isInvalidated).toBe(false);
     expect(sessionList.result.current.data).toEqual([readSession]);
+  });
+
+  it.each(["decision_cancel_notice", "decision_reference"] as const)("does not badge or bump a live %s", async (kind) => {
+    const { sessionList, listChatSessions, emitMessage, handlers } = await mountSessionList();
+    const openKey = ["chat", "ws-1", "open-decisions"];
+    queryClient.setQueryData(openKey, [{ id: "ask" }]);
+    await emitMessage(readSession.id, "assistant", kind);
+    await act(async () => {
+      handlers["chat:done"]!({ chat_session_id: readSession.id, task_id: "task", message_kind: kind });
+    });
+    expect(listChatSessions).toHaveBeenCalledTimes(1);
+    expect(sessionList.result.current.data).toEqual([readSession]);
+    expect(queryClient.getQueryState(openKey)?.isInvalidated).toBe(true);
+  });
+
+  it("refreshes open asks when expiry posts a decision comment without a DM note", async () => {
+    const { handlers, listChatSessions } = await mountSessionList();
+    const openKey = ["chat", "ws-1", "open-decisions"];
+    queryClient.setQueryData(openKey, [{ id: "expired-ask" }]);
+    await act(async () => {
+      handlers["comment:created"]!({
+        comment: { id: "expiry", issue_id: "issue", decision_request_id: "expired-ask", decision_comment_kind: "cancel" },
+      });
+    });
+    expect(queryClient.getQueryState(openKey)?.isInvalidated).toBe(true);
+    expect(listChatSessions).toHaveBeenCalledTimes(1);
   });
 });

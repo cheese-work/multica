@@ -609,6 +609,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "show_full": "Show full comment",
     "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
@@ -1420,6 +1421,10 @@
       "other_done": "When {{issue}} is done",
       "other_ended": "When {{issue}} is done or cancelled",
       "other_in_review": "When {{issue}} moves to In Review",
+      "gh_run_id": "run {{id}} of {{repo}}",
+      "gh_run_sha": "{{workflow}} at {{sha}} of {{repo}}",
+      "gh_run_completed": "When {{run}} finishes",
+      "gh_run_waiting": "When {{run}} waits at an approval gate",
       "other_blocked": "When {{issue}} moves to Blocked",
       "another_issue": "another issue",
       "unknown_label": "a deleted label",
@@ -1444,6 +1449,8 @@
       "other_done": "Waiting for {{issue}}",
       "other_ended": "Waiting for {{issue}} to end",
       "other_in_review": "Waiting for {{issue}} to reach review",
+      "gh_run_completed": "Waiting for {{run}} to finish",
+      "gh_run_waiting": "Waiting for {{run}} to reach an approval gate",
       "other_blocked": "Waiting for {{issue}} to be blocked",
       "time": "{{time}} · wakes {{agent}}",
       "header": "{{agent}}: {{what}}",
@@ -1516,6 +1523,7 @@
     "not_merged": "{{prs}} closed without merging",
     "not_merged_action": "Remove",
     "all_merged_to": "All PRs merged. The next merged PR moves this issue to {{status}}.",
+    "workflow_owned": "The workflow moves this issue when its PR merges",
     "issue_disabled": "PR merges won’t change this issue",
     "issue_disabled_action": "Turn on"
   },
@@ -1885,11 +1893,15 @@
     "state": {
       "pending": "Pending",
       "effective": "In effect",
-      "disclaimed": "Disclaimed"
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered",
+      "recorded": "Recorded"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
-    "asked_in_dm": "Asked in DM",
+    "recorded_for": "Recorded for {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",

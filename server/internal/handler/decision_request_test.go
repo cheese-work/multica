@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -97,7 +98,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if stored != result.Request || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
+			if !reflect.DeepEqual(stored, result.Request) || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
 				test.Fatalf("wrong request: %+v", stored)
 			}
 			if result.Comment.ID != stored.IssueCommentID || result.Comment.ParentID != parseUUID(fixture.tagID) || result.Comment.DecisionRequestID != stored.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.AuthorType != "agent" || result.Comment.AuthorID != stored.AskingAgentID || result.Comment.SourceTaskID != parseUUID(fixture.taskID) || result.Comment.Content != input.Ask {

@@ -125,6 +125,43 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 
 撤销 GitHub 侧的仓库授权，需到个人或组织的 GitHub App installations 页面卸载或调整仓库范围。卸载后，与该 installation 关联的所有 Multica 工作区都会停止接收事件。
 
+## 等待 GitHub Actions 运行
+
+唤醒可以等待某次 GitHub Actions 运行，例如停在环境审批关卡的部署，无需轮询。该运行不需要关联 PR。
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` 接受三种写法之一：
+
+| 写法 | 选中的运行 |
+|---|---|
+| `owner/repo:RUN_ID` | 该 ID 的运行 |
+| `owner/repo:WORKFLOW_FILE@SHA` | 该工作流文件中，自身 `head_sha` 等于完整 40 位 SHA 的运行 |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | 该 ID 的运行 |
+
+`--until-gh-run-state` 取 `completed`（默认）或 `waiting`。`waiting` 会在运行中的作业每次开始等待环境关卡时触发。请先查看 facts 中的 `waiting_now` 再请人审批关卡：关卡已关闭时它为 `false`。`SHA` 写法匹配的是运行自身的提交。部署其他提交的部署运行（例如 `cd-deploy.yml`）需要使用它的运行 ID。
+
+该 App 必须已为本工作区中的仓库所有者安装，并订阅 **Workflow run** 与 **Workflow job** 事件，这两类事件需要 **Actions: read** 权限。记录保留 30 天。
+
+### 限制：仅限已观察到的事件
+
+规则由 App 订阅之后 Multica 收到的 webhook 事件满足，而不是对运行当前状态的查询。
+
+- GitHub 不会自动重新投递失败的投递。丢失 `completed` 事件会使已存储的运行一直停在 `in_progress`。
+- App 订阅之前就已开始的运行或关卡不可见。
+- 恢复方法：在 App 的 **Advanced → Recent Deliveries** 页面手动重新投递该事件。
+- 务必同时设置 `--expires-in` 和 `--on-timeout wake`。到期时的默认值是 `end`，不会启动任何运行。
+
+### 示例：合并后等待部署
+
+1. 等待合并提交 `M` 的资格验证运行：
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. 被唤醒的运行查找部署运行 ID：`gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`。选择标题包含 `M` 的运行。
+3. 等待审批关卡：`--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. 审批通过后，用同一规则和 `--until-gh-run-state completed` 等待完成。
+
 ## 自托管配置
 
 Multica Cloud 无需执行本节。自托管需要先创建自己的 GitHub App。

@@ -65,9 +65,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  cd-qualification:
+  build-images:
     needs: fork-changelog
     if: ${{ always() && !cancelled() }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        image: [backend, web]
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
     runs-on: [self-hosted, linux, x64, cheese-x99]
@@ -123,6 +128,7 @@ jobs:
           bash deploy/cd/test-release-manifest.sh
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
+          python3 deploy/cd/test-build-cache.py
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           bash deploy/cd/test-workflow-path-filters.sh
@@ -135,7 +141,16 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@v4
         with:
+          name: multica-cd-${{ matrix.image }}-v1
           driver: docker-container
+          cleanup: false
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+              gc = true
+              reservedSpace = "1GB"
+              maxUsedSpace = "4GB"
+              minFreeSpace = "10GB"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -145,6 +160,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish immutable amd64 backend
+        if: matrix.image == 'backend'
         shell: bash
         run: |
           set -euo pipefail
@@ -171,6 +187,7 @@ jobs:
           node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
 
       - name: Build and publish immutable amd64 web
+        if: matrix.image == 'web'
         shell: bash
         run: |
           set -euo pipefail
@@ -197,6 +214,67 @@ jobs:
             --file Dockerfile.web .
           node -e 'const m=require("./web-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > web.digest
 
+      - name: Record immutable image inspection and web entries
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$IMAGE_NAME" = backend ]; then
+            image_ref="${BACKEND_IMAGE}@$(cat backend.digest)"
+          else
+            image_ref="${WEB_IMAGE}@$(cat web.digest)"
+            if [ -f apps/web/.fork-changelog/entries.json ]; then
+              cp apps/web/.fork-changelog/entries.json web-fork-changelog.json
+            fi
+          fi
+          docker buildx imagetools inspect "$image_ref" | tee "${IMAGE_NAME}-inspect.txt"
+
+      - name: Upload immutable image evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: cd-image-${{ matrix.image }}-${{ github.sha }}
+          path: |
+            ${{ matrix.image }}-metadata.json
+            ${{ matrix.image }}.digest
+            ${{ matrix.image }}-inspect.txt
+            web-fork-changelog.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stop the persistent builder with a bounded shutdown budget
+        if: ${{ always() && steps.buildx.outputs.name != '' }}
+        timeout-minutes: 4
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
+
+  cd-qualification:
+    needs: build-images
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 6
+    env:
+      BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
+      WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-web
+    steps:
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
+
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download both immutable image results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cd-image-*-${{ github.sha }}
+          merge-multiple: true
+
       - name: Write immutable build-evidence manifest
         shell: bash
         run: |
@@ -205,6 +283,11 @@ jobs:
           migration_sha="$(node deploy/cd/migration-inventory.mjs)"
           backend_ref="${BACKEND_IMAGE}@$(cat backend.digest)"
           web_ref="${WEB_IMAGE}@$(cat web.digest)"
+          rm -f apps/web/.fork-changelog/entries.json
+          if [ -f web-fork-changelog.json ]; then
+            mkdir -p apps/web/.fork-changelog
+            cp web-fork-changelog.json apps/web/.fork-changelog/entries.json
+          fi
           node deploy/cd/release-manifest.mjs create \
             --kind build-evidence \
             --repository "$GITHUB_REPOSITORY" \
@@ -222,8 +305,6 @@ jobs:
             --expected-source-sha "$GITHUB_SHA" \
             --expected-configuration-sha256 "$config_sha" \
             --expected-migration-inventory-sha256 "$migration_sha"
-          docker buildx imagetools inspect "$backend_ref" | tee backend-inspect.txt
-          docker buildx imagetools inspect "$web_ref" | tee web-inspect.txt
           entries_sha="$(node -p 'JSON.parse(require("node:fs").readFileSync("cd-build-evidence.json", "utf8")).fork_changelog_sha256')"
           cat > cd-image-provenance.json <<EOF
           {"fork_changelog_sha256":"${entries_sha}","images":{"backend":{"digest":"$(cat backend.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"},"web":{"digest":"$(cat web.digest)","architecture":"linux/amd64","repository":"${GITHUB_REPOSITORY}","source_sha":"${GITHUB_SHA}"}}}
@@ -242,12 +323,3 @@ jobs:
             web-inspect.txt
           if-no-files-found: error
           retention-days: 30
-
-      - name: Remove this run's builder with a bounded shutdown budget
-        if: ${{ always() && steps.buildx.outputs.name != '' }}
-        timeout-minutes: 4
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: |
-          docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
-          docker buildx rm --timeout 180s "$BUILDER_NAME"

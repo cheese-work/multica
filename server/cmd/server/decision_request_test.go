@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -88,7 +89,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var fetched db.DecisionRequest
 	readJSON(test, response, &fetched)
-	if fetched != created {
+	if !reflect.DeepEqual(fetched, created) {
 		test.Fatal("get did not roundtrip the committed request")
 	}
 	response = call(http.MethodGet, "/api/decisions?issue="+issueID, nil, token, false)
@@ -97,7 +98,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var requests []db.DecisionRequest
 	readJSON(test, response, &requests)
-	if len(requests) != 1 || requests[0] != created {
+	if len(requests) != 1 || !reflect.DeepEqual(requests[0], created) {
 		test.Fatalf("wrong list: %+v", requests)
 	}
 	if count := fixture.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, issueID, testUserID); count != 1 {

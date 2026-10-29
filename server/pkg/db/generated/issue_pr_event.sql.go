@@ -71,21 +71,22 @@ func (q *Queries) GetLatestIssuePREventObservedAt(ctx context.Context, arg GetLa
 
 const insertIssuePREvent = `-- name: InsertIssuePREvent :execrows
 INSERT INTO issue_pr_event (
-    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status, previous_head_sha
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (issue_id, pull_request_id, dedupe_key) DO NOTHING
 `
 
 type InsertIssuePREventParams struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	Kind          string             `json:"kind"`
-	HeadSha       string             `json:"head_sha"`
-	BaseSha       string             `json:"base_sha"`
-	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
-	DedupeKey     string             `json:"dedupe_key"`
-	Status        string             `json:"status"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	PullRequestID   pgtype.UUID        `json:"pull_request_id"`
+	Kind            string             `json:"kind"`
+	HeadSha         string             `json:"head_sha"`
+	BaseSha         string             `json:"base_sha"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	DedupeKey       string             `json:"dedupe_key"`
+	Status          string             `json:"status"`
+	PreviousHeadSha string             `json:"previous_head_sha"`
 }
 
 func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREventParams) (int64, error) {
@@ -99,6 +100,7 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 		arg.ObservedAt,
 		arg.DedupeKey,
 		arg.Status,
+		arg.PreviousHeadSha,
 	)
 	if err != nil {
 		return 0, err
@@ -130,9 +132,105 @@ func (q *Queries) ListIssueIDsForPR(ctx context.Context, pullRequestID pgtype.UU
 	return items, nil
 }
 
+const listNextTurnPREvents = `-- name: ListNextTurnPREvents :many
+SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
+       pr.pr_number, pr.repo_owner, pr.repo_name
+FROM issue_pr_event e
+JOIN github_pull_request pr ON pr.id = e.pull_request_id
+WHERE e.kind NOT IN ('draft', 'ready')
+  AND (e.status = 'next_turn'
+       OR (e.status = 'accepted'
+           AND NOT EXISTS (
+               SELECT 1 FROM agent_task_queue t
+               JOIN task_pr_event_capability cap ON cap.task_id = t.id
+               WHERE t.issue_id = e.issue_id AND t.status = 'running')))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM issue_wakeup w
+      JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
+      LEFT JOIN agent_task_queue t ON t.id = r.task_id
+      WHERE w.issue_id = e.issue_id
+        AND w.system_rule = 'pr_needs_attention'
+        AND r.event_type = 'pr.event'
+        AND r.payload->>'event_id' = e.id::text
+        AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))
+  AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
+  AND ($2::timestamptz IS NULL
+       OR (e.observed_at, e.id) > ($2::timestamptz, $3::uuid))
+ORDER BY e.observed_at, e.id
+LIMIT $4
+FOR UPDATE OF e SKIP LOCKED
+`
+
+type ListNextTurnPREventsParams struct {
+	WorkspaceIds    []pgtype.UUID      `json:"workspace_ids"`
+	AfterObservedAt pgtype.Timestamptz `json:"after_observed_at"`
+	AfterID         pgtype.UUID        `json:"after_id"`
+	RowLimit        int32              `json:"row_limit"`
+}
+
+type ListNextTurnPREventsRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Kind        string             `json:"kind"`
+	HeadSha     string             `json:"head_sha"`
+	BaseSha     string             `json:"base_sha"`
+	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
+	PrNumber    int32              `json:"pr_number"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+}
+
+// Events no mid-run delivery will take (CHE-2298 a3): next_turn ones, and
+// accepted ones while the issue has no live run with the PR-event channel. Not
+// filtered by the capture switch: that stops new capture only, stored events
+// keep draining. An event with a receipt still in flight (pending, or carried by
+// a run that is queued, dispatched or has started) is skipped; a receipt that
+// was discarded or whose run ended unstarted leaves the event eligible again.
+// A started carrier is excluded here, not only swept to delivered, so a start
+// between the sweep and this read never makes the event eligible twice. The
+// after_* pair is the caller's cursor: a batch full of causes the rule cannot
+// take now must not hold every later batch back.
+func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
+	rows, err := q.db.Query(ctx, listNextTurnPREvents,
+		arg.WorkspaceIds,
+		arg.AfterObservedAt,
+		arg.AfterID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNextTurnPREventsRow{}
+	for rows.Next() {
+		var i ListNextTurnPREventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.Kind,
+			&i.HeadSha,
+			&i.BaseSha,
+			&i.ObservedAt,
+			&i.PrNumber,
+			&i.RepoOwner,
+			&i.RepoName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockGitHubPRForEvent = `-- name: LockGitHubPRForEvent :one
 
-SELECT id, workspace_id, head_sha
+SELECT id, workspace_id, head_sha, state
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE
@@ -142,14 +240,20 @@ type LockGitHubPRForEventRow struct {
 	ID          pgtype.UUID `json:"id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	HeadSha     string      `json:"head_sha"`
+	State       string      `json:"state"`
 }
 
 // PR event store (CHE-2298 a1).
-// Serializes event capture per PR row and returns the current head.
+// Serializes event capture per PR row and returns the current head and state.
 func (q *Queries) LockGitHubPRForEvent(ctx context.Context, id pgtype.UUID) (LockGitHubPRForEventRow, error) {
 	row := q.db.QueryRow(ctx, lockGitHubPRForEvent, id)
 	var i LockGitHubPRForEventRow
-	err := row.Scan(&i.ID, &i.WorkspaceID, &i.HeadSha)
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.HeadSha,
+		&i.State,
+	)
 	return i, err
 }
 
@@ -169,6 +273,42 @@ func (q *Queries) LockIssueForPREvent(ctx context.Context, id pgtype.UUID) (pgty
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const markPREventNextTurn = `-- name: MarkPREventNextTurn :exec
+UPDATE issue_pr_event SET status = 'next_turn' WHERE id = $1 AND status = 'accepted'
+`
+
+// The fallback owns the event from here: typed delivery takes accepted ones only.
+func (q *Queries) MarkPREventNextTurn(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markPREventNextTurn, id)
+	return err
+}
+
+const markStartedPREventsDelivered = `-- name: MarkStartedPREventsDelivered :execrows
+UPDATE issue_pr_event e
+SET status = 'delivered'
+WHERE e.status = 'next_turn'
+  AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
+  AND EXISTS (
+      SELECT 1
+      FROM issue_wakeup w
+      JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
+      JOIN agent_task_queue t ON t.id = r.task_id
+      WHERE w.issue_id = e.issue_id
+        AND w.system_rule = 'pr_needs_attention'
+        AND r.event_type = 'pr.event'
+        AND r.payload->>'event_id' = e.id::text
+        AND t.started_at IS NOT NULL)
+`
+
+// A next-turn wake that started carries its receipts' events.
+func (q *Queries) MarkStartedPREventsDelivered(ctx context.Context, workspaceIds []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markStartedPREventsDelivered, workspaceIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const pREventKindEnabled = `-- name: PREventKindEnabled :one
@@ -191,4 +331,23 @@ func (q *Queries) PREventKindEnabled(ctx context.Context, arg PREventKindEnabled
 	var enabled bool
 	err := row.Scan(&enabled)
 	return enabled, err
+}
+
+const pREventQueuedNoted = `-- name: PREventQueuedNoted :one
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE issue_id = $1 AND details->>'event_id' = $2::text
+)::boolean
+`
+
+type PREventQueuedNotedParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	EventID string      `json:"event_id"`
+}
+
+func (q *Queries) PREventQueuedNoted(ctx context.Context, arg PREventQueuedNotedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pREventQueuedNoted, arg.IssueID, arg.EventID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

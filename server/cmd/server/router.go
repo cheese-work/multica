@@ -1872,6 +1872,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-2454: delegated governed writes. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
+					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
@@ -2130,6 +2133,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
+			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.
 			r.Route("/api/search-index", func(r chi.Router) {
@@ -2170,6 +2177,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Post("/run-budget", h.RaiseIssueRunBudget)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
@@ -2290,14 +2298,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// member; edits and deletes are gated inside the handlers to the
 			// workflow's owner and workspace owners/admins (MUL-8120), and
 			// switching a project's workflow to admins and the project's lead.
+			// Edits, deletes and handoff writes also refuse machine credentials
+			// (task_token, cloud_pat): an agent must not rewrite its own workflow.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
-					r.Patch("/", h.UpdateIssueWorkflow)
-					r.Delete("/", h.DeleteIssueWorkflow)
-					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+					r.With(handler.RequireHumanActor).Patch("/", h.UpdateIssueWorkflow)
+					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
+					r.With(handler.RequireHumanActor).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
 				})
 			})
@@ -2684,11 +2694,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
+				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/{id}", h.GetDecision)
 				r.Post("/{id}/withdraw", h.WithdrawDecision)
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/challenge", h.ChallengePasskeyRevocation)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke", h.RevokePasskey)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/code", h.StartPasskeyRevocationByCode)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/confirm", h.ConfirmPasskeyRevocationByCode)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {

@@ -45,6 +45,7 @@ import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
 import { formatChatTime } from "./format-chat-time";
+import { NeedsYouList } from "./needs-you-list";
 
 const apiLogger = createLogger("chat.api");
 
@@ -515,6 +516,7 @@ function ChatThreadListBody({
   if (view === "archived") {
     return (
       <>
+        <NeedsYouList />
         <button
           type="button"
           onClick={() => setView("history")}
@@ -552,6 +554,7 @@ function ChatThreadListBody({
   if (historySessions.length === 0) {
     return (
       <>
+        <NeedsYouList />
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
@@ -562,6 +565,7 @@ function ChatThreadListBody({
 
   return (
     <>
+      <NeedsYouList />
       <div className="contents" data-testid="chat-thread-group-recent">
         {historySessions.map(renderRow)}
       </div>

@@ -1,6 +1,6 @@
 ---
 title: 项目资源
-description: 为项目关联 GitHub 仓库或本地目录，让后续执行获得稳定的工作上下文。
+description: 为项目关联仓库、本地目录和 HTTPS 参考链接。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,12 +11,13 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 
 [项目](/projects)资源告诉智能体这组工作会用到哪些代码，以及在哪里执行。资源会持续关联在项目上，不必在每条任务中重复粘贴仓库地址或本地路径。
 
-目前支持两种资源：
+目前支持三种资源：
 
 | 资源 | 适用场景 | 执行位置 |
 |---|---|---|
 | **GitHub 仓库** | 团队共享的代码库，希望由运行时管理 checkout | 运行时管理的工作目录 |
 | **本地目录** | 已经存在的 checkout、很大的仓库，或需要直接查看本地改动 | 指定电脑上的原目录 |
+| **URL** | 带备注的设计文件、文档或其他 HTTPS 参考链接 | 仅作上下文，不会检出 |
 
 ## 资源进入执行的方式
 
@@ -35,6 +36,20 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 创建项目时，也可以直接在 **Repos** 中选择仓库。一个项目可以关联多个 GitHub 仓库。
 
 资源中的 `ref` 可以指定后续 checkout 默认使用的分支、tag 或 commit。`default_branch_hint` 只向智能体提供默认分支提示，不会强制切换分支。
+
+## 添加 HTTPS 参考链接
+
+用 CLI 添加链接。侧栏会分别显示 URL 和可选的 `label` 备注。
+
+```bash
+multica project resource add <project-id> --type url \
+  --url https://example.com/design --label "设计文件"
+multica project resource list <project-id>
+multica project resource update <project-id> <resource-id> \
+  --url https://example.com/design-v2 --label "更新后的设计文件"
+```
+
+API 接受 `resource_type: "url"` 和 `resource_ref: {"url": "https://example.com/design"}`。只接受包含主机名的 HTTPS 链接。智能体会把这些链接作为项目上下文，但 URL 资源不会成为仓库或检出目标。GitHub 仓库资源保留原有的检出行为。
 
 ## 添加本地目录
 

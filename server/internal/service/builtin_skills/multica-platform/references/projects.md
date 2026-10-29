@@ -200,3 +200,8 @@ reference (`in_progress` on start, `in_review` on delivery) do not apply.
 - **No `blocked` column.** When the workflow has none, comment why you cannot
   proceed, then use the "needs changes" status if the step has one, or leave
   the status as it is.
+
+## Deleting a project
+
+`multica project delete <id>` is destructive. Read `project get <id>` and the
+issues in the project first; do not delete a project that still has live work.
