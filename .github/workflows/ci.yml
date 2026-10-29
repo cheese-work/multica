@@ -911,6 +911,7 @@ jobs:
           bash deploy/cd/ensure-pyyaml.sh
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-build-cache.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
 
