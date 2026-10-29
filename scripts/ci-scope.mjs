@@ -12,7 +12,10 @@ export const filters = JSON.parse(
 // never select them; the aggregate gates then expect "skipped" for both.
 const X99_SCOPES = ["scripts", "quality_only"];
 
-export function decideScopes(event, filtered, headRef = "") {
+// A push to main whose SHA already has a green merge_group run (the queue
+// fast-forwards main to the tested SHA) reuses that run: every path scope is
+// "false" so the scoped jobs skip, and "!reuse" jobs below skip with them.
+export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = false) {
   const full = event === "schedule" || event === "workflow_dispatch";
   if (!full && event !== "push" && event !== "pull_request" && event !== "merge_group") {
     throw new Error(`Unsupported CI event: ${event}`);
@@ -27,6 +30,11 @@ export function decideScopes(event, filtered, headRef = "") {
   // Product builds already install dependencies and run the shared checks.
   // Only allocate a separate runner when quality is the sole frontend work.
   outputs.quality_only = String(outputs.quality === "true" && outputs.frontend === "false");
+  outputs.reuse = String(event === "push" && mergeGroupGreen);
+  if (outputs.reuse === "true") {
+    for (const scope of Object.keys(filters)) outputs[scope] = "false";
+    outputs.quality_only = "false";
+  }
   if (headRef.startsWith("upstream-sync/")) {
     for (const scope of X99_SCOPES) outputs[scope] = "false";
   }
@@ -48,11 +56,14 @@ export function checkGate(needs, jobScopes) {
       }
       continue;
     }
-    const selected = needs.changes.outputs?.[scope];
+    // "!reuse" marks an unscoped job that is skipped only when the run reuses
+    // a green merge_group run; otherwise it must succeed.
+    const name = scope.replace(/^!/, "");
+    const selected = needs.changes.outputs?.[name];
     if (selected !== "true" && selected !== "false") {
       throw new Error(`Missing or invalid scope: ${scope}`);
     }
-    const expected = selected === "true" ? "success" : "skipped";
+    const expected = (selected === "true") === !scope.startsWith("!") ? "success" : "skipped";
     if (needs[job]?.result !== expected) {
       throw new Error(`${job}: expected ${expected}, got ${needs[job]?.result ?? "missing"}`);
     }
@@ -69,7 +80,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     switch (process.argv[2]) {
       case "decide": {
-        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF);
+        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF, process.env.MERGE_GROUP_GREEN === "true");
         appendFileSync(process.env.GITHUB_OUTPUT,
           Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(""));
         break;

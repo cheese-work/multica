@@ -213,10 +213,13 @@ test("the CLI skips upstream-sync heads", () => {
   assert.match(result.stdout, /skipped.*upstream-sync/i);
 });
 
-test("the workflow runs the trusted workflow checker on X99 without PR code", () => {
+test("the workflow runs the trusted workflow checker on a hosted runner without PR code", () => {
   const content = readFileSync(workflow, "utf8");
   assert.match(content, /pull_request_target:/);
-  assert.match(content, /runs-on: \[self-hosted, Linux, X64, cheese-x99\]/);
+  assert.match(content, /^    runs-on: ubuntu-24\.04$/m);
+  assert.doesNotMatch(content, /self-hosted|cheese-x99/);
+  // Both triggers stay: the changelog check needs title edits, this one base changes.
+  assert.match(content, /types: \[opened, edited, synchronize, reopened\]/);
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);
@@ -279,7 +282,7 @@ const x99CheckoutJobs = () =>
 
 test("every X99 job that checks out heals leaked sparse state before its first checkout", () => {
   const jobs = x99CheckoutJobs();
-  assert.ok(jobs.length >= 3, `discovery found only ${jobs.map((j) => j.id)}`);
+  assert.ok(jobs.length >= 2, `discovery found only ${jobs.map((j) => j.id)}`);
   const missing = jobs
     .filter(({ body }) => {
       const heal = body.indexOf(`name: ${healName}`);
@@ -292,7 +295,9 @@ test("every X99 job that checks out heals leaked sparse state before its first c
 });
 
 test("a workspace already contaminated by sparse state gets a full tree on the next checkout", () => {
-  const run = healRun(readFileSync(workflow, "utf8"));
+  // This workflow moved to an ephemeral hosted runner (CHE-2415); the shared heal step lives on X99 jobs.
+  const run = healRun(readFileSync(new URL("../.github/workflows/cd-qualification.yml", import.meta.url), "utf8"));
+  assert.ok(run, "cd-qualification.yml heal step missing");
   const dir = mkdtempSync(join(tmpdir(), "sparse-"));
   try {
     const git = (...args) => {

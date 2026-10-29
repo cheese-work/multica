@@ -66,7 +66,8 @@ for (const [name, files, selected] of [
 
 test("scheduled and manual runs select every scope without a path-filter result", () => {
   for (const event of ["schedule", "workflow_dispatch"]) {
-    const { quality_only, ...scopes } = decideScopes(event, {});
+    const { quality_only, reuse, ...scopes } = decideScopes(event, {});
+    assert.equal(reuse, "false");
     assert.ok(Object.values(scopes).every((value) => value === "true"));
     assert.equal(quality_only, "false", "the full frontend build owns quality checks");
   }
@@ -145,6 +146,9 @@ function productionNeeds(gate, outputs, headRef = "") {
     // accounts for that through JOB_SCOPES rather than a skipped dependency.
     // A dependency with no job-level if: scope is unconditional: it always
     // succeeds regardless of the simulated path-filter outputs.
+    if (/^    if: \$\{\{ .*needs\.changes\.outputs\.reuse != 'true' \}\}$/m.test(jobs[job])) {
+      return [job, { result: outputs.reuse === "true" ? "skipped" : "success" }];
+    }
     const match = jobs[job].match(/^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true'( && !startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\))? \}\}$/m);
     if (!match) return [job, { result: "success" }];
     const [, scope, syncExclusion] = match;
@@ -167,8 +171,8 @@ test("a merge-group migration failure cannot pass the backend gate", () => {
   ]));
   assert.equal(outputs.backend, "true");
   assert.equal(outputs.sqlc, "true");
-  assert.equal(productionMapping("backend")["backend-tests"], "always");
-  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.equal(productionMapping("backend")["backend-tests"], "!reuse");
+  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.reuse != 'true' \}\}$/m);
   const needs = productionNeeds("backend", outputs);
   checkGate(needs, productionMapping("backend"));
   needs["backend-tests"].result = "failure";
@@ -181,7 +185,7 @@ for (const gate of ["frontend", "backend"]) {
     assert.match(jobs[gate], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
     assert.match(jobs[gate], /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
     assert.match(jobs[gate], /^        run: node scripts\/ci-scope\.mjs gate$/m);
-    for (const scope of Object.values(mapping)) {
+    for (const scope of Object.values(mapping).map((value) => value.replace(/^!/, ""))) {
       if (scope === "always") continue;
       assert.ok(jobs.changes.includes(`      ${scope}: \${{ steps.decide.outputs.${scope} }}`));
     }
@@ -233,7 +237,7 @@ for (const gate of ["frontend", "backend"]) {
       if (scope === "always") continue;
       for (const value of [undefined, "", "unknown"]) {
         const invalid = unselected();
-        invalid.changes.outputs[scope] = value;
+        invalid.changes.outputs[scope.replace(/^!/, "")] = value;
         assert.throws(() => checkGate(invalid, mapping), /scope/);
       }
     }
@@ -313,4 +317,76 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   });
   assert.equal(gate.status, 1);
   assert.match(gate.stderr, /backend-tests/);
+});
+
+// CHE-2415 A2: a push to main whose SHA already has a green merge_group run
+// skips the heavy jobs. The aggregates must still end "success": admission
+// reads the newest check run named backend/frontend on the SHA.
+const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
+
+test("a push with a green merge-queue run reuses it and selects no heavy scope", () => {
+  const outputs = decideScopes("push", everything, "", true);
+  assert.equal(outputs.reuse, "true");
+  assert.ok(Object.keys(filters).every((scope) => outputs[scope] === "false"));
+  assert.equal(outputs.quality_only, "false");
+});
+
+test("only a push can reuse a merge-queue run", () => {
+  for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
+    assert.equal(decideScopes(event, everything, "", true).reuse, "false");
+  }
+  assert.equal(decideScopes("push", everything).reuse, "false");
+  assert.equal(decideScopes("push", everything, "", false).backend, "true");
+});
+
+test("reuse still rejects malformed path-filter results", () => {
+  assert.throws(() => decideScopes("push", { ...everything, backend: "" }, "", true), /backend/);
+});
+
+for (const gate of ["frontend", "backend"]) {
+  test(`reuse keeps the ${gate} aggregate green so deploy admission still sees success`, () => {
+    const mapping = productionMapping(gate);
+    const reused = decideScopes("push", everything, "", true);
+    const needs = productionNeeds(gate, reused);
+    assert.ok(Object.entries(mapping).some(([job, scope]) => scope === "!reuse" && needs[job].result === "skipped"));
+    checkGate(needs, mapping);
+    // Without reuse the same skipped jobs fail the gate.
+    const full = decideScopes("push", everything);
+    const skipped = productionNeeds(gate, full);
+    for (const [job, scope] of Object.entries(mapping)) {
+      if (scope === "!reuse") skipped[job].result = "skipped";
+    }
+    assert.throws(() => checkGate(skipped, mapping), /expected success, got skipped/);
+  });
+}
+
+test("push reuse is limited to the CI_PUSH_FULL kill switch and a merge_group query", () => {
+  assert.match(jobs.changes, /^      actions: read$/m);
+  assert.match(jobs.changes, /^      reuse: \$\{\{ steps\.decide\.outputs\.reuse \}\}$/m);
+  assert.match(jobs.changes, /vars\.CI_PUSH_FULL != 'true'/);
+  assert.match(jobs.changes, /event=merge_group/);
+  assert.match(jobs.changes, /head_sha=\$GITHUB_SHA/);
+  assert.match(jobs.changes, /MERGE_GROUP_GREEN: \$\{\{ steps\.queue\.outputs\.green \}\}/);
+});
+
+test("warm jobs run only on a reused push and keep their own job names", () => {
+  for (const job of ["warm-go", "warm-turbo"]) {
+    assert.match(jobs[job], /^    if: \$\{\{ needs\.changes\.outputs\.reuse == 'true' \}\}$/m);
+  }
+  assert.match(jobs["warm-go"], /go test -race -run '\^\$' -exec true \.\/\.\.\./);
+  assert.match(jobs["warm-turbo"], /turbo build typecheck lint/);
+});
+
+test("the CLI reads MERGE_GROUP_GREEN", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-scope-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const output = join(dir, "output");
+  const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [script, "decide"], {
+    env: { ...process.env, EVENT_NAME: "push", MERGE_GROUP_GREEN: "true", FILTER_RESULTS: JSON.stringify(filterFiles(["server/go.mod"])), GITHUB_OUTPUT: output },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(readFileSync(output, "utf8"), /^reuse=true$/m);
+  assert.match(readFileSync(output, "utf8"), /^backend=false$/m);
 });

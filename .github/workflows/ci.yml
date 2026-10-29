@@ -119,7 +119,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
+      reuse: ${{ steps.decide.outputs.reuse }}
       frontend: ${{ steps.decide.outputs.frontend }}
       backend: ${{ steps.decide.outputs.backend }}
       sqlc: ${{ steps.decide.outputs.sqlc }}
@@ -153,10 +155,26 @@ jobs:
           ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha || '') }}
           filters: .github/ci-paths.json
 
+      # The merge queue fast-forwards main to the SHA it tested, so a green
+      # merge_group run of this exact SHA makes the push run redundant. The
+      # newest check runs named backend/frontend stay green (the aggregates
+      # report success with their heavy dependencies skipped), which is what
+      # deploy admission reads. Any API error means a full run. Set repo
+      # variable CI_PUSH_FULL=true to force full push CI.
+      - name: Find a green merge_group run of this SHA
+        id: queue
+        if: ${{ github.event_name == 'push' && vars.CI_PUSH_FULL != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=merge_group&status=success&head_sha=$GITHUB_SHA" --jq .total_count || echo 0)"
+          echo "green=$([ "${count:-0}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Decide
         id: decide
         env:
           EVENT_NAME: ${{ github.event_name }}
+          MERGE_GROUP_GREEN: ${{ steps.queue.outputs.green }}
           # PR head branch, else the pushed/dispatched ref: upstream-sync/* heads
           # must not select the X99 self-hosted jobs (CHE-1381).
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
@@ -165,6 +183,7 @@ jobs:
 
   sqlc-check:
     needs: changes
+    if: ${{ needs.changes.outputs.reuse != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -187,6 +206,109 @@ jobs:
             exit 1
           fi
 
+  # Reused pushes skip the heavy jobs above, which are also the only writers
+  # of the main-branch caches PRs restore (PRs cannot read gh-readonly-queue/*
+  # caches). These two jobs keep those caches fresh under their own job names:
+  # warning-budget takes per-job baselines from main runs and must not see a
+  # compile-only run as `backend-tests`. Not part of any aggregate gate.
+  # ponytail: turbo-test entries are not warmed (running tests is the cost
+  # being cut); PR test runs miss them until a full run, add if hit rate drops.
+  warm-go:
+    needs: changes
+    if: ${{ needs.changes.outputs.reuse == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      GOFLAGS: -count=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        id: go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      # Must match backend-tests' key step exactly.
+      - name: Resolve Go build cache key
+        id: gocache
+        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.gocache.outputs.prefix }}
+
+      - name: Mark Go build cache epoch
+        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
+
+      # Same race objects as backend-tests Build and Test. `-exec true` links
+      # every test binary without running it, so no database is needed.
+      - name: Compile build and test objects
+        run: |
+          cd server
+          go build -race ./...
+          go test -race -run '^$' -exec true ./...
+
+      - name: Prune Go build cache to this run's entries
+        run: |
+          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
+            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
+
+      - name: Save Go build cache
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+
+  warm-turbo:
+    needs: changes
+    if: ${{ needs.changes.outputs.reuse == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      TURBO_CACHE_DIR: .turbo/cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Resolve runtime for cache key
+        id: runtime
+        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+
+      # Same key and prefix as frontend-build so PRs restore this entry.
+      - name: Restore turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
+
+      - name: Build, type check, and lint
+        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
+
   # The frontend validation is split across four runners on purpose. A prior
   # split isolated build/typecheck/lint from the test suites; on a full test
   # cache miss, however, web/core/desktop/views still competed for the four
@@ -197,6 +319,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
+    if: ${{ needs.changes.outputs.reuse != 'true' }}
     runs-on: ubuntu-24.04
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
@@ -258,6 +381,7 @@ jobs:
 
   frontend-test:
     needs: changes
+    if: ${{ needs.changes.outputs.reuse != 'true' }}
     runs-on: ubuntu-24.04
     env:
       TURBO_CACHE_DIR: .turbo/cache
@@ -362,7 +486,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"always","frontend-test":"always","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"!reuse","frontend-test":"!reuse","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -410,7 +534,7 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: [changes, migration-prefix-check]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.outputs.reuse != 'true' }}
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -433,10 +557,9 @@ jobs:
     runs-on: ubuntu-24.04
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
-    # the several minutes the gated steps below cost; job-level `if` would
-    # save it but report `skipped` to the aggregate gate, which then has to
-    # accept `skipped` as success and stops catching jobs that go missing for
-    # reasons other than the path filter.
+    # the several minutes the gated steps below cost. Job-level `if` is used
+    # only for a push that reuses a green merge_group run (outputs.reuse); the
+    # aggregate gate accepts `skipped` for exactly that case ("!reuse").
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -628,6 +751,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
+    if: ${{ needs.changes.outputs.reuse != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -698,7 +822,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
+          JOB_SCOPES: '{"backend-tests":"!reuse","backend-agent-tests":"backend","sqlc-check":"!reuse","go-vulnerability-scan":"!reuse","go-lint":"always","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
 
 

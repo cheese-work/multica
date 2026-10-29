@@ -14,16 +14,11 @@ concurrency:
 jobs:
   close-target:
     if: github.event.pull_request.state != 'closed'
-    runs-on: [self-hosted, Linux, X64, cheese-x99]
+    # Hosted, not X99: edited events fire on every title/body change and queued
+    # up to 46 min behind other X99 jobs (CHE-2415). Trusted checker only, no PR code.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
-      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
-      - name: Reset leaked sparse-checkout state
-        run: |
-          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
-          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
-      # Full checkout on purpose: a sparse input would leak the same state again.
       - name: Checkout trusted workflow checker
         uses: actions/checkout@v6
         with:
