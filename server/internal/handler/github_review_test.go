@@ -20,7 +20,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/yuin/goldmark"
 )
@@ -103,8 +102,8 @@ func newGitHubReviewFixture(t *testing.T) githubReviewFixture {
 		handler: &handler, issueID: fixture.child.ID, author: author, other: other, source: sourceTaskID, secret: fixture.secret,
 		payload: map[string]any{
 			"action": "submitted", "installation": map[string]any{"id": installationID},
-			"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
-			"pull_request": map[string]any{"number": 2019},
+			"repository":   githubRepositoryForTest("acme", "widget"),
+			"pull_request": map[string]any{"number": 2019, "head": map[string]any{"repo": githubRepositoryForTest("acme", "widget")}},
 			"review": map[string]any{
 				"id": 77, "state": "changes_requested", "body": "Please fix the error path.",
 				"html_url": "https://github.com/acme/widget/pull/2019#pullrequestreview-77",
@@ -114,39 +113,33 @@ func newGitHubReviewFixture(t *testing.T) githubReviewFixture {
 	}
 }
 
-func TestGitHubPRReviewSubmittedUsesAuthoringTaskAfterRename(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+func TestGitHubPRReviewIntakeDoesNotWakeRenamedAuthor(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	dbfx.Exec(t, `UPDATE agent SET name='Renamed PR Author' WHERE id=$1`, fixture.author)
-	if response := fixture.post("pull_request_review", fixture.secret, "renamed-author"); response.Code != http.StatusAccepted {
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-renamed-author"); response.Code != http.StatusAccepted {
 		t.Fatalf("renamed author review: %d %s", response.Code, response.Body.String())
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.author); count != 1 {
-		t.Fatalf("renamed PR author runs = %d, want 1", count)
-	}
+	assertGitHubIntakeNoEffects(t, fixture)
 }
 
-func TestGitHubPRReviewSubmittedUsesRecordedCustomBranch(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+func TestGitHubPRReviewIntakeDoesNotWakeCustomBranchAuthor(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	dbfx.Exec(t, `UPDATE github_pull_request SET branch='che-2012/revenue-events' WHERE workspace_id=$1`, testWorkspaceID)
 	dbfx.Exec(t, `UPDATE agent_task_queue SET issue_id=$1, branch_name='che-2012/revenue-events' WHERE id=$2`, fixture.issueID, fixture.source)
-	if response := fixture.post("pull_request_review", fixture.secret, "custom-branch"); response.Code != http.StatusAccepted {
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-custom-branch"); response.Code != http.StatusAccepted {
 		t.Fatalf("custom branch review: %d %s", response.Code, response.Body.String())
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND trigger_comment_id IS NOT NULL`, fixture.issueID, fixture.author); count != 1 {
-		t.Fatalf("custom branch PR author runs = %d, want 1", count)
-	}
+	assertGitHubIntakeNoEffects(t, fixture)
 }
 
-func TestGitHubPRReviewSubmittedUsesExplicitAuthorBindingForLegacyPR(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+func TestGitHubPRReviewIntakeDoesNotWakeExplicitAuthorBinding(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	dbfx.Exec(t, `UPDATE github_pull_request SET branch='che-2012/revenue-events' WHERE workspace_id=$1`, testWorkspaceID)
 	dbfx.Exec(t, `UPDATE workspace SET settings=jsonb_set(settings,'{github_review_authors}',jsonb_build_object('acme/widget#2019',$1::text)) WHERE id=$2`, fixture.author, testWorkspaceID)
-	if response := fixture.post("pull_request_review", fixture.secret, "explicit-author-binding"); response.Code != http.StatusAccepted {
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-explicit-author-binding"); response.Code != http.StatusAccepted {
 		t.Fatalf("explicit author review: %d %s", response.Code, response.Body.String())
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.author); count != 1 {
-		t.Fatalf("explicitly bound author runs = %d, want 1", count)
-	}
+	assertGitHubIntakeNoEffects(t, fixture)
 }
 
 func (fixture githubReviewFixture) post(event, secret, delivery string) *httptest.ResponseRecorder {
@@ -167,103 +160,49 @@ func (fixture githubReviewFixture) postContext(ctx context.Context, event, secre
 	return response
 }
 
-func TestGitHubPRReviewSubmittedWakesAuthorOnce(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+func TestGitHubPRReviewIntakeStaysDeferredAcrossRedelivery(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	for delivery := 0; delivery < 2; delivery++ {
-		response := fixture.post("pull_request_review", fixture.secret, fmt.Sprint(delivery))
+		response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+fmt.Sprint(delivery))
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("review webhook: %d %s", response.Code, response.Body.String())
 		}
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.author); count != 1 {
-		t.Fatalf("review author runs = %d, want 1", count)
+	assertGitHubIntakeNoEffects(t, fixture)
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1 AND state='deferred'`, testWorkspaceID); count != 1 {
+		t.Fatalf("pending revision rows = %d, want 1", count)
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.other); count != 0 {
-		t.Fatalf("unrelated issue assignee runs = %d, want 0", count)
-	}
-	var content, status, originator string
-	err := testPool.QueryRow(context.Background(), `SELECT c.content,t.status,t.originator_user_id::text FROM agent_task_queue t JOIN comment c ON c.id=t.trigger_comment_id WHERE t.issue_id=$1 AND t.agent_id=$2`, fixture.issueID, fixture.author).Scan(&content, &status, &originator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{"mention://agent/" + fixture.author, "pullrequestreview-77", "Please fix the error path.", "server.go", "Handle the error.", "discussion_r1"} {
-		if !strings.Contains(content, expected) {
-			t.Errorf("review comment lacks %q: %s", expected, content)
-		}
-	}
-	if status != "queued" || originator != testUserID {
-		t.Fatalf("run readback: status=%s originator=%s", status, originator)
-	}
-	if mentions := util.ParseMentions(content); len(mentions) != 1 || mentions[0].ID != fixture.author {
-		t.Fatalf("external review text injected dispatch targets: %+v", mentions)
-	}
-	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed' WHERE issue_id=$1`, fixture.issueID)
-	fixture.post("pull_request_review", fixture.secret, "after-completion")
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 1 {
-		t.Fatalf("redelivery after completion created another run: %d", count)
-	}
-	dbfx.Exec(t, `DELETE FROM comment WHERE issue_id=$1`, fixture.issueID)
-	if response := fixture.post("pull_request_review", fixture.secret, "after-comment-deletion"); response.Code != http.StatusAccepted {
-		t.Fatalf("redelivery after comment deletion: %d", response.Code)
-	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 1 {
-		t.Fatalf("comment deletion lost the review receipt: %d runs", count)
-	}
-	t.Logf("run readback: author=%s, queued, originator=%s; one comment/run across redelivery and completion", fixture.author, originator)
 }
 
-func TestGitHubPRReviewSubmittedRetriesWithoutPartialWrites(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
-	client := fixture.handler.PRRefresh
+func TestGitHubPRReviewIntakeDoesNotFetchExternalText(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	fixture.handler.PRRefresh = nil
-	if response := fixture.post("pull_request_review", fixture.secret, "unconfigured-api"); response.Code != http.StatusInternalServerError {
-		t.Fatalf("unconfigured API response = %d, want 500", response.Code)
-	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 0 {
-		t.Fatalf("failed API fetch committed %d comments", count)
-	}
-	fixture.handler.PRRefresh = client
-	originalTransport := http.DefaultTransport
 	http.DefaultTransport = githubReviewTransport(func(request *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(request.URL.Path, "/comments") {
-			dbfx.Exec(t, `UPDATE agent SET runtime_id=NULL WHERE id=$1`, fixture.author)
-		}
-		return originalTransport.RoundTrip(request)
+		t.Errorf("intake fetched GitHub text: %s", request.URL.Path)
+		return nil, fmt.Errorf("no GitHub API calls during intake")
 	})
-	if response := fixture.post("pull_request_review", fixture.secret, "failed-enqueue"); response.Code != http.StatusInternalServerError {
-		t.Fatalf("failed enqueue response = %d, want 500", response.Code)
+	if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-no-api"); response.Code != http.StatusAccepted {
+		t.Fatalf("intake response = %d %s", response.Code, response.Body.String())
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 0 {
-		t.Fatalf("failed enqueue committed %d comments", count)
-	}
-	http.DefaultTransport = originalTransport
-	dbfx.Exec(t, `UPDATE agent SET runtime_id=$1 WHERE id=$2`, handlerTestRuntimeID(t), fixture.author)
-	if response := fixture.post("pull_request_review", fixture.secret, "retry"); response.Code != http.StatusAccepted {
-		t.Fatalf("retry response = %d %s", response.Code, response.Body.String())
-	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 1 {
-		t.Fatalf("successful retry runs = %d, want 1", count)
-	}
+	assertGitHubIntakeNoEffects(t, fixture)
 }
 
-func TestGitHubPRReviewSubmittedWakesOnceForEachReview(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+func TestGitHubPRReviewIntakeRetainsDistinctReviews(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
 	for _, reviewID := range []int64{77, 78, 77, 78} {
 		fixture.payload["review"].(map[string]any)["id"] = reviewID
-		if response := fixture.post("pull_request_review", fixture.secret, fmt.Sprint(reviewID)); response.Code != http.StatusAccepted {
+		if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+fmt.Sprint(reviewID)); response.Code != http.StatusAccepted {
 			t.Fatalf("review %d: %d %s", reviewID, response.Code, response.Body.String())
 		}
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2`, fixture.issueID, fixture.author); count != 2 {
-		t.Fatalf("distinct review runs = %d, want 2", count)
-	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 2 {
-		t.Fatalf("distinct review comments = %d, want 2", count)
+	assertGitHubIntakeNoEffects(t, fixture)
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 2 {
+		t.Fatalf("distinct review revisions = %d, want 2", count)
 	}
 }
 
 func TestGitHubPRReviewSubmittedConcurrentRedelivery(t *testing.T) {
-	fixture := newGitHubReviewFixture(t)
+	fixture := newGitHubIntakeFixture(t)
 	config := testPool.Config().Copy()
 	config.MaxConns = 1
 	config.MinConns = 0
@@ -281,7 +220,9 @@ func TestGitHubPRReviewSubmittedConcurrentRedelivery(t *testing.T) {
 	var workers sync.WaitGroup
 	statuses := make(chan int, 6)
 	for delivery := 0; delivery < 6; delivery++ {
-		workers.Go(func() { statuses <- fixture.postContext(ctx, "pull_request_review", fixture.secret, "concurrent").Code })
+		workers.Go(func() {
+			statuses <- fixture.postContext(ctx, "pull_request_review", fixture.secret, fixture.issueID+"-concurrent").Code
+		})
 	}
 	workers.Wait()
 	close(statuses)
@@ -290,11 +231,9 @@ func TestGitHubPRReviewSubmittedConcurrentRedelivery(t *testing.T) {
 			t.Errorf("concurrent review response = %d", status)
 		}
 	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 1 {
-		t.Fatalf("concurrent review runs = %d, want 1", count)
-	}
-	if count := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, fixture.issueID); count != 1 {
-		t.Fatalf("concurrent review comments = %d, want 1", count)
+	assertGitHubIntakeNoEffects(t, fixture)
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 1 {
+		t.Fatalf("concurrent review revisions = %d, want 1", count)
 	}
 }
 
@@ -317,10 +256,26 @@ func TestGitHubPRReviewContentDoesNotRenderExternalMentionChips(t *testing.T) {
 	}
 }
 
+func TestGitHubLegacyReviewDispatchHelper(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	body, err := json.Marshal(fixture.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := fixture.handler.handlePullRequestReviewEvent(context.Background(), body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 1 {
+		t.Fatalf("isolated legacy helper dispatches = %d, want 1", count)
+	}
+}
+
 func TestGitHubPRReviewSubmittedRejectsUntrustedReviews(t *testing.T) {
 	for _, scenario := range []string{"bot", "unmapped-user", "departed-member", "edited", "inline-comment", "bad-signature", "unlinked", "integration-disabled", "unknown-author", "unknown-task", "wrong-installation", "malformed-member-map", "missing-secret", "ambiguous-author", "invalid-author-binding"} {
 		t.Run(scenario, func(t *testing.T) {
-			fixture := newGitHubReviewFixture(t)
+			fixture := newGitHubIntakeFixture(t)
 			event, secret, expectedStatus := "pull_request_review", fixture.secret, http.StatusAccepted
 			switch scenario {
 			case "bot":
@@ -357,7 +312,7 @@ func TestGitHubPRReviewSubmittedRejectsUntrustedReviews(t *testing.T) {
 			case "invalid-author-binding":
 				dbfx.Exec(t, `UPDATE workspace SET settings=settings || '{"github_review_authors":{"acme/widget#2019":"invalid"}}'::jsonb WHERE id=$1`, testWorkspaceID)
 			}
-			response := fixture.post(event, secret, scenario)
+			response := fixture.post(event, secret, fixture.issueID+scenario)
 			if response.Code != expectedStatus {
 				t.Fatalf("response = %d %s, want %d", response.Code, response.Body.String(), expectedStatus)
 			}

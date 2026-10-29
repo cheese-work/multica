@@ -14,6 +14,8 @@ const DECISION_FIELD_KEYS = [
   "disclaimed_at",
   "decision_source_session_id",
   "decision_source_message_id",
+  "decision_request_session_id",
+  "decision_request_message_id",
 ] as const satisfies readonly (keyof DecisionCommentFields)[];
 
 /** Copies the decision card fields a comment carries, so a comment-to-timeline mapper keeps them. */

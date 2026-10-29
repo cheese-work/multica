@@ -243,6 +243,8 @@ const desktopAPI = {
   /** Open a validated issue-detail route in a dedicated native window. */
   openIssueWindow: (request: IssueWindowRequest) =>
     ipcRenderer.invoke("window:open-issue", request),
+  openMediaWindow: (request: IssueWindowRequest) =>
+    ipcRenderer.invoke("window:open-media", request),
 };
 
 type DaemonReauthResult =

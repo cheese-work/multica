@@ -95,7 +95,10 @@ func TestWebhookStatusResolver(t *testing.T) {
 							mirror = func(number int32) {
 								p := &ghPullRequestPayload{}
 								p.Action = "closed"
+								p.Repository.ID = 424242
 								p.Repository.Owner.Login, p.Repository.Name = "fixture", "resolver"
+								fork := false
+								p.PullRequest.Head.Repo = &ghPRHeadRepository{ID: 424242, FullName: "fixture/resolver", Fork: &fork}
 								p.PullRequest.Number, p.PullRequest.Title = number, "Resolve linked issues"
 								p.PullRequest.Body = strings.Join(closing, "\n")
 								p.PullRequest.State, p.PullRequest.Merged = "closed", true

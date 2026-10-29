@@ -102,7 +102,7 @@ func (s *IssueWakeupService) customGate(ctx context.Context, tx pgx.Tx, q *db.Qu
 		err = b.retire(ctx, w)
 		return nil, target, customOff, b.withdrawn, err
 	}
-	if target, err = builtinTarget(ctx, s, q, issue, cfg); err != nil {
+	if target, err = builtinTarget(ctx, s, q, issue, cfg, w); err != nil {
 		return nil, target, customHold, nil, err
 	}
 	// The fingerprint covers the definitions, the project and the assignee; a
@@ -207,7 +207,7 @@ func (s *IssueWakeupService) customRunEligible(ctx context.Context, q *db.Querie
 	if ok, err := cfg.matchesIssue(ctx, q, issue); err != nil || !ok {
 		return false, err
 	}
-	target, err := builtinTarget(ctx, s, q, issue, cfg)
+	target, err := builtinTarget(ctx, s, q, issue, cfg, w)
 	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
 		return false, err
 	}
@@ -232,7 +232,7 @@ func (s *IssueWakeupService) customActiveRun(ctx context.Context, q *db.Queries,
 		return false, err
 	}
 	if deferring {
-		return true, deferForActiveRun(ctx, q, w, target, receipts, now, note)
+		return true, deferForActiveRun(ctx, q, w, target, receipts, now, note, false)
 	}
 	var suppressed []db.IssueWakeupReceipt
 	for _, r := range receipts {

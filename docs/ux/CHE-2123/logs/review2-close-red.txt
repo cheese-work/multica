@@ -1,0 +1,470 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ × media/media-dialog-close.test.tsx > phone source-dialog Close > keeps mermaid Close outside More and usable without opening it 678ms
+   → expected <details …(1)>…(2)</details> to be null
+ × media/media-dialog-close.test.tsx > phone source-dialog Close > keeps table Close outside More and usable without opening it 235ms
+   → expected <details …(1)>…(2)</details> to be null
+ × media/media-dialog-close.test.tsx > phone source-dialog Close > keeps image Close outside More and usable without opening it 14ms
+   → api.getBaseUrl is not a function
+ × media/media-dialog-close.test.tsx > phone source-dialog Close > keeps html Close outside More and usable without opening it 60ms
+   → expected <details …(1)>…(2)</details> to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  media/media-dialog-close.test.tsx > phone source-dialog Close > keeps mermaid Close outside More and usable without opening it
+AssertionError: expected <details …(1)>…(2)</details> to be null
+
+- Expected:
+null
+
++ Received:
+<details
+  class="group relative ml-auto"
+>
+  <summary
+    aria-label="More"
+    class="flex size-10 cursor-pointer list-none items-center justify-center rounded-md hover:bg-secondary"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-ellipsis size-5"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="19"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="5"
+        cy="12"
+        r="1"
+      />
+    </svg>
+  </summary>
+  <div
+    class="absolute right-0 top-full z-50 hidden w-max max-w-[calc(100vw-2rem)] flex-wrap gap-1 rounded-md border border-border bg-background p-2 shadow-lg group-open:flex [&_button]:min-h-10 [&_button]:min-w-10"
+  >
+    <button
+      aria-label="Show source"
+      class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      data-slot="tooltip-trigger"
+      id="base-ui-_r_r_"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-code size-4"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="m16 18 6-6-6-6"
+        />
+        <path
+          d="m8 6-6 6 6 6"
+        />
+      </svg>
+    </button>
+    <button
+      aria-label="Copy diagram source"
+      class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      data-slot="tooltip-trigger"
+      id="base-ui-_r_t_"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-copy size-4"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect
+          height="14"
+          rx="2"
+          ry="2"
+          width="14"
+          x="8"
+          y="8"
+        />
+        <path
+          d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+        />
+      </svg>
+    </button>
+    <button
+      aria-expanded="false"
+      aria-haspopup="menu"
+      aria-label="Export"
+      class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+      data-slot="tooltip-trigger"
+      id="base-ui-_r_13_"
+      tabindex="0"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-download size-4"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M12 15V3"
+        />
+        <path
+          d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        />
+        <path
+          d="m7 10 5 5 5-5"
+        />
+      </svg>
+    </button>
+    <button
+      aria-label="Close"
+      class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      data-slot="tooltip-trigger"
+      id="base-ui-_r_17_"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-x size-4"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M18 6 6 18"
+        />
+        <path
+          d="m6 6 12 12"
+        />
+      </svg>
+    </button>
+  </div>
+</details>
+
+ ❯ media/media-dialog-close.test.tsx:32:39
+     30|     await waitFor(() => expect(more.closest("details")).not.toHaveAttr…
+     31|     const button = screen.getByRole("button", { name: "Close" });
+     32|     expect(button.closest("details")).toBeNull();
+       |                                       ^
+     33|     button.focus();
+     34|     expect(button).toHaveFocus();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  media/media-dialog-close.test.tsx > phone source-dialog Close > keeps table Close outside More and usable without opening it
+AssertionError: expected <details …(1)>…(2)</details> to be null
+
+- Expected:
+null
+
++ Received:
+<details
+  class="group relative ml-auto"
+>
+  <summary
+    aria-label="More"
+    class="flex size-10 cursor-pointer list-none items-center justify-center rounded-md hover:bg-secondary"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-ellipsis size-5"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="19"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="5"
+        cy="12"
+        r="1"
+      />
+    </svg>
+  </summary>
+  <div
+    class="absolute right-0 top-full z-50 hidden w-max max-w-[calc(100vw-2rem)] flex-wrap gap-1 rounded-md border border-border bg-background p-2 shadow-lg group-open:flex [&_button]:min-h-10 [&_button]:min-w-10"
+  >
+    <button
+      class="group/button inline-flex shrink-0 items-center justify-center border bg-clip-padding font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50 h-[var(--button-height-sm)] gap-[var(--button-gap-sm)] rounded-md px-[var(--button-padding-sm)] text-label in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-[max(0px,calc(var(--button-padding-sm)-0.25rem))] has-data-[icon=inline-start]:pl-[max(0px,calc(var(--button-padding-sm)-0.25rem))] [&_svg:not([class*='size-'])]:size-3.5"
+      data-slot="button"
+      tabindex="0"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-copy"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect
+          height="14"
+          rx="2"
+          ry="2"
+          width="14"
+          x="8"
+          y="8"
+        />
+        <path
+          d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+        />
+      </svg>
+      Copy as Markdown
+    </button>
+    <button
+      class="group/button inline-flex shrink-0 items-center justify-center border bg-clip-padding font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50 h-[var(--button-height-sm)] gap-[var(--button-gap-sm)] rounded-md px-[var(--button-padding-sm)] text-label in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-[max(0px,calc(var(--button-padding-sm)-0.25rem))] has-data-[icon=inline-start]:pl-[max(0px,calc(var(--button-padding-sm)-0.25rem))] [&_svg:not([class*='size-'])]:size-3.5"
+      data-slot="button"
+      tabindex="0"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-copy"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect
+          height="14"
+          rx="2"
+          ry="2"
+          width="14"
+          x="8"
+          y="8"
+        />
+        <path
+          d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+        />
+      </svg>
+      Copy as CSV
+    </button>
+    <button
+      aria-label="Close"
+      class="group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:active:translate-y-0"
+      data-slot="dialog-close"
+      id="base-ui-_r_1i_"
+      tabindex="0"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-x"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M18 6 6 18"
+        />
+        <path
+          d="m6 6 12 12"
+        />
+      </svg>
+    </button>
+  </div>
+</details>
+
+ ❯ media/media-dialog-close.test.tsx:32:39
+     30|     await waitFor(() => expect(more.closest("details")).not.toHaveAttr…
+     31|     const button = screen.getByRole("button", { name: "Close" });
+     32|     expect(button.closest("details")).toBeNull();
+       |                                       ^
+     33|     button.focus();
+     34|     expect(button).toHaveFocus();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  media/media-dialog-close.test.tsx > phone source-dialog Close > keeps image Close outside More and usable without opening it
+TypeError: api.getBaseUrl is not a function
+ ❯ resolvePublicFileUrl ../core/workspace/avatar-url.ts:11:51
+      9|
+     10| export function resolvePublicFileUrl(rawUrl: string | null | undefined…
+     11|   return resolvePublicFileUrlWithBase(rawUrl, api.getBaseUrl());
+       |                                                   ^
+     12| }
+     13|
+ ❯ normalize editor/attachment-preview-modal.tsx:190:15
+ ❯ AttachmentPreviewModal editor/attachment-preview-modal.tsx:421:17
+ ❯ Object.react_stack_bottom_frame ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:25904:20
+ ❯ renderWithHooks ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:7662:22
+ ❯ updateFunctionComponent ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:10166:19
+ ❯ beginWork ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:11778:18
+ ❯ runWithFiberInDEV ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:874:13
+ ❯ performUnitOfWork ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:17641:22
+ ❯ workLoopSync ../../node_modules/.pnpm/react-dom@19.2.3_react@19.2.3/node_modules/react-dom/cjs/react-dom-client.development.js:17469:41
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  media/media-dialog-close.test.tsx > phone source-dialog Close > keeps html Close outside More and usable without opening it
+AssertionError: expected <details …(1)>…(2)</details> to be null
+
+- Expected:
+null
+
++ Received:
+<details
+  class="group relative ml-auto"
+>
+  <summary
+    aria-label="More"
+    class="flex size-10 cursor-pointer list-none items-center justify-center rounded-md hover:bg-secondary"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-ellipsis size-5"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="19"
+        cy="12"
+        r="1"
+      />
+      <circle
+        cx="5"
+        cy="12"
+        r="1"
+      />
+    </svg>
+  </summary>
+  <div
+    class="absolute right-0 top-full z-50 hidden w-max max-w-[calc(100vw-2rem)] flex-wrap gap-1 rounded-md border border-border bg-background p-2 shadow-lg group-open:flex [&_button]:min-h-10 [&_button]:min-w-10"
+  >
+    <button
+      aria-label="Close"
+      class="group/button inline-flex shrink-0 items-center justify-center border border-transparent bg-clip-padding text-body font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50 size-[var(--button-height-sm)] rounded-md in-data-[slot=button-group]:rounded-lg"
+      data-slot="button"
+      tabindex="0"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-x"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M18 6 6 18"
+        />
+        <path
+          d="m6 6 12 12"
+        />
+      </svg>
+    </button>
+  </div>
+</details>
+
+ ❯ media/media-dialog-close.test.tsx:32:39
+     30|     await waitFor(() => expect(more.closest("details")).not.toHaveAttr…
+     31|     const button = screen.getByRole("button", { name: "Close" });
+     32|     expect(button.closest("details")).toBeNull();
+       |                                       ^
+     33|     button.focus();
+     34|     expect(button).toHaveFocus();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+   Start at  23:23:16
+   Duration  27.39s (transform 14.54s, setup 232ms, import 23.84s, tests 992ms, environment 1.94s)
+
+undefined
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run media/media-dialog-close.test.tsx --reporter=verbose

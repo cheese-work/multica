@@ -32,6 +32,8 @@ describe("keepDecisionFields", () => {
     decision_state: "pending" as const,
     decision_source_session_id: "session",
     decision_source_message_id: "message",
+    decision_request_session_id: "ask-session",
+    decision_request_message_id: "ask-message",
   };
 
   it("keeps the fields a sparse snapshot lacks, including the owner-only DM pointers", () => {

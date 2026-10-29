@@ -1,15 +1,37 @@
 export type DecisionState = "pending" | "effective" | "disclaimed";
 
+export interface OpenDecisionRequest {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  asking_agent_id: string;
+  asking_agent_name: string;
+  ask: string;
+  escalation_class: string;
+  created_at: string;
+  chat_session_id: string;
+  message_id: string | null;
+}
+
+/** One answer button on an open decision card. */
+export interface DecisionRequestOption {
+  label: string;
+  what_happens?: string;
+}
+
 export interface DecisionRequestCard {
   id: string;
   issue_id: string;
   issue_identifier: string;
   source_comment_id?: string | null;
   ask: string;
+  options?: DecisionRequestOption[];
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;
   reason?: string;
+  /** The issue comment that recorded the answer, set once the request is answered. */
+  record_comment_id?: string | null;
 }
 
 export type DecisionCommentKind = "ask" | "quote" | "disclaim" | "delivery" | "cancel" | "veto";
@@ -47,4 +69,7 @@ export interface DecisionCommentFields {
   disclaimed_at?: string | null;
   decision_source_session_id?: string;
   decision_source_message_id?: string;
+  /** The DM message that asked, in the request's own session (a continued DM can differ from the answer's). */
+  decision_request_session_id?: string;
+  decision_request_message_id?: string;
 }

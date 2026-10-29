@@ -483,9 +483,15 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 			return "", false, nil
 		}
 	}
-	target, err := builtinTarget(ctx, s, q, issue, config)
+	target, err := builtinTarget(ctx, s, q, issue, config, w)
 	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
 		return "", false, err
+	}
+	if usesPRResolver(config, w) {
+		matched, err := prResolverReceipts(ctx, q, issue, target, receipts)
+		if err != nil || len(matched) != len(receipts) {
+			return "", false, err
+		}
 	}
 	if !config.carrierMatchesTarget(target, task) {
 		return "", false, nil

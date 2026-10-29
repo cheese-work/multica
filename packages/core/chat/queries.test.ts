@@ -161,6 +161,15 @@ describe("sortChatSessions", () => {
     sortChatSessions(input);
     expect(input.map((s) => s.id)).toEqual(snapshot);
   });
+
+  it("does not bump a lifecycle-only DM whose metadata was touched", () => {
+    const notesOnly = session({ id: "notes", updated_at: "2026-06-03T00:00:00Z" });
+    const conversation = session({
+      id: "conversation",
+      last_message: { content: "Reply", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
+    });
+    expect(sortChatSessions([notesOnly, conversation]).map((row) => row.id)).toEqual(["conversation", "notes"]);
+  });
 });
 
 describe("countUnreadChatSessions", () => {

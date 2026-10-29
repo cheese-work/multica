@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ func newRequestCoreFixture(test *testing.T, group bool) requestCoreFixture {
 	}
 	intentID, tagID := openLaneIntent(test, fixture, content)
 	sessionID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Decision lane"})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + fixture.issueID + ")"})
 	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
 	if err != nil {
 		test.Fatal(err)
@@ -63,7 +65,7 @@ func (fixture requestCoreFixture) assertCounts(test *testing.T, wanted int) {
 			test.Fatalf("%s = %d, want %d", label, count, wanted)
 		}
 	}
-	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID) != 0 {
+	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_request'`, fixture.sessionID) != 0 {
 		test.Fatal("refusal left a DM message")
 	}
 }
@@ -96,7 +98,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if stored != result.Request || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
+			if !reflect.DeepEqual(stored, result.Request) || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
 				test.Fatalf("wrong request: %+v", stored)
 			}
 			if result.Comment.ID != stored.IssueCommentID || result.Comment.ParentID != parseUUID(fixture.tagID) || result.Comment.DecisionRequestID != stored.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.AuthorType != "agent" || result.Comment.AuthorID != stored.AskingAgentID || result.Comment.SourceTaskID != parseUUID(fixture.taskID) || result.Comment.Content != input.Ask {
@@ -227,7 +229,7 @@ func TestDecisionRequestCoreGroupConsumption(test *testing.T) {
 	_, err = testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
 	requireRequestRefusal(test, err)
 	fixture.assertCounts(test, 1)
-	secondSession := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"})
+	secondSession := laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Owner lane")
 	input := fixture.input()
 	input.SessionID = parseUUID(secondSession)
 	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
@@ -274,7 +276,7 @@ func TestDecisionRequestCoreConcurrentConsumption(test *testing.T) {
 			fixture := newRequestCoreFixture(test, group)
 			input := fixture.input()
 			if group {
-				input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Concurrent owner lane"}))
+				input.SessionID = parseUUID(laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Concurrent owner lane"))
 			}
 			first := startRequestCore(test, fixture, fixture.input())
 			second := startRequestCore(test, fixture, input)
@@ -594,7 +596,7 @@ func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"}))
+	input.SessionID = parseUUID(laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Owner lane"))
 	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
 	if err != nil {
 		test.Fatal(err)

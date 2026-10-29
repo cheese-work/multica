@@ -15,7 +15,7 @@
  * dialog can't hear, which is why Escape used to stop working after a click.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Code as CodeIcon,
@@ -45,6 +45,7 @@ import {
   renderSvgToPngBlob,
 } from "./utils/mermaid-export";
 import type { Size } from "./utils/zoom-transform";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 const COPY_FEEDBACK_MS = 2000;
 
@@ -60,6 +61,8 @@ interface MermaidViewerContentProps {
   /** Colors resolved from the host theme, so exports match what is on screen. */
   exportBackground: string;
   exportFontFamily: string;
+  /** Reports the canvas width, so the caller can draw the diagram to fit it. */
+  onViewportWidth?: (width: number) => void;
 }
 
 export interface MermaidViewerProps extends MermaidViewerContentProps {
@@ -140,16 +143,28 @@ function MermaidViewerContent({
   layout,
   exportBackground,
   exportFontFamily,
+  onViewportWidth,
   canvasRef,
   onClose,
 }: MermaidViewerContentProps & {
   canvasRef: React.RefObject<HTMLDivElement | null>;
-  onClose: () => void;
+  onClose?: () => void;
 }) {
   const { t } = useT("editor");
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
   const canvas = useZoomCanvas({ content: layout });
+
+  useEffect(() => {
+    const node = canvasRef.current;
+    if (!onViewportWidth || !node) return;
+    const report = () => onViewportWidth(node.getBoundingClientRect().width);
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [canvasRef, onViewportWidth, showSource]);
 
   const handleCopySource = useCallback(async () => {
     if (await copyText(chart)) {
@@ -203,14 +218,12 @@ function MermaidViewerContent({
     <>
       {/* Sibling of the scrolling canvas, never inside it: the toolbar must
           stay put no matter how far the diagram is panned or zoomed. */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-3 py-2">
-          <DialogTitle className="mr-1 truncate text-body font-medium">
-            {t(($) => $.mermaid.viewer_title)}
-          </DialogTitle>
+      <header data-testid="media-toolbar" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-3 py-2 max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10">
+          {onClose ? <DialogTitle className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</DialogTitle> : <h1 className="mr-1 w-full truncate text-body font-medium md:w-auto">{t(($) => $.mermaid.viewer_title)}</h1>}
 
           <ZoomControls canvas={canvas} disabled={showSource} />
 
-          <div className="ml-auto flex items-center gap-0.5">
+          <ViewerActions>
             <ToolbarButton
               onClick={() => setShowSource((value) => !value)}
               label={
@@ -256,13 +269,14 @@ function MermaidViewerContent({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <ToolbarButton
+            <MediaLinkAction kind="mermaid" content={chart} />
+          </ViewerActions>
+            {onClose && <ToolbarButton
               onClick={onClose}
               label={t(($) => $.mermaid.close_viewer)}
             >
               <X className="size-4" />
-            </ToolbarButton>
-          </div>
+            </ToolbarButton>}
         </header>
 
         {showSource ? (
@@ -290,4 +304,9 @@ function MermaidViewerContent({
         )}
     </>
   );
+}
+
+export function MermaidViewerStandalone(props: MermaidViewerContentProps) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  return <div className="flex h-full min-h-0 w-full flex-col" data-testid="media-stage"><MermaidViewerContent {...props} canvasRef={canvasRef} /></div>;
 }

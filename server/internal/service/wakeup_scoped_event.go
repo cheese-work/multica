@@ -726,7 +726,7 @@ func (b *scopedIssueBatch) ensure(ctx context.Context, r *scopedRule, baseline b
 			return db.IssueWakeup{}, scopedOutcomeInvalid, nil
 		}
 	}
-	target, err := builtinTarget(ctx, b.s, b.q, b.issue, w)
+	target, err := builtinTarget(ctx, b.s, b.q, b.issue, w, db.IssueWakeup{})
 	if err != nil {
 		return db.IssueWakeup{}, "", err
 	}

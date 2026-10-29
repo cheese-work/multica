@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -17,10 +19,14 @@ type DecisionRequestCard struct {
 	IssueIdentifier string  `json:"issue_identifier"`
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
-	State           string  `json:"state"`
-	CreatedAt       string  `json:"created_at"`
-	WithdrawnAt     *string `json:"withdrawn_at,omitempty"`
-	Reason          string  `json:"reason,omitempty"`
+	// Options are the answer buttons; empty for a card with no structured options.
+	Options     []decisiontx.AskOption `json:"options"`
+	State       string                 `json:"state"`
+	CreatedAt   string                 `json:"created_at"`
+	WithdrawnAt *string                `json:"withdrawn_at,omitempty"`
+	Reason      string                 `json:"reason,omitempty"`
+	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
+	RecordCommentID *string `json:"record_comment_id,omitempty"`
 }
 
 func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspaceID string, messages []db.ChatMessage) map[string][]DecisionRequestCard {
@@ -48,9 +54,16 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
 			Ask:             row.Ask, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 		}
+		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
+			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
+		}
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)
 			card.SourceCommentID = &sourceID
+		}
+		if row.RecordCommentID.Valid {
+			recordID := uuidToString(row.RecordCommentID)
+			card.RecordCommentID = &recordID
 		}
 		if row.Status == "cancelled" {
 			card.State = "withdrawn"
