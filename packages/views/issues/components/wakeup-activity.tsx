@@ -187,6 +187,10 @@ export function formatWakeupActivity(
       const fired = triggerOf(details, preview, t, text, getActorName);
       if (details.outcome === "merged") return t(($) => $.activity.wakeup_triggered_merged, { condition: fired, agent: woken });
       if (details.outcome === "acknowledged") return t(($) => $.activity.wakeup_triggered_acknowledged, { condition: fired, agent: woken });
+      if (details.rule === "pr_needs_attention" || details.rule === "pr_checks_failed") {
+        if (details.outcome === "notified") return fired + t(($) => $.activity.wakeup_child_done_notified, { name: woken });
+        if (details.outcome === "none") return fired;
+      }
       return t(($) => $.activity.wakeup_triggered, { condition: fired, agent: woken });
     }
     case "wakeup_skipped": {

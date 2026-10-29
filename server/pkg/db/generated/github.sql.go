@@ -420,28 +420,29 @@ func (q *Queries) HasGitHubReviewWakeup(ctx context.Context, arg HasGitHubReview
 const linkIssueToPullRequest = `-- name: LinkIssueToPullRequest :execrows
 
 INSERT INTO issue_pull_request (
-    issue_id, pull_request_id, linked_by_type, linked_by_id
+    issue_id, pull_request_id, linked_by_type, linked_by_id, link_kind
 ) VALUES (
-    $1, $2, 'system', NULL
+    $1, $2, 'system', NULL, COALESCE($3::text, 'closing')
 )
-ON CONFLICT (issue_id, pull_request_id) DO NOTHING
+ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
+    link_kind = EXCLUDED.link_kind
+WHERE COALESCE(issue_pull_request.linked_by_type, 'system') <> 'member'
+  AND issue_pull_request.link_kind IS DISTINCT FROM EXCLUDED.link_kind
 `
 
 type LinkIssueToPullRequestParams struct {
 	IssueID       pgtype.UUID `json:"issue_id"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	LinkKind      pgtype.Text `json:"link_kind"`
 }
 
 // =====================
 // Issue ↔ Pull Request link
 // =====================
-// Automatic link from a PR title, branch, or closing keyword. Returns 1 only
-// when the link is new, so the webhook evaluates the merge automation on the
-// link event and not on every redelivery. An existing link (automatic or
-// manual) is left untouched. close_intent is no longer read or written
-// (MUL-7726).
+// Automatic link from a PR title, branch, or keyword. Returns 1 when the link
+// is new or its kind changes. Manual links are left untouched.
 func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPullRequestParams) (int64, error) {
-	result, err := q.db.Exec(ctx, linkIssueToPullRequest, arg.IssueID, arg.PullRequestID)
+	result, err := q.db.Exec(ctx, linkIssueToPullRequest, arg.IssueID, arg.PullRequestID, arg.LinkKind)
 	if err != nil {
 		return 0, err
 	}
@@ -456,8 +457,10 @@ INSERT INTO issue_pull_request (
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
     linked_by_type = 'member',
-    linked_by_id = EXCLUDED.linked_by_id
+    linked_by_id = EXCLUDED.linked_by_id,
+    link_kind = 'closing'
 WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member'
+   OR issue_pull_request.link_kind <> 'closing'
 `
 
 type LinkIssueToPullRequestManuallyParams struct {
@@ -487,6 +490,31 @@ WHERE pull_request_id = $1
 // webhook reconciles only what it created itself.
 func (q *Queries) ListAutoLinkedIssueIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listAutoLinkedIssueIDsForPullRequest, pullRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var issue_id pgtype.UUID
+		if err := rows.Scan(&issue_id); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listClosingIssueIDsForPullRequest = `-- name: ListClosingIssueIDsForPullRequest :many
+SELECT issue_id FROM issue_pull_request
+WHERE pull_request_id = $1 AND link_kind = 'closing'
+`
+
+func (q *Queries) ListClosingIssueIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listClosingIssueIDsForPullRequest, pullRequestID)
 	if err != nil {
 		return nil, err
 	}
@@ -739,6 +767,7 @@ SELECT
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(ipr.linked_by_type, 'system')::text AS linked_by_type,
+    ipr.link_kind,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
     COALESCE(c.failed, 0)::bigint  AS checks_failed,
@@ -781,6 +810,7 @@ type ListPullRequestsByIssueRow struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	LinkedByType        string             `json:"linked_by_type"`
+	LinkKind            string             `json:"link_kind"`
 	ChecksTotal         int64              `json:"checks_total"`
 	ChecksPassed        int64              `json:"checks_passed"`
 	ChecksFailed        int64              `json:"checks_failed"`
@@ -795,9 +825,8 @@ type ListPullRequestsByIssueRow struct {
 // refresh pipeline — NOT the legacy suite-level webhook aggregation, which is
 // removed. The `issue_prs` CTE narrows to this issue's PR ids first so the
 // aggregation only touches check rows for those PRs. Rows for an OLD head are
-// excluded by the snapshot_head_sha filter. Every link row is a delivery PR:
-// the webhook links an identifier it read from the PR title or branch name, and
-// a member can link one by hand (linked_by_type = 'member'). MUL-7429.
+// excluded by the snapshot_head_sha filter. Both closing and reference links
+// remain visible; only closing links participate in merge automation.
 func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UUID) ([]ListPullRequestsByIssueRow, error) {
 	rows, err := q.db.Query(ctx, listPullRequestsByIssue, issueID)
 	if err != nil {
@@ -837,6 +866,7 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LinkedByType,
+			&i.LinkKind,
 			&i.ChecksTotal,
 			&i.ChecksPassed,
 			&i.ChecksFailed,

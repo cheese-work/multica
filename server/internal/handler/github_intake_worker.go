@@ -87,7 +87,7 @@ func (handler *Handler) admitGitHubIntake(ctx context.Context, queries *db.Queri
 	if err != nil {
 		return githubIntakeDecision{}, err
 	}
-	agent, err := githubIntakeAuthor(ctx, queries, pull)
+	agent, err := service.GitHubPullRequestAuthor(ctx, queries, pull)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return githubIntakeDecision{State: "denied", Reason: "no_unique_pr_author"}, nil
 	}

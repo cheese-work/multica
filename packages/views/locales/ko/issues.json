@@ -1472,6 +1472,7 @@
     "not_merged": "{{prs}}이(가) 병합되지 않고 닫혔습니다",
     "not_merged_action": "제거",
     "all_merged_to": "PR이 모두 병합되었습니다. 다음 PR이 병합되면 {{status}}(으)로 변경합니다.",
+    "workflow_owned": "PR이 병합되면 워크플로가 이 태스크를 이동합니다",
     "issue_disabled": "이 태스크는 PR 병합 시 상태를 바꾸지 않음",
     "issue_disabled_action": "다시 켜기"
   },

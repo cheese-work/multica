@@ -1472,6 +1472,7 @@
     "not_merged": "{{prs}} はマージされずにクローズされました",
     "not_merged_action": "外す",
     "all_merged_to": "PR はすべてマージ済みです。次に PR がマージされると {{status}} に変更します。",
+    "workflow_owned": "PR がマージされるとワークフローがこのタスクを移動します",
     "issue_disabled": "このタスクは PR マージでステータスを変えません",
     "issue_disabled_action": "再開"
   },

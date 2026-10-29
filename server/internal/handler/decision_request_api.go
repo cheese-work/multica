@@ -89,7 +89,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -136,6 +136,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+		MessageKind:   result.Message.MessageKind,
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
@@ -191,6 +192,28 @@ func (handler *Handler) ListDecisions(writer http.ResponseWriter, request *http.
 	}
 	if requests == nil {
 		requests = []db.DecisionRequest{}
+	}
+	writeJSON(writer, http.StatusOK, requests)
+}
+
+func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *http.Request) {
+	if isMachineCredentialActor(request) {
+		writeError(writer, http.StatusForbidden, "this endpoint is only available to human actors")
+		return
+	}
+	member, ok := handler.requireWorkspaceMember(writer, request, ctxWorkspaceID(request.Context()), "workspace not found")
+	if !ok {
+		return
+	}
+	requests, err := handler.Queries.ListOpenDecisionRequestsForHuman(request.Context(), db.ListOpenDecisionRequestsForHumanParams{
+		WorkspaceID: member.WorkspaceID, HumanUserID: member.UserID,
+	})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list open decision requests")
+		return
+	}
+	if requests == nil {
+		requests = []db.ListOpenDecisionRequestsForHumanRow{}
 	}
 	writeJSON(writer, http.StatusOK, requests)
 }

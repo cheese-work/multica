@@ -1452,6 +1452,7 @@
     "not_merged": "{{prs}} 已關閉，未合併",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合併。之後有新 PR 合併時會改為 {{status}}。",
+    "workflow_owned": "PR 合併後由工作流程移動此任務",
     "issue_disabled": "此任務合併後不改狀態",
     "issue_disabled_action": "恢復"
   },
