@@ -73,20 +73,20 @@ func runFakeClaudeTurnResult() {
 	}
 }
 
-func TestClaudeExecuteTurnResult(t *testing.T) {
-	t.Parallel()
+func TestClaudeExecuteTurnResult(test *testing.T) {
+	test.Parallel()
 	self, err := os.Executable()
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	fixture, err := filepath.Abs("testdata/claude-code-2.1.308-injected-result.jsonl")
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	for _, supplements := range []bool{true, false} {
 		for _, mode := range []string{"injected_before_prompt", "injected_after_prompt", "normal", "empty", "error", "cancel"} {
-			t.Run(fmt.Sprintf("%s/supplements=%t", mode, supplements), func(t *testing.T) {
-				t.Parallel()
+			test.Run(fmt.Sprintf("%s/supplements=%t", mode, supplements), func(subtest *testing.T) {
+				subtest.Parallel()
 				backend := &claudeBackend{cfg: Config{
 					ExecutablePath: self,
 					Logger:         slog.Default(),
@@ -95,18 +95,18 @@ func TestClaudeExecuteTurnResult(t *testing.T) {
 						"CLAUDE_RESULT_CASE":        mode,
 						"CLAUDE_RESULT_SUPPLEMENTS": fmt.Sprint(supplements),
 						"CLAUDE_RESULT_FIXTURE":     fixture,
-						"CLAUDE_CONFIG_DIR":         t.TempDir(),
+						"CLAUDE_CONFIG_DIR":         subtest.TempDir(),
 						"IS_SANDBOX":                "1",
 					},
 				}}
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				ctx, cancel := context.WithTimeout(subtest.Context(), 10*time.Second)
 				defer cancel()
 				session, err := backend.Execute(ctx, "Multica prompt", ExecOptions{
 					ResumeSessionID:      "owned-session",
 					EnableTaskSupplement: supplements,
 				})
 				if err != nil {
-					t.Fatal(err)
+					subtest.Fatal(err)
 				}
 				for message := range session.Messages {
 					if mode == "cancel" && message.SessionID == "owned-session" {
@@ -115,7 +115,7 @@ func TestClaudeExecuteTurnResult(t *testing.T) {
 				}
 				result, ok := <-session.Result
 				if !ok {
-					t.Fatal("result channel closed without a result")
+					subtest.Fatal("result channel closed without a result")
 				}
 				status, output, failure := "completed", "Multica prompt completed", ""
 				switch mode {
@@ -127,10 +127,10 @@ func TestClaudeExecuteTurnResult(t *testing.T) {
 					status, output, failure = "aborted", "", "execution cancelled"
 				}
 				if result.Status != status || result.Output != output || result.Error != failure || result.SessionID != "owned-session" {
-					t.Fatalf("expected status=%s output=%q error=%q session=owned-session, got %+v", status, output, failure, result)
+					subtest.Fatalf("expected status=%s output=%q error=%q session=owned-session, got %+v", status, output, failure, result)
 				}
 				if session.SupplementReady != nil && session.SupplementReady() {
-					t.Fatal("completed turn still accepts supplements")
+					subtest.Fatal("completed turn still accepts supplements")
 				}
 			})
 		}
