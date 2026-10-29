@@ -131,28 +131,14 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		}
 		return ReviewGate{}, fmt.Errorf("run budget: load issue: %w", err)
 	}
-	if !issue.ProjectID.Valid && !issue.WorkflowID.Valid {
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil {
+		return ReviewGate{}, err
+	}
+	if usage == nil {
 		return ReviewGate{}, nil
 	}
-	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if errors.Is(err, issueworkflow.ErrOverrideMissing) || (err == nil && (def == nil || def.RunBudgetSince.IsZero())) {
-		return ReviewGate{}, nil
-	}
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: load workflow: %w", err)
-	}
-	since, err := RunBudgetStart(ctx, q, issue.ID, def)
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: window start: %w", err)
-	}
-	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: since, Valid: true}})
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: count runs: %w", err)
-	}
-	max := def.EffectiveMaxRuns()
-	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > max {
-		max = int(issue.MaxRunsOverride.Int32)
-	}
+	runs, max := usage.Runs, usage.Max
 	spent := runs >= int64(max)
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
@@ -213,7 +199,7 @@ func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target Run
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}
-	head, err = q.GetIssueReviewHeadSha(ctx, issue.ID)
+	head, err = issueReviewHead(ctx, q, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
 		return "", false, nil
 	}

@@ -70,6 +70,55 @@ func TestResolveTaskModelSelectionThinkingLevelWarning(t *testing.T) {
 	}
 }
 
+func TestResolveTaskModelSelectionCodexUnlistedEffort(test *testing.T) {
+	stubModelDiscovery(test, map[string]agent.Catalog{
+		"codex": {Models: []agent.Model{{ID: "gpt-5.6-sol", Thinking: &agent.ModelThinking{
+			SupportedLevels: []agent.ThinkingLevel{{Value: "high"}},
+		}}}},
+	})
+	selection := resolveTaskModelSelection(context.Background(), "codex", agent.Command{}, taskModelSelection{
+		Model: "gpt-6.1-sol", ThinkingLevel: "high",
+	}, quietTaskLog())
+	if selection.Model != "gpt-6.1-sol" || selection.ThinkingLevel != "high" || selection.ThinkingLevelWarning != "" {
+		test.Fatalf("explicit unlisted Codex effort must reach native validation: %+v", selection)
+	}
+}
+
+func TestResolveTaskModelSelectionCodexEffortControls(test *testing.T) {
+	for _, testcase := range []struct {
+		name       string
+		model      string
+		level      string
+		cliLevels  []string
+		wantLevel  string
+		wantReason string
+	}{
+		{name: "listed supported", model: "gpt-5.6-sol", level: "medium", wantLevel: "medium"},
+		{name: "listed unsupported", model: "gpt-5.6-sol", level: "high", wantReason: "does not support this thinking level"},
+		{name: "empty model", level: "high", wantReason: "codex requires an explicit model"},
+		{name: "CLI control unsupported", model: "gpt-6.1-sol", level: "high", cliLevels: []string{}, wantReason: "does not support thinking-level control"},
+		{name: "CLI vocabulary unsupported", model: "gpt-6.1-sol", level: "high", cliLevels: []string{"medium"}, wantReason: "does not accept this thinking level"},
+	} {
+		test.Run(testcase.name, func(test *testing.T) {
+			stubModelDiscovery(test, map[string]agent.Catalog{
+				"codex": {Models: []agent.Model{{ID: "gpt-5.6-sol", Thinking: &agent.ModelThinking{
+					SupportedLevels: []agent.ThinkingLevel{{Value: "medium"}},
+				}}}, CLIThinkingLevels: testcase.cliLevels},
+			})
+			selection := resolveTaskModelSelection(context.Background(), "codex", agent.Command{}, taskModelSelection{
+				Model: testcase.model, ThinkingLevel: testcase.level, ServiceTier: "fast",
+			}, quietTaskLog())
+			test.Logf("selection: %+v", selection)
+			if selection.Model != testcase.model || selection.ThinkingLevel != testcase.wantLevel || selection.ServiceTier != "" {
+				test.Fatalf("unexpected selection: %+v", selection)
+			}
+			if testcase.wantReason == "" && selection.ThinkingLevelWarning != "" || !strings.Contains(selection.ThinkingLevelWarning, testcase.wantReason) {
+				test.Fatalf("warning = %q, want reason %q", selection.ThinkingLevelWarning, testcase.wantReason)
+			}
+		})
+	}
+}
+
 func TestThinkingLevelWarningSequenceAcrossResumeRetry(t *testing.T) {
 	t.Parallel()
 	d, rec := newTranscriptRecorder(t)

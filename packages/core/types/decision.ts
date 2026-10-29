@@ -1,5 +1,11 @@
 export type DecisionState = "pending" | "effective" | "disclaimed";
 
+/** One answer button on an open decision card. */
+export interface DecisionRequestOption {
+  label: string;
+  what_happens?: string;
+}
+
 export interface DecisionRequestCard {
   id: string;
   issue_id: string;
@@ -8,6 +14,7 @@ export interface DecisionRequestCard {
   ask: string;
   /** The asking agent's name; absent when the agent is gone or the server is older. */
   asking_agent_name?: string;
+  options?: DecisionRequestOption[];
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;

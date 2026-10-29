@@ -66,7 +66,7 @@ const cancelWithdrawnDecisionRequest = `-- name: CancelWithdrawnDecisionRequest 
 UPDATE decision_request SET status = 'cancelled', cancel_reason = $1,
     cancel_notice_posted_at = clock_timestamp()
 WHERE workspace_id = $2 AND id = $3 AND status = 'answered'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type CancelWithdrawnDecisionRequestParams struct {
@@ -105,6 +105,7 @@ func (q *Queries) CancelWithdrawnDecisionRequest(ctx context.Context, arg Cancel
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -181,8 +182,8 @@ func (q *Queries) ConsumeDecisionIntentTarget(ctx context.Context, arg ConsumeDe
 }
 
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id
 `
 
@@ -195,6 +196,7 @@ type CreateDecisionAnswerParams struct {
 	ContentSnapshot     string             `json:"content_snapshot"`
 	EffectiveAt         pgtype.Timestamptz `json:"effective_at"`
 	IssueCommentID      pgtype.UUID        `json:"issue_comment_id"`
+	WakeAt              pgtype.Timestamptz `json:"wake_at"`
 }
 
 func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAnswerParams) (DecisionAnswer, error) {
@@ -207,6 +209,7 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 		arg.ContentSnapshot,
 		arg.EffectiveAt,
 		arg.IssueCommentID,
+		arg.WakeAt,
 	)
 	var i DecisionAnswer
 	err := row.Scan(
@@ -332,9 +335,9 @@ func (q *Queries) CreateDecisionIntentTarget(ctx context.Context, arg CreateDeci
 }
 
 const createDecisionRequest = `-- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, ask_identity)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::jsonb, '[]'::jsonb), $16)
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type CreateDecisionRequestParams struct {
@@ -352,6 +355,7 @@ type CreateDecisionRequestParams struct {
 	SourceCommentID       pgtype.UUID `json:"source_comment_id"`
 	SourceContentSnapshot string      `json:"source_content_snapshot"`
 	RequestFingerprint    string      `json:"request_fingerprint"`
+	Options               []byte      `json:"options"`
 	AskIdentity           string      `json:"ask_identity"`
 }
 
@@ -371,6 +375,7 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		arg.SourceCommentID,
 		arg.SourceContentSnapshot,
 		arg.RequestFingerprint,
+		arg.Options,
 		arg.AskIdentity,
 	)
 	var i DecisionRequest
@@ -401,6 +406,7 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -645,7 +651,7 @@ func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionI
 }
 
 const getDecisionRequest = `-- name: GetDecisionRequest :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity FROM decision_request
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -684,6 +690,7 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -787,10 +794,9 @@ func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecis
 }
 
 const listChatDecisionContext = `-- name: ListChatDecisionContext :many
-SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.options,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
-       COALESCE(issue.title, '')::text AS issue_title,
-       count(*) OVER ()::bigint AS total
+       COALESCE(issue.title, '')::text AS issue_title
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -799,14 +805,12 @@ WHERE request.workspace_id = $1 AND request.chat_session_id = $2
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < $3
 ORDER BY ping.created_at DESC, request.id DESC
-LIMIT $4
 `
 
 type ListChatDecisionContextParams struct {
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
 	Before        pgtype.Timestamptz `json:"before"`
-	RowLimit      int32              `json:"row_limit"`
 }
 
 type ListChatDecisionContextRow struct {
@@ -815,25 +819,19 @@ type ListChatDecisionContextRow struct {
 	IssueCommentID pgtype.UUID `json:"issue_comment_id"`
 	PingMessageID  pgtype.UUID `json:"ping_message_id"`
 	Ask            string      `json:"ask"`
+	Options        []byte      `json:"options"`
 	IssueKey       string      `json:"issue_key"`
 	IssueTitle     string      `json:"issue_title"`
-	Total          int64       `json:"total"`
 }
 
 // The asks a bare reply in a DM may be answering: open, asked, in this
 // workspace and DM, with the ping before the first reply being claimed. The ping
 // is an assistant row no task produced, so it is in neither the resumed provider
-// session nor the user-only prompt input. total counts every eligible ask in the
-// same snapshot before the display limit, so a limit never turns several asks
-// into one. Answered or cancelled asks, newer pings and decision notes are not
-// eligible and never counted.
+// session nor the user-only prompt input. Every eligible ask is returned, so the
+// run can explain any open card. Answered or cancelled asks, newer pings and
+// decision notes are not eligible.
 func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecisionContextParams) ([]ListChatDecisionContextRow, error) {
-	rows, err := q.db.Query(ctx, listChatDecisionContext,
-		arg.WorkspaceID,
-		arg.ChatSessionID,
-		arg.Before,
-		arg.RowLimit,
-	)
+	rows, err := q.db.Query(ctx, listChatDecisionContext, arg.WorkspaceID, arg.ChatSessionID, arg.Before)
 	if err != nil {
 		return nil, err
 	}
@@ -847,9 +845,9 @@ func (q *Queries) ListChatDecisionContext(ctx context.Context, arg ListChatDecis
 			&i.IssueCommentID,
 			&i.PingMessageID,
 			&i.Ask,
+			&i.Options,
 			&i.IssueKey,
 			&i.IssueTitle,
-			&i.Total,
 		); err != nil {
 			return nil, err
 		}
@@ -1176,7 +1174,7 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 }
 
 const listDecisionPingRetries = `-- name: ListDecisionPingRetries :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity FROM decision_request
 WHERE origin = 'asked' AND ping_notified_at IS NULL
 ORDER BY created_at, id
 LIMIT $1
@@ -1218,6 +1216,7 @@ func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]D
 			&i.WithdrawnAt,
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
+			&i.Options,
 			&i.AskIdentity,
 		); err != nil {
 			return nil, err
@@ -1231,7 +1230,7 @@ func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]D
 }
 
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity FROM decision_request
 WHERE workspace_id = $1 AND issue_id = $2
 ORDER BY created_at, id
 `
@@ -1277,6 +1276,7 @@ func (q *Queries) ListDecisionRequestsByIssue(ctx context.Context, arg ListDecis
 			&i.WithdrawnAt,
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
+			&i.Options,
 			&i.AskIdentity,
 		); err != nil {
 			return nil, err
@@ -1378,7 +1378,7 @@ func (q *Queries) ListDecisionSessionReferences(ctx context.Context, arg ListDec
 }
 
 const listDecisionSourceChecks = `-- name: ListDecisionSourceChecks :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.ask_identity FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
 WHERE EXISTS (
@@ -1432,6 +1432,7 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 			&i.WithdrawnAt,
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
+			&i.Options,
 			&i.AskIdentity,
 		); err != nil {
 			return nil, err
@@ -1718,7 +1719,7 @@ func (q *Queries) LockDecisionPendingIntent(ctx context.Context, arg LockDecisio
 }
 
 const lockDecisionRequest = `-- name: LockDecisionRequest :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity FROM decision_request
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE
 `
@@ -1758,6 +1759,7 @@ func (q *Queries) LockDecisionRequest(ctx context.Context, arg LockDecisionReque
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -1819,7 +1821,7 @@ UPDATE decision_request
 SET ping_notified_at = clock_timestamp()
 WHERE workspace_id = $1 AND id = $2
   AND ping_notified_at IS NULL
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type MarkDecisionPingNotifiedParams struct {
@@ -1857,6 +1859,7 @@ func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecision
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -1865,7 +1868,7 @@ func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecision
 const markDecisionRequestAnswered = `-- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
 WHERE workspace_id = $1 AND id = $2 AND status = 'open'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type MarkDecisionRequestAnsweredParams struct {
@@ -1903,6 +1906,7 @@ func (q *Queries) MarkDecisionRequestAnswered(ctx context.Context, arg MarkDecis
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -1957,7 +1961,7 @@ func (q *Queries) OpenDecisionAsksSince(ctx context.Context, arg OpenDecisionAsk
 const raiseDecisionClass = `-- name: RaiseDecisionClass :one
 UPDATE decision_request SET escalation_class = $1
 WHERE workspace_id = $2 AND id = $3
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type RaiseDecisionClassParams struct {
@@ -1996,6 +2000,7 @@ func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClass
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err
@@ -2004,7 +2009,7 @@ func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClass
 const reopenDecisionRequest = `-- name: ReopenDecisionRequest :one
 UPDATE decision_request SET status = 'open'
 WHERE workspace_id = $1 AND id = $2 AND status = 'answered'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, ask_identity
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity
 `
 
 type ReopenDecisionRequestParams struct {
@@ -2042,6 +2047,7 @@ func (q *Queries) ReopenDecisionRequest(ctx context.Context, arg ReopenDecisionR
 		&i.WithdrawnAt,
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
+		&i.Options,
 		&i.AskIdentity,
 	)
 	return i, err

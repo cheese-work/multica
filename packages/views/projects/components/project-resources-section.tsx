@@ -7,6 +7,7 @@ import {
   FolderGit,
   FolderOpen,
   GitBranch,
+  Link,
   Plus,
   Search,
   Trash2,
@@ -26,6 +27,7 @@ import type {
   LocalDirectoryExecutionMode,
   LocalDirectoryResourceRef,
   ProjectResource,
+  UrlResourceRef,
 } from "@multica/core/types";
 import {
   runtimeAdvertisesLocalWorktree,
@@ -744,6 +746,41 @@ function ResourceRow({
         onRemove={onRemove}
         onEditMode={onEditLocalDirectoryMode}
       />
+    );
+  }
+
+  if (resource.resource_type === "url") {
+    const ref = resource.resource_ref as UrlResourceRef;
+    return (
+      <div className="group flex items-start gap-2 text-caption">
+        <Link className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <a
+            href={ref.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block truncate hover:underline"
+            title={ref.url}
+          >
+            {ref.url}
+          </a>
+          {resource.label && (
+            <span className="block break-words text-micro text-muted-foreground">
+              {resource.label}
+            </span>
+          )}
+        </div>
+        <TooltipHint label={t(($) => $.resources.remove_tooltip)}>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded-sm p-0.5 hover:bg-accent"
+            aria-label={t(($) => $.resources.remove_tooltip)}
+          >
+            <Trash2 className="size-3 text-muted-foreground" />
+          </button>
+        </TooltipHint>
+      </div>
     );
   }
 

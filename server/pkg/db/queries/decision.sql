@@ -48,13 +48,13 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, ask_identity)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), sqlc.arg('ask_identity'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'))
 RETURNING *;
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id)
-VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at)
+VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
@@ -421,14 +421,12 @@ ORDER BY answer.created_at, answer.id;
 -- The asks a bare reply in a DM may be answering: open, asked, in this
 -- workspace and DM, with the ping before the first reply being claimed. The ping
 -- is an assistant row no task produced, so it is in neither the resumed provider
--- session nor the user-only prompt input. total counts every eligible ask in the
--- same snapshot before the display limit, so a limit never turns several asks
--- into one. Answered or cancelled asks, newer pings and decision notes are not
--- eligible and never counted.
-SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+-- session nor the user-only prompt input. Every eligible ask is returned, so the
+-- run can explain any open card. Answered or cancelled asks, newer pings and
+-- decision notes are not eligible.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.options,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
-       COALESCE(issue.title, '')::text AS issue_title,
-       count(*) OVER ()::bigint AS total
+       COALESCE(issue.title, '')::text AS issue_title
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -436,8 +434,7 @@ LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < sqlc.arg('before')
-ORDER BY ping.created_at DESC, request.id DESC
-LIMIT sqlc.arg('row_limit');
+ORDER BY ping.created_at DESC, request.id DESC;
 
 -- name: ListChatDecisionReferences :many
 -- Server-authored decision notes (cancellations, recorded answers) posted after

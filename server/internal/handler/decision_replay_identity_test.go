@@ -216,8 +216,8 @@ func TestDecisionConcurrentRetryWithLinkedComment(test *testing.T) {
 }
 
 // legacyFingerprint is the pre-D1d formula, written out independently of the
-// handler: SHA-256 of the JSON of the old input struct, Fingerprint empty,
-// Ask the un-enriched rendering.
+// handler: SHA-256 of the JSON of the old input struct (the D1b head's, with
+// Options), Fingerprint empty, Ask the un-enriched rendering.
 func legacyFingerprint(input decisionRequestInput) string {
 	encoded, err := json.Marshal(struct {
 		SessionID       pgtype.UUID
@@ -229,7 +229,8 @@ func legacyFingerprint(input decisionRequestInput) string {
 		EscalationClass string
 		SourceCommentID pgtype.UUID
 		Fingerprint     string
-	}{input.SessionID, input.NewDM, input.HumanUserID, input.Ask, input.Footer, input.ParentID, input.EscalationClass, input.SourceCommentID, ""})
+		Options         []decisiontx.AskOption
+	}{input.SessionID, input.NewDM, input.HumanUserID, input.Ask, input.Footer, input.ParentID, input.EscalationClass, input.SourceCommentID, "", input.Options})
 	if err != nil {
 		panic(err)
 	}
@@ -249,7 +250,7 @@ func TestDecisionRetryReplaysLegacyFingerprintRow(test *testing.T) {
 			testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, ask, singleCall)).Want(http.StatusCreated).JSON(&first)
 			bare := ask
 			bare.AskedBy = "" // D1c rendered no asking agent
-			legacy := decisionRequestInput{SessionID: parseUUID(fixture.sessionID), Ask: bare.Content(handlerTestWorkspaceSlug), EscalationClass: "reversible", SourceCommentID: parseUUID(fixture.tagID)}
+			legacy := decisionRequestInput{SessionID: parseUUID(fixture.sessionID), Ask: bare.Content(handlerTestWorkspaceSlug), Options: bare.Options, EscalationClass: "reversible", SourceCommentID: parseUUID(fixture.tagID)}
 			if singleCall {
 				legacy.HumanUserID = parseUUID(fixture.humanID)
 			}
@@ -263,14 +264,14 @@ func TestDecisionRetryReplaysLegacyFingerprintRow(test *testing.T) {
 	}
 }
 
-// The legacy formula is pinned to the bytes D1c head produced, so a later
+// The legacy formula is pinned to the bytes the D1b head (with Options) produced, so a later
 // change to decisionRequestInput cannot silently orphan stored rows.
 func TestLegacyFingerprintIsPinned(test *testing.T) {
 	input := decisionRequestInput{
 		SessionID: parseUUID("11111111-1111-4111-8111-111111111111"), HumanUserID: parseUUID("22222222-2222-4222-8222-222222222222"),
 		Ask: "ask", Footer: "footer", EscalationClass: "reversible", SourceCommentID: parseUUID("33333333-3333-4333-8333-333333333333"),
 	}
-	const pinned = "2c64e6d7f1c9d255f1636243ab1915f983103d1c1c634c48e0582eb20c68a579"
+	const pinned = "dcc7cb96ec041516e91e193f362abc8898033b4f817a2c1af644aff60074f24a"
 	if got := legacyFingerprint(input); got != pinned {
 		test.Fatalf("test formula drifted: %s", got)
 	}

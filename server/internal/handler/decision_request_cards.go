@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -18,11 +20,13 @@ type DecisionRequestCard struct {
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
 	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
-	AskingAgentName string  `json:"asking_agent_name,omitempty"`
-	State           string  `json:"state"`
-	CreatedAt       string  `json:"created_at"`
-	WithdrawnAt     *string `json:"withdrawn_at,omitempty"`
-	Reason          string  `json:"reason,omitempty"`
+	AskingAgentName string `json:"asking_agent_name,omitempty"`
+	// Options are the answer buttons; empty for a card with no structured options.
+	Options     []decisiontx.AskOption `json:"options"`
+	State       string                 `json:"state"`
+	CreatedAt   string                 `json:"created_at"`
+	WithdrawnAt *string                `json:"withdrawn_at,omitempty"`
+	Reason      string                 `json:"reason,omitempty"`
 	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
 }
@@ -51,6 +55,9 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
 			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
 			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+		}
+		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
+			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
 		}
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)

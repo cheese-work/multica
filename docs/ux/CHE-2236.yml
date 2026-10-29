@@ -2,7 +2,7 @@
 # One text span is added; nothing is removed. The Details block of the ask comment
 # (server-rendered markdown) gains an "**Asked by**" line and up to 5 comment excerpts.
 issue: CHE-2236
-design: waiver NOT-RECORDED   # no design lock exists; one muted header span, existing tokens. Cheese waiver pending.
+design: waiver Cheese 2026-10-29 "waived" on decision request 51ac8bd4-5b97-443d-a325-c4bb3db844a7 (CHE-2236 comment 01a18765-3ff3-7441-bfe8-6ef125eb2c28)   # no design lock; one muted header span, existing tokens.
 pages:
   - id: chat-decision-request-card
     url: /<workspace-slug>/chat   # a chat session with a decision request card; same path on base and preview

@@ -40,6 +40,7 @@ controller_files=(
   docker-compose.ab.yml
   docker-compose.flags.yml
   docker-compose.jev.yml
+  drift-receipt.mjs
   flagfile-check.mjs
   migration-inventory.mjs
   quiescence.mjs
@@ -50,6 +51,7 @@ controller_files=(
 for file in "${controller_files[@]}"; do
   cp "$root_dir/deploy/cd/$file" "$bundle/deploy/cd/$file"
 done
+cp "$root_dir/docker-compose.selfhost.yml" "$bundle/docker-compose.selfhost.yml"
 cp "$root_dir/deploy/cd/router/nginx.conf.template" "$bundle/deploy/cd/router/nginx.conf.template"
 cp -a "$root_dir/server/migrations" "$bundle/server/migrations"
 cp "$manifest" "$bundle/evidence/manifest.json"
@@ -65,7 +67,7 @@ node "$root_dir/deploy/cd/release-packet.mjs" create \
 
 (
   cd "$bundle"
-  find deploy server evidence -type f ! -name controller-files.sha256 -print0 \
+  find docker-compose.selfhost.yml deploy server evidence -type f ! -name controller-files.sha256 -print0 \
     | sort -z \
     | xargs -0 sha256sum > controller-files.sha256
 )
