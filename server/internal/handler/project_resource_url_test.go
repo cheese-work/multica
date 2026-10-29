@@ -100,8 +100,11 @@ func TestURLProjectResourceTaskClaim(test *testing.T) {
 			"resource_type": resourceType, "resource_ref": `{"url":"` + link + `"}`, "position": position,
 		})
 	}
-	var agentID, runtimeID string
-	dbfx.QueryRow(test, `SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	var sharedAgentID string
+	dbfx.QueryRow(test, `SELECT id FROM agent WHERE workspace_id = $1 AND runtime_id = $2 LIMIT 1`, testWorkspaceID, testRuntimeID).Scan(&sharedAgentID)
+	dbfx.Task(test, sharedAgentID, testutil.Cols{"runtime_id": testRuntimeID, "status": "running"})
+	runtimeID := dbfx.Runtime(test, "URL resource claim runtime")
+	agentID := dbfx.Agent(test, "URL resource claim agent", runtimeID)
 	issueID := dbfx.Issue(test, "Task with URL context and a repository", testutil.Cols{"project_id": projectID, "priority": "medium"})
 	dbfx.Task(test, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
 	request := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil), "runtimeId", runtimeID)
