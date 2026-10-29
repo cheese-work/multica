@@ -190,6 +190,7 @@ export type {
   ChatLastMessage,
   ChatPinnedAgent,
   ChatMessage,
+  ChatScheduledWakeup,
   ChatQuickAction,
   ChatQuickActionsPendingState,
   ChatQuickActionsFailureState,

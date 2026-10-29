@@ -400,5 +400,15 @@
     "archived_badge": "アーカイブ済み",
     "title_match": "タイトル一致",
     "actions_aria": "{{title}} の操作"
+  },
+  "wakeup": {
+    "node_label": "予約された起動が実行されました",
+    "scheduled_at": "予約 {{time}}",
+    "set_by": "{{agent}} が {{time}} に設定",
+    "show_instruction": "指示を表示",
+    "hide_instruction": "指示を隠す",
+    "instruction_region": "エージェントへの指示",
+    "instruction_note": "エージェントへの指示（原文）。エージェントはこの内容をすべて受け取ります。",
+    "issue_fallback": "課題"
   }
 }
