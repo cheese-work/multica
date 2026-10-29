@@ -128,6 +128,25 @@ describe("CommentCard — oversized body (CHE-2191)", () => {
     expect(screen.getByRole("button", { name: "Show full comment" })).toBeTruthy();
   });
 
+  // Fence boundaries follow Markdown, not a three-backtick count.
+  it("never cuts inside a tilde-fenced block that holds blank lines", () => {
+    const code = Array.from({ length: 200 }, (_, i) => `code line ${i}`).join("\n\n");
+    renderCard(["intro", `~~~text\n${code}\n~~~`, "tail ".repeat(3_500)].join("\n\n"));
+    expect(screen.getByTestId("body").textContent).toBe("intro");
+  });
+
+  it("keeps the closing fence of a four-backtick block holding a literal three-backtick line", () => {
+    renderCard(["intro", "````\n```\n````", "tail ".repeat(3_500)].join("\n\n"));
+    const text = screen.getByTestId("body").textContent ?? "";
+    expect(text).toContain("````\n```\n````");
+  });
+
+  it("keeps an indented fence inside a list item whole", () => {
+    const code = Array.from({ length: 200 }, (_, i) => `code line ${i}`).join("\n\n");
+    renderCard(["intro", `- item\n\n  \`\`\`\n${code}\n  \`\`\``, "tail ".repeat(3_500)].join("\n\n"));
+    expect(screen.getByTestId("body").textContent).not.toContain("code line");
+  });
+
   it("mounts the full body on click and drops the button", () => {
     renderCard(LONG);
     fireEvent.click(screen.getByRole("button", { name: "Show full comment" }));

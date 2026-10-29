@@ -699,11 +699,27 @@ function CommentRevisionConflict({
 const LONG_BODY_CHARS = 16_000;
 const BODY_PREFIX_CHARS = 2_000;
 
+// CommonMark fences: 3+ backticks or tildes; the close uses the same char and
+// is at least as long. Blank lines inside a fence do not end a block.
+const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
+
 function bodyPrefix(content: string) {
-  const cut = content.lastIndexOf("\n\n", BODY_PREFIX_CHARS);
-  const prefix = cut > 0 ? content.slice(0, cut) : "";
-  // An odd fence count means the cut landed inside a code block.
-  return (prefix.match(/^```/gm)?.length ?? 0) % 2 ? prefix.slice(0, prefix.lastIndexOf("```")).trimEnd() : prefix;
+  let fence = "";
+  let pos = 0;
+  let cut = 0;
+  for (const line of content.split("\n")) {
+    if (pos - 1 > BODY_PREFIX_CHARS) break;
+    const [, marker = "", info = ""] = FENCE_LINE.exec(line) ?? [];
+    if (fence) {
+      if (marker[0] === fence[0] && marker.length >= fence.length && !info.trim()) fence = "";
+    } else if (marker) {
+      fence = marker;
+    } else if (!line.trim() && pos > 1 && pos - 1 <= BODY_PREFIX_CHARS) {
+      cut = pos - 1;
+    }
+    pos += line.length + 1;
+  }
+  return content.slice(0, cut).trimEnd();
 }
 
 /**
