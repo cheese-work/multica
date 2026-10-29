@@ -79,14 +79,35 @@ type excerptMatch struct {
 	unique bool
 }
 
+// excerptReplyText is the reply text stored for an excerpted record: each
+// span with its whitespace collapsed, one paragraph per excerpt. Collapsed
+// spans hold no blank line, so the paragraphs name the excerpts exactly.
+func excerptReplyText(spans []string) string {
+	paragraphs := make([]string, len(spans))
+	for index, span := range spans {
+		paragraphs[index] = strings.Join(strings.Fields(span), " ")
+	}
+	return strings.Join(paragraphs, "\n\n")
+}
+
 // sameExcerpts reports whether a retry names the excerpts the stored answer
-// quoted: the stored reply text is those excerpts joined, so it must equal the
-// retry's excerpts after whitespace is normalised.
+// quoted, one for one and in order. The stored paragraphs were verified
+// against the source when the record was made, so an equal retry is valid;
+// a retry with a different count, order, split or blank excerpt is not.
 func sameExcerpts(excerpted bool, storedReply string, excerpts []string) bool {
-	if excerpted != (len(excerpts) > 0) {
+	if !excerpted {
+		return len(excerpts) == 0
+	}
+	stored := strings.Split(storedReply, "\n\n")
+	if len(excerpts) != len(stored) {
 		return false
 	}
-	return !excerpted || strings.Join(strings.Fields(storedReply), " ") == strings.Join(strings.Fields(strings.Join(excerpts, " ")), " ")
+	for index, excerpt := range excerpts {
+		if strings.Join(strings.Fields(excerpt), " ") != stored[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // quoteExcerpts renders each excerpt as its own block quote paragraph.

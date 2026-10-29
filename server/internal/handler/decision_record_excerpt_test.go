@@ -190,3 +190,35 @@ func TestDecisionRecordRetryMustNameTheSameExcerpts(test *testing.T) {
 	}
 	fixture.assertRecordCounts(test, 1)
 }
+
+func TestDecisionRecordRetryKeepsEachExcerptApart(test *testing.T) {
+	fixture, first, err := twoMessageRecord(test, "alpha beta", "gamma delta", []string{"beta", "gamma"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	retry := func(excerpts []string) (decisionRecordResult, error) {
+		input := fixture.recordInput()
+		input.MessageIDs = first.Answer.ChatMessageIds
+		input.Excerpts = excerpts
+		return testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
+	}
+	if again, err := retry([]string{"beta", "gamma"}); err != nil || !again.Replayed || again.Answer.ID != first.Answer.ID {
+		test.Fatalf("identical retry must replay: %+v %v", again, err)
+	}
+	if again, err := retry([]string{" beta ", "gamma"}); err != nil || !again.Replayed {
+		test.Fatalf("a retry that differs only in whitespace must replay: %+v %v", again, err)
+	}
+	cases := map[string][]string{
+		"joined across messages": {"beta gamma"},
+		"blank extra":            {"beta", "gamma", ""},
+		"too many":               {"beta", "gamma", "a", "a", "a", "a", "a", "a", "a", "a", "a"},
+		"reordered":              {"gamma", "beta"},
+		"one dropped":            {"beta"},
+	}
+	for name, excerpts := range cases {
+		if again, err := retry(excerpts); err == nil {
+			test.Fatalf("%s retry returned the old record: %+v", name, again)
+		}
+	}
+	fixture.assertRecordCounts(test, 1)
+}

@@ -391,7 +391,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil {
 			return empty, err
 		}
-		quote, replyText = quoteExcerpts(spans), strings.Join(spans, "\n\n")
+		quote, replyText = quoteExcerpts(spans), excerptReplyText(spans)
 	}
 	answeredLabel := ""
 	if input.ContextMessageID.Valid {
