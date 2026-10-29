@@ -40,6 +40,20 @@ bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh" "$
 
 test -f "$work_dir/unpack/cutover-controller/evidence/manifest.json"
 test -f "$work_dir/unpack/cutover-controller/evidence/release-packet.json"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.flags.yml"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.ab.yml"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.jev.yml"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/drift-receipt.mjs"
+# The released base compose file travels in the checksummed bundle, byte for byte.
+cmp docker-compose.selfhost.yml "$work_dir/unpack/cutover-controller/docker-compose.selfhost.yml"
+
+# A bundle without the base compose file is refused (exact-path contract).
+mv "$work_dir/unpack/cutover-controller/docker-compose.selfhost.yml" "$work_dir/unpack/cutover-controller/base.moved"
+if bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh" "$work_dir/unpack/cutover-controller" >/dev/null 2>&1; then
+  echo "bundle without the base compose file was accepted" >&2
+  exit 1
+fi
+mv "$work_dir/unpack/cutover-controller/base.moved" "$work_dir/unpack/cutover-controller/docker-compose.selfhost.yml"
 
 # Layout mismatch: the consumer's exact paths are mandatory.
 mv "$work_dir/unpack/cutover-controller/evidence/manifest.json" "$work_dir/unpack/cutover-controller/evidence/wrong-name.json"
@@ -54,7 +68,7 @@ mv "$work_dir/unpack/cutover-controller/evidence/wrong-name.json" "$work_dir/unp
 printf '\n-- drift\n' >>"$work_dir/unpack/cutover-controller/server/migrations/$(find server/migrations -maxdepth 1 -name '*.up.sql' -printf '%f\n' | sort | tail -1)"
 (
   cd "$work_dir/unpack/cutover-controller"
-  find deploy server evidence -type f ! -name controller-files.sha256 -print0 | sort -z | xargs -0 sha256sum >controller-files.sha256
+  find docker-compose.selfhost.yml deploy server evidence -type f ! -name controller-files.sha256 -print0 | sort -z | xargs -0 sha256sum >controller-files.sha256
 )
 if bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh" "$work_dir/unpack/cutover-controller" >/dev/null 2>&1; then
   echo "controller/migration mismatch was accepted" >&2

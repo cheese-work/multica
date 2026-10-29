@@ -1420,7 +1420,7 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 	if !issueID.Valid {
 		return ""
 	}
-	sha, err := s.Queries.GetIssueReviewHeadSha(ctx, issueID)
+	sha, err := issueReviewHead(ctx, s.Queries, issueID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("resolve issue review sha failed",
@@ -1429,6 +1429,33 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 		return ""
 	}
 	return sha
+}
+
+type reviewPRKey struct{}
+
+// reviewPRPin is the PR WithReviewPR pinned on ctx, or the zero (invalid) UUID.
+func reviewPRPin(ctx context.Context) pgtype.UUID {
+	prID, _ := ctx.Value(reviewPRKey{}).(pgtype.UUID)
+	return prID
+}
+
+// WithReviewPR pins the review head every enqueue under ctx resolves to the
+// head of one linked PR, instead of the issue's most recently updated one. A
+// replacement review of a superseded run uses it to stay on its own PR
+// (CHE-2307).
+func WithReviewPR(ctx context.Context, prID pgtype.UUID) context.Context {
+	return context.WithValue(ctx, reviewPRKey{}, prID)
+}
+
+// issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
+// The enqueue's dedup key and the run budget's review gate both resolve the head
+// here, so a pinned replacement is admitted and stamped against one head.
+func issueReviewHead(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	if prID := reviewPRPin(ctx); prID.Valid {
+		pr, err := q.GetGitHubPullRequestByID(ctx, prID)
+		return pr.HeadSha, err
+	}
+	return q.GetIssueReviewHeadSha(ctx, issueID)
 }
 
 // headShaText wraps a resolved review SHA into the pgtype.Text the dedup/enqueue
@@ -1532,6 +1559,8 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		// A pinned replacement keeps the identity of its PR, not just its head.
+		PullRequestID: reviewPRPin(ctx),
 	}
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
@@ -1562,8 +1591,14 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
 			FireAt:               fireAt,
 		})
+		if err == nil {
+			noteRunInserted(ctx, queries, createParams.IssueID)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
+	}
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1590,8 +1625,8 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 }
 
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
-	if squadID.Valid {
-		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 		return task, err
 	}
 	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, triggerCommentID, commentIDs, false, handoff, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
@@ -1699,6 +1734,9 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
+	}
 	if err != nil {
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -4787,6 +4825,7 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // Persist these in the same transaction as running, before cancellation can win.
 type TaskStartCapabilities struct {
 	Supplement     bool
+	PREvent        bool
 	ProcessCleanup bool
 }
 
@@ -4853,6 +4892,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 		})
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
+		}
+		if offered.PREvent {
+			if _, err := qtx.RecordTaskPREventCapability(ctx, task.ID); err != nil {
+				return fmt.Errorf("record PR event capability: %w", err)
+			}
 		}
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, task); err != nil {
 			return err
@@ -5760,6 +5804,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			})
 			switch {
 			case cerr == nil:
+				noteRunInserted(ctx, qtx, t.IssueID)
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -6368,6 +6413,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		)
 		return nil, err
 	}
+	noteRunInserted(ctx, qtx, parent.IssueID)
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than
@@ -7163,6 +7209,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
+	}
+	if _, err := q.SettleTerminalTaskPREventDeliveries(ctx, taskIDs); err != nil {
+		return fmt.Errorf("settle terminal task PR events: %w", err)
 	}
 	if err := SettleDeliveredDelegatedFailureRecoveries(ctx, q, tasks...); err != nil {
 		return err

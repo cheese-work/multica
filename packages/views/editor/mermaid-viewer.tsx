@@ -15,7 +15,7 @@
  * dialog can't hear, which is why Escape used to stop working after a click.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Code as CodeIcon,
@@ -49,6 +49,16 @@ import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 const COPY_FEEDBACK_MS = 2000;
 
+// iOS Safari zooms the page on a pinch via `gesturestart`; React has no
+// synthetic event for it, so cancel it natively. Passive false, or
+// preventDefault is ignored. Ref callbacks may return a cleanup (React 19).
+function containGesture(node: HTMLElement | null) {
+  if (!node) return;
+  const cancel = (event: Event) => event.preventDefault();
+  node.addEventListener("gesturestart", cancel, { passive: false });
+  return () => node.removeEventListener("gesturestart", cancel);
+}
+
 interface MermaidViewerContentProps {
   /** Mermaid source, for the source view and `.mmd` export. */
   chart: string;
@@ -61,6 +71,8 @@ interface MermaidViewerContentProps {
   /** Colors resolved from the host theme, so exports match what is on screen. */
   exportBackground: string;
   exportFontFamily: string;
+  /** Reports the canvas width, so the caller can draw the diagram to fit it. */
+  onViewportWidth?: (width: number) => void;
 }
 
 export interface MermaidViewerProps extends MermaidViewerContentProps {
@@ -110,6 +122,7 @@ export function MermaidViewer({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        ref={containGesture}
         showCloseButton={false}
         initialFocus={canvasRef}
         finalFocus={finalFocusRef}
@@ -117,7 +130,11 @@ export function MermaidViewer({
         // panes `vh` includes retracted browser chrome, which would push the
         // toolbar off-screen — the exact "can't find the close button"
         // failure this viewer exists to remove.
-        className="!max-w-[calc(100vw-2rem)] !h-[min(90dvh,calc(100dvh-2rem))] !w-[calc(100vw-2rem)] flex flex-col gap-0 overflow-hidden p-0 xl:!max-w-[80rem]"
+        // `touch-none` + `overscroll-contain`: a finger anywhere on the dialog
+        // (header included) stays here and never scrolls or zooms the page
+        // behind. Below md it fills the screen, so no backdrop strip is left
+        // to touch; the `!` overrides beat the base popup's centring classes.
+        className="touch-none overscroll-contain !max-w-[calc(100vw-2rem)] !h-[min(90dvh,calc(100dvh-2rem))] !w-[calc(100vw-2rem)] flex flex-col gap-0 overflow-hidden p-0 max-md:!inset-0 max-md:!h-dvh max-md:!max-h-none max-md:!w-screen max-md:!max-w-none max-md:!translate-x-0 max-md:!translate-y-0 max-md:!rounded-none max-md:!ring-0 xl:!max-w-[80rem]"
         aria-label={t(($) => $.mermaid.viewer_title)}
       >
         {/* Body state (zoom, pan, source toggle) deliberately lives below the
@@ -141,6 +158,7 @@ function MermaidViewerContent({
   layout,
   exportBackground,
   exportFontFamily,
+  onViewportWidth,
   canvasRef,
   onClose,
 }: MermaidViewerContentProps & {
@@ -151,6 +169,17 @@ function MermaidViewerContent({
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
   const canvas = useZoomCanvas({ content: layout });
+
+  useEffect(() => {
+    const node = canvasRef.current;
+    if (!onViewportWidth || !node) return;
+    const report = () => onViewportWidth(node.getBoundingClientRect().width);
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [canvasRef, onViewportWidth, showSource]);
 
   const handleCopySource = useCallback(async () => {
     if (await copyText(chart)) {

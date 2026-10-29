@@ -258,6 +258,8 @@ export interface CommentUnresolvedPayload {
 export interface DecisionAnswerUpdatedPayload {
   answer_id: string;
   issue_id: string;
+  /** The issue holding the member comment the answer was recorded from, when it differs from issue_id. */
+  source_issue_id?: string;
   state: import("./decision").DecisionState;
 }
 
@@ -433,6 +435,7 @@ export interface ChatMessageEventPayload {
   content: string;
   task_id?: string;
   created_at: string;
+  message_kind?: import("./chat").ChatMessageKind;
 }
 
 export interface ChatDonePayload {

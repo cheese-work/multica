@@ -62,7 +62,18 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	}
 	// Another writer moving the issue first (revision) wins; the claim is given
 	// back so the next snapshot of this head can try the issue where it is.
-	moved, ranHandler := h.moveIssueOnEdge(ctx, issue, next, "ci_green_advance", map[string]any{"head_sha": headSHA}, true)
+	// The kill switch (CHE-2220) finds this run by the mark: nothing else on it
+	// says a GitHub snapshot started it. The mark goes on the row this move's
+	// own enqueue creates, never on a later run of the issue.
+	markCtx := service.WithEnqueuedTaskHook(ctx, func(task db.AgentTaskQueue) {
+		if task.IssueID != issue.ID {
+			return
+		}
+		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green"}); err != nil {
+			slog.Warn("ci advance: mark run failed", "err", err, "issue_id", uuidToString(issueID))
+		}
+	})
+	moved, ranHandler := h.moveIssueOnEdge(markCtx, issue, next, "ci_green_advance", map[string]any{"head_sha": headSHA}, true)
 	if !moved {
 		if err := h.Queries.ReleaseIssueCIAdvance(ctx, db.ReleaseIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA}); err != nil {
 			slog.Warn("ci advance: release claim failed", "err", err, "issue_id", uuidToString(issueID))
@@ -92,7 +103,7 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 		ProjectID:        issue.ProjectID,
 		Stage:            issue.Stage,
 	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, nil)
+	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
 	if err != nil {
 		slog.Warn("workflow edge: workflow refused the move", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 		return false, false

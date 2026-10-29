@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -65,7 +66,7 @@ func (handler *Handler) WithdrawDecision(writer http.ResponseWriter, request *ht
 		handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
 		if result.Message.ID.Valid {
 			message := result.Message
-			handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
+			handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 		}
 	}
 	writeJSON(writer, http.StatusOK, result.Request)
@@ -161,6 +162,9 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	}
 	current, err = queries.WithdrawOpenDecisionRequest(ctx, db.WithdrawOpenDecisionRequestParams{WorkspaceID: current.WorkspaceID, ID: current.ID, Reason: reason, TaskID: taskID, UserID: userID})
 	if err != nil {
+		return empty, err
+	}
+	if _, err := decisiontx.EndAction(ctx, queries, current, "agent_withdrawn"); err != nil {
 		return empty, err
 	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: current.WorkspaceID, ID: current.ChatSessionID})

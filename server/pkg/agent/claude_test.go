@@ -558,7 +558,8 @@ func TestBuildClaudeArgsFiltersBlockedCustomArgs(t *testing.T) {
 func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	t.Parallel()
 
-	data, err := buildClaudeInput("say pong")
+	promptUUID := "b60ccafe-dc53-4479-a651-11063fa3ed32"
+	data, err := buildClaudeInput("say pong", promptUUID)
 	if err != nil {
 		t.Fatalf("buildClaudeInput: %v", err)
 	}
@@ -572,6 +573,9 @@ func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	}
 	if payload["type"] != "user" {
 		t.Fatalf("expected type user, got %v", payload["type"])
+	}
+	if payload["uuid"] != promptUUID {
+		t.Fatalf("expected prompt uuid %q, got %v", promptUUID, payload["uuid"])
 	}
 
 	message, ok := payload["message"].(map[string]any)

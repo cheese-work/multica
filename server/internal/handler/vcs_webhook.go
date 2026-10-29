@@ -243,7 +243,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		idents:    idents,
 		permits:   permits,
 		ambiguous: func(string) bool { return false },
-		link: func(issueID pgtype.UUID) (int64, error) {
+		link: func(issueID pgtype.UUID, _ string) (int64, error) {
 			return qtx.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
 		},
 		unlink: func(issueID pgtype.UUID) (int64, error) {
