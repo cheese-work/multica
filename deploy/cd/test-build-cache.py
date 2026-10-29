@@ -53,7 +53,25 @@ class BuildCacheTests(unittest.TestCase):
         self.assertTrue(all('--mount=type=cache,target=/root/.cache/go-build' in line for line in build_steps))
         web = (ROOT / 'Dockerfile.web').read_text()
         self.assertIn('RUN --mount=type=cache,target=/app/apps/web/.next/cache', web)
-        self.assertLess(web.index('RUN pnpm install --frozen-lockfile --offline'), web.index('ARG NEXT_PUBLIC_APP_VERSION'))
+        self.assertLess(web.index('pnpm install --frozen-lockfile --offline'), web.index('ARG NEXT_PUBLIC_APP_VERSION'))
+
+    def test_go_module_cache_is_available_to_every_consumer(self):
+        backend = (ROOT / 'Dockerfile').read_text()
+        consumers = [line for line in backend.splitlines() if line.startswith('RUN ') and
+                     any(command in line for command in ['go mod download', 'go build', 'sh scripts/build-daemon-binaries.sh'])]
+        self.assertEqual(len(consumers), 7)
+        for command in consumers:
+            with self.subTest(command=command):
+                self.assertIn('--mount=type=cache,target=/go/pkg/mod', command)
+
+    def test_pnpm_installs_share_the_explicit_cache_store(self):
+        web = (ROOT / 'Dockerfile.web').read_text()
+        installs = [line for line in web.splitlines() if line.startswith('RUN ') and 'pnpm install' in line]
+        self.assertEqual(len(installs), 2)
+        for command in installs:
+            with self.subTest(command=command):
+                self.assertIn('--mount=type=cache,target=/pnpm/store,sharing=locked', command)
+                self.assertIn('--store-dir=/pnpm/store', command)
 
     def test_manifest_uses_both_image_digests_and_actual_web_entries(self):
         job = self.workflow['jobs']['cd-qualification']
