@@ -42,7 +42,7 @@ vi.mock("mermaid", () => ({
 
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
-import { MermaidDiagram } from "./mermaid-diagram";
+import { MermaidDiagram, getMermaidThemeVariables } from "./mermaid-diagram";
 import { hashSource } from "./utils/source-hash";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
@@ -205,6 +205,46 @@ describe("MermaidDiagram lifecycle", () => {
     const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
     expect(frontmatter).not.toBeNull();
     expect(parse(frontmatter![1]!).config.theme).toBe(theme);
+  });
+});
+
+describe("getMermaidThemeVariables", () => {
+  const stubColor = (rgb: [number, number, number]) =>
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => ({
+        fillStyle: "#000",
+        fillRect: vi.fn(),
+        getImageData: () => ({ data: new Uint8ClampedArray([...rgb, 255]) }),
+      }),
+    });
+
+  it("paints chart backgrounds with the app background, so xychart-beta text stays readable in dark mode", () => {
+    stubColor([12, 12, 14]);
+    const vars = getMermaidThemeVariables(document.body);
+    expect(vars.darkMode).toBe(true);
+    expect(vars.background).toBe("rgb(12, 12, 14)");
+    expect(vars.xyChart.backgroundColor).toBe("rgb(12, 12, 14)");
+    // xychart-beta merges these onto the light default theme, so none may be left unset.
+    expect(vars.xyChart.titleColor).toBe("rgb(12, 12, 14)");
+    for (const key of ["dataLabelColor", "xAxisLabelColor", "xAxisLineColor", "yAxisTitleColor", "yAxisTickColor"]) {
+      expect(vars.xyChart).toHaveProperty(key, vars.xyChart.titleColor);
+    }
+  });
+
+  it("is not dark mode on a light app background", () => {
+    stubColor([250, 250, 250]);
+    expect(getMermaidThemeVariables(document.body).darkMode).toBe(false);
+  });
+
+  it("draws xychart series, radar grid and timeline sections from theme tokens", () => {
+    stubColor([12, 34, 56]);
+    const vars = getMermaidThemeVariables(document.body);
+    // Mermaid splits the palette on commas, so each color must be a hex, not rgb(r, g, b).
+    expect(vars.xyChart.plotColorPalette).toBe(Array(5).fill("#0c2238").join(","));
+    expect(vars.radar.graticuleColor).toBe("rgb(12, 34, 56)");
+    expect((vars as Record<string, unknown>)["cScale0"]).toBe("rgb(12, 34, 56)");
+    expect((vars as Record<string, unknown>)["cScaleLabel0"]).toBeTruthy();
   });
 });
 

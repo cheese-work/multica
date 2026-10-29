@@ -127,23 +127,68 @@ function resolveCssColor(
 
 const FALLBACK_BACKGROUND = "rgb(255, 255, 255)";
 
+const CHART_TOKENS = ["--chart-1", "--chart-2", "--chart-3", "--chart-4", "--chart-5"];
+
+function toHex(rgb: string): string {
+  return `#${(rgb.match(/\d+/g) ?? []).slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Relative-luminance cut: a color below it is a dark surface. */
+function isDark(color: string): boolean {
+  const [red = 255, green = 255, blue = 255] = (color.match(/\d+/g) ?? []).map(Number);
+  return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255 < 0.5;
+}
+
+/**
+ * Mermaid only follows custom colors in the `base` theme, and a diagram type
+ * that is not given a color keeps its own light default (the grey plot of an
+ * `xychart-beta`, the `radar-beta` grid). Every type that draws its own surface
+ * or series colors is mapped to the app's tokens here, so a diagram reads in
+ * both modes without the author writing an init block.
+ */
 export function getMermaidThemeVariables(host: HTMLElement | null) {
-  if (!host) {
-    return {
-      primaryColor: "rgb(245, 245, 245)",
-      primaryBorderColor: "rgb(59, 130, 246)",
-      primaryTextColor: "rgb(17, 24, 39)",
-      lineColor: "rgb(107, 114, 128)",
-      fontFamily: "inherit",
-    };
-  }
+  const color = (token: string, fallback: string) =>
+    host ? resolveCssColor(host, token, fallback) : fallback;
+  const background = color("--background", FALLBACK_BACKGROUND);
+  const foreground = color("--foreground", "rgb(17, 24, 39)");
+  const line = color("--muted-foreground", "rgb(107, 114, 128)");
+  const series = CHART_TOKENS.map((token) => color(token, "rgb(59, 130, 246)"));
+  const axis = foreground;
+  const sections: Record<string, string> = Object.fromEntries(
+    series.flatMap((fill, index) => [
+      [`cScale${index}`, fill],
+      [`pie${index + 1}`, fill],
+      [`cScaleLabel${index}`, isDark(fill) ? "rgb(255, 255, 255)" : "rgb(17, 24, 39)"],
+    ]),
+  );
 
   return {
-    primaryColor: resolveCssColor(host, "--muted", "rgb(245, 245, 245)"),
-    primaryBorderColor: resolveCssColor(host, "--primary", "rgb(59, 130, 246)"),
-    primaryTextColor: resolveCssColor(host, "--foreground", "rgb(17, 24, 39)"),
-    lineColor: resolveCssColor(host, "--muted-foreground", "rgb(107, 114, 128)"),
+    darkMode: isDark(background),
+    background,
+    primaryColor: color("--muted", "rgb(245, 245, 245)"),
+    primaryBorderColor: color("--primary", "rgb(59, 130, 246)"),
+    primaryTextColor: foreground,
+    lineColor: line,
     fontFamily: "inherit",
+    ...sections,
+    // xychart-beta merges these onto the light default theme rather than onto
+    // the base theme's derived values, so every color has to be given.
+    xyChart: {
+      backgroundColor: background,
+      titleColor: axis,
+      dataLabelColor: axis,
+      xAxisTitleColor: axis,
+      xAxisLabelColor: axis,
+      xAxisTickColor: axis,
+      xAxisLineColor: axis,
+      yAxisTitleColor: axis,
+      yAxisLabelColor: axis,
+      yAxisTickColor: axis,
+      yAxisLineColor: axis,
+      // Split on commas by Mermaid, so hex rather than rgb(r, g, b).
+      plotColorPalette: series.map(toHex).join(","),
+    },
+    radar: { graticuleColor: line },
   };
 }
 
