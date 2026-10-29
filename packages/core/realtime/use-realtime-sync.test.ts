@@ -1270,6 +1270,23 @@ describe("applyChatMessageToCache", () => {
     expect(pages?.pages[0]?.messages.map((m) => m.id)).toEqual(["msg-user", "msg-user-2"]);
   });
 
+  it("does not write a fired wakeup as a user row; the refetch brings it with its wakeup data", () => {
+    const qc = createQueryClient();
+    qc.setQueryData<ChatMessage[]>(messagesKey, [userMessage()]);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    applyChatMessageToCache(
+      qc,
+      messagePayload({
+        message_id: "msg-wakeup",
+        content: "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: report",
+      }),
+    );
+
+    expect(qc.getQueryData<ChatMessage[]>(messagesKey)?.map((m) => m.id)).toEqual(["msg-user"]);
+    expect(invalidate).toHaveBeenCalled();
+  });
+
   it("is idempotent against the sender's own write and reconnect replay", () => {
     const qc = createQueryClient();
     // The sender's row is richer than the event: it carries the draft
@@ -1314,6 +1331,15 @@ describe("applyChatMessageToCache", () => {
 });
 
 describe("applyDecisionAnswerUpdated", () => {
+  it("also refreshes the timeline holding the member comment the answer was recorded from", () => {
+    const qc = createQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyDecisionAnswerUpdated(qc, { answer_id: "answer", issue_id: "issue-1", source_issue_id: "issue-2", state: "effective" });
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toContainEqual(issueKeys.timeline("issue-1"));
+    expect(keys).toContainEqual(issueKeys.timeline("issue-2"));
+  });
+
   it("refreshes the issue timeline and every DM message list", () => {
     const qc = createQueryClient();
     const spy = vi.spyOn(qc, "invalidateQueries");

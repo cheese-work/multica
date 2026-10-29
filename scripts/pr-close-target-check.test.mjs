@@ -79,15 +79,13 @@ test("a close directive in the title declares the target", async () => {
   assert.deepEqual(result.strays, []);
 });
 
-test("a PR without issue keys or close intent passes", async () => {
-  assert.deepEqual(
-    await strayKeys(pullRequest({
-      title: "chore: bump [squash]",
-      body: "No issue link",
-      headRef: "agent/x99/abc123",
-    })),
-    [],
-  );
+test("a PR without issue keys or close intent is missing an issue link", async () => {
+  const result = (await load()).checkCloseTarget(pullRequest({
+    title: "chore: bump [squash]",
+    body: "No issue link",
+    headRef: "agent/x99/abc123",
+  }));
+  assert.equal(result.missingIssueLink, true);
 });
 
 test("a body-only close directive passes", async () => {

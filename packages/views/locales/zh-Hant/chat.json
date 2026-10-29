@@ -309,7 +309,10 @@
     "request_state": {
       "open": "待答復",
       "answered": "已答復",
-      "withdrawn": "已撤回"
+      "withdrawn": "已撤回",
+      "recorded": "已記錄",
+      "delivered": "已送達",
+      "disclaimed": "已撤銷"
     },
     "answer_options": "選項",
     "answer_text": "或輸入回答",
@@ -323,9 +326,22 @@
     "source_comment": "來源評論",
     "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",
+    "receipt_recorded": "已記錄到 {{issue}}",
+    "receipt_option": "選項 {{number}}",
+    "jump_to_card": "跳到卡片",
     "withdrawn_in": "已在 {{issue}} 撤回",
     "from_original_dm": "來自原始私信",
     "inherited": "繼承",
     "message_unavailable": "該消息已不可用"
+  },
+  "wakeup": {
+    "node_label": "定時喚醒已觸發",
+    "scheduled_at": "定時 {{time}}",
+    "set_by": "{{agent}} 於 {{time}} 設定",
+    "show_instruction": "查看指令",
+    "hide_instruction": "收合指令",
+    "instruction_region": "給智慧體的指令",
+    "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。",
+    "issue_fallback": "事項"
   }
 }

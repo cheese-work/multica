@@ -71,6 +71,7 @@ import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
+import { isWakeupHeaderContent } from "../chat/wakeup";
 import {
   promotePendingChatTask,
   removePendingChatTask,
@@ -182,6 +183,7 @@ export function applyDecisionAnswerUpdated(
   payload: DecisionAnswerUpdatedPayload,
 ) {
   qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }
@@ -212,7 +214,14 @@ export function applyChatMessageToCache(
   payload: ChatMessageEventPayload,
 ) {
   const sessionId = payload.chat_session_id;
-  if (payload.role === "user" && payload.message_id) {
+  // A fired wakeup renders as an event row, which needs `scheduled_wakeup` that
+  // this payload lacks; writing it here would flash a user bubble. Leave it to
+  // the invalidate below, which refetches the row with its wakeup data.
+  if (
+    payload.role === "user" &&
+    payload.message_id &&
+    !isWakeupHeaderContent(payload.content ?? "")
+  ) {
     upsertChatMessageToCaches(qc, sessionId, {
       id: payload.message_id,
       chat_session_id: sessionId,

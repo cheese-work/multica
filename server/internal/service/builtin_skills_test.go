@@ -361,6 +361,12 @@ func TestPlatformSkillDescriptionNamesEveryDomain(t *testing.T) {
 		"references/projects.md":      "project",
 		"references/runtimes.md":      "runtime",
 		"references/wakeups.md":       "wakeup",
+		"references/workflows.md":     "workflow",
+		"references/decisions.md":     "decision",
+		"references/chat.md":          "chat",
+		"references/charts.md":        "chart",
+		"references/labels.md":        "labels",
+		"references/workspace.md":     "workspace",
 		"references/skill-import.md":  "skill import",
 	}
 
@@ -435,6 +441,11 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				"references/projects.md",
 				"references/runtimes.md",
 				"references/skill-import.md",
+				"references/workflows.md",
+				"references/decisions.md",
+				"references/chat.md",
+				"references/labels.md",
+				"references/workspace.md",
 				// Invariants deduplicated out of the eight merged bodies. Each
 				// was repeated in most of them; the router is now their only
 				// home, so losing one here loses it everywhere.

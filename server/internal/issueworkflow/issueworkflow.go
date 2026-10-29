@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -178,6 +179,17 @@ type Step struct {
 	// Edges are the step's exits, each taken when its guard holds. Without
 	// them the exits derive from the fields above (see EdgesOf).
 	Edges []Edge `json:"edges,omitempty"`
+	// SubWorkflow makes the step a sub-workflow node (CHE-2031): entering it
+	// creates a child issue that follows another workflow, and a children_done
+	// edge joins when every child of the stage is done.
+	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
+}
+
+// SubWorkflow names the workflow a sub-workflow step starts and the stage its
+// child issues join on.
+type SubWorkflow struct {
+	WorkflowID string `json:"workflow_id"`
+	Stage      int    `json:"stage,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -209,13 +221,14 @@ func (s Step) HandsOff() bool {
 // storedStep is a step as the workflow row stores it; a step without a
 // handoff is just its status key.
 type storedStep struct {
-	StatusKey     string   `json:"status_key"`
-	Handler       *Handler `json:"handler,omitempty"`
-	Instructions  string   `json:"instructions,omitempty"`
-	NextStatusKey string   `json:"next_status_key,omitempty"`
-	BackStatusKey string   `json:"back_status_key,omitempty"`
-	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
-	Edges         []Edge   `json:"edges,omitempty"`
+	StatusKey     string       `json:"status_key"`
+	Handler       *Handler     `json:"handler,omitempty"`
+	Instructions  string       `json:"instructions,omitempty"`
+	NextStatusKey string       `json:"next_status_key,omitempty"`
+	BackStatusKey string       `json:"back_status_key,omitempty"`
+	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge       `json:"edges,omitempty"`
+	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -255,6 +268,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 
 			AdvanceOnCIGreen: s.AdvanceOnCI,
 			Edges:            s.Edges,
+			SubWorkflow:      s.SubWorkflow,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -276,7 +290,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -449,6 +463,9 @@ func NormalizeHandoff(s Step) Step {
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
 	s.Edges = normalizeEdges(s.Edges)
+	if s.SubWorkflow != nil {
+		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
+	}
 	return s
 }
 
@@ -490,6 +507,9 @@ func ValidateHandoff(s Step, def Definition) error {
 	}
 	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
+	}
+	if err := validateSubWorkflow(s); err != nil {
+		return err
 	}
 	return validateEdges(s, def)
 }
@@ -844,4 +864,27 @@ func briefText(s string) string {
 		return r
 	}, s)
 	return strings.TrimSpace(s)
+}
+
+// MaxSubWorkflowStage bounds the stage a sub-workflow step joins on.
+const MaxSubWorkflowStage = 100
+
+// validateSubWorkflow checks a sub-workflow step. The join is the step's
+// children_done edge: without one the parent would wait for ever. That the
+// target workflow exists in the workspace is the caller's check.
+func validateSubWorkflow(s Step) error {
+	sub := s.SubWorkflow
+	if sub == nil {
+		return nil
+	}
+	if _, err := util.ParseUUID(sub.WorkflowID); err != nil {
+		return invalid("sub-workflow needs a valid workflow id")
+	}
+	if sub.Stage < 0 || sub.Stage > MaxSubWorkflowStage {
+		return invalid("sub-workflow stage must be between 0 and %d", MaxSubWorkflowStage)
+	}
+	if !hasGuard(s.Edges, GuardChildrenDone) {
+		return invalid("a sub-workflow step needs a children_done edge to join on")
+	}
+	return nil
 }

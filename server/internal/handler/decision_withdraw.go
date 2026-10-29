@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/commentguard"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -161,6 +162,9 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	}
 	current, err = queries.WithdrawOpenDecisionRequest(ctx, db.WithdrawOpenDecisionRequestParams{WorkspaceID: current.WorkspaceID, ID: current.ID, Reason: reason, TaskID: taskID, UserID: userID})
 	if err != nil {
+		return empty, err
+	}
+	if _, err := decisiontx.EndAction(ctx, queries, current, "agent_withdrawn"); err != nil {
 		return empty, err
 	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: current.WorkspaceID, ID: current.ChatSessionID})

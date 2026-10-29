@@ -520,6 +520,9 @@ deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
 ),
+deleted_agent_presets AS (
+    DELETE FROM agent_preset WHERE workspace_id = $1
+),
 deleted_agent_skills AS (
     DELETE FROM agent_skill
     WHERE agent_id IN (SELECT id FROM ws_agents)

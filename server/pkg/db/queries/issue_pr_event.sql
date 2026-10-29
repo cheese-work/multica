@@ -70,7 +70,8 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        pr.pr_number, pr.repo_owner, pr.repo_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE (e.status = 'next_turn'
+WHERE e.kind NOT IN ('draft', 'ready')
+  AND (e.status = 'next_turn'
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t

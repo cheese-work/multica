@@ -595,6 +595,7 @@
     "wakeup_link_run": "실행 보기"
   },
   "comment": {
+    "show_full": "전체 댓글 보기",
     "you": "나",
     "add_reaction": "반응 추가",
     "collapse_thread": "스레드 접기",
@@ -1820,11 +1821,15 @@
     "state": {
       "pending": "대기 중",
       "effective": "적용됨",
-      "disclaimed": "철회됨"
+      "disclaimed": "철회됨",
+      "delivered": "전달됨",
+      "recorded": "기록됨"
     },
     "via_dm": "DM 경유",
     "recorded_by": "{{name}} 기록",
-    "asked_in_dm": "DM에서 질문",
+    "recorded_for": "{{issue}}에 기록됨",
+    "option_n": "선택지 {{number}}",
+    "jump_to_card": "카드로 이동",
     "answered_in_dm": "DM에서 답변",
     "private_dm": "비공개 DM에서",
     "disclaim_action": "철회",

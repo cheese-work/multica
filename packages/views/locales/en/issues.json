@@ -609,6 +609,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "show_full": "Show full comment",
     "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
@@ -1892,11 +1893,15 @@
     "state": {
       "pending": "Pending",
       "effective": "In effect",
-      "disclaimed": "Disclaimed"
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered",
+      "recorded": "Recorded"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
-    "asked_in_dm": "Asked in DM",
+    "recorded_for": "Recorded for {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",
