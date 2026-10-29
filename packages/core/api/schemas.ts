@@ -1014,6 +1014,19 @@ const DecisionRequestCardSchema = z.object({
   record_comment_id: z.string().nullish().catch(undefined),
 }).loose();
 
+export const OpenDecisionRequestListSchema = z.array(z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  asking_agent_id: z.string(),
+  asking_agent_name: z.string().catch(""),
+  ask: z.string(),
+  escalation_class: z.string(),
+  created_at: z.string(),
+  chat_session_id: z.string(),
+  message_id: z.string().nullable().catch(null),
+}).loose());
+
 export const ChatMessageSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),

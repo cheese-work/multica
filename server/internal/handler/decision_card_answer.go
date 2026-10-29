@@ -79,6 +79,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 	handler.publishDecisionAnswerUpdated(workspaceID, "member", actorID, result.Answer.ID, result.Request.IssueID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
 	for _, message := range []db.ChatMessage{result.AnswerMessage, result.Message} {
 		handler.publishChat(protocol.EventChatMessage, workspaceID, "member", actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{
+			MessageKind:   message.MessageKind,
 			ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
 		})
 	}

@@ -164,6 +164,52 @@ func TestReviewSupersede_LateFinishOfOldReviewIsRefusedAsStale(t *testing.T) {
 	}
 }
 
+// The webhook stores the new head before the snapshot callback cancels the old
+// review. A verdict in that window is for a commit that is no longer the head.
+func TestReviewSupersede_VerdictRefusedWhenWebhookStoredNewHeadBeforeCancellation(t *testing.T) {
+	f := reviewIssue(t)
+	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2, pr_updated_at = now() WHERE id = $1`, f.prID, reviewHeadB)
+
+	body := agentUpdateIssue(t, f.issueID, f.agentID, f.review, map[string]any{"status": "blocked"}).Want(http.StatusConflict).Map()
+	if body["code"] != "review_verdict_stale" {
+		t.Fatalf("refusal = %v", body)
+	}
+	if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "in_review" {
+		t.Fatalf("issue status after refused verdict = %q, want in_review", status)
+	}
+	var details string
+	dbfx.QueryRow(t, `SELECT details::text FROM activity_log WHERE issue_id = $1 AND action = 'review_verdict_stale'`, f.issueID).Scan(&details)
+	if want := "verdict for " + reviewHeadA + " is stale"; !strings.Contains(details, want) {
+		t.Fatalf("activity details %q lack %q", details, want)
+	}
+	// The refused move leaves the old run where the snapshot callback finds it.
+	testHandler.supersedeStaleReviews(context.Background(), parseUUID(f.prID))
+	if got := taskStatus(t, f.review); got != "cancelled" {
+		t.Fatalf("review run status after the later snapshot = %q, want cancelled", got)
+	}
+}
+
+// A verdict for the PR's current head is not stale.
+func TestReviewSupersede_VerdictOnCurrentHeadIsAllowed(t *testing.T) {
+	f := reviewIssue(t)
+	agentUpdateIssue(t, f.issueID, f.agentID, f.review, map[string]any{"status": "blocked"}).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "blocked" {
+		t.Fatalf("issue status = %q, want blocked", status)
+	}
+}
+
+// An author run bound to an old head is not a review: a new head does not make
+// its status move stale.
+func TestReviewSupersede_AuthorRunOnOldHeadIsNotRefusedAsStale(t *testing.T) {
+	f := reviewIssue(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, f.review)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issueID)
+	author := reviewRun(t, f.agentID, f.runtimeID, f.issueID, f.prID, "in_progress", reviewHeadA)
+	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2, pr_updated_at = now() WHERE id = $1`, f.prID, reviewHeadB)
+
+	agentUpdateIssue(t, f.issueID, f.agentID, author, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+}
+
 // Only review runs are superseded. The author's run on the same PR keeps going.
 func TestReviewSupersede_AuthorRunIsNotCancelled(t *testing.T) {
 	f := reviewIssue(t)

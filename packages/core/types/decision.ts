@@ -1,5 +1,18 @@
 export type DecisionState = "pending" | "effective" | "disclaimed";
 
+export interface OpenDecisionRequest {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  asking_agent_id: string;
+  asking_agent_name: string;
+  ask: string;
+  escalation_class: string;
+  created_at: string;
+  chat_session_id: string;
+  message_id: string | null;
+}
+
 /** One answer button on an open decision card. */
 export interface DecisionRequestOption {
   label: string;

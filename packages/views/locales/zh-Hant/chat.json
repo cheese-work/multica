@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你決定",
+    "loading": "正在載入待處理請求…",
+    "error": "無法載入待處理請求。",
+    "retry": "重試",
+    "empty": "沒有待處理請求。"
+  },
   "page": {
     "title": "聊天",
     "select_prompt": "選擇一個對話，或點 + 新建",
