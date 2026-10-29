@@ -93,7 +93,7 @@ export function WakeupEventRow({
         >
           <Clock className="size-3.5" aria-hidden />
         </div>
-        <span aria-hidden className="my-0.5 min-h-2.5 w-0.5 flex-1 bg-warning/30" />
+        <span aria-hidden className="mt-0.5 min-h-2.5 w-0.5 flex-1 bg-warning/30" />
       </div>
       <div className="min-w-0 flex-1 pb-3">
         <div className="flex min-h-6 flex-wrap items-center gap-x-2">
@@ -167,7 +167,7 @@ export function WakeupReplyRail({
   return (
     <div data-testid="wakeup-reply" className="flex gap-2.5">
       <div className="-mt-2 flex w-6 shrink-0 flex-col items-center">
-        <span aria-hidden className="mb-0.5 h-2.5 w-0.5 bg-warning/30" />
+        <span aria-hidden className="h-3 w-0.5 bg-warning/30" />
         <ActorAvatar actorType="agent" actorId={agentId} size="md" profileLink={false} />
       </div>
       <div className="min-w-0 flex-1">{children}</div>
