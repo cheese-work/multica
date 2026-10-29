@@ -2291,14 +2291,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// member; edits and deletes are gated inside the handlers to the
 			// workflow's owner and workspace owners/admins (MUL-8120), and
 			// switching a project's workflow to admins and the project's lead.
+			// Edits, deletes and handoff writes also refuse machine credentials
+			// (task_token, cloud_pat): an agent must not rewrite its own workflow.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
-					r.Patch("/", h.UpdateIssueWorkflow)
-					r.Delete("/", h.DeleteIssueWorkflow)
-					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+					r.With(handler.RequireHumanActor).Patch("/", h.UpdateIssueWorkflow)
+					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
+					r.With(handler.RequireHumanActor).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
 				})
 			})
@@ -2685,6 +2687,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
+				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/{id}", h.GetDecision)
 				r.Post("/{id}/withdraw", h.WithdrawDecision)
 			})

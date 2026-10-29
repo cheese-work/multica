@@ -380,6 +380,10 @@ deleted_stage_completion_wakes AS (
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
 ),
+-- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
+deleted_run_budget_notices AS (
+    DELETE FROM run_budget_notice WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),

@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "あなたの判断待ち",
+    "loading": "未回答の依頼を読み込み中…",
+    "error": "依頼を読み込めませんでした。",
+    "retry": "再試行",
+    "empty": "未回答の依頼はありません。"
+  },
   "page": {
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",

@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "내 결정이 필요해요",
+    "loading": "미응답 요청을 불러오는 중…",
+    "error": "요청을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "empty": "미응답 요청이 없습니다."
+  },
   "page": {
     "interactive_login_required": "채팅을 사용하려면 다시 로그인하세요",
     "interactive_login_action": "로그인",
