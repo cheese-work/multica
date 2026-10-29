@@ -51,7 +51,7 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	run := caller.run
 	// A review superseded by a newer head has no say on the status, in any
 	// workflow (CHE-2307).
-	if oldHead, stale := staleVerdictRun(run); stale && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+	if oldHead, stale := staleVerdictRun(ctx, q, run); stale && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		h.recordReviewActivity(ctx, prev.ID, "agent", uuidToString(run.AgentID), "review_verdict_stale", map[string]string{
 			"message": "verdict for " + oldHead + " is stale", "task_id": uuidToString(run.ID), "head_sha": oldHead,
 		})
