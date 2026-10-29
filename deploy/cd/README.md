@@ -13,6 +13,31 @@ credentials, receive recovery private keys, or use restored production data.
 D4 (full C00 rehearsal, not yet implemented) is what actually activates
 against C00, gated on its own separate approval.
 
+## Persistent D1 build cache
+
+`cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
+Each image gets its own runner/DinD budget, rather than sharing one DinD's
+4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
+name and assembles the same `cd-build-evidence-<sha>` artifact after both
+images succeed. The web job supplies the exact optional fork entries used
+in its image, so manifest assembly cannot hash a different download.
+
+Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
+`multica-cd-web-v1` builders. They use `docker-container` for provenance and
+SBOM generation. A bounded stop releases builder memory after the job;
+the builder and its cache volume remain for later trusted main pushes.
+BuildKit GC targets at most 4 GB per builder, reserves 1 GB, and targets
+10 GB free. Each builder admits at most two build vertices at once.
+No registry cache or untrusted PR cache is imported.
+
+Go compilation uses `/root/.cache/go-build` cache mounts, including the
+four daemon targets. Unversioned utilities compile before the release
+arguments; server and daemon linking still consume the exact release
+version and commit. Web builds retain `/app/apps/web/.next/cache`.
+`NEXT_PUBLIC_*` stays after dependency installation but before compilation:
+Next.js embeds those values in client bundles, so moving them after the
+build would ship stale release metadata.
+
 ## D2: quiescence and supervised migration
 
 `quiescence.mjs` implements the two admission gates from the approved D2
