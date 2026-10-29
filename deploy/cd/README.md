@@ -290,6 +290,8 @@ bash deploy/cd/test-deploy.sh
 bash deploy/cd/test-router.sh
 bash deploy/cd/test-release-packet.sh
 bash deploy/cd/test-cutover.sh
+bash deploy/cd/test-artifact-controller.sh
+node --test deploy/cd/drift-receipt.test.mjs
 (cd server && go test ./internal/dbstartup/...)
 ```
 
@@ -519,6 +521,20 @@ assuming `deploy/cd/router/state`).
 6. If the router selects a colour whose ports differ from Compose's render,
    re-select it with the rendered ports (`BACKEND_<C>_PORT=... FRONTEND_<C>_PORT=... bash deploy/cd/router.sh select --colour <colour>`).
    Take the ports from `docker compose "${ab[@]}" port ...`, never from memory.
+
+### Deploy drift gate (CHE-2396)
+
+The cutover bundle carries the released `docker-compose.selfhost.yml` and the
+blue/green, flags and Jev overlays. Under the deploy lock, `cutover` copies
+them into `--compose-dir` (`drift-receipt.mjs sync`) before anything renders.
+After the candidate starts and before the router switches,
+`drift-receipt.mjs check` writes `<state-dir>/drift-receipt.json` and exits
+nonzero, failing the cutover (incumbent recovery), when any of these differ:
+
+- deployed compose bytes vs the released source;
+- the candidate containers' env key names vs the released compose render plus
+  the image's own env (names only, never values);
+- the candidate containers' image digests vs the manifest.
 
 ### What this unit does NOT cover
 

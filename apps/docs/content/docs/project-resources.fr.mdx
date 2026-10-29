@@ -1,6 +1,6 @@
 ---
 title: Ressources de projet
-description: Rattachez des dépôts GitHub ou des répertoires locaux à un projet pour que les exécutions suivantes disposent d'un contexte de travail stable.
+description: Rattachez des dépôts, des répertoires locaux et des références HTTPS à un projet.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,12 +11,13 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 
 Les ressources d'un [projet](/projects) indiquent aux agents quel code utilise cet ensemble de travail et où s'exécuter. Les ressources restent rattachées au projet : inutile de recoller les URL de dépôts ou les chemins locaux dans chaque tâche.
 
-Deux types de ressources sont pris en charge aujourd'hui :
+Trois types de ressources sont pris en charge aujourd'hui :
 
 | Ressource | Idéal pour | Où ont lieu les exécutions |
 |---|---|---|
 | **Dépôt GitHub** | Du code partagé par l'équipe, avec des checkouts gérés par le runtime | Un répertoire de travail géré par le runtime |
 | **Répertoire local** | Un checkout existant, un très gros dépôt, ou lorsque vous voulez inspecter directement les modifications locales | Le répertoire d'origine, sur un ordinateur précis |
+| **URL** | Des fichiers de conception, des documents ou d'autres références HTTPS avec une note | Contexte uniquement ; jamais de checkout |
 
 ## Comment les ressources entrent dans une exécution
 
@@ -35,6 +36,20 @@ Les dépôts ne se limitent pas à GitHub : toute URL Git accessible par le runt
 Lors de la création d'un projet, vous pouvez aussi choisir des dépôts directement sous **Dépôts**. Un même projet peut rattacher plusieurs dépôts GitHub.
 
 La `ref` d'une ressource définit la branche, le tag ou le commit que les checkouts suivants utilisent par défaut. `default_branch_hint` donne seulement à l'agent une indication sur la branche par défaut et n'impose pas de changement de branche.
+
+## Ajouter une référence HTTPS
+
+Utilisez le CLI pour rattacher un lien. La barre latérale affiche séparément l'URL et sa note `label` facultative.
+
+```bash
+multica project resource add <project-id> --type url \
+  --url https://example.com/design --label "Fichier de conception"
+multica project resource list <project-id>
+multica project resource update <project-id> <resource-id> \
+  --url https://example.com/design-v2 --label "Fichier de conception mis à jour"
+```
+
+L'API accepte `resource_type: "url"` et `resource_ref: {"url": "https://example.com/design"}`. Seuls les liens HTTPS avec un nom d'hôte sont acceptés. Les agents reçoivent ces liens dans le contexte du projet, mais les ressources URL ne deviennent jamais des dépôts ou des cibles de checkout. Les ressources de dépôt GitHub conservent leur comportement de checkout existant.
 
 ## Ajouter un répertoire local
 

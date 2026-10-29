@@ -282,6 +282,7 @@
     "delete": "Supprimer la discussion"
   },
   "annotations": {
+    "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
     "add": "Ajouter un commentaire",
     "confirm_add": "Ajouter",
@@ -305,6 +306,15 @@
     "request_title": "Demande de décision",
     "request_label": "Demande de décision : {{state}}",
     "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
+    "answer_options": "Options",
+    "answer_text": "Ou écrivez une réponse",
+    "answer_send": "Envoyer",
+    "answer_error": "Échec de l'envoi. Réessayez.",
+    "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
+    "answer_hint": "Entrée envoie · Maj+Entrée pour un saut de ligne",
+    "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
+    "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
+    "answer_discard": "Supprimer le brouillon",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
     "withdrawn_in": "Retirée dans {{issue}}",

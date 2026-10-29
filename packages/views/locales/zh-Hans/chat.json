@@ -277,6 +277,7 @@
     "unarchive": "取消归档"
   },
   "annotations": {
+    "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",
     "add": "添加评论",
     "confirm_add": "添加",
@@ -299,6 +300,15 @@
     "request_title": "决策请求",
     "request_label": "决策请求：{{state}}",
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
+    "answer_options": "选项",
+    "answer_text": "或输入回答",
+    "answer_send": "发送",
+    "answer_error": "发送失败，请重试。",
+    "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
+    "answer_hint": "Enter 发送 · Shift+Enter 换行",
+    "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
+    "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
+    "answer_discard": "丢弃草稿",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
     "withdrawn_in": "已在 {{issue}} 撤回",

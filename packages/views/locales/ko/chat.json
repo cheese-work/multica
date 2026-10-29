@@ -277,6 +277,7 @@
     "unarchive": "채팅 보관 해제"
   },
   "annotations": {
+    "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
     "add": "댓글 추가",
     "confirm_add": "추가",
@@ -299,6 +300,15 @@
     "request_title": "결정 요청",
     "request_label": "결정 요청: {{state}}",
     "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨" },
+    "answer_options": "선택지",
+    "answer_text": "또는 답변 입력",
+    "answer_send": "보내기",
+    "answer_error": "보내지 못했습니다. 다시 시도하세요.",
+    "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
+    "answer_hint": "Enter로 보내기 · Shift+Enter로 줄바꿈",
+    "answer_offline": "오프라인입니다. 답변은 유지됩니다. 다시 연결되면 보내기가 켜집니다.",
+    "answer_conflict": "이 카드는 더 이상 답변을 받을 수 없습니다(예: 먼저 답변이 있었던 경우). 초안은 게시되지 않았습니다. 초안:",
+    "answer_discard": "초안 삭제",
     "source_comment": "원본 댓글",
     "quoted_in": "{{issue}}에 인용됨",
     "withdrawn_in": "{{issue}}에서 철회됨",
