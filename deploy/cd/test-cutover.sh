@@ -1536,6 +1536,9 @@ for f in docker-compose.selfhost.yml deploy/cd/docker-compose.ab.yml deploy/cd/d
 done
 [ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$state_dir/drift-receipt.json")" = match ] \
   || { echo "scenario drift-stale-compose-synced: no match receipt" >&2; exit 1; }
+# The interpolated compose render holds secrets: it must never be persisted.
+[ -z "$(find "$state_dir" -name 'compose-config*' 2>/dev/null)" ] \
+  || { echo "scenario drift-stale-compose-synced: compose render was persisted in the state dir" >&2; exit 1; }
 
 drift_case() {
   local name=$1 flag=$2 content=$3 want=$4

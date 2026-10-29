@@ -31,14 +31,17 @@ export function syncComposeFiles(sourceRoot, composeDir) {
 
 export function compare({ compose, services }) {
   const differences = [];
+  if (compose.length === 0) differences.push("compose: no files were compared");
+  if (Object.keys(services).length === 0) differences.push("services: none were checked");
   for (const { name, source_sha256: want, deployed_sha256: got } of compose) {
-    if (want !== got) differences.push(`compose ${name}: deployed bytes differ from released source`);
+    if (want === null) differences.push(`compose ${name}: released source file is missing`);
+    else if (want !== got) differences.push(`compose ${name}: deployed bytes differ from released source`);
   }
   for (const [name, s] of Object.entries(services)) {
     const have = new Set(s.container_env);
-    const allowed = new Set([...s.expected_env, ...s.image_env]);
-    for (const key of s.expected_env) if (!have.has(key)) differences.push(`${name} env: missing key ${key}`);
-    for (const key of s.container_env) if (!allowed.has(key)) differences.push(`${name} env: unexpected key ${key}`);
+    const effective = new Set([...s.expected_env, ...s.image_env]);
+    for (const key of effective) if (!have.has(key)) differences.push(`${name} env: missing key ${key}`);
+    for (const key of have) if (!effective.has(key)) differences.push(`${name} env: unexpected key ${key}`);
     if (!s.repo_digests.some((d) => d.endsWith(`@${s.expected_digest}`))) {
       differences.push(`${name} image: running digest ${s.repo_digests.join(",") || "<none>"} does not include manifest digest ${s.expected_digest}`);
     }
@@ -82,8 +85,9 @@ function main(argv) {
   const services = {};
   for (const spec of opts.service) {
     const [name, containerId] = spec.split("=");
+    if (!containerId || !config.services?.[name]) throw new Error(`service ${name}: no running container or no compose render`);
     const image = name.startsWith("backend") ? manifest.images.backend : manifest.images.web;
-    services[name] = gatherService(name, containerId, config.services?.[name]?.environment, image);
+    services[name] = gatherService(name, containerId, config.services[name].environment, image);
   }
   const compose = COMPOSE_FILES.map((name) => ({
     name,

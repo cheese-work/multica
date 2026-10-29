@@ -744,14 +744,14 @@ case "$command" in
     # (never values) and running image digests must equal the released
     # source and manifest. Any difference fails the deploy before traffic moves.
     echo "==> deploy drift receipt"
-    drift_config="$state_dir/compose-config.json"
     drift_services=()
     for svc in "backend-${to_colour}" "frontend-${to_colour}"; do
       drift_services+=(--service "${svc}=$(compose ps -q "$svc" | head -1)")
     done
-    if ! compose config --format json >"$drift_config" ||
-      ! node "$script_dir/drift-receipt.mjs" check --source-root "$root_dir" --compose-dir "$compose_dir" \
-        --config "$drift_config" --manifest "$manifest" "${drift_services[@]}" --output "$state_dir/drift-receipt.json"; then
+    # The interpolated render holds secrets: stream it, never write it to disk.
+    if ! compose config --format json | node "$script_dir/drift-receipt.mjs" check \
+      --source-root "$root_dir" --compose-dir "$compose_dir" --config /dev/stdin --manifest "$manifest" \
+      "${drift_services[@]}" --output "$state_dir/drift-receipt.json"; then
       recover_incumbent "deploy drift receipt: candidate colour=$to_colour differs from the released source (see $state_dir/drift-receipt.json)"
     fi
 
