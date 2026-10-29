@@ -183,7 +183,7 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	// --expected-before-digest present -> conditional compare-and-swap on
 	// exactly `instructions`, single-field body. Absent -> the existing
 	// unconditional update path below, completely unchanged.
-	if err := checkVoteIssueFlag(cmd); err != nil {
+	if err := checkBindingFlags(cmd); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {
@@ -191,7 +191,10 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		body = withVoteReceipt(cmd, body, "instructions")
+		body = withBinding(cmd, body, "instructions")
+		if done, err := printHashOnly(cmd, body, "instructions"); done {
+			return err
+		}
 		var result map[string]any
 		if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
 			return digestWriteError("update squad", err, bodyText(body, "instructions"), bodyBefore(body))
@@ -641,6 +644,8 @@ func init() {
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
 	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	squadUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
+	squadUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	squadUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete

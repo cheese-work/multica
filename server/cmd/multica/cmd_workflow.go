@@ -74,6 +74,10 @@ func init() {
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd} {
+		c.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. The CLI sends decision_id, before_sha256 and after_sha256 and takes the steps from the live workflow read. Agent task tokens only.")
+		c.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing")
+	}
 	workflowSetInstructionsCmd.Flags().String("status", "", "status_key of the step to change (required)")
 	workflowSetInstructionsCmd.Flags().String("file", "", "File holding the new instructions text (required)")
 	workflowSetInstructionsCmd.Flags().String("output", "json", "Output format: table or json")
@@ -160,6 +164,12 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if len(body) == 0 {
 		return errors.New("give --steps-file, --max-runs-per-issue or --include-child-prs")
 	}
+	if err := checkWorkflowBindingFlags(cmd); err != nil {
+		return err
+	}
+	if workflowBindingRequested(cmd) && body["steps"] == nil {
+		return errors.New("a decision-bound write carries --steps-file only")
+	}
 
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -167,6 +177,27 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
+
+	if workflowBindingRequested(cmd) {
+		live, err := getWorkflow(ctx, client, args[0])
+		if err != nil {
+			return err
+		}
+		before, err := liveWorkflowHash(live)
+		if err != nil {
+			return err
+		}
+		binding, err := bindWorkflow(cmd, live, before, body["steps"].([]any))
+		if err != nil {
+			return err
+		}
+		if done, err := binding.apply(cmd, body); done {
+			return err
+		}
+		if v := strVal(live, "version"); v != "" {
+			body["expected_version"] = v
+		}
+	}
 
 	wf, err := patchWorkflow(ctx, client, args[0], body)
 	if err != nil {
@@ -180,6 +211,9 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 	path, _ := cmd.Flags().GetString("file")
 	if status == "" || path == "" {
 		return errors.New("--status and --file are required")
+	}
+	if err := checkWorkflowBindingFlags(cmd); err != nil {
+		return err
 	}
 	text, err := os.ReadFile(path)
 	if err != nil {
@@ -210,6 +244,12 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 	if match == nil {
 		return fmt.Errorf("status %q matches no step; nothing was changed", status)
 	}
+	var before string
+	if workflowBindingRequested(cmd) {
+		if before, err = liveWorkflowHash(wf); err != nil {
+			return err
+		}
+	}
 	match["instructions"] = string(text)
 
 	// expected_version makes the server refuse the write if someone edited the
@@ -217,6 +257,15 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"steps": steps}
 	if v := strVal(wf, "version"); v != "" {
 		body["expected_version"] = v
+	}
+	if workflowBindingRequested(cmd) {
+		binding, err := bindWorkflow(cmd, wf, before, steps)
+		if err != nil {
+			return err
+		}
+		if done, err := binding.apply(cmd, body); done {
+			return err
+		}
 	}
 	wf, err = patchWorkflow(ctx, client, args[0], body)
 	if err != nil {
@@ -237,7 +286,7 @@ func patchWorkflow(ctx context.Context, client *cli.APIClient, id string, body m
 	var wf map[string]any
 	if err := client.PatchJSON(ctx, "/api/issue-workflows/"+id, body, &wf); err != nil {
 		var httpErr *cli.HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden {
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden && body["decision_id"] == nil {
 			return nil, fmt.Errorf("update workflow: only a workspace owner or admin can edit workflows (server said: %s)", httpErr.Body)
 		}
 		return nil, fmt.Errorf("update workflow: %w", err)
@@ -287,4 +336,24 @@ func printWorkflowRules(wf map[string]any) {
 		include = b
 	}
 	fmt.Printf("max runs per issue: %s, include child PRs: %t\n", maxRuns, include)
+}
+
+// bindWorkflow hashes steps as the workflow's new steps; before is the hash of
+// the live workflow taken earlier.
+func bindWorkflow(cmd *cobra.Command, live map[string]any, before string, steps []any) (workflowBinding, error) {
+	after, err := workflowStepsHash(strVal(live, "id"), steps)
+	if err != nil {
+		return workflowBinding{}, fmt.Errorf("hash new steps: %w", err)
+	}
+	return workflowBinding{decisionID: mustGetString(cmd, "decision-id"), before: before, after: after}, nil
+}
+
+// liveWorkflowHash is the hash of the live workflow's steps.
+func liveWorkflowHash(live map[string]any) (string, error) {
+	steps, _ := live["steps"].([]any)
+	before, err := workflowStepsHash(strVal(live, "id"), steps)
+	if err != nil {
+		return "", fmt.Errorf("hash live workflow: %w", err)
+	}
+	return before, nil
 }
