@@ -1617,6 +1617,7 @@ type PendingChatTaskItem struct {
 	TaskID        string `json:"task_id"`
 	Status        string `json:"status"`
 	ChatSessionID string `json:"chat_session_id"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type CancelledChatMessageResponse struct {
@@ -1684,6 +1685,7 @@ func (h *Handler) ListPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 			TaskID:        uuidToString(row.TaskID),
 			Status:        row.Status,
 			ChatSessionID: uuidToString(row.ChatSessionID),
+			CreatedAt:     timestampToString(row.CreatedAt),
 		})
 	}
 	writeJSON(w, http.StatusOK, PendingChatTasksResponse{Tasks: items})

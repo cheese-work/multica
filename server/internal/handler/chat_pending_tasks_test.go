@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -880,4 +881,45 @@ func TestHasPendingChatTasks_HidesOtherCreatorsTask(t *testing.T) {
 	if resp := decodePendingTasks(t, w); len(resp.Tasks) != 0 {
 		t.Fatalf("list leaked user A's task to user B: %+v", resp.Tasks)
 	}
+}
+
+func TestListPendingChatTasks_IncludesCreatedAt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	_, _, memberID := privateAgentTestFixture(t)
+	publicAgentID := createHandlerTestAgent(t, "PendingCreatedAtAgent", []byte("[]"))
+	sessionID := insertChatSessionAs(t, publicAgentID, memberID)
+	taskID := insertPendingChatTask(t, publicAgentID, sessionID, "queued")
+	wantCreatedAt := "2026-07-29T01:00:00Z"
+	if _, err := testPool.Exec(
+		context.Background(),
+		`UPDATE agent_task_queue SET created_at = $2 WHERE id = $1`,
+		taskID,
+		wantCreatedAt,
+	); err != nil {
+		t.Fatalf("stamp task created_at: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.ListPendingChatTasks(w, chatPendingCtxAs(
+		t,
+		newRequestAs(memberID, "GET", "/api/chat/pending-tasks", nil),
+		memberID,
+	))
+	resp := decodePendingTasks(t, w)
+	for _, it := range resp.Tasks {
+		if it.TaskID == taskID {
+			gotTime, err := time.Parse(time.RFC3339, it.CreatedAt)
+			if err != nil {
+				t.Fatalf("pending task created_at = %q is not RFC3339: %v", it.CreatedAt, err)
+			}
+			if gotUTC := gotTime.UTC().Format(time.RFC3339); gotUTC != wantCreatedAt {
+				t.Fatalf("pending task created_at = %q (%s), want %q", it.CreatedAt, gotUTC, wantCreatedAt)
+			}
+			return
+		}
+	}
+	t.Fatalf("pending task %s not found in response: %+v", taskID, resp.Tasks)
 }

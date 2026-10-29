@@ -38,7 +38,9 @@ import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
+import { formatElapsedSecs } from "../lib/format";
 import { NeedsYouList } from "./needs-you-list";
+import { useResolveStage } from "./task-status-pill";
 
 const apiLogger = createLogger("chat.api");
 
@@ -155,11 +157,25 @@ export function ChatThreadList({
     [pending],
   );
 
-  // Per-agent presence, so a pending task on an OFFLINE agent shows "waiting"
-  // rather than a misleading "typing…" (the task is queued until the agent is
-  // back). Same availability source the conversation pane's status pill uses,
-  // keeping the two surfaces consistent.
+  // Per-agent presence, so a pending task on an OFFLINE agent shows "Offline"
+  // rather than a misleading running label. Same availability source the
+  // conversation pane's status pill uses, keeping the two surfaces consistent.
   const presence = useWorkspacePresenceMap(wsId);
+  const resolveStage = useResolveStage();
+  const hasQueuedTaskWithTimestamp = useMemo(
+    () =>
+      (pending?.tasks ?? []).some(
+        (task) => task.status === "queued" && !!task.created_at,
+      ),
+    [pending],
+  );
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasQueuedTaskWithTimestamp) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasQueuedTaskWithTimestamp]);
 
   useEffect(() => {
     if (!confirmingStopId || pendingTaskBySessionId.has(confirmingStopId)) return;
@@ -218,12 +234,9 @@ export function ChatThreadList({
     const agentName = agent?.name.trim() || null;
     const pendingTask = pendingTaskBySessionId.get(session.id);
     const isRunning = !!pendingTask;
-    // Only "offline" (definitively long-offline) downgrades typing → waiting.
-    // Unknown/loading presence keeps the optimistic "typing…" so we never
-    // suppress it just because presence data hasn't landed yet.
-    const agentOffline = agent
-      ? presence.byAgent.get(agent.id)?.availability === "offline"
-      : false;
+    const availability = agent
+      ? presence.byAgent.get(agent.id)?.availability
+      : undefined;
     const unread = isCurrent ? 0 : (session.unread_count ?? 0);
     const isConfirmingDelete = confirmingDeleteId === session.id;
     const isConfirmingStop = confirmingStopId === session.id && !!pendingTask;
@@ -234,22 +247,32 @@ export function ChatThreadList({
       ? formatChatTime(last.created_at, locale)
       : formatChatTime(session.updated_at, locale);
 
-    // The second line: typing/waiting → failed → preview.
+    // The second line: shared run stage (via pickStageKeys) → failed → preview.
     let previewNode: React.ReactNode;
-    if (isRunning && agentOffline) {
-      // Task is queued but the agent is offline — it will run once the agent
-      // is back. Show a static "waiting", not an animated "typing".
+    if (pendingTask) {
+      const stage = resolveStage(pendingTask.status, [], availability);
+      const createdMs = pendingTask.created_at
+        ? Date.parse(pendingTask.created_at)
+        : NaN;
+      const elapsedSuffix =
+        stage.stageKey === "queued" && Number.isFinite(createdMs)
+          ? ` ${formatElapsedSecs(Math.max(0, Math.floor((now - createdMs) / 1000)))}`
+          : "";
+      const isActivelyRunning = pendingTask.status === "running";
       previewNode = (
-        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-          <Clock className="size-3 shrink-0" />
-          <span className="truncate">{t(($) => $.list.waiting)}</span>
-        </span>
-      );
-    } else if (isRunning) {
-      previewNode = (
-        <span className="flex min-w-0 items-center gap-1.5 text-emerald-500">
-          <Loader2 className="size-3 shrink-0 animate-spin" />
-          <span className="truncate">{t(($) => $.list.typing)}</span>
+        <span
+          data-testid="chat-thread-row-status"
+          className={cn(
+            "flex min-w-0 items-center gap-1.5",
+            isActivelyRunning ? "text-emerald-500" : "text-muted-foreground",
+          )}
+        >
+          {isActivelyRunning ? (
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+          ) : (
+            <Clock className="size-3 shrink-0" />
+          )}
+          <span className="truncate">{`${stage.label}${elapsedSuffix}`}</span>
         </span>
       );
     } else if (last?.failure_reason) {

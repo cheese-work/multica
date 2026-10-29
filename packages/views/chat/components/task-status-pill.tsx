@@ -18,6 +18,7 @@ interface Props {
 }
 
 interface Stage {
+  stageKey: StageKey;
   label: string;
   static?: boolean;
 }
@@ -132,7 +133,7 @@ export function effectiveTaskStatus(
   return taskMessages.length > 0 ? "running" : status;
 }
 
-function useResolveStage(): (
+export function useResolveStage(): (
   status: string | undefined,
   taskMessages: readonly TaskMessagePayload[],
   availability: AgentAvailability | undefined,
@@ -143,6 +144,7 @@ function useResolveStage(): (
     const decision = pickStageKeys(status, taskMessages, availability);
     if (decision.toolKey) {
       return {
+        stageKey: decision.stageKey,
         label: t(($) => $.status_pill.tools[decision.toolKey!]),
       };
     }
@@ -153,6 +155,7 @@ function useResolveStage(): (
     const reason = waitReason?.trim();
     if (decision.needsWaitReason && reason) {
       return {
+        stageKey: decision.stageKey,
         label: t(($) => $.status_pill.stages.waiting_local_directory_reason, {
           reason,
         }),
@@ -160,6 +163,7 @@ function useResolveStage(): (
       };
     }
     return {
+      stageKey: decision.stageKey,
       label: t(($) => $.status_pill.stages[decision.stageKey]),
       static: decision.static,
     };

@@ -1759,7 +1759,7 @@ FROM prioritized;
 -- atq.chat_session_id IS NOT NULL is redundant given the JOIN, but stated
 -- explicitly so the planner can prove the query predicate is a subset of the
 -- idx_agent_task_queue_chat_pending_v3 partial-index predicate and use it.
-SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id
+SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id, atq.created_at
 FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL

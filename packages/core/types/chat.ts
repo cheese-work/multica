@@ -192,6 +192,7 @@ export interface PendingChatTaskItem {
   task_id: string;
   status: string;
   chat_session_id: string;
+  created_at?: string;
 }
 
 export interface PendingChatTasksResponse {

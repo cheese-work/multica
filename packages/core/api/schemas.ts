@@ -20,6 +20,7 @@ import type {
   ChatMessage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
+  PendingChatTasksResponse,
   ChatSession,
   ChatSessionUsage,
   PrioritizeQueuedChatTaskResponse,
@@ -2449,6 +2450,22 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
 }).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
+
+// `created_at` is additive: servers that predate it omit the field, and the
+// list then renders the stage without an elapsed time. Status stays a free
+// string so unknown server states survive.
+const PendingChatTaskItemSchema = z.object({
+  task_id: z.string(),
+  status: z.string(),
+  chat_session_id: z.string(),
+  created_at: z.string().optional(),
+}).loose();
+
+export const PendingChatTasksResponseSchema: z.ZodType<PendingChatTasksResponse> = z.object({
+  tasks: z.array(PendingChatTaskItemSchema).default([]),
+}).loose();
+
+export const EMPTY_PENDING_CHAT_TASKS: PendingChatTasksResponse = { tasks: [] };
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),

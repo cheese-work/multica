@@ -3441,7 +3441,7 @@ func (q *Queries) ListLatestRunContextForChatSessions(ctx context.Context, dolla
 }
 
 const listPendingChatTasksByCreator = `-- name: ListPendingChatTasksByCreator :many
-SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id
+SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id, atq.created_at
 FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL
@@ -3460,10 +3460,11 @@ type ListPendingChatTasksByCreatorParams struct {
 }
 
 type ListPendingChatTasksByCreatorRow struct {
-	TaskID        pgtype.UUID `json:"task_id"`
-	Status        string      `json:"status"`
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	AgentID       pgtype.UUID `json:"agent_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	Status        string             `json:"status"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 // Aggregate view of all in-flight chat tasks owned by a given creator in a
@@ -3491,6 +3492,7 @@ func (q *Queries) ListPendingChatTasksByCreator(ctx context.Context, arg ListPen
 			&i.Status,
 			&i.ChatSessionID,
 			&i.AgentID,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
