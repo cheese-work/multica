@@ -573,7 +573,7 @@ func (q *Queries) ReplayScopedWakeupEvent(ctx context.Context, arg ReplayScopedW
 }
 
 const tryLockWakeupIssue = `-- name: TryLockWakeupIssue :one
-SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id FROM issue WHERE id= $1 FOR NO KEY UPDATE SKIP LOCKED
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override FROM issue WHERE id= $1 FOR NO KEY UPDATE SKIP LOCKED
 `
 
 // The drain's issue lock never waits: a held issue yields no row, and the caller
@@ -614,6 +614,7 @@ func (q *Queries) TryLockWakeupIssue(ctx context.Context, id pgtype.UUID) (Issue
 		&i.DuplicateOfIssueID,
 		&i.WorkflowID,
 		&i.RequestedByID,
+		&i.MaxRunsOverride,
 	)
 	return i, err
 }

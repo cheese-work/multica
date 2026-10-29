@@ -85,6 +85,26 @@ beforeEach(() => {
 });
 
 describe("AttachmentPreviewPage", () => {
+  it("route permission: removes cached media when read access is denied", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["attachment-preview-page", "att-1"], makeAttachment({
+      filename: "private.png",
+      content_type: "image/png",
+    }));
+    getAttachmentMock.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
+    renderWithI18n(
+      <QueryClientProvider client={client}>
+        <AttachmentPreviewPage attachmentId="att-1" />
+      </QueryClientProvider>,
+    );
+
+    await client.invalidateQueries({ queryKey: ["attachment-preview-page", "att-1"] });
+    await waitFor(() => expect(getAttachmentMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByAltText("private.png")).toBeNull());
+    expect(document.querySelector("iframe, img, video, audio")).toBeNull();
+    expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
+  });
+
   it("shows the viewer's bar and stage — without a close button, since the tab is the frame", async () => {
     renderPage(<AttachmentPreviewPage attachmentId="att-1" filename="report.html" />);
 

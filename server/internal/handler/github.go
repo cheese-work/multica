@@ -26,6 +26,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -90,7 +91,7 @@ type GitHubPullRequestResponse struct {
 	PRCreatedAt     string  `json:"pr_created_at"`
 	PRUpdatedAt     string  `json:"pr_updated_at"`
 	// LinkSource explains why the PR is on the issue: "manual", "title",
-	// "branch", or "auto" (an older rule). Only set on the issue PR list.
+	// "branch", "reference", or "auto". Only set on the issue PR list.
 	LinkSource string `json:"link_source,omitempty"`
 	// Mergeable state mirrors GitHub's REST `mergeable_state` field, retained
 	// for compatibility. The card now reads the richer GraphQL fields below.
@@ -1311,6 +1312,9 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
+		if row.LinkKind == "reference" {
+			resp.LinkSource = "reference"
+		}
 		out = append(out, resp)
 		// Page-visit trigger (MUL-5265): if this card's snapshot is missing or
 		// older than the view TTL, kick an async refresh. Non-blocking — the
@@ -1363,6 +1367,13 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if err != nil {
 		return
 	}
+	// A new head retires the reviews of the old one (CHE-2307).
+	h.supersedeStaleReviews(ctx, prID)
+	if pr.HeadRepoSame {
+		if err := h.TaskService.NoticePRSnapshotEvents(ctx, prID); err != nil {
+			slog.Warn("github: failed to deliver pull request snapshot events", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	issueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, prID)
 	if err != nil {
 		return
@@ -1371,6 +1382,11 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
 	}
+	// Kill switch (CHE-2220): the broadcast below still runs, but no linked issue
+	// is dispatched to. This path has no redelivery, so a failed read halts too.
+	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
+		issueIDs = nil
+	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so
 	// mergeable=CONFLICTING counts as DIRTY.
@@ -1378,7 +1394,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if pr.ApiMergeable.String == "CONFLICTING" {
 		mergeState = "DIRTY"
 	}
-	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; fresh &&
+	if fresh := pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha; pr.HeadRepoSame && fresh &&
 		(mergeState == "DIRTY" && (pr.State == "open" || pr.State == "draft") || mergeState == "BEHIND" && pr.State == "open") &&
 		pr.SnapshotBaseRef.Valid && pr.SnapshotBaseRef.String != "" {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
@@ -1392,7 +1408,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
 		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
@@ -1407,7 +1423,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
@@ -1440,15 +1456,16 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 var identifierRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{0,9})-(\d+)\b`)
 
 // closingIdentifierRe extracts identifiers that appear immediately after a
-// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?") or
-// a plain reference keyword ("refs?", "part of"), optionally separated by a
-// colon and whitespace. Matching is intentionally
+// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?"),
+// optionally separated by a colon and whitespace. Matching is intentionally
 // strict on adjacency — "Fix MUL-1" names MUL-1, but "Fix login MUL-1" does
-// not. It is the one way a PR body links an issue; a bare body mention links
-// nothing. Since MUL-7726 the keyword only links: what a merge does is the
-// workspace's choice, not the PR text's.
+// not. A bare body mention links nothing.
 var closingIdentifierRe = regexp.MustCompile(
-	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+)
+
+var referenceIdentifierRe = regexp.MustCompile(
+	`(?i)\b(?:refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
 )
 
 // HandleGitHubWebhook (POST /api/webhooks/github) is GitHub's destination for
@@ -1470,6 +1487,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	sigHeader := r.Header.Get("X-Hub-Signature-256")
 	if !verifyWebhookSignature(secret, sigHeader, body) {
+		slog.Warn("github: delivery denied", "delivery_guid", r.Header.Get("X-GitHub-Delivery"), "reason", "invalid_signature")
 		writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -1482,10 +1500,20 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
-	case "pull_request_review":
-		if err := h.handlePullRequestReviewEvent(ctx, body); err != nil {
-			slog.Error("github: pull_request_review event failed", "err", err, "delivery_guid", deliveryGUID)
-			writeError(w, http.StatusInternalServerError, "failed to process pull_request_review event")
+	case "pull_request_review", "pull_request_review_comment", "issue_comment":
+		if strings.TrimSpace(deliveryGUID) == "" {
+			slog.Warn("github: intake denied", "event", event, "reason", "missing_delivery_guid")
+			writeError(w, http.StatusBadRequest, "missing delivery GUID")
+			return
+		}
+		if err := h.handleGitHubWebhookIntake(ctx, event, deliveryGUID, sigHeader, body); err != nil {
+			if errors.Is(err, errGitHubDeliveryConflict) {
+				slog.Warn("github: intake denied", "delivery_guid", deliveryGUID, "reason", "delivery_guid_conflict")
+				writeError(w, http.StatusConflict, "delivery GUID conflicts with stored delivery")
+				return
+			}
+			slog.Error("github: durable intake failed", "err", err, "delivery_guid", deliveryGUID, "reason", "database_error")
+			writeError(w, http.StatusInternalServerError, "failed to persist GitHub delivery")
 			return
 		}
 	case "pull_request":
@@ -1493,6 +1521,18 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
+			return
+		}
+	case "workflow_run":
+		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_run event")
+			return
+		}
+	case "workflow_job":
+		if err := h.handleWorkflowJobEvent(ctx, body); err != nil {
+			slog.Error("github: workflow_job event failed", "err", err, "delivery_guid", deliveryGUID)
+			writeError(w, http.StatusInternalServerError, "failed to process workflow_job event")
 			return
 		}
 	case "check_suite", "check_run", "status":
@@ -1630,6 +1670,21 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 	}
 }
 
+type ghPRHeadRepository struct {
+	ID       int64  `json:"id"`
+	FullName string `json:"full_name"`
+	Fork     *bool  `json:"fork"`
+}
+
+// sameRepository compares head and base by repository id and full name only.
+// GitHub's `fork` flag describes the repository, not the PR: a same-repo PR in
+// a repository that is itself a fork (cheese-work/multica) carries fork=true.
+// The flag must be present, so a truncated payload still defers.
+func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
+	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
+		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
+}
+
 type ghPullRequestPayload struct {
 	Action      string `json:"action"`
 	PullRequest struct {
@@ -1650,11 +1705,13 @@ type ghPullRequestPayload struct {
 		ChangedFiles   int32  `json:"changed_files"`
 		MergeCommitSHA string `json:"merge_commit_sha"`
 		Head           struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+			Ref  string              `json:"ref"`
+			SHA  string              `json:"sha"`
+			Repo *ghPRHeadRepository `json:"repo"`
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
+			SHA string `json:"sha"`
 		} `json:"base"`
 		User struct {
 			Login     string `json:"login"`
@@ -1792,6 +1849,11 @@ func (c prLinkPolicy) permits(identifier, workspaceID string) bool {
 // resolve it; misjudging "unique" as "ambiguous" costs a link a person can add
 // by hand, while the reverse would move someone else's issue on merge.
 func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInstallation, p *ghPullRequestPayload) prLinkPolicy {
+	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+		slog.Info("github: denied automatic pull request actions", "reason", "fork_or_unverified_head_repository",
+			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
+		return prLinkPolicy{indeterminate: true}
+	}
 	if len(insts) < 2 {
 		return prLinkPolicy{unrestricted: true}
 	}
@@ -2010,6 +2072,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
+		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
 		ChangedFiles: p.PullRequest.ChangedFiles, IsReopen: p.Action == "reopened",
@@ -2024,8 +2087,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	workspaceID := uuidToString(wsID)
 	linkedIssueIDs := make([]string, 0)
 	touched := map[pgtype.UUID]struct{}{}
-	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
+		closingIdents := prClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)
 		if err != nil {
 			return fmt.Errorf("github: read auto-link setting: %w", err)
@@ -2035,8 +2099,18 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				idents:    idents,
 				permits:   func(id string) bool { return linkPolicy.permits(id, workspaceID) },
 				ambiguous: func(id string) bool { return linkPolicy.ambiguous[id] },
-				link: func(issueID pgtype.UUID) (int64, error) {
-					return qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+				link: func(issueID pgtype.UUID, identifier string) (int64, error) {
+					kind := "reference"
+					if slices.Contains(closingIdents, identifier) {
+						kind = "closing"
+					}
+					rows, err := qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+						IssueID: issueID, PullRequestID: pr.ID, LinkKind: pgtype.Text{String: kind, Valid: true},
+					})
+					if kind == "reference" {
+						return 0, err
+					}
+					return rows, err
 				},
 				unlink: func(issueID pgtype.UUID) (int64, error) {
 					return qtx.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
@@ -2052,12 +2126,36 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list persisted links: %w", err)
 	}
+	lifecycle := prLifecycleKind(prevState, state)
+	if lifecycle != "" && pr.HeadRepoSame {
+		if _, err := ghsnapshot.CapturePREvent(ctx, qtx, ghsnapshot.PREventInput{
+			PRID: pr.ID, Kind: lifecycle, HeadSHA: pr.HeadSha, BaseSHA: p.PullRequest.Base.SHA,
+			ObservedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt).Time,
+		}); err != nil {
+			return fmt.Errorf("github: capture pr %s event: %w", lifecycle, err)
+		}
+	}
+	closingIssueIDs, err := qtx.ListClosingIssueIDsForPullRequest(ctx, pr.ID)
+	if err != nil {
+		return fmt.Errorf("github: list closing links: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
-	if githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+	if pr.HeadRepoSame {
+		// Applied from the stored state, not only on a transition: a failure
+		// returns 5xx so GitHub redelivers, and the redelivery no longer sees a
+		// transition. Stopping and delivering are idempotent.
+		if err := h.TaskService.ApplyPRLifecycleEvent(ctx, service.PRLifecycleEvent{
+			PRID: pr.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+			Number: p.PullRequest.Number, Kind: prLifecycleApplyKind(state),
+		}); err != nil {
+			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
+		}
+	}
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
-			for _, issueID := range issueIDs {
+			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
@@ -2079,7 +2177,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	case state == "draft" && p.Action == "converted_to_draft":
 		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRAttention, Reason: service.PRAttentionDraft, EventAt: p.PullRequest.UpdatedAt}
 	}
-	if attention.Rule != "" {
+	if attention.Rule != "" && pr.HeadRepoSame {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
@@ -2136,12 +2234,12 @@ func dispatchMergedPRWakeups(issueIDs []pgtype.UUID, dispatch func(pgtype.UUID) 
 
 // prAutoLinkInput is what reconcileAutoLinks needs from one provider.
 type prAutoLinkInput struct {
-	idents    []string                         // identifiers the PR claims (see prClaimedIdentifiers)
-	permits   func(identifier string) bool     // cross-workspace verdict (always true for VCS)
-	ambiguous func(identifier string) bool     // resolved in several workspaces
-	link      func(pgtype.UUID) (int64, error) // automatic link; 1 when new
-	unlink    func(pgtype.UUID) (int64, error) // drop a link; 1 when removed
-	listAuto  func() ([]pgtype.UUID, error)    // issues currently auto-linked to the PR
+	idents    []string                                 // identifiers the PR claims (see prClaimedIdentifiers)
+	permits   func(identifier string) bool             // cross-workspace verdict (always true for VCS)
+	ambiguous func(identifier string) bool             // resolved in several workspaces
+	link      func(pgtype.UUID, string) (int64, error) // automatic link; 1 when new
+	unlink    func(pgtype.UUID) (int64, error)         // drop a link; 1 when removed
+	listAuto  func() ([]pgtype.UUID, error)            // issues currently auto-linked to the PR
 }
 
 // reconcileAutoLinks makes the PR's automatic links match its claims. It
@@ -2186,7 +2284,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, queries *db.Queries, w
 			continue
 		}
 		claimed[issue.ID] = struct{}{}
-		rows, err := in.link(issue.ID)
+		rows, err := in.link(issue.ID, id)
 		if err != nil {
 			return linked, touched, err
 		}
@@ -2266,6 +2364,36 @@ type ghPRChanges struct {
 // existing mergeable_state.
 func baseRefChanged(c *ghPRChanges) bool {
 	return c != nil && c.Base != nil && c.Base.Ref != nil && c.Base.Ref.From != ""
+}
+
+// prLifecycleKind names the lifecycle event a PR state change raises, or "" for
+// none. A PR first seen as draft or closed is not a change a live run missed.
+func prLifecycleKind(prev, state string) ghsnapshot.PREventKind {
+	switch {
+	case state == "merged" && prev != "merged":
+		return ghsnapshot.PREventMerged
+	case state == "closed" && prev != "" && prev != "closed" && prev != "merged":
+		return ghsnapshot.PREventClosed
+	case state == "draft" && prev != "" && prev != "draft":
+		return ghsnapshot.PREventDraft
+	case state == "open" && prev == "draft":
+		return ghsnapshot.PREventReady
+	}
+	return ""
+}
+
+// prLifecycleApplyKind maps the stored PR state to the lifecycle action still
+// owed to the PR's runs: stop for merged and closed, notice for draft and open.
+func prLifecycleApplyKind(state string) string {
+	switch state {
+	case "merged":
+		return "merged"
+	case "closed":
+		return "closed"
+	case "draft":
+		return "draft"
+	}
+	return "ready"
 }
 
 func derivePRState(state string, draft, merged bool) string {
@@ -2440,11 +2568,15 @@ func stripMarkdownCodeSpans(s string) string {
 // to fix. Markdown code spans are stripped first so a quoted closing keyword
 // in documentation prose is never mistaken for a live closing declaration.
 func extractClosingIdentifiers(parts ...string) []string {
+	return extractKeywordIdentifiers(closingIdentifierRe, parts...)
+}
+
+func extractKeywordIdentifiers(pattern *regexp.Regexp, parts ...string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, src := range parts {
 		src = stripMarkdownCodeSpans(src)
-		for _, m := range closingIdentifierRe.FindAllStringSubmatch(src, -1) {
+		for _, m := range pattern.FindAllStringSubmatch(src, -1) {
 			ident := strings.ToUpper(m[1]) + "-" + m[2]
 			if _, dup := seen[ident]; dup {
 				continue
@@ -2467,6 +2599,16 @@ func extractClosingIdentifiers(parts ...string) []string {
 // keep taking the default, but the cross-workspace scan has to tell "auto-link
 // is on" apart from "we could not find out" — see prLinkPolicy.
 func prClaimedIdentifiers(title, body, branch string) []string {
+	idents := prClosingIdentifiers(title, body, branch)
+	for _, identifier := range extractKeywordIdentifiers(referenceIdentifierRe, title, body) {
+		if !slices.Contains(idents, identifier) {
+			idents = append(idents, identifier)
+		}
+	}
+	return idents
+}
+
+func prClosingIdentifiers(title, body, branch string) []string {
 	idents := extractIdentifiers(title, branch)
 	for _, id := range extractClosingIdentifiers(title, body) {
 		if !slices.Contains(idents, id) {

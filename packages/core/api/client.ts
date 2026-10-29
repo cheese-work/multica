@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -270,6 +271,7 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
+  OpenDecisionRequestListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -3199,7 +3201,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -4046,6 +4048,17 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
+  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
+    const raw: unknown = await this.fetch("/api/decisions/open");
+    return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
+      endpoint: "GET /api/decisions/open",
+    });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
     params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
@@ -4091,11 +4104,14 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    decisionRequestId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      decision_request_id?: string;
     } = { content };
+    if (decisionRequestId) body.decision_request_id = decisionRequestId;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }

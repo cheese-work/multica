@@ -30,6 +30,19 @@ func (q *Queries) CountIssueRunsSince(ctx context.Context, arg CountIssueRunsSin
 	return column_1, err
 }
 
+const currentXactID = `-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text::bigint
+`
+
+// The current transaction's id, so a run-budget notice can wait for that
+// transaction to finish. The cast keeps the xid8 out of the Go type map.
+func (q *Queries) CurrentXactID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, currentXactID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteWorkflowEdges = `-- name: DeleteWorkflowEdges :exec
 DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 `
@@ -37,6 +50,28 @@ DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 func (q *Queries) DeleteWorkflowEdges(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkflowEdges, id)
 	return err
+}
+
+const hasIssueReviewAdmission = `-- name: HasIssueReviewAdmission :one
+SELECT EXISTS (
+    SELECT 1 FROM issue_review_admission
+    WHERE issue_id = $1::uuid AND head_sha = $2::text
+)
+`
+
+type HasIssueReviewAdmissionParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Whether the issue's first review of this PR head was already admitted. The
+// row is written with the task row (CreateAgentTask), so it exists exactly when
+// a run was admitted as the reviewer for that head.
+func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueReviewAdmissionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueReviewAdmission, arg.IssueID, arg.HeadSha)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
@@ -58,12 +93,13 @@ const listEdgePullRequests = `-- name: ListEdgePullRequests :many
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
-       pr.snapshot_head_sha::text AS head_sha
+       pr.snapshot_head_sha::text AS head_sha,
+       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
@@ -74,11 +110,13 @@ type ListEdgePullRequestsRow struct {
 	ChecksRollupState string `json:"checks_rollup_state"`
 	HeadFresh         bool   `json:"head_fresh"`
 	HeadSha           string `json:"head_sha"`
+	Review            string `json:"review"`
 }
 
 // Every PR linked to the given issues, GitHub and self-hosted, as the facts
 // edge guards read. Only a GitHub PR carries a checks snapshot; head_fresh says
-// the snapshot belongs to the PR's newest head.
+// the snapshot belongs to the PR's newest head; review is the latest human
+// review decision, and counts only while it is on the PR's current head.
 func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UUID) ([]ListEdgePullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listEdgePullRequests, issueIds)
 	if err != nil {
@@ -93,6 +131,7 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 			&i.ChecksRollupState,
 			&i.HeadFresh,
 			&i.HeadSha,
+			&i.Review,
 		); err != nil {
 			return nil, err
 		}
@@ -102,6 +141,33 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const raiseIssueMaxRuns = `-- name: RaiseIssueMaxRuns :one
+UPDATE issue SET max_runs_override = $1::int
+WHERE id = $2::uuid AND workspace_id = $3::uuid
+  AND $1::int > COALESCE(max_runs_override, $4::int)
+RETURNING max_runs_override
+`
+
+type RaiseIssueMaxRunsParams struct {
+	Runs        int32       `json:"runs"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	WorkflowMax int32       `json:"workflow_max"`
+}
+
+// Sets the issue's own run cap, only upward from the cap now in force.
+func (q *Queries) RaiseIssueMaxRuns(ctx context.Context, arg RaiseIssueMaxRunsParams) (pgtype.Int4, error) {
+	row := q.db.QueryRow(ctx, raiseIssueMaxRuns,
+		arg.Runs,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.WorkflowMax,
+	)
+	var max_runs_override pgtype.Int4
+	err := row.Scan(&max_runs_override)
+	return max_runs_override, err
 }
 
 const scheduleWorkflowEdges = `-- name: ScheduleWorkflowEdges :exec
@@ -121,4 +187,16 @@ type ScheduleWorkflowEdgesParams struct {
 func (q *Queries) ScheduleWorkflowEdges(ctx context.Context, arg ScheduleWorkflowEdgesParams) error {
 	_, err := q.db.Exec(ctx, scheduleWorkflowEdges, arg.NextFireAt, arg.ID)
 	return err
+}
+
+const xactStatus = `-- name: XactStatus :one
+SELECT COALESCE(pg_xact_status($1::bigint::text::xid8), 'unknown')::text
+`
+
+// 'in progress', 'committed', 'aborted', or 'unknown' once the id is too old.
+func (q *Queries) XactStatus(ctx context.Context, xid int64) (string, error) {
+	row := q.db.QueryRow(ctx, xactStatus, xid)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }

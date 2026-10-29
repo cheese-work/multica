@@ -45,6 +45,31 @@ func newProjectResourceUpdateTestCmd() *cobra.Command {
 	return c
 }
 
+func TestBuildURLResourceRefFromFlags(test *testing.T) {
+	cmd := newProjectResourceUpdateTestCmd()
+	if err := cmd.Flags().Set("url", " https://example.com/design "); err != nil {
+		test.Fatal(err)
+	}
+	ref, has, err := buildResourceRefFromFlags(cmd, "url", map[string]any{"url": "https://example.com/old"})
+	if err != nil || !has || ref["url"] != "https://example.com/design" || len(ref) != 1 {
+		test.Fatalf("URL shortcut = %#v, has = %v, error = %v", ref, has, err)
+	}
+}
+
+func TestBuildURLResourceRefWithoutShortcut(test *testing.T) {
+	cmd := newProjectResourceUpdateTestCmd()
+	ref, has, err := buildResourceRefFromFlags(cmd, "url", map[string]any{"url": "https://example.com/design"})
+	if err != nil || has || ref != nil {
+		test.Fatalf("label-only update must not replace resource_ref: %#v, %v, %v", ref, has, err)
+	}
+	if err := cmd.Flags().Set("url", " "); err != nil {
+		test.Fatal(err)
+	}
+	if _, _, err := buildResourceRefFromFlags(cmd, "url", nil); err == nil {
+		test.Fatal("empty --url must be rejected")
+	}
+}
+
 // TestBuildResourceRefFromFlagsGithubMergesHint pins the nit fix from MUL-2662
 // review round 2: `multica project resource update <p> <r> --default-branch-hint x`
 // must rebuild the full github_repo payload by merging the existing `url` —

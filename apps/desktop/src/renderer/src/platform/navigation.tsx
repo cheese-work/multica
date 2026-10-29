@@ -240,6 +240,10 @@ export function DesktopNavigationProvider({
         store.openTab(path, title ?? "", { activate: opts?.activate });
       },
       getShareableUrl: (path: string) => `${appUrl}${path}`,
+      openMediaWindow: async (path, title) => {
+        const result = await window.desktopAPI.openMediaWindow({ path, title });
+        if (!result.ok) throw new Error("Media window request rejected");
+      },
     }),
     [appUrl, location],
   );

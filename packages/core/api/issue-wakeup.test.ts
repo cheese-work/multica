@@ -231,12 +231,14 @@ it("reads conditions, caps and pauses, and drops shapes it does not know", async
     { ...base, condition: { type: "issue_field", field: "status", value: "in_review" }, max_fires: 20, fire_count: 20, paused_reason: "max_fires" },
     { ...base, id: "w2", condition: { type: "future_kind" }, paused_reason: "someday" },
     { ...base, id: "w3", condition: { type: "other_issue", issue_id: "x", state: "done", identifier: "MUL-2" } },
+    { ...base, id: "w4", condition: { type: "other_issue", issue_id: "y", state: "blocked", identifier: "MUL-3" } },
   ];
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(rows))));
-  const [known, unknown, other] = await client.listIssueWakeups("i");
+  const [known, unknown, other, blocked] = await client.listIssueWakeups("i");
   expect(known).toMatchObject({ condition: { field: "status", value: "in_review" }, max_fires: 20, fire_count: 20, paused_reason: "max_fires" });
   expect(unknown).toMatchObject({ condition: null, paused_reason: null });
   expect(other!.condition).toEqual({ type: "other_issue", issue_id: "x", state: "done", identifier: "MUL-2" });
+  expect(blocked!.condition).toEqual({ type: "other_issue", issue_id: "y", state: "blocked", identifier: "MUL-3" });
 });
 
 it("reads system rule rows in the workspace list", async () => {
@@ -266,4 +268,24 @@ it("loads a rule's runs and the paused list", async () => {
     expect.objectContaining({ id: "r", checkin_note: "ok", triggers: ["time.due"], commented: false }),
   ]);
   await expect(client.listPausedWakeups()).resolves.toEqual([{ issue_id: "i", id: "w", agent_id: "a", paused_reason: "loop" }]);
+});
+
+it("reads a github_run condition and drops a malformed one", async () => {
+  const base = {
+    id: "w", issue_id: "i", agent_id: "a", agent_name: "Emacs", instruction: "go", kind: "event", mode: "once",
+    event_types: ["condition.met"], filter_agent_id: null, filter_task_id: null, interval_seconds: null,
+    cron_expression: null, timezone: "UTC", next_fire_at: null, enabled: true, disabled_at: null,
+    last_task_id: null, last_error: null,
+  };
+  const sha = "59819ba721b4d542791db013ec2bb43ed9d66503";
+  const rows = [
+    { ...base, condition: { type: "github_run", repo: "cheese-work/multica", run_id: 40343069164, state: "waiting" } },
+    { ...base, id: "w2", condition: { type: "github_run", repo: "cheese-work/multica", workflow: "cd-qualification.yml", head_sha: sha, state: "completed" } },
+    { ...base, id: "w3", condition: { type: "github_run", repo: "cheese-work/multica", run_id: "1", state: "bogus" } },
+  ];
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(rows))));
+  const [byId, bySha, malformed] = await client.listIssueWakeups("i");
+  expect(byId!.condition).toEqual({ type: "github_run", repo: "cheese-work/multica", run_id: 40343069164, state: "waiting" });
+  expect(bySha!.condition).toEqual({ type: "github_run", repo: "cheese-work/multica", workflow: "cd-qualification.yml", head_sha: sha, state: "completed" });
+  expect(malformed!.condition).toBeNull();
 });

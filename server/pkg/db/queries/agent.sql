@@ -335,12 +335,28 @@ LIMIT @page_limit;
 -- COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 -- that passes no id still inserts — it just gets a random v4, exactly as before.
 -- The same pattern is used by every INSERT listed in pkg/dbid's write table.
+-- gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
+-- admitted as the issue's reviewer records the head in issue_review_admission in
+-- this same statement, so the claim and the task row commit or roll back
+-- together. When the budget is spent (gate_required) only the statement that
+-- inserted the claim writes a task; a concurrent loser writes none and the
+-- caller sees no row.
+WITH review_claim AS (
+    INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
+    SELECT i.workspace_id, i.id, sqlc.narg('gate_head')::text, $1
+    FROM issue i
+    WHERE i.id = $3
+      AND COALESCE(sqlc.narg('gate_head')::text, '') <> ''
+      AND lock_task_owner_rows($1, $3, $2)
+    ON CONFLICT (issue_id, head_sha) DO NOTHING
+    RETURNING issue_id
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, id
+    workflow_step, pull_request_id, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -367,8 +383,22 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     (SELECT i.status FROM issue i WHERE i.id = $3),
+    -- The PR whose head the review is stamped with, so a later head can find
+    -- and supersede this run (CHE-2307). A replacement passes the exact PR
+    -- (pull_request_id): rebuilding it from the head would pick the newest of
+    -- two PRs that share one. Otherwise only a run queued while the issue is in
+    -- a review step is bound: an author's run is queued at another step, and its
+    -- step advancing to in_review later does not make it a review.
+    COALESCE(sqlc.narg('pull_request_id')::uuid, (SELECT pr.id FROM github_pull_request pr
+       JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+      WHERE ipr.issue_id = $3
+        AND (SELECT i.status FROM issue i WHERE i.id = $3) IN ('in_review', 'agent_review')
+        AND COALESCE(sqlc.narg('head_sha')::text, '') <> ''
+        AND pr.head_sha = sqlc.narg('head_sha')::text
+      ORDER BY pr.pr_updated_at DESC LIMIT 1)),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
+  AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one
@@ -938,10 +968,9 @@ RETURNING *;
 -- query (dispatched, never started, past the recovery window, expired/absent
 -- prepare lease) and the same dispatched_at refresh; only the runtime filter
 -- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
-UPDATE agent_task_queue
-SET dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
-WHERE id IN (
+-- MATERIALIZED pins the candidate set so nested-loop rescans cannot exceed
+-- max_tasks.
+WITH candidates AS MATERIALIZED (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
       AND atq.status = 'dispatched'
@@ -976,6 +1005,10 @@ WHERE id IN (
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
 )
+UPDATE agent_task_queue
+SET dispatched_at = now(),
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+WHERE id IN (SELECT id FROM candidates)
 RETURNING *;
 
 -- name: ExtendAgentTaskPrepareLease :one
@@ -1603,6 +1636,76 @@ SELECT EXISTS (
 UPDATE agent_task_queue
 SET retired_session_id = COALESCE(retired_session_id, sqlc.arg('retired_session_id'))
 WHERE id = sqlc.arg('id') AND status = 'cancelled';
+
+-- name: MarkAgentTaskCancelAcked :exec
+-- Records the daemon's cancel-ack as proof the runner stopped. Settles a
+-- cancelled row, or a row the stop gate retained after it was rewritten
+-- (stop_unconfirmed_at, set by trigger agent_task_keep_stop_unconfirmed). Any
+-- other failed/completed row is a late ack from a stale run and is not
+-- stamped. The first ack wins, so a replay is a no-op.
+UPDATE agent_task_queue
+SET cancel_acked_at = now()
+WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
+  AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
+
+-- name: ListLiveReviewRunsForPR :many
+-- Live review runs of the PR stamped with a head other than the PR's current
+-- one, at the step their issue is still in. Author runs carry a different
+-- workflow_step and are never listed.
+SELECT t.id, t.issue_id, t.agent_id FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE t.pull_request_id = sqlc.arg('pull_request_id')
+  AND t.status IN ('queued', 'dispatched', 'running')
+  AND t.workflow_step IN ('in_review', 'agent_review')
+  AND t.workflow_step = i.status
+  AND COALESCE(t.context->>'head_sha', '') <> sqlc.arg('head_sha')::text;
+
+-- name: ListUnreleasedSupersededReviews :many
+-- Superseded review runs of the issue whose single replacement has not been
+-- enqueued yet, newest first. Rows of one (pull_request_id, workflow_step)
+-- share one replacement. A run stays superseded after a later writer rewrites
+-- its status or reason (a cleanup-unconfirmed report, /fail, a late complete):
+-- the b1 trigger keeps stop_unconfirmed_at, the same identity the cancel-ack
+-- settles (MarkAgentTaskCancelAcked).
+SELECT t.id, t.agent_id, t.pull_request_id, t.workflow_step FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE t.issue_id = sqlc.arg('issue_id')
+  AND ((t.status = 'cancelled' AND t.failure_reason = 'superseded_head') OR t.stop_unconfirmed_at IS NOT NULL)
+  AND t.pull_request_id IS NOT NULL
+  AND t.workflow_step IN ('in_review', 'agent_review')
+  AND t.workflow_step = i.status
+  AND t.replacement_released_at IS NULL
+ORDER BY t.created_at DESC;
+
+-- name: MarkReviewReplacementReleased :exec
+UPDATE agent_task_queue
+SET replacement_released_at = now()
+WHERE issue_id = sqlc.arg('issue_id')
+  AND pull_request_id = sqlc.arg('pull_request_id')
+  AND workflow_step = sqlc.arg('workflow_step')
+  AND ((status = 'cancelled' AND failure_reason = 'superseded_head') OR stop_unconfirmed_at IS NOT NULL)
+  AND replacement_released_at IS NULL;
+
+-- name: GetUnackedSupersededRun :one
+-- The newest run of the issue cancelled by the stop gate whose runner is not yet
+-- proven stopped. A superseded head holds the gate at the step the issue is in
+-- now; a merged or closed PR (CHE-2298 c1) holds it whatever the step, because
+-- the merge itself moves the issue on. A rewrite of such a run (for example to
+-- failed/cleanup_unconfirmed) keeps the issue-wide hold via stop_hold_issue_wide;
+-- any other rewritten run keeps only the step-bound hold. A run that never
+-- reached a daemon (dispatched_at NULL) has no runner to wait for.
+SELECT t.id FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE t.issue_id = sqlc.arg('issue_id')
+  AND t.dispatched_at IS NOT NULL
+  AND t.cancel_acked_at IS NULL
+  AND ((t.status = 'cancelled' AND t.failure_reason IN ('pr_merged', 'pr_closed'))
+       OR (t.stop_hold_issue_wide AND t.stop_unconfirmed_at IS NOT NULL)
+       OR (((t.status = 'cancelled' AND t.failure_reason = 'superseded_head')
+            OR t.stop_unconfirmed_at IS NOT NULL)
+           AND t.workflow_step = i.status))
+ORDER BY t.created_at DESC
+LIMIT 1;
 
 -- name: SetAgentTaskErrorIfEmpty :exec
 -- Companion to SetAgentTaskBranchName for the cancel-ack path. A cancelled

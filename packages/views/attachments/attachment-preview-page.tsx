@@ -61,14 +61,12 @@ export function AttachmentPreviewPage({
   const query = useQuery({
     queryKey: ["attachment-preview-page", attachmentId] as const,
     queryFn: () => api.getAttachment(attachmentId),
-    // The record carries signed media URLs. Refetching would re-sign them and
-    // reload a playing video or an open PDF under the reader; one fetch per
-    // page view is enough.
-    staleTime: Infinity,
+    staleTime: 0,
+    refetchOnMount: "always",
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const attachment = query.data?.id ? query.data : null;
+  const attachment = query.isFetchedAfterMount && !query.isError && query.data?.id ? query.data : null;
 
   // Set document.title so desktop's MutationObserver-based tab title picks
   // up the filename. Web shows the same string in the browser tab.
@@ -99,7 +97,7 @@ export function AttachmentPreviewPage({
 
   return (
     <div className="dark flex h-full w-full items-center justify-center gap-2 bg-black/95 px-4 text-body text-muted-foreground">
-      {query.isLoading ? (
+      {query.isLoading || (!query.isFetchedAfterMount && query.isFetching) ? (
         <>
           <Loader2 className="size-4 animate-spin" />
           {t(($) => $.attachment.preview_loading)}

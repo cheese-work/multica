@@ -1,0 +1,11 @@
+
+> @multica/desktop@0.7.0 typecheck /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/desktop
+> pnpm run typecheck:node && pnpm run typecheck:web
+
+
+> @multica/desktop@0.7.0 typecheck:node /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/desktop
+> tsc --noEmit -p tsconfig.node.json --composite false
+
+
+> @multica/desktop@0.7.0 typecheck:web /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/desktop
+> tsc --noEmit -p tsconfig.web.json --composite false

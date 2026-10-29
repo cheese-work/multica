@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	issueID := fixture.Issue(test, "Decision HTTP roundtrip", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := fixture.Task(test, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "running"})
 	sessionID := fixture.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Decisions"})
+	fixture.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + issueID + ")"})
 	fixture.Cleanup(test, `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
@@ -76,7 +78,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task request failed: status=%d body=%+v", response.StatusCode, body)
 	}
 	readJSON(test, response, &created)
-	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content() || created.SourceCommentID != toPgUUID(test, sourceID) {
+	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
 		test.Fatalf("missing receipt or wrong ask: %+v", created)
 	}
 	var requestID string
@@ -87,7 +89,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var fetched db.DecisionRequest
 	readJSON(test, response, &fetched)
-	if fetched != created {
+	if !reflect.DeepEqual(fetched, created) {
 		test.Fatal("get did not roundtrip the committed request")
 	}
 	response = call(http.MethodGet, "/api/decisions?issue="+issueID, nil, token, false)
@@ -96,7 +98,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var requests []db.DecisionRequest
 	readJSON(test, response, &requests)
-	if len(requests) != 1 || requests[0] != created {
+	if len(requests) != 1 || !reflect.DeepEqual(requests[0], created) {
 		test.Fatalf("wrong list: %+v", requests)
 	}
 	if count := fixture.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, issueID, testUserID); count != 1 {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveGitHubSettings, derivePRMergeStatus } from "./settings";
+import { deriveGitHubReviewMappings, deriveGitHubSettings, derivePRMergeStatus } from "./settings";
 import type { Workspace } from "../types";
 
 function ws(settings: Record<string, unknown>): Pick<Workspace, "settings"> {
@@ -85,5 +85,27 @@ describe("derivePRMergeStatus", () => {
 
   it("ignores the GitHub master switch", () => {
     expect(derivePRMergeStatus(ws({ github_enabled: false }))).toBe("done");
+  });
+});
+
+describe("deriveGitHubReviewMappings", () => {
+  it("reads both maps and drops entries that are not strings", () => {
+    expect(
+      deriveGitHubReviewMappings(
+        ws({
+          github_review_members: { "42": "user-1", "43": 7 },
+          github_review_authors: { "acme/app#1": "agent-1" },
+        }),
+      ),
+    ).toEqual({ members: { "42": "user-1" }, authors: { "acme/app#1": "agent-1" } });
+  });
+
+  it("is empty when a map is missing or malformed", () => {
+    const empty = { members: {}, authors: {} };
+    expect(deriveGitHubReviewMappings(null)).toEqual(empty);
+    expect(deriveGitHubReviewMappings(ws({}))).toEqual(empty);
+    expect(
+      deriveGitHubReviewMappings(ws({ github_review_members: "x", github_review_authors: ["a"] })),
+    ).toEqual(empty);
   });
 });

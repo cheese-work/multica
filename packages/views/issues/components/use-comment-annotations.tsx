@@ -181,6 +181,19 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
 
   useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
 
+  // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
+  // a document-level pointerup; captureCommentSelection then decides from the selection alone.
+  const armed = useRef(false);
+  const captureRef = useRef(capture);
+  captureRef.current = capture;
+  useEffect(() => {
+    const onUp = () => { if (armed.current) { armed.current = false; captureRef.current(); } };
+    const disarm = () => { armed.current = false; };
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", disarm);
+    return () => { document.removeEventListener("pointerup", onUp); document.removeEventListener("pointercancel", disarm); };
+  }, []);
+
   // Dismiss on the next press, never on the click completing the opening drag.
   useEffect(() => {
     if (!selection) return;
@@ -368,9 +381,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     addSelection,
     captureProps: {
       "data-annotation-thread": draftKey,
-      onPointerUp: (event: React.PointerEvent) => {
-        if (!editable && event.target instanceof Element && event.target.closest("[data-comment-content]") &&
-          !event.target.closest("button, [contenteditable=true]")) capture();
+      onPointerDown: (event: React.PointerEvent) => {
+        armed.current = !editable && event.target instanceof Element && !!event.target.closest("[data-comment-content]") &&
+          !event.target.closest("button, [contenteditable=true]");
       },
       onKeyUp: (event: React.KeyboardEvent) => {
         if (!editable && event.shiftKey && event.key.startsWith("Arrow")) capture();

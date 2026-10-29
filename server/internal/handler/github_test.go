@@ -128,14 +128,14 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			want: []string{},
 		},
 		{
-			name: "refs_links",
+			name: "refs_does_not_close",
 			in:   []string{"", "Refs CHE-1988"},
-			want: []string{"CHE-1988"},
+			want: []string{},
 		},
 		{
-			name: "part_of_links",
+			name: "part_of_does_not_close",
 			in:   []string{"", "Part of CHE-1988\nPart of: che-7"},
-			want: []string{"CHE-1988", "CHE-7"},
+			want: []string{},
 		},
 		{
 			name: "refs_must_be_adjacent_and_whole_word",
@@ -527,10 +527,11 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 			"closed_at":  "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z",
 			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": "fix/login"},
+			"head":       map[string]any{"ref": "fix/login", "repo": githubRepositoryForTest("acme", "widget")},
 			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
 		},
 		"repository": map[string]any{
+			"id":    424242,
 			"name":  "widget",
 			"owner": map[string]any{"login": "acme"},
 		},
@@ -633,9 +634,9 @@ func TestWebhook_MergedPR_OpenChildBlocksAutoClose(t *testing.T) {
 			"state": "closed", "merged": true, "draft": false,
 			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
-			"head": map[string]any{"ref": "fix/parent"}, "user": map[string]any{"login": "octocat"},
+			"head": map[string]any{"ref": "fix/parent", "repo": githubRepositoryForTest("acme", "widget")}, "user": map[string]any{"login": "octocat"},
 		},
-		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	})
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -732,9 +733,9 @@ func TestWebhook_MergedPR_MixedStagedUnstagedTerminalChildrenAdvance(t *testing.
 			"state": "closed", "merged": true, "draft": false,
 			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
-			"head": map[string]any{"ref": "fix/parent2"}, "user": map[string]any{"login": "octocat"},
+			"head": map[string]any{"ref": "fix/parent2", "repo": githubRepositoryForTest("acme", "widget")}, "user": map[string]any{"login": "octocat"},
 		},
-		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	})
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -798,9 +799,9 @@ func TestWebhook_MergedPR_PreservesCancelled(t *testing.T) {
 			"state": "closed", "merged": true, "draft": false,
 			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
-			"head": map[string]any{"ref": "x"}, "user": map[string]any{"login": "u"},
+			"head": map[string]any{"ref": "x", "repo": githubRepositoryForTest("o", "r")}, "user": map[string]any{"login": "u"},
 		},
-		"repository":   map[string]any{"name": "r", "owner": map[string]any{"login": "o"}},
+		"repository":   githubRepositoryForTest("o", "r"),
 		"installation": map[string]any{"id": installationID},
 	})
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -922,10 +923,11 @@ func TestWebhook_MergedPR_WaitsForOpenSibling(t *testing.T) {
 				"closed_at":  "2026-04-29T00:00:00Z",
 				"created_at": "2026-04-28T00:00:00Z",
 				"updated_at": "2026-04-29T00:00:00Z",
-				"head":       map[string]any{"ref": "fix/multi"},
+				"head":       map[string]any{"ref": "fix/multi", "repo": githubRepositoryForTest("acme", repo)},
 				"user":       map[string]any{"login": "octocat"},
 			},
 			"repository": map[string]any{
+				"id":    424242,
 				"name":  repo,
 				"owner": map[string]any{"login": "acme"},
 			},
@@ -1006,10 +1008,11 @@ func firePullRequestWebhook(t *testing.T, secret, identifier string, installatio
 			"closed_at":  "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z",
 			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": "fix/multi"},
+			"head":       map[string]any{"ref": "fix/multi", "repo": githubRepositoryForTest("acme", repo)},
 			"user":       map[string]any{"login": "octocat"},
 		},
 		"repository": map[string]any{
+			"id":    424242,
 			"name":  repo,
 			"owner": map[string]any{"login": "acme"},
 		},
@@ -1182,10 +1185,10 @@ func fireBareWebhook(t *testing.T, secret string, installationID int64, prNumber
 			"closed_at":  "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z",
 			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch},
+			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
 			"user":       map[string]any{"login": "octocat"},
 		},
-		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	}
 	raw, _ := json.Marshal(payload)
@@ -1438,10 +1441,10 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 			"closed_at":  closedAt,
 			"created_at": "2026-04-28T00:00:00Z",
 			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch},
+			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
 			"user":       map[string]any{"login": "octocat"},
 		},
-		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	}
 	raw, _ := json.Marshal(payload)
@@ -1990,10 +1993,11 @@ func firePullRequestWebhookWithHead(t *testing.T, secret, identifier string, ins
 			"created_at":      "2026-04-28T00:00:00Z",
 			"updated_at":      "2026-04-29T00:00:00Z",
 			"mergeable_state": mergeableState,
-			"head":            map[string]any{"ref": "fix/foo", "sha": headSHA},
+			"head":            map[string]any{"ref": "fix/foo", "sha": headSHA, "repo": githubRepositoryForTest("acme", repo)},
 			"user":            map[string]any{"login": "octocat"},
 		},
 		"repository": map[string]any{
+			"id":    424242,
 			"name":  repo,
 			"owner": map[string]any{"login": "acme"},
 		},
@@ -2492,10 +2496,11 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 			"closed_at":  "2026-04-29T00:00:00Z",
 			"created_at": "2026-04-28T00:00:00Z",
 			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": "fix/child"},
+			"head":       map[string]any{"ref": "fix/child", "repo": githubRepositoryForTest("acme", "widget")},
 			"user":       map[string]any{"login": "octocat", "avatar_url": ""},
 		},
 		"repository": map[string]any{
+			"id":    424242,
 			"name":  "widget",
 			"owner": map[string]any{"login": "acme"},
 		},

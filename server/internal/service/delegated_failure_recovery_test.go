@@ -1596,3 +1596,48 @@ func TestPendingDelegatedFailureSweepSkipsTriageSourceIssue(t *testing.T) {
 		t.Fatalf("recovery tasks after accept = %d, want 1", n)
 	}
 }
+
+// A recovery task is a new coordinator run. While the superseded run on the
+// coordinator's issue is not proven stopped it must not start, and the durable
+// signal must survive until the daemon's cancel-ack opens the gate.
+func TestDelegatedFailureRecoveryWaitsForStopGate(t *testing.T) {
+	ctx := context.Background()
+	f, svc := seedDelegatedFailureFixture(t)
+	fx := dbfx.New(f.pool, f.workspaceID, f.userID)
+	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
+	target, created, err := svc.ensureDelegatedFailureRecoveryComment(ctx, failedID)
+	if err != nil || target == nil || !created {
+		t.Fatalf("seed recovery: created=%v err=%v", created, err)
+	}
+	superseded := fx.Insert(t, "agent_task_queue", dbfx.Cols{
+		"agent_id": f.coordinator, "runtime_id": f.runtimeID, "issue_id": f.issueID,
+		"status": "cancelled", "failure_reason": FailureReasonSupersededHead,
+		"workflow_step": "in_progress", "dispatched_at": dbfx.Raw("now() - interval '5 minutes'"),
+		"completed_at": dbfx.Raw("now()"),
+	})
+	recoveryTasks := func() (n int) {
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue
+			WHERE trigger_evidence_kind = 'delegated_failure' AND trigger_evidence_ref_id = $1`, failedID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if err := svc.DispatchDelegatedFailureRecoveryComment(ctx, target.comment, pgtype.UUID{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := recoveryTasks(); n != 0 {
+		t.Fatalf("recovery tasks = %d while the superseded run is unacked, want 0", n)
+	}
+	if f.settled(t, target.comment.ID) {
+		t.Fatal("a refused recovery must keep its durable signal")
+	}
+
+	fx.Exec(t, `UPDATE agent_task_queue SET cancel_acked_at = now() WHERE id = $1`, superseded)
+	if result, err := svc.RecoverPendingDelegatedFailures(ctx, 100); err != nil || result != (DelegatedFailureRecoverySweepResult{Scanned: 1, Replayed: 1}) {
+		t.Fatalf("sweep after ack = %+v, %v; want one replay", result, err)
+	}
+	if n := recoveryTasks(); n != 1 {
+		t.Fatalf("recovery tasks after ack = %d, want 1", n)
+	}
+}

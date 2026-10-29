@@ -5,6 +5,7 @@ export type ForkEntry = {
   date: string;
   section: string;
   text: string;
+  group?: "week"; // backfilled entries (CHE-2196) group by ISO week instead of by day
 };
 
 type Category = "features" | "improvements" | "fixes";
@@ -46,13 +47,24 @@ function entryOrder(left: ForkEntry, right: ForkEntry) {
   return Date.parse(right.mergedAt) - Date.parse(left.mergedAt) || right.number - left.number;
 }
 
+// ISO week of a YYYY-MM-DD date: the Monday it starts on and the "YYYY-Www" label.
+function isoWeek(date: string) {
+  const day = new Date(`${date}T00:00:00Z`);
+  const monday = new Date(day.getTime() - ((day.getUTCDay() + 6) % 7) * 86_400_000);
+  const thursday = new Date(monday.getTime() + 3 * 86_400_000);
+  const jan1 = Date.UTC(thursday.getUTCFullYear(), 0, 1);
+  const week = Math.floor((thursday.getTime() - jan1) / (7 * 86_400_000)) + 1;
+  return { monday: monday.toISOString().slice(0, 10), label: `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}` };
+}
+
 export function forkReleases(entries: ForkEntry[]): ChangelogRelease[] {
   const releases = new Map<string, ChangelogRelease>();
   for (const entry of [...entries].sort(entryOrder)) {
-    const version = `fork-${entry.date}`;
+    const week = entry.group === "week" ? isoWeek(entry.date) : null;
+    const version = `fork-${week?.label ?? entry.date}`;
     let release = releases.get(version);
     if (!release) {
-      release = { version, date: entry.date, title: "Fork", changes: [],
+      release = { version, date: week?.monday ?? entry.date, title: "Fork", changes: [],
         features: [], improvements: [], fixes: [], changeKeys: { features: [], improvements: [], fixes: [] },
         mergedAt: entry.mergedAt, number: entry.number };
       releases.set(version, release);

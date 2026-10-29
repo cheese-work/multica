@@ -31,7 +31,8 @@
  *
  * Mention chip note: mobile renders `mention://` links via enriched's
  * default link styling (brand-colored, underlined), except the viewer's own
- * member mention, which gets the pastel-yellow fill via `linkVariants`
+ * member mention and `@all`, which get the pastel-yellow fill via `linkVariants`
+ * and a bold label
  * (`./self-mention.ts`). Other mentions match web's
  * fallback behavior when no `renderMention` is provided
  * (`packages/ui/markdown/Markdown.tsx:173-178`). The avatar pill
@@ -50,7 +51,7 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
-import { SELF_MENTION_COLORS, selfMentionLinkVariants } from "./self-mention";
+import { SELF_MENTION_COLORS, emphasizeSelfMentionSegments, selfMentionLinkVariants } from "./self-mention";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 
@@ -140,8 +141,8 @@ export function Markdown({
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);
-    return splitMarkdown(processed);
-  }, [content]);
+    return emphasizeSelfMentionSegments(splitMarkdown(processed), viewerId);
+  }, [content, viewerId]);
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
