@@ -407,5 +407,15 @@
     "archived_badge": "Archived",
     "title_match": "Title match",
     "actions_aria": "Actions for {{title}}"
+  },
+  "wakeup": {
+    "node_label": "Scheduled wakeup fired",
+    "scheduled_at": "Scheduled {{time}}",
+    "set_by": "{{agent}} set this at {{time}}",
+    "show_instruction": "Show instruction",
+    "hide_instruction": "Hide instruction",
+    "instruction_region": "Instruction for the agent",
+    "instruction_note": "Instruction for the agent, verbatim. The agent receives all of this.",
+    "issue_fallback": "issue"
   }
 }

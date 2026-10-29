@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -63,6 +62,7 @@ import (
 
 const (
 	voteIssueKey  = "vote_issue"
+	decisionIDKey = "decision_id"
 	voteBeforeKey = "before_sha256"
 	voteAfterKey  = "after_sha256"
 
@@ -75,9 +75,11 @@ const (
 var ownerCASProjectDescription = ownerCASColumn{"project.description", "description", "project", "description", "workspace_id"}
 
 // voteEntered reports whether an agent update of a governed field names a
-// vote issue. Any other agent write keeps the CHE-455 denial.
+// vote issue or a decision (CHE-2457, governed_instruction_decision.go). Any
+// other agent write keeps the CHE-455 denial.
 func voteEntered(actorType string, fieldWillBeWritten bool, raw map[string]json.RawMessage) bool {
-	return actorType == "agent" && fieldWillBeWritten && rawFieldsHasKeyFold(raw, voteIssueKey)
+	return actorType == "agent" && fieldWillBeWritten &&
+		(rawFieldsHasKeyFold(raw, voteIssueKey) || rawFieldsHasKeyFold(raw, decisionIDKey))
 }
 
 // governedPublisher is the actor recorded on the update event.
@@ -379,13 +381,27 @@ func voteReceiptReason(ctx context.Context, q db.DBTX, workspaceID, issueID, wri
 	return "", live, nil
 }
 
-// governedApply routes an update to the vote path (an agent that passed
+// governedApply routes an update to the agent path (an agent that passed
 // voteEntered) or the owner-only CAS path.
 func (h *Handler) governedApply(w http.ResponseWriter, r *http.Request, actorType, actorID, role string, raw map[string]json.RawMessage, c ownerCASColumn, workspaceID, id string) (hermesExceptionSwapResult, bool) {
-	if actorType == "agent" && rawFieldsHasKeyFold(raw, voteIssueKey) {
-		return h.voteApply(w, r, actorID, raw, c, workspaceID, id)
+	if voteEntered(actorType, true, raw) {
+		return h.agentGovernedApply(w, r, actorID, raw, c, workspaceID, id)
 	}
 	return h.ownerCASApply(w, r, actorType, role, raw, c, workspaceID, id)
+}
+
+// agentGovernedApply sends an agent write to the vote receipt or to the
+// decision binding. The two are alternatives: a body naming both is refused.
+func (h *Handler) agentGovernedApply(w http.ResponseWriter, r *http.Request, writerID string, raw map[string]json.RawMessage, c ownerCASColumn, workspaceID, id string) (hermesExceptionSwapResult, bool) {
+	hasVote, hasDecision := rawFieldsHasKeyFold(raw, voteIssueKey), rawFieldsHasKeyFold(raw, decisionIDKey)
+	switch {
+	case hasVote && hasDecision:
+		writeError(w, http.StatusBadRequest, voteIssueKey+" and "+decisionIDKey+" are alternatives; send one")
+		return hermesExceptionSwapResult{}, false
+	case hasDecision:
+		return h.decisionApply(w, r, writerID, raw, c, workspaceID, id)
+	}
+	return h.voteApply(w, r, writerID, raw, c, workspaceID, id)
 }
 
 // voteApply runs checks 1 to 7 and the write for one agent request; ok is true
@@ -435,8 +451,7 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 	if err != nil {
 		return deny("", err)
 	}
-	var live string
-	err = h.DB.QueryRow(r.Context(), fmt.Sprintf(`SELECT COALESCE(%[1]s, '') FROM %[2]s WHERE id = $1 AND %[3]s = $2`, c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&live)
+	live, err := h.governedLiveValue(r.Context(), c, wsUUID, idUUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "target row not found")
 		return hermesExceptionSwapResult{}, false
@@ -445,15 +460,11 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 		return deny("", err)
 	}
 
-	switch {
-	case hermesExceptionDigest([]byte(live)) != before:
-		return deny(voteBeforeKey+" does not match the live value", nil)
-	case hermesExceptionDigest([]byte(content)) != after:
-		return deny(voteAfterKey+" does not match the new value", nil)
-	case voteNeedsMarker(c.kind) && !hasGovernedHumanBlock(live):
+	if reason := governedChangeRefusal(live, content, before, after); reason != "" {
+		return deny(reason, nil)
+	}
+	if voteNeedsMarker(c.kind) && !hasGovernedHumanBlock(live) {
 		return deny("the live value has no governed:human block", nil)
-	case !protectedBlocksUnchanged(live, content):
-		return deny("a governed:human block changed", nil)
 	}
 	// Vote check and write share one transaction under the vote issue's
 	// advisory lock. A BLOCK holds the same lock until its own commit, so a
@@ -509,7 +520,7 @@ func logVoteOutcome(r *http.Request, c ownerCASColumn, writerID, id, issueID str
 
 // voteUpdateProject is the project.description analogue of ownerCASUpdateAgent.
 func (h *Handler) voteUpdateProject(w http.ResponseWriter, r *http.Request, workspaceID string, prev db.Project, actorID string, raw map[string]json.RawMessage) {
-	result, ok := h.voteApply(w, r, actorID, raw, ownerCASProjectDescription, workspaceID, uuidToString(prev.ID))
+	result, ok := h.agentGovernedApply(w, r, actorID, raw, ownerCASProjectDescription, workspaceID, uuidToString(prev.ID))
 	if !ok {
 		return
 	}
