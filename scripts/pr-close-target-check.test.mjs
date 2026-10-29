@@ -213,10 +213,10 @@ test("the CLI skips upstream-sync heads", () => {
   assert.match(result.stdout, /skipped.*upstream-sync/i);
 });
 
-test("the workflow runs the trusted workflow checker on X99 without PR code", () => {
+test("the workflow runs the trusted workflow checker on a hosted runner without PR code", () => {
   const content = readFileSync(workflow, "utf8");
   assert.match(content, /pull_request_target:/);
-  assert.match(content, /runs-on: \[self-hosted, Linux, X64, cheese-x99\]/);
+  assert.match(content, /runs-on: ubuntu-24\.04/);
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);
