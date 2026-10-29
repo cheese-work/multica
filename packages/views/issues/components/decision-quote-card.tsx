@@ -25,12 +25,46 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import type { DecisionState, TimelineEntry } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
+import { RichContent } from "../../rich-content";
 
 const STATE_TONE: Record<DecisionState, string> = {
   pending: "bg-warning/10 text-warning",
   effective: "bg-success/10 text-success",
   disclaimed: "bg-muted text-muted-foreground",
 };
+
+function ictTime(iso: string): string | undefined {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return undefined;
+  return `${new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Bangkok",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(at)} ICT`;
+}
+
+/** The record's timing line: when a pending record takes effect (and how long the human can disclaim), or since when it holds. */
+function useTimingLine(entry: TimelineEntry, state: DecisionState): string | undefined {
+  const { t } = useT("issues");
+  if (state === "disclaimed") {
+    const time = entry.disclaimed_at ? ictTime(entry.disclaimed_at) : undefined;
+    return time ? t(($) => $.decision.timing_disclaimed, { time }) : undefined;
+  }
+  if (state === "effective") {
+    const time = entry.decision_delivered && entry.decision_woken_at ? ictTime(entry.decision_woken_at) : undefined;
+    return time ? t(($) => $.decision.timing_effective, { time }) : undefined;
+  }
+  const time = entry.effective_at ? ictTime(entry.effective_at) : undefined;
+  if (!time) return undefined;
+  const windowMs = entry.decision_answered_at ? Date.parse(entry.effective_at!) - Date.parse(entry.decision_answered_at) : 0;
+  const minutes = Math.round(windowMs / 60_000);
+  return minutes > 0
+    ? t(($) => $.decision.timing_pending_window, { time, minutes })
+    : t(($) => $.decision.timing_pending_turn_end);
+}
 
 /**
  * Receipt card for a decision quote comment (design `dm-decision-quote-cards`
@@ -66,6 +100,7 @@ export function DecisionQuoteCard({
   const isHuman = !!currentUserId && entry.decision_human_user_id === currentUserId;
   const state: DecisionState = conflict === "withdrawn" ? "disclaimed" : (entry.decision_state ?? "pending");
   const { note, quote } = splitDecisionQuote(entry.content ?? "");
+  const timing = useTimingLine(entry, state);
   const recorder = getActorName("agent", entry.decision_recorder_agent_id ?? entry.actor_id);
   const dmLink = (session?: string, message?: string) =>
     session && message ? `${paths.chatSession(session)}&message=${encodeURIComponent(message)}` : undefined;
@@ -127,6 +162,11 @@ export function DecisionQuoteCard({
               ? t(($) => $.decision.state.delivered)
               : t(($) => $.decision.state.recorded)}
         </span>
+        {entry.decision_answered_label && (
+          <span data-testid="decision-answered-label" className="rounded-xs border px-1.5 text-micro font-medium">
+            {entry.decision_answered_label}
+          </span>
+        )}
         {optionIndex !== undefined && (
           <span className="rounded-xs border px-1.5 text-micro" title={entry.decision_option_label}>
             {t(($) => $.decision.option_n, { number: optionIndex + 1 })}
@@ -143,8 +183,32 @@ export function DecisionQuoteCard({
         )}
         {!compact && <span className="text-micro text-muted-foreground">{t(($) => $.decision.via_dm)}</span>}
       </div>
-      {!compact && <p className="whitespace-pre-wrap break-words px-2.5 py-2 text-body">{quote}</p>}
-      {!compact && note && <p className="px-2.5 pb-2 text-caption text-muted-foreground">{note}</p>}
+      {!compact && (
+        <figure data-testid="decision-quote-words" className="m-2.5 border-l-2 border-surface-border pl-2.5 text-body">
+          <RichContent content={quote} density="compact" phase="settled" />
+        </figure>
+      )}
+      {!compact && entry.decision_full_message && (
+        <details data-testid="decision-full-message" className="px-2.5 pb-2 text-caption text-muted-foreground">
+          <summary className="cursor-pointer select-none">{t(($) => $.decision.full_message)}</summary>
+          <div className="mt-1.5 text-body text-foreground">
+            <RichContent content={entry.decision_full_message} density="compact" phase="settled" />
+          </div>
+        </details>
+      )}
+      {!compact && note && (
+        <details data-testid="decision-agent-note" className="px-2.5 pb-2 text-caption text-muted-foreground">
+          <summary className="cursor-pointer select-none">{t(($) => $.decision.agent_note)}</summary>
+          <div className="mt-1.5">
+            <RichContent content={note} density="compact" phase="settled" />
+          </div>
+        </details>
+      )}
+      {timing && (
+        <p data-testid="decision-timing" className="px-2.5 pb-1 text-caption text-muted-foreground">
+          {timing}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-1 px-1.5 pb-1.5 pl-2.5">
         <span className="mr-auto text-caption text-muted-foreground">
           {t(($) => $.decision.recorded_by, { name: recorder })}

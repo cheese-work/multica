@@ -753,6 +753,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's decision from attested DM messages or a member comment")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
+	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
 	issueCommentAddCmd.Flags().String("context-message", "", "Earlier assistant DM message UUID that offered the options; quoted as \"Options offered\" above the reply (requires --decision-record)")
 	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
@@ -2928,7 +2929,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
 	sourceComment, _ := cmd.Flags().GetString("source-comment")
+	excerpts, _ := cmd.Flags().GetStringArray("excerpt")
 	parent, _ := cmd.Flags().GetString("parent")
+	if len(excerpts) > 0 && (!decisionRecord || len(messageIDs) == 0) {
+		return fmt.Errorf("--excerpt requires --decision-record with --message")
+	}
 	if decisionRecord && (decisionIntent || (len(messageIDs) > 0) == (sourceComment != "") || sourceComment != "" && (parent == "" || contextMessage != "")) || !decisionRecord && (len(messageIDs) > 0 || sourceComment != "" || escalationClass != "" || contextMessage != "") {
 		return fmt.Errorf("--decision-record requires --message or --source-comment, not both; --source-comment requires --parent and excludes --context-message; decision sources and --class require --decision-record, not --decision-intent")
 	}
@@ -3014,6 +3019,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 		}
 		if contextMessage != "" {
 			body["context_message_id"] = contextMessage
+		}
+		if len(excerpts) > 0 {
+			body["excerpts"] = excerpts
 		}
 		if escalationClass != "" {
 			body["escalation_class"] = escalationClass

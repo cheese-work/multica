@@ -403,7 +403,6 @@
     "metadata_restore": "ダイアログのサイズを戻す",
     "metadata_copy_failed": "メタデータをコピーできませんでした",
     "metadata_description": "エージェントや連携機能がワークフローを引き継ぐために記録するキーと値のデータ。",
-
     "section_load_failed_retry": "読み込めませんでした。再試行",
     "not_found": "このタスクはこのワークスペースに存在しないか、削除されています。",
     "breadcrumb_project_unknown": "不明なプロジェクト",
@@ -1844,6 +1843,12 @@
     "withdrawn_body": "今回のクリックでは何も変更されていません。",
     "review_action": "確認",
     "failed_notice": "撤回できませんでした。決定は変更されていません。",
-    "try_again_action": "再試行"
+    "try_again_action": "再試行",
+    "full_message": "全文",
+    "agent_note": "エージェントのメモ",
+    "timing_disclaimed": "{{time}} に取り消し済み",
+    "timing_effective": "{{time}} から有効",
+    "timing_pending_window": "保留中。{{time}} に有効になります。取り消しは {{minutes}} 分以内。",
+    "timing_pending_turn_end": "保留中。回答したターンの終了時に有効になります。"
   }
 }

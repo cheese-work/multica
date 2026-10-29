@@ -53,8 +53,8 @@ VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_i
 RETURNING *;
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id)
-VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
+VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'), sqlc.arg('excerpted')::boolean, sqlc.narg('answered_label'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
@@ -407,7 +407,8 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- call serves the issue timeline and the DM list.
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
-       answer.chosen_option_index, request.options AS request_options,
+       answer.chosen_option_index, answer.excerpted, answer.answered_label, answer.content_snapshot,
+       answer.created_at AS answered_at, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
        request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix

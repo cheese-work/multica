@@ -403,7 +403,6 @@
     "metadata_restore": "恢复弹窗大小",
     "metadata_copy_failed": "复制元数据失败",
     "metadata_description": "智能体和集成记录的键值数据，用于衔接工作流程。",
-
     "section_load_failed_retry": "加载失败，点击重试",
     "not_found": "这个任务不存在或已在该工作区被删除。",
     "breadcrumb_project_unknown": "未知项目",
@@ -1844,6 +1843,12 @@
     "withdrawn_body": "此次点击未更改任何内容。",
     "review_action": "查看",
     "failed_notice": "无法撤回，决定保持不变。",
-    "try_again_action": "重试"
+    "try_again_action": "重试",
+    "full_message": "完整消息",
+    "agent_note": "智能体备注",
+    "timing_disclaimed": "已于 {{time}} 撤销",
+    "timing_effective": "自 {{time}} 起生效",
+    "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分钟内可撤销。",
+    "timing_pending_turn_end": "待生效。回答所在的回合结束时生效。"
   }
 }

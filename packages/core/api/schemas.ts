@@ -991,6 +991,10 @@ const decisionCommentShape = {
   decision_source_message_id: z.string().optional().catch(undefined),
   decision_request_session_id: z.string().optional().catch(undefined),
   decision_request_message_id: z.string().optional().catch(undefined),
+  decision_answered_label: z.string().optional().catch(undefined),
+  decision_full_message: z.string().optional().catch(undefined),
+  decision_answered_at: z.string().optional().catch(undefined),
+  decision_woken_at: z.string().nullable().optional().catch(undefined),
 };
 
 const DecisionCardSchema = z.object({

@@ -802,6 +802,8 @@ type DecisionAnswer struct {
 	ChosenOptionIndex       pgtype.Int4        `json:"chosen_option_index"`
 	ReplyText               pgtype.Text        `json:"reply_text"`
 	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
+	Excerpted               bool               `json:"excerpted"`
+	AnsweredLabel           pgtype.Text        `json:"answered_label"`
 }
 
 type DecisionBoundWrite struct {

@@ -1843,6 +1843,12 @@
     "withdrawn_body": "此次點擊未更改任何內容。",
     "review_action": "查看",
     "failed_notice": "無法撤回，決定保持不變。",
-    "try_again_action": "重試"
+    "try_again_action": "重試",
+    "full_message": "完整訊息",
+    "agent_note": "代理備註",
+    "timing_disclaimed": "已於 {{time}} 撤銷",
+    "timing_effective": "自 {{time}} 起生效",
+    "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分鐘內可撤銷。",
+    "timing_pending_turn_end": "待生效。回答所在的回合結束時生效。"
   }
 }

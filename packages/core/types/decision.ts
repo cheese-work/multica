@@ -99,4 +99,12 @@ export interface DecisionCommentFields {
   /** The DM message that asked, in the request's own session (a continued DM can differ from the answer's). */
   decision_request_session_id?: string;
   decision_request_message_id?: string;
+  /** The offered-option label (for example D1) an excerpted record answers. */
+  decision_answered_label?: string;
+  /** The whole source message, sent only for an excerpted record so the card can disclose it. */
+  decision_full_message?: string;
+  /** When the record was made; `effective_at` minus this is the disclaim window. */
+  decision_answered_at?: string;
+  /** When the answer became effective; absent while pending. */
+  decision_woken_at?: string | null;
 }

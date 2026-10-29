@@ -19,13 +19,16 @@ vi.mock("@multica/core/issues/decision-disclaim", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/issues/decision-disclaim")>()),
   useDisclaimDecisionAnswer: () => ({ mutateAsync: disclaim, isPending: false }),
 }));
-vi.mock("@multica/core/paths", () => ({
+vi.mock("@multica/core/paths", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/paths")>()),
+  useWorkspaceSlug: () => "acme",
   useWorkspacePaths: () => ({ chatSession: (id: string) => `/acme/chat?session=${id}`, issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: (_type: string, id: string) => (id === "agent-1" ? "x99-claude-sonnet" : id) }),
 }));
-vi.mock("../../navigation", () => ({
+vi.mock("../../navigation", async (importActual) => ({
+  ...(await importActual<typeof import("../../navigation")>()),
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
@@ -90,6 +93,73 @@ describe("DecisionQuoteCard", () => {
     expect(card).not.toHaveTextContent("Pending");
     expect(card).toHaveTextContent("x99-claude-sonnet");
     expect(card).toHaveTextContent("Agent note here.");
+  });
+
+  it("renders Markdown in the quoted words", () => {
+    renderCard(quote({ content: "> **Ship** it\n>\n> - one\n> - two" }));
+    const words = screen.getByTestId("decision-quote-words");
+    expect(words.querySelector("strong")).toHaveTextContent("Ship");
+    expect(words.querySelectorAll("li")).toHaveLength(2);
+    expect(words).not.toHaveTextContent("**");
+  });
+
+  it("keeps the agent's note out of the quote: labelled, collapsed, Markdown", () => {
+    renderCard(quote({ content: "Cheese decided: **stop Jev**.\n\n> Yes." }));
+    const note = screen.getByTestId("decision-agent-note");
+    expect(note.tagName).toBe("DETAILS");
+    expect(note).not.toHaveAttribute("open");
+    expect(note).toHaveTextContent("Agent's note");
+    expect(note.querySelector("strong")).toHaveTextContent("stop Jev");
+    expect(screen.getByTestId("decision-quote-words")).not.toHaveTextContent("stop Jev");
+    expect(screen.getByTestId("decision-quote-words")).toHaveTextContent("Yes.");
+  });
+
+  it("omits the agent's note when there is none", () => {
+    renderCard(quote());
+    expect(screen.queryByTestId("decision-agent-note")).toBeNull();
+  });
+
+  it("shows the answered option label and a collapsed Full message for an excerpted record", () => {
+    renderCard(quote({ content: "> yes", decision_answered_label: "D1", decision_full_message: "> D1: OK?\n\nyes\n\n> D2: Weekly?\n\nA" }));
+    expect(screen.getByTestId("decision-answered-label")).toHaveTextContent("D1");
+    expect(screen.getByTestId("decision-quote-words")).toHaveTextContent("yes");
+    expect(screen.getByTestId("decision-quote-words")).not.toHaveTextContent("Weekly");
+    const full = screen.getByTestId("decision-full-message");
+    expect(full.tagName).toBe("DETAILS");
+    expect(full).not.toHaveAttribute("open");
+    expect(full).toHaveTextContent("Full message");
+    expect(full).toHaveTextContent("Weekly?");
+  });
+
+  it("offers no Full message and no label on a whole-message record", () => {
+    renderCard(quote());
+    expect(screen.queryByTestId("decision-full-message")).toBeNull();
+    expect(screen.queryByTestId("decision-answered-label")).toBeNull();
+  });
+
+  it("says when a pending record takes effect, in ICT, with the disclaim window", () => {
+    renderCard(quote({ decision_state: "pending", decision_answered_at: "2026-10-30T03:00:00Z", effective_at: "2026-10-30T03:10:00Z" }));
+    const timing = screen.getByTestId("decision-timing");
+    expect(timing).toHaveTextContent("Pending");
+    expect(timing).toHaveTextContent("10:10 ICT");
+    expect(timing).toHaveTextContent("10 min to disclaim");
+  });
+
+  it("says a reversible pending record takes effect when the answering turn ends", () => {
+    renderCard(quote({ decision_state: "pending", decision_answered_at: "2026-10-30T03:00:00Z", effective_at: "2026-10-30T03:00:00Z" }));
+    const timing = screen.getByTestId("decision-timing");
+    expect(timing).toHaveTextContent("when the answering turn ends");
+    expect(timing).not.toHaveTextContent("to disclaim");
+  });
+
+  it("says when an effective record took effect, in ICT", () => {
+    renderCard(quote({ decision_state: "effective", decision_delivered: true, decision_woken_at: "2026-10-30T04:05:00Z" }));
+    expect(screen.getByTestId("decision-timing")).toHaveTextContent("In effect since 30 Oct, 11:05 ICT");
+  });
+
+  it("says when a disclaimed record was withdrawn, in ICT", () => {
+    renderCard(quote({ decision_state: "disclaimed", disclaimed_at: "2026-10-30T05:30:00Z" }));
+    expect(screen.getByTestId("decision-timing")).toHaveTextContent("Disclaimed at 30 Oct, 12:30 ICT");
   });
 
   it("shows Recorded, never In effect, for a woken answer the agent never received", () => {
