@@ -1747,6 +1747,7 @@ type IssueWakeup struct {
 	AggregateBlockedScopeKind pgtype.Text        `json:"aggregate_blocked_scope_kind"`
 	AggregateBlockedScopeID   pgtype.UUID        `json:"aggregate_blocked_scope_id"`
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
+	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 }
 
 type IssueWakeupDefinition struct {

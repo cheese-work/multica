@@ -342,8 +342,9 @@ func (q *Queries) CountWakeupFires(ctx context.Context, id pgtype.UUID) error {
 }
 
 const createIssueWakeup = `-- name: CreateIssueWakeup :one
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires,workflow_step)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
+ CASE WHEN $6::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=$3::uuid) END) RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
 `
 
 type CreateIssueWakeupParams struct {
@@ -373,6 +374,8 @@ type CreateIssueWakeupParams struct {
 	MaxFires        pgtype.Int4        `json:"max_fires"`
 }
 
+// workflow_step: see migration 798. A run registering a wakeup decides from the
+// issue's status now, so its wakeup works on that status (CHE-2298).
 func (q *Queries) CreateIssueWakeup(ctx context.Context, arg CreateIssueWakeupParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, createIssueWakeup,
 		arg.ID,
@@ -447,6 +450,7 @@ func (q *Queries) CreateIssueWakeup(ctx context.Context, arg CreateIssueWakeupPa
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -482,15 +486,21 @@ SELECT
     $21,
     $22,
     $23,
-    -- The workflow step this run works on (MUL-7420). A wakeup continues the
-    -- run that registered it, so it keeps that run's step: a status change it
-    -- makes after someone else moved the issue is refused like the run's own
-    -- would be. A wakeup a member registered starts from the issue's status.
+    -- The workflow step this run works on (MUL-7420). A wakeup an agent run
+    -- registered works on the issue's status at registration (wakeup_step,
+    -- migration 798): a status change it makes after someone else moved the
+    -- issue is refused like the registering run's would be. It is not the
+    -- registering run's own step, because a run that was already stale when it
+    -- registered would pass that stale step down every wakeup chain and every
+    -- status change would be refused (CHE-2298). Rows from before migration 798
+    -- keep copying the registering run's step. A wakeup a member registered
+    -- starts from the issue's status.
     COALESCE(
+        $24::text,
         (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = $19 AND s.issue_id = $3),
         (SELECT i.status FROM issue i WHERE i.id = $3)
     ),
-    COALESCE($24::uuid, gen_random_uuid())
+    COALESCE($25::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide
 `
@@ -519,6 +529,7 @@ type CreateWakeupTaskParams struct {
 	RerunOfTaskID        pgtype.UUID   `json:"rerun_of_task_id"`
 	TriggerEvidenceKind  pgtype.Text   `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID pgtype.UUID   `json:"trigger_evidence_ref_id"`
+	WakeupStep           pgtype.Text   `json:"wakeup_step"`
 	ID                   pgtype.UUID   `json:"id"`
 }
 
@@ -565,6 +576,7 @@ func (q *Queries) CreateWakeupTask(ctx context.Context, arg CreateWakeupTaskPara
 		arg.RerunOfTaskID,
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
+		arg.WakeupStep,
 		arg.ID,
 	)
 	var i AgentTaskQueue
@@ -900,7 +912,7 @@ func (q *Queries) FindWaitingIssueRun(ctx context.Context, arg FindWaitingIssueR
 }
 
 const getIssueWakeup = `-- name: GetIssueWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE id= $1 AND workspace_id= $2
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE id= $1 AND workspace_id= $2
 `
 
 type GetIssueWakeupParams struct {
@@ -957,6 +969,7 @@ func (q *Queries) GetIssueWakeup(ctx context.Context, arg GetIssueWakeupParams) 
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -976,7 +989,7 @@ WITH candidates AS (
   AND i.status<>'cancelled'
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
-SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at FROM candidates c JOIN issue_wakeup w ON w.id=c.id
+SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.workflow_step FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 WHERE ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
   AND NOT (w.id = ANY($2::uuid[]))
   -- An instance a full aggregate counter delayed waits for its retry time.
@@ -1055,6 +1068,7 @@ func (q *Queries) ListDueWakeups(ctx context.Context, arg ListDueWakeupsParams) 
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}
@@ -1067,7 +1081,7 @@ func (q *Queries) ListDueWakeups(ctx context.Context, arg ListDueWakeupsParams) 
 }
 
 const listInputWakeups = `-- name: ListInputWakeups :many
-SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at FROM issue_wakeup w
+SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.workflow_step FROM issue_wakeup w
 WHERE w.id IN (SELECT r.wakeup_id FROM issue_wakeup_receipt r WHERE r.processed_at IS NULL)
   AND ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
   AND NOT (w.id = ANY($2::uuid[]))
@@ -1142,6 +1156,7 @@ func (q *Queries) ListInputWakeups(ctx context.Context, arg ListInputWakeupsPara
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}
@@ -1294,7 +1309,7 @@ func (q *Queries) ListIssueWakeups(ctx context.Context, arg ListIssueWakeupsPara
 }
 
 const listOverdueRecurringWakeups = `-- name: ListOverdueRecurringWakeups :many
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE workspace_id= $1 AND enabled AND kind IN ('every','cron') AND next_fire_at<=now()
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE workspace_id= $1 AND enabled AND kind IN ('every','cron') AND next_fire_at<=now()
 `
 
 func (q *Queries) ListOverdueRecurringWakeups(ctx context.Context, workspaceID pgtype.UUID) ([]IssueWakeup, error) {
@@ -1352,6 +1367,7 @@ func (q *Queries) ListOverdueRecurringWakeups(ctx context.Context, workspaceID p
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}
@@ -1870,7 +1886,7 @@ func (q *Queries) ListWorkspaceWakeupSummaryRows(ctx context.Context, arg ListWo
 }
 
 const lockIssueWakeup = `-- name: LockIssueWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE id= $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE id= $1 FOR UPDATE
 `
 
 func (q *Queries) LockIssueWakeup(ctx context.Context, id pgtype.UUID) (IssueWakeup, error) {
@@ -1922,6 +1938,7 @@ func (q *Queries) LockIssueWakeup(ctx context.Context, id pgtype.UUID) (IssueWak
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -2067,7 +2084,7 @@ func (q *Queries) LockWakeupSourceTask(ctx context.Context, arg LockWakeupSource
 }
 
 const locklessWakeup = `-- name: LocklessWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE id= $1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE id= $1
 `
 
 func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWakeup, error) {
@@ -2119,6 +2136,7 @@ func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWake
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -2546,7 +2564,7 @@ func (q *Queries) TouchWakeupDispatch(ctx context.Context, id pgtype.UUID) error
 }
 
 const tryLockIssueWakeup = `-- name: TryLockIssueWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE id= $1 FOR UPDATE SKIP LOCKED
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE id= $1 FOR UPDATE SKIP LOCKED
 `
 
 // A rule another writer holds is skipped; it keeps its inputs.
@@ -2599,6 +2617,7 @@ func (q *Queries) TryLockIssueWakeup(ctx context.Context, id pgtype.UUID) (Issue
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
