@@ -70,6 +70,11 @@ test("timestamped application events are not compiler or test-harness diagnostic
   assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: "warning: C compiler diagnostic\n2026/10/28 06:00:22.123456 WARN expected negative-control event", annotations: [] }])).length, 1)
 })
 
+test("a BOM at a GitHub log chunk boundary does not defeat the application WARN skip", () => {
+  const log = '2026-10-29T19:17:20.5264970Z 2026/10/29 19:17:20 WARN plugins: queue full dropped_total=784\n\uFEFF2026-10-29T19:17:20.5267014Z 2026/10/29 19:17:20 WARN plugins: queue full dropped_total=785'
+  assert.deepEqual(warningCounts([{ name: "backend-tests", log, annotations: [] }]), {})
+})
+
 test("eslint warnings follow file and rule rather than line numbers", () => {
   const job = (file, line) => ({
     name: "frontend-build",

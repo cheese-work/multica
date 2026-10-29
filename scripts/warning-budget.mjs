@@ -34,7 +34,8 @@ export function warningCounts(jobs) {
     const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    for (const line of stripVTControlCharacters(job.log).split("\n")) {
+    // GitHub can start a log line with a BOM at a chunk boundary, which defeats the anchored regexes below.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\uFEFF", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""
