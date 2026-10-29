@@ -50,10 +50,8 @@ func TestDecisionDeliveryBranches(test *testing.T) {
 				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'squad', assignee_id = $1 WHERE id = $2`, squadID, fixture.issueID)
 			case "member":
 				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'member', assignee_id = $1 WHERE id = $2`, testUserID, fixture.issueID)
-				outcome = "comment_member"
 			case "unassigned":
 				dbfx.Exec(test, `UPDATE issue SET assignee_id = NULL, assignee_type = NULL WHERE id = $1`, fixture.issueID)
-				outcome = "comment_unassigned"
 			case "unbound":
 				dbfx.Exec(test, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, fixture.agentID)
 				outcome = ""
@@ -82,14 +80,8 @@ func TestDecisionDeliveryBranches(test *testing.T) {
 				}
 				return
 			}
-			if branch == "member" || branch == "unassigned" {
-				if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE decision_answer_id = $1 AND decision_comment_kind = 'delivery'`, recorded.Answer.ID); count != 1 {
-					test.Fatalf("delivery comments=%d, want 1", count)
-				}
-			} else {
-				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, fixture.agentID, recorded.Comment.ID); count != 1 {
-					test.Fatalf("durably covered quote count=%d, want 1", count)
-				}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, fixture.agentID, recorded.Comment.ID); count != 1 {
+				test.Fatalf("durably covered quote count=%d, want 1", count)
 			}
 			decisionPass(test, runner)
 			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, fixture.issueID); count > 1 {
@@ -268,6 +260,7 @@ func TestDecisionDeliveryReassignment(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, runtimeID, agentID)
 				if changed == "owner" {
 					dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, agentID, fixture.issueID)
+					dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)
 				}
 			}}
 			if err := deliverDecisionForTest(handler, fixture); err != nil {
@@ -685,12 +678,15 @@ func TestDecisionDeliveryCrossDMMemberLockOrderConcurrent(test *testing.T) {
 		chatTaskID := dbfx.Task(test, core.agentID, testutil.Cols{"chat_session_id": person.sessionID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 		dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)
 		member := askedRecordFixture{requestCoreFixture: person, decision: request, parentID: uuidToString(askComment.ID), messageID: messageID, chatTaskID: chatTaskID}
-		recorded, err := testHandler.createAskedDecisionRecord(member.recordRequest(), core.issue, member.recordInput())
+		input := member.recordInput()
+		input.ParentID, input.EscalationClass = pgtype.UUID{}, "reversible"
+		recorded, err := testHandler.createAskedDecisionRecord(member.recordRequest(), core.issue, input)
 		if err != nil {
 			test.Fatal(err)
 		}
 		dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, chatTaskID)
 		dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, recorded.Answer.ID)
+		member.decision = recorded.Request
 		return member
 	}
 	first := makeAnswer(core, firstRequest.Request, firstRequest.Comment)

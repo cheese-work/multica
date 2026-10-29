@@ -26,6 +26,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -90,7 +91,7 @@ type GitHubPullRequestResponse struct {
 	PRCreatedAt     string  `json:"pr_created_at"`
 	PRUpdatedAt     string  `json:"pr_updated_at"`
 	// LinkSource explains why the PR is on the issue: "manual", "title",
-	// "branch", or "auto" (an older rule). Only set on the issue PR list.
+	// "branch", "reference", or "auto". Only set on the issue PR list.
 	LinkSource string `json:"link_source,omitempty"`
 	// Mergeable state mirrors GitHub's REST `mergeable_state` field, retained
 	// for compatibility. The card now reads the richer GraphQL fields below.
@@ -1311,6 +1312,9 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
+		if row.LinkKind == "reference" {
+			resp.LinkSource = "reference"
+		}
 		out = append(out, resp)
 		// Page-visit trigger (MUL-5265): if this card's snapshot is missing or
 		// older than the view TTL, kick an async refresh. Non-blocking — the
@@ -1363,6 +1367,13 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if err != nil {
 		return
 	}
+	// A new head retires the reviews of the old one (CHE-2307).
+	h.supersedeStaleReviews(ctx, prID)
+	if pr.HeadRepoSame {
+		if err := h.TaskService.NoticePRSnapshotEvents(ctx, prID); err != nil {
+			slog.Warn("github: failed to deliver pull request snapshot events", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	issueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, prID)
 	if err != nil {
 		return
@@ -1370,6 +1381,11 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	linked := make([]string, 0, len(issueIDs))
 	for _, id := range issueIDs {
 		linked = append(linked, uuidToString(id))
+	}
+	// Kill switch (CHE-2220): the broadcast below still runs, but no linked issue
+	// is dispatched to. This path has no redelivery, so a failed read halts too.
+	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
+		issueIDs = nil
 	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so
@@ -1440,15 +1456,16 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 var identifierRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{0,9})-(\d+)\b`)
 
 // closingIdentifierRe extracts identifiers that appear immediately after a
-// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?") or
-// a plain reference keyword ("refs?", "part of"), optionally separated by a
-// colon and whitespace. Matching is intentionally
+// GitHub-style closing keyword ("close[sd]?", "fix(e[sd])?", "resolve[sd]?"),
+// optionally separated by a colon and whitespace. Matching is intentionally
 // strict on adjacency — "Fix MUL-1" names MUL-1, but "Fix login MUL-1" does
-// not. It is the one way a PR body links an issue; a bare body mention links
-// nothing. Since MUL-7726 the keyword only links: what a merge does is the
-// workspace's choice, not the PR text's.
+// not. A bare body mention links nothing.
 var closingIdentifierRe = regexp.MustCompile(
-	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+	`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
+)
+
+var referenceIdentifierRe = regexp.MustCompile(
+	`(?i)\b(?:refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9})-(\d+)\b`,
 )
 
 // HandleGitHubWebhook (POST /api/webhooks/github) is GitHub's destination for
@@ -1694,6 +1711,7 @@ type ghPullRequestPayload struct {
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
+			SHA string `json:"sha"`
 		} `json:"base"`
 		User struct {
 			Login     string `json:"login"`
@@ -2071,6 +2089,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	touched := map[pgtype.UUID]struct{}{}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
+		closingIdents := prClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)
 		if err != nil {
 			return fmt.Errorf("github: read auto-link setting: %w", err)
@@ -2080,8 +2099,18 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				idents:    idents,
 				permits:   func(id string) bool { return linkPolicy.permits(id, workspaceID) },
 				ambiguous: func(id string) bool { return linkPolicy.ambiguous[id] },
-				link: func(issueID pgtype.UUID) (int64, error) {
-					return qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+				link: func(issueID pgtype.UUID, identifier string) (int64, error) {
+					kind := "reference"
+					if slices.Contains(closingIdents, identifier) {
+						kind = "closing"
+					}
+					rows, err := qtx.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+						IssueID: issueID, PullRequestID: pr.ID, LinkKind: pgtype.Text{String: kind, Valid: true},
+					})
+					if kind == "reference" {
+						return 0, err
+					}
+					return rows, err
 				},
 				unlink: func(issueID pgtype.UUID) (int64, error) {
 					return qtx.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
@@ -2097,12 +2126,36 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list persisted links: %w", err)
 	}
+	lifecycle := prLifecycleKind(prevState, state)
+	if lifecycle != "" && pr.HeadRepoSame {
+		if _, err := ghsnapshot.CapturePREvent(ctx, qtx, ghsnapshot.PREventInput{
+			PRID: pr.ID, Kind: lifecycle, HeadSHA: pr.HeadSha, BaseSHA: p.PullRequest.Base.SHA,
+			ObservedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt).Time,
+		}); err != nil {
+			return fmt.Errorf("github: capture pr %s event: %w", lifecycle, err)
+		}
+	}
+	closingIssueIDs, err := qtx.ListClosingIssueIDsForPullRequest(ctx, pr.ID)
+	if err != nil {
+		return fmt.Errorf("github: list closing links: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
+	if pr.HeadRepoSame {
+		// Applied from the stored state, not only on a transition: a failure
+		// returns 5xx so GitHub redelivers, and the redelivery no longer sees a
+		// transition. Stopping and delivering are idempotent.
+		if err := h.TaskService.ApplyPRLifecycleEvent(ctx, service.PRLifecycleEvent{
+			PRID: pr.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+			Number: p.PullRequest.Number, Kind: prLifecycleApplyKind(state),
+		}); err != nil {
+			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
+		}
+	}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		if state == "merged" && prevState != "merged" {
-			for _, issueID := range issueIDs {
+			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
@@ -2181,12 +2234,12 @@ func dispatchMergedPRWakeups(issueIDs []pgtype.UUID, dispatch func(pgtype.UUID) 
 
 // prAutoLinkInput is what reconcileAutoLinks needs from one provider.
 type prAutoLinkInput struct {
-	idents    []string                         // identifiers the PR claims (see prClaimedIdentifiers)
-	permits   func(identifier string) bool     // cross-workspace verdict (always true for VCS)
-	ambiguous func(identifier string) bool     // resolved in several workspaces
-	link      func(pgtype.UUID) (int64, error) // automatic link; 1 when new
-	unlink    func(pgtype.UUID) (int64, error) // drop a link; 1 when removed
-	listAuto  func() ([]pgtype.UUID, error)    // issues currently auto-linked to the PR
+	idents    []string                                 // identifiers the PR claims (see prClaimedIdentifiers)
+	permits   func(identifier string) bool             // cross-workspace verdict (always true for VCS)
+	ambiguous func(identifier string) bool             // resolved in several workspaces
+	link      func(pgtype.UUID, string) (int64, error) // automatic link; 1 when new
+	unlink    func(pgtype.UUID) (int64, error)         // drop a link; 1 when removed
+	listAuto  func() ([]pgtype.UUID, error)            // issues currently auto-linked to the PR
 }
 
 // reconcileAutoLinks makes the PR's automatic links match its claims. It
@@ -2231,7 +2284,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, queries *db.Queries, w
 			continue
 		}
 		claimed[issue.ID] = struct{}{}
-		rows, err := in.link(issue.ID)
+		rows, err := in.link(issue.ID, id)
 		if err != nil {
 			return linked, touched, err
 		}
@@ -2311,6 +2364,36 @@ type ghPRChanges struct {
 // existing mergeable_state.
 func baseRefChanged(c *ghPRChanges) bool {
 	return c != nil && c.Base != nil && c.Base.Ref != nil && c.Base.Ref.From != ""
+}
+
+// prLifecycleKind names the lifecycle event a PR state change raises, or "" for
+// none. A PR first seen as draft or closed is not a change a live run missed.
+func prLifecycleKind(prev, state string) ghsnapshot.PREventKind {
+	switch {
+	case state == "merged" && prev != "merged":
+		return ghsnapshot.PREventMerged
+	case state == "closed" && prev != "" && prev != "closed" && prev != "merged":
+		return ghsnapshot.PREventClosed
+	case state == "draft" && prev != "" && prev != "draft":
+		return ghsnapshot.PREventDraft
+	case state == "open" && prev == "draft":
+		return ghsnapshot.PREventReady
+	}
+	return ""
+}
+
+// prLifecycleApplyKind maps the stored PR state to the lifecycle action still
+// owed to the PR's runs: stop for merged and closed, notice for draft and open.
+func prLifecycleApplyKind(state string) string {
+	switch state {
+	case "merged":
+		return "merged"
+	case "closed":
+		return "closed"
+	case "draft":
+		return "draft"
+	}
+	return "ready"
 }
 
 func derivePRState(state string, draft, merged bool) string {
@@ -2485,11 +2568,15 @@ func stripMarkdownCodeSpans(s string) string {
 // to fix. Markdown code spans are stripped first so a quoted closing keyword
 // in documentation prose is never mistaken for a live closing declaration.
 func extractClosingIdentifiers(parts ...string) []string {
+	return extractKeywordIdentifiers(closingIdentifierRe, parts...)
+}
+
+func extractKeywordIdentifiers(pattern *regexp.Regexp, parts ...string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, src := range parts {
 		src = stripMarkdownCodeSpans(src)
-		for _, m := range closingIdentifierRe.FindAllStringSubmatch(src, -1) {
+		for _, m := range pattern.FindAllStringSubmatch(src, -1) {
 			ident := strings.ToUpper(m[1]) + "-" + m[2]
 			if _, dup := seen[ident]; dup {
 				continue
@@ -2512,6 +2599,16 @@ func extractClosingIdentifiers(parts ...string) []string {
 // keep taking the default, but the cross-workspace scan has to tell "auto-link
 // is on" apart from "we could not find out" — see prLinkPolicy.
 func prClaimedIdentifiers(title, body, branch string) []string {
+	idents := prClosingIdentifiers(title, body, branch)
+	for _, identifier := range extractKeywordIdentifiers(referenceIdentifierRe, title, body) {
+		if !slices.Contains(idents, identifier) {
+			idents = append(idents, identifier)
+		}
+	}
+	return idents
+}
+
+func prClosingIdentifiers(title, body, branch string) []string {
 	idents := extractIdentifiers(title, branch)
 	for _, id := range extractClosingIdentifiers(title, body) {
 		if !slices.Contains(idents, id) {

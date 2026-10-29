@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const ISSUE_KEY = /\b[a-z][a-z0-9]{0,9}-\d+\b/gi;
 const CLOSE_DIRECTIVE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9}-\d+)\b/gi;
+const REFERENCE_DIRECTIVE = /\b(?:refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9}-\d+)\b/gi;
 const FENCE_START = /^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)$/m;
 
 function withoutMarkdownCode(body) {
@@ -80,9 +81,9 @@ function issueKeys(text) {
   return [...keys];
 }
 
-export function checkCloseTarget({ title = "", body = "", headRef = "" } = {}) {
+export function checkCloseTarget({ title = "", body = "", headRef = "", author = "" } = {}) {
   const normalizedHeadRef = typeof headRef === "string" ? headRef : "";
-  if (normalizedHeadRef.startsWith("upstream-sync/")) {
+  if (normalizedHeadRef.startsWith("upstream-sync/") || author === "dependabot[bot]") {
     return { closeTargets: [], strays: [], skipped: true };
   }
 
@@ -90,7 +91,11 @@ export function checkCloseTarget({ title = "", body = "", headRef = "" } = {}) {
   const visibleTitle = withoutMarkdownCode(typeof title === "string" ? title : "");
   const visibleBody = withoutMarkdownCode(typeof body === "string" ? body : "");
 
-  for (const directive of `${visibleTitle}\n${visibleBody}`.matchAll(CLOSE_DIRECTIVE)) {
+  const visibleText = `${visibleTitle}\n${visibleBody}`;
+  const referenceTargets = [...new Set(
+    [...visibleText.matchAll(REFERENCE_DIRECTIVE)].map((match) => match[1].toUpperCase()),
+  )];
+  for (const directive of visibleText.matchAll(CLOSE_DIRECTIVE)) {
     closeTargets.add(directive[1].toUpperCase());
   }
 
@@ -121,7 +126,12 @@ export function checkCloseTarget({ title = "", body = "", headRef = "" } = {}) {
     }
   }
 
-  return { closeTargets: [...closeTargets], strays };
+  return {
+    closeTargets: [...closeTargets],
+    strays,
+    referenceTargets,
+    missingIssueLink: ![...linkedKeys, ...closeTargets, ...referenceTargets].some((key) => /^CHE-\d+$/.test(key)),
+  };
 }
 
 function run(args) {
@@ -152,11 +162,17 @@ function run(args) {
     title: pullRequest.title,
     body: typeof pullRequest.body === "string" ? pullRequest.body : "",
     headRef: pullRequest.head.ref,
+    author: pullRequest.user?.login,
   });
 
   if (result.skipped) {
-    console.log("Close-target check skipped for upstream-sync head");
+    console.log("Close-target check skipped for upstream-sync head or dependabot author");
     return 0;
+  }
+
+  if (result.missingIssueLink) {
+    console.log("::error::PR has no issue link. Add Part of CHE-N on its own body line for a partial PR, or add the issue key to the title when the PR delivers the whole issue.");
+    return 1;
   }
 
   if (result.strays.length > 0) {
@@ -187,7 +203,10 @@ function run(args) {
     : targets.length === 1
       ? `${targets[0]} from title/branch`
       : "none";
-  console.log(`${number} close-target check passed; effective target(s): ${targetSummary}`);
+  const referenceSummary = result.referenceTargets.length > 0
+    ? `; reference link(s): ${result.referenceTargets.join(", ")}`
+    : "";
+  console.log(`${number} close-target check passed; effective target(s): ${targetSummary}${referenceSummary}`);
   return 0;
 }
 

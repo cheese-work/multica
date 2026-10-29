@@ -112,13 +112,14 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 		// Only an old client's flip of the retired PR switch needs the stored
 		// value; see reconcilePRMergeSettings.
 		reconcilePRMergeSettings(stored, incoming)
+		reconcileDelegatedWrites(stored, incoming)
 		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 		}
-	} else if stored[wakeupsPausedKey] == true {
-		// A non-object body would replace the whole blob and clear the pause
-		// with no resume record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused"}
+	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil {
+		// A non-object body would replace the whole blob and clear the pause or
+		// the delegated-writes setting with no record. Other callers may still store one.
+		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused or delegated writes are set"}
 	}
 	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)

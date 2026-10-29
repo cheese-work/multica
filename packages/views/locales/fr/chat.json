@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "À vous de décider",
+    "loading": "Chargement des demandes…",
+    "error": "Impossible de charger les demandes.",
+    "retry": "Réessayer",
+    "empty": "Aucune demande ouverte."
+  },
   "page": {
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "interactive_login_action": "Se connecter",
@@ -284,6 +291,7 @@
     "delete": "Supprimer la discussion"
   },
   "annotations": {
+    "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
     "add": "Ajouter un commentaire",
     "confirm_add": "Ajouter",
@@ -306,9 +314,21 @@
   "decision": {
     "request_title": "Demande de décision",
     "request_label": "Demande de décision : {{state}}",
-    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "disclaimed": "Désavouée" },
+    "answer_options": "Options",
+    "answer_text": "Ou écrivez une réponse",
+    "answer_send": "Envoyer",
+    "answer_error": "Échec de l'envoi. Réessayez.",
+    "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
+    "answer_hint": "Entrée envoie · Maj+Entrée pour un saut de ligne",
+    "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
+    "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
+    "answer_discard": "Supprimer le brouillon",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
+    "receipt_recorded": "Enregistré pour {{issue}}",
+    "receipt_option": "Option {{number}}",
+    "jump_to_card": "Aller à la carte",
     "withdrawn_in": "Retirée dans {{issue}}",
     "recorded_on": "Enregistré dans {{issue}}",
     "from_original_dm": "du DM d'origine",

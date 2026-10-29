@@ -1314,6 +1314,15 @@ describe("applyChatMessageToCache", () => {
 });
 
 describe("applyDecisionAnswerUpdated", () => {
+  it("also refreshes the timeline holding the member comment the answer was recorded from", () => {
+    const qc = createQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyDecisionAnswerUpdated(qc, { answer_id: "answer", issue_id: "issue-1", source_issue_id: "issue-2", state: "effective" });
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toContainEqual(issueKeys.timeline("issue-1"));
+    expect(keys).toContainEqual(issueKeys.timeline("issue-2"));
+  });
+
   it("refreshes the issue timeline and every DM message list", () => {
     const qc = createQueryClient();
     const spy = vi.spyOn(qc, "invalidateQueries");

@@ -10,7 +10,7 @@ const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "
 export async function fetchChangelog({
   token, out, firstParent, repository = "cheese-work/multica", fetchImpl = fetch,
   generator = generateEntries, deadlineMs = FETCH_DEADLINE_MS, summaryPath,
-  warning = annotate, ...options
+  warning = annotate, note = console.log, ...options
 }) {
   const controller = new AbortController();
   const started = performance.now();
@@ -61,7 +61,8 @@ export async function fetchChangelog({
       checkDeadline();
       writeAtomically(out, serializeEntries(result));
       checkDeadline();
-      for (const { message } of result.warnings) warning(message);
+      // Merged PRs were already warned at PR time (pr-changelog-check); a plain log keeps every build free of annotations nobody can act on.
+      for (const { number, message } of result.warnings) note(`PR #${number}: ${message}`);
       if (summaryPath) {
         const { shown, hidden, byReason } = result.counts;
         appendFileSync(summaryPath, `### Fork changelog\n\nShown: ${shown}\n\nHidden: ${hidden}\n${Object.entries(byReason).sort().map(([reason, count]) => `\n- ${reason}: ${count}`).join("")}\n`);

@@ -128,14 +128,14 @@ func TestExtractClosingIdentifiers(t *testing.T) {
 			want: []string{},
 		},
 		{
-			name: "refs_links",
+			name: "refs_does_not_close",
 			in:   []string{"", "Refs CHE-1988"},
-			want: []string{"CHE-1988"},
+			want: []string{},
 		},
 		{
-			name: "part_of_links",
+			name: "part_of_does_not_close",
 			in:   []string{"", "Part of CHE-1988\nPart of: che-7"},
-			want: []string{"CHE-1988", "CHE-7"},
+			want: []string{},
 		},
 		{
 			name: "refs_must_be_adjacent_and_whole_word",
