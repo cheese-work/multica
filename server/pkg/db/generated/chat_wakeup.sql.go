@@ -14,7 +14,7 @@ import (
 const cancelChatWakeup = `-- name: CancelChatWakeup :one
 UPDATE chat_wakeup SET status = 'cancelled', resolved_at = now()
 WHERE id = $1 AND chat_session_id = $2 AND status = 'pending'
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
 `
 
 type CancelChatWakeupParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 		&i.FiredTaskID,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -44,7 +45,7 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 const claimChatWakeup = `-- name: ClaimChatWakeup :one
 UPDATE chat_wakeup SET status = 'fired', resolved_at = now()
 WHERE id = $1 AND status = 'pending' AND fire_at <= now()
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
 `
 
 // ClaimChatWakeup is the fire gate: only one caller flips a pending row, and it
@@ -64,6 +65,7 @@ func (q *Queries) ClaimChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWake
 		&i.FiredTaskID,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -81,15 +83,16 @@ func (q *Queries) CountPendingChatWakeups(ctx context.Context, chatSessionID pgt
 }
 
 const createChatWakeup = `-- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, instruction, fire_at, created_by_task_id)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at
+INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, title, instruction, fire_at, created_by_task_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
 `
 
 type CreateChatWakeupParams struct {
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`
+	Title           string             `json:"title"`
 	Instruction     string             `json:"instruction"`
 	FireAt          pgtype.Timestamptz `json:"fire_at"`
 	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
@@ -100,6 +103,7 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		arg.WorkspaceID,
 		arg.ChatSessionID,
 		arg.AgentID,
+		arg.Title,
 		arg.Instruction,
 		arg.FireAt,
 		arg.CreatedByTaskID,
@@ -117,6 +121,7 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		&i.FiredTaskID,
 		&i.CreatedAt,
 		&i.ResolvedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -131,8 +136,46 @@ func (q *Queries) DropChatWakeup(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const listChatWakeupsByFiredTasks = `-- name: ListChatWakeupsByFiredTasks :many
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
+WHERE fired_task_id = ANY($1::uuid[])
+`
+
+func (q *Queries) ListChatWakeupsByFiredTasks(ctx context.Context, taskIds []pgtype.UUID) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, listChatWakeupsByFiredTasks, taskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatWakeup{}
+	for rows.Next() {
+		var i ChatWakeup
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ChatSessionID,
+			&i.AgentID,
+			&i.Instruction,
+			&i.FireAt,
+			&i.Status,
+			&i.CreatedByTaskID,
+			&i.FiredTaskID,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.Title,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueChatWakeups = `-- name: ListDueChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
 WHERE status = 'pending' AND fire_at <= now()
 ORDER BY fire_at, id
 LIMIT $1
@@ -159,6 +202,7 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 			&i.FiredTaskID,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}
@@ -171,7 +215,7 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 }
 
 const listPendingChatWakeups = `-- name: ListPendingChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
 WHERE chat_session_id = $1 AND status = 'pending'
 ORDER BY fire_at, id
 `
@@ -197,6 +241,7 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgty
 			&i.FiredTaskID,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}

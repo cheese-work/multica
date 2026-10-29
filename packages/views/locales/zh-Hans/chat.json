@@ -323,5 +323,14 @@
     "from_original_dm": "来自原始私信",
     "inherited": "继承",
     "message_unavailable": "该消息已不可用"
+  },
+  "wakeup": {
+    "node_label": "定时唤醒已触发",
+    "scheduled_at": "定时 {{time}}",
+    "set_by": "{{agent}} 于 {{time}} 设置",
+    "show_instruction": "查看指令",
+    "hide_instruction": "收起指令",
+    "instruction_region": "给智能体的指令",
+    "instruction_note": "给智能体的指令（原文）。智能体会收到全部内容。"
   }
 }

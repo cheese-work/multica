@@ -604,6 +604,7 @@ type ChatWakeup struct {
 	FiredTaskID     pgtype.UUID        `json:"fired_task_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
+	Title           string             `json:"title"`
 }
 
 type ClientUsageDaily struct {
