@@ -166,18 +166,18 @@ func (h *Handler) spawnSubWorkflowChild(ctx context.Context, parent db.Issue, su
 		status = def.Steps[0].StatusKey
 	}
 	_, err = h.IssueService.Create(ctx, service.IssueCreateParams{
-		WorkspaceID:     parent.WorkspaceID,
-		Title:           parent.Title + " — " + def.Name,
-		Status:          status,
-		Priority:        parent.Priority,
-		CreatorType:     parent.CreatorType,
-		CreatorID:       parent.CreatorID,
-		RequestedByID:   parent.RequestedByID,
-		ParentIssueID:   parent.ID,
-		ProjectID:       parent.ProjectID,
-		WorkflowID:      targetID,
-		Stage:           pgtype.Int4{Int32: int32(sub.Stage), Valid: true},
-		AllowDuplicate:  true,
+		WorkspaceID:    parent.WorkspaceID,
+		Title:          parent.Title + " — " + def.Name,
+		Status:         status,
+		Priority:       parent.Priority,
+		CreatorType:    parent.CreatorType,
+		CreatorID:      parent.CreatorID,
+		RequestedByID:  parent.RequestedByID,
+		ParentIssueID:  parent.ID,
+		ProjectID:      parent.ProjectID,
+		WorkflowID:     targetID,
+		Stage:          pgtype.Int4{Int32: int32(sub.Stage), Valid: true},
+		AllowDuplicate: true,
 	}, service.IssueCreateOpts{
 		ActorID: uuidToString(parent.CreatorID),
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, _ []db.IssueLabel) map[string]any {
