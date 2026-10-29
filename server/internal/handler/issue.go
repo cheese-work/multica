@@ -4183,7 +4183,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// An agent's run may only move the issue from the step it works on.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -5063,7 +5063,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// entering a handoff step reassigns this issue to the step's handler.
 		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-		handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
+		handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, workflowCaller{run: callerRun, agent: actorType == "agent"})
 		if err != nil {
 			continue
 		}

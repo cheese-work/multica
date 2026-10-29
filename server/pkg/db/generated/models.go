@@ -186,6 +186,7 @@ type AgentTaskQueue struct {
 	CompactTriggerTokens      pgtype.Int8        `json:"compact_trigger_tokens"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 	ClaimedModel              pgtype.Text        `json:"claimed_model"`
+	ChatCompactionEpoch       pgtype.Int8        `json:"chat_compaction_epoch"`
 	CancelAckedAt             pgtype.Timestamptz `json:"cancel_acked_at"`
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
@@ -587,6 +588,7 @@ type ChatSession struct {
 	ForkMessageCount       pgtype.Int4        `json:"fork_message_count"`
 	ForkSourceMessageID    pgtype.UUID        `json:"fork_source_message_id"`
 	TitleManuallySet       bool               `json:"title_manually_set"`
+	CompactionEpoch        int64              `json:"compaction_epoch"`
 }
 
 type ChatWakeup struct {
@@ -2250,6 +2252,27 @@ type TaskMessage struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	OutputTruncated pgtype.Bool        `json:"output_truncated"`
 	CallID          pgtype.Text        `json:"call_id"`
+}
+
+type TaskPrEventCapability struct {
+	TaskID      pgtype.UUID        `json:"task_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Capability  string             `json:"capability"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type TaskPrEventDelivery struct {
+	TaskID        pgtype.UUID        `json:"task_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	Status        string             `json:"status"`
+	FailureReason pgtype.Text        `json:"failure_reason"`
+	AttemptCount  int32              `json:"attempt_count"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
 }
 
 type TaskSupplement struct {

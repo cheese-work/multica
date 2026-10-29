@@ -1546,7 +1546,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		params.ProjectID = projectID
 		enterOnMove = true
 	}
-	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, nil)
+	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{})
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return

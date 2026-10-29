@@ -282,6 +282,7 @@
     "delete": "Delete chat"
   },
   "annotations": {
+    "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",
     "add": "Add comment",
     "confirm_add": "Add",

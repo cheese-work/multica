@@ -521,6 +521,12 @@ cleared_task_supplements AS (
 cleared_task_supplement_capabilities AS (
  DELETE FROM task_supplement_capability WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_task_pr_event_deliveries AS (
+ DELETE FROM task_pr_event_delivery WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_task_pr_event_capabilities AS (
+ DELETE FROM task_pr_event_capability WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
 ),
