@@ -40,7 +40,11 @@ func New(test *testing.T) *Authenticator {
 
 func (a *Authenticator) COSEPublicKey(test *testing.T) []byte {
 	test.Helper()
-	x, y := a.key.PublicKey.X.FillBytes(make([]byte, 32)), a.key.PublicKey.Y.FillBytes(make([]byte, 32))
+	point, err := a.key.PublicKey.Bytes() // 0x04 || X || Y, each coordinate 32 bytes for P-256
+	if err != nil {
+		test.Fatal(err)
+	}
+	x, y := point[1:33], point[33:65]
 	data, err := webauthncbor.Marshal(webauthncose.EC2PublicKeyData{
 		PublicKeyData: webauthncose.PublicKeyData{KeyType: int64(webauthncose.EllipticKey), Algorithm: int64(webauthncose.AlgES256)},
 		Curve:         int64(webauthncose.P256), XCoord: x, YCoord: y,

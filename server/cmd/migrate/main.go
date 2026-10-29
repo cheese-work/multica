@@ -145,11 +145,11 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"747_decision_action_request_index":                         "idx_decision_action_request",
-	"749_passkey_assertion_open":                                "uq_passkey_assertion_open",
-	"750_passkey_enroll_open":                                   "uq_passkey_enroll_open",
-	"751_user_passkey_credential":                               "uq_user_passkey_credential",
-	"752_idx_user_passkey_user":                                 "idx_user_passkey_user",
-	"754_idx_passkey_event_user":                                "idx_passkey_event_user",
+	"777_passkey_assertion_open":                                "uq_passkey_assertion_open",
+	"778_passkey_enroll_open":                                   "uq_passkey_enroll_open",
+	"779_user_passkey_credential":                               "uq_user_passkey_credential",
+	"780_idx_user_passkey_user":                                 "idx_user_passkey_user",
+	"782_idx_passkey_event_user":                                "idx_passkey_event_user",
 	"759_issue_pr_event_dedupe_index":                           "idx_issue_pr_event_dedupe",
 	"760_issue_pr_event_latest_index":                           "idx_issue_pr_event_latest",
 	"770_task_pr_event_capability_index":                        "task_pr_event_capability_task_uidx",

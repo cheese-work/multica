@@ -175,7 +175,7 @@ func (service *Service) mailCeremony(ctx context.Context, userID pgtype.UUID, em
 		if errors.Is(err, ErrDeliveryUnavailable) {
 			return row, err
 		}
-		return row, fmt.Errorf("%w: %v", ErrDeliveryUnavailable, err)
+		return row, fmt.Errorf("%w: %w", ErrDeliveryUnavailable, err)
 	}
 	return row, tx.Commit(ctx)
 }
