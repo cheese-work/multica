@@ -82,6 +82,7 @@ import type {
   WorkspaceDeletedPayload,
   WorkspaceUpdatedPayload,
   MemberRemovedPayload,
+  IssueStatusChangedPayload,
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
@@ -1097,6 +1098,16 @@ export function useRealtimeSync(
       }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
+      // A category move is the one catalog edit that does reach issue caches:
+      // rows carry the server-resolved status_category, and groups, facets and
+      // category-scoped lists are bucketed by it. Presentation-only edits keep
+      // the catalog-only path above.
+      if (msg.type === "issue_status:changed" && (msg.payload as IssueStatusChangedPayload | undefined)?.category_changed) {
+        debouncedRefresh("issue_status:category", () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        });
+      }
     });
 
     // --- Specific event handlers (granular cache updates) ---

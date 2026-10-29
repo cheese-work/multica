@@ -40,6 +40,7 @@ bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh" "$
 
 test -f "$work_dir/unpack/cutover-controller/evidence/manifest.json"
 test -f "$work_dir/unpack/cutover-controller/evidence/release-packet.json"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.flags.yml"
 
 # Layout mismatch: the consumer's exact paths are mandatory.
 mv "$work_dir/unpack/cutover-controller/evidence/manifest.json" "$work_dir/unpack/cutover-controller/evidence/wrong-name.json"

@@ -27,7 +27,13 @@ func TestDecisionActionSchema(test *testing.T) {
 		test.Skip("DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		test.Fatal(err)
+	}
+	// Each begin() holds its connection until the subtest ends, and "state set" opens seven.
+	poolConfig.MaxConns = 16
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		test.Fatal(err)
 	}

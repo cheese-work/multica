@@ -36,7 +36,7 @@ export function openSettingsTab(): void {
  */
 export function useOpenSettingsShortcut(): void {
   useEffect(() => {
-    if (window.desktopAPI.windowContext?.kind === "issue") return undefined;
+    if (window.desktopAPI.windowContext && window.desktopAPI.windowContext.kind !== "main") return undefined;
     // Optional call keeps renderer HMR safe while an old preload is still
     // attached to a refreshed React tree, same as reportAuthSession in App.
     return window.desktopAPI.onOpenSettings?.(openSettingsTab);

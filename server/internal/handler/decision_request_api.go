@@ -63,7 +63,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask.source_issue_id must match issue_id")
 		return
 	}
-	ask := parsed.Content()
+	workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
+		return
+	}
+	ask := parsed.Content(workspace.Slug)
 	if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return

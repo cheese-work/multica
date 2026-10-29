@@ -1,0 +1,178 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/packages/views
+
+ ❯ editor/plan-revision-viewer.test.tsx (5 tests | 5 failed) 5121ms
+     × renders current Markdown first, without fetching a base, and preserves download/close 1045ms
+     × compares literal source with collapsed context, change navigation and aligned split rows 1008ms
+     × labels bases with ICT time and uploader, and clears stale output after a denied base 1017ms
+     × does not silently choose a duplicate revision 1017ms
+     × shows first-revision and empty-document states without inventing a diff 1027ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  editor/plan-revision-viewer.test.tsx > PlanRevisionViewer > renders current Markdown first, without fetching a base, and preserves download/close
+TestingLibraryElementError: Unable to find role="article"
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ editor/plan-revision-viewer.test.tsx:55:25
+     53|   it("renders current Markdown first, without fetching a base, and pre…
+     54|     const { download, close } = mount();
+     55|     expect(await screen.findByRole("article")).toHaveTextContent("New …
+       |                         ^
+     56|     expect(screen.getByRole("switch", { name: "Diff" })).not.toBeCheck…
+     57|     expect(content.mock.calls.map(([id]) => id)).toEqual(["current"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  editor/plan-revision-viewer.test.tsx > PlanRevisionViewer > compares literal source with collapsed context, change navigation and aligned split rows
+TestingLibraryElementError: Unable to find role="article"
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ editor/plan-revision-viewer.test.tsx:66:18
+     64|   it("compares literal source with collapsed context, change navigatio…
+     65|     mount();
+     66|     await screen.findByRole("article");
+       |                  ^
+     67|     await waitFor(() => expect(screen.getByRole("switch", { name: "Dif…
+     68|     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  editor/plan-revision-viewer.test.tsx > PlanRevisionViewer > labels bases with ICT time and uploader, and clears stale output after a denied base
+TestingLibraryElementError: Unable to find role="article"
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ editor/plan-revision-viewer.test.tsx:85:18
+     83|   it("labels bases with ICT time and uploader, and clears stale output…
+     84|     mount();
+     85|     await screen.findByRole("article");
+       |                  ^
+     86|     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
+     87|     await screen.findByTestId("revision-diff");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  editor/plan-revision-viewer.test.tsx > PlanRevisionViewer > does not silently choose a duplicate revision
+TestingLibraryElementError: Unable to find an element with the text: Choose a base revision. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ editor/plan-revision-viewer.test.tsx:103:18
+    101|     list.mockResolvedValue([current, base, { ...base, id: "duplicate" …
+    102|     mount();
+    103|     await screen.findByText("Choose a base revision");
+       |                  ^
+    104|     expect(screen.getByRole("switch", { name: "Diff" })).toBeDisabled(…
+    105|     expect(content.mock.calls.map(([id]) => id)).toEqual(["current"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  editor/plan-revision-viewer.test.tsx > PlanRevisionViewer > shows first-revision and empty-document states without inventing a diff
+TestingLibraryElementError: Unable to find an element with the text: No earlier revisions. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div>[39m
+      [0mplan-rev-3.md[0m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ editor/plan-revision-viewer.test.tsx:115:25
+    113|     content.mockResolvedValue("");
+    114|     mount();
+    115|     expect(await screen.findByText("No earlier revisions")).toBeVisibl…
+       |                         ^
+    116|     expect(screen.getByRole("switch", { name: "Diff" })).toBeDisabled(…
+    117|     expect(await screen.findByText("This document is empty")).toBeVisi…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  13:06:02
+   Duration  8.17s (transform 131ms, setup 190ms, import 424ms, tests 5.12s, environment 2.14s)
+

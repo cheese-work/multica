@@ -405,14 +405,31 @@ writes `<state-dir>/outage-alert.json` and exits 1.
 upstream `/readyz` and the public listeners must answer 2xx for the whole
 `--window`. CD runs it for 120s after every cutover (0s after a failed one).
 
+### Feature-flag runtime inputs (CHE-2348)
+
+`docker-compose.flags.yml` preserves the feature-flag file across blue/green
+recreation independently of Jev. `cutover.sh` loads this overlay for cutover
+and rollback when the compose dir's `.env` sets `MULTICA_FEATURE_FLAGS_FILE`.
+The existing `MULTICA_JEV_FLAGS_FILE` setting remains a fallback so C00 does
+not need a configuration change. The generic setting takes precedence when
+both are non-empty. With neither set, no flags overlay loads.
+
+The host path must name an absolute, readable, non-empty file admitted by
+`flagfile-check.mjs`. Validation runs before any drain, pull, migration or
+start. Both backends mount the file read-only at `/app/feature-flags.yaml`,
+with their `MULTICA_FEATURE_FLAGS_FILE` environment pointing to that mount.
+The overlay does not set flag values, a Jev key, a gateway network or a
+database hostname. A flags-only installation needs no Jev configuration.
+
 ### Scoped Jev runtime inputs (CHE-1854)
 
 A backend recreated from the base files alone loses three things a scoped Jev
 shadow runtime needs: the deployment key, the workspace-scoped feature-flag
-file and the gateway network. `docker-compose.jev.yml` keeps them. It is
-opt-in per installation: `cutover.sh` loads it only when the compose dir's
-`.env` sets `MULTICA_JEV_FLAGS_FILE` or `MULTICA_JEV_GATEWAY_NETWORK`. With
-neither set, no overlay loads and every Compose call is unchanged. Jev stays
+file and the gateway network. `docker-compose.flags.yml` keeps the flag
+file; `docker-compose.jev.yml` keeps the Jev key and network. Jev is
+opt-in per installation: `cutover.sh` loads the Jev overlay only when the
+compose dir's `.env` sets `MULTICA_JEV_GATEWAY_NETWORK`. Without that setting,
+no Jev overlay loads. Jev stays
 off everywhere else; the overlay never sets `FF_JEV_ENABLED` or `JEV_API_KEY`.
 
 Protected operator inputs, all in the C00 compose dir's `.env` (never in the
@@ -421,7 +438,8 @@ repository, CI, logs or PR evidence):
 | Variable | Meaning |
 | --- | --- |
 | `MULTICA_JEV_SECRET_KEY` | Deployment key: standard base64 of 32 bytes. Already passed through by `docker-compose.selfhost.yml`. |
-| `MULTICA_JEV_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only at `/app/feature-flags.yaml`; `MULTICA_FEATURE_FLAGS_FILE` points there. |
+| `MULTICA_FEATURE_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only by the generic overlay at `/app/feature-flags.yaml`. |
+| `MULTICA_JEV_FLAGS_FILE` | Existing host flag-path setting, used only when `MULTICA_FEATURE_FLAGS_FILE` is empty or unset. No C00 configuration change is required. |
 | `MULTICA_JEV_GATEWAY_NETWORK` | Name of the existing external network. Both backends join it next to the project network. |
 
 The flag file decides which workspace may use Jev. Shape (workspace ID is
@@ -436,10 +454,10 @@ not recover. The Go loader classifies the same corpus
 Edit the file in place: replacing it by rename leaves a running colour on the
 old inode until recreation.
 
-Once either path or network is set, all three must hold. Before the first
+Once the Jev gateway network is set, all three must hold. Before the first
 drain, pull, migration or start, `cutover` and `rollback` refuse and name the
 failing variable (never its value) when the key is not base64 of 32 bytes,
-the flag file is not an absolute readable non-empty file that
+the selected flag file is not an absolute readable non-empty file that
 `flagfile-check.mjs` admits, or the network does not exist. A refusal leaves the incumbent serving.
 
 Joining the gateway network adds a second `postgres` to the backend's DNS
@@ -451,7 +469,7 @@ the deploy lock, rollback and the one-active-backend rule are untouched.
 
 Temporary-to-durable transition (operator, on C00; no value is printed):
 1. Copy the key already in the protected backend environment into
-   `.env` as `MULTICA_JEV_SECRET_KEY`, and add the other two variables.
+   `.env` as `MULTICA_JEV_SECRET_KEY`, and configure the flag path and network.
 2. The next CD cutover recreates the candidate colour with the overlay. The
    hand-made container from the temporary recovery is replaced by it; the
    original `unless-stopped` policy comes from the base files.
@@ -583,9 +601,12 @@ admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
 
 `cd-qualification.yml` groups pushes by `github.ref` with
-`cancel-in-progress: true`: a new `main` push cancels superseded qualification
-work instead of waiting for the old build. This group is separate from every
-approval and C00 mutation lock; cancellation cannot interrupt a started deploy.
+`cancel-in-progress: false`: the running qualification build finishes, and a new
+`main` push replaces only the older pending run, so at most one build runs and
+one waits. The newest commit can wait for the running build (about 25-45 min).
+A finished older build is not wasted: `require-current.sh` accepts a qualified
+older `main` commit that is a forward move from C00. This group is separate from
+every approval and C00 mutation lock.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual

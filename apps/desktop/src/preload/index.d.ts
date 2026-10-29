@@ -120,6 +120,9 @@ interface DesktopAPI {
   openIssueWindow: (
     request: IssueWindowRequest,
   ) => Promise<{ ok: true } | { ok: false; reason: "invalid_request" }>;
+  openMediaWindow: (
+    request: IssueWindowRequest,
+  ) => Promise<{ ok: true } | { ok: false; reason: "invalid_request" }>;
 }
 
 type DaemonReauthResult =

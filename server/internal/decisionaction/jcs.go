@@ -86,7 +86,10 @@ func writeObject(out *bytes.Buffer, decoder *json.Decoder) error {
 		if err != nil {
 			return fmt.Errorf("canonical json: %w", err)
 		}
-		key := token.(string)
+		key, isKey := token.(string)
+		if !isKey {
+			return fmt.Errorf("canonical json: object key is %T, not a string", token)
+		}
 		if _, dup := members[key]; dup {
 			return fmt.Errorf("canonical json: duplicate key %q", key)
 		}

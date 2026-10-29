@@ -253,3 +253,17 @@ func TestNewClientFromEnv(t *testing.T) {
 		}
 	})
 }
+
+func TestInstallationToken404IsInstallationGone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.restGet(context.Background(), 77, "/repos/o/r/pulls/5")
+	var gone *InstallationGoneError
+	if !errors.As(err, &gone) || gone.InstallationID != 77 {
+		t.Fatalf("err = %T (%v), want *InstallationGoneError for installation 77", err, err)
+	}
+}

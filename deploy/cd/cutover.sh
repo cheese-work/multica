@@ -139,30 +139,44 @@ deploy_lock="$state_dir/deploy.lock"
 source "$script_dir/deploy-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
 
+flags_overlay_prepare() {
+  local flags flags_var=MULTICA_FEATURE_FLAGS_FILE
+  flags="$(env_setting "$flags_var")"
+  if [ -z "$flags" ]; then
+    flags_var=MULTICA_JEV_FLAGS_FILE
+    flags="$(env_setting "$flags_var")"
+  fi
+  [ -n "$flags" ] || return 0
+  flags_refuse() {
+    echo "!! flags overlay: $flags_var $1; refusing before any change" >&2
+    exit 1
+  }
+  case "$flags" in
+    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || flags_refuse "is not a readable, non-empty file"
+      node "$script_dir/flagfile-check.mjs" "$flags" || flags_refuse "is not a valid feature-flag file (see the line above)" ;;
+    *) flags_refuse "is unset or not an absolute path" ;;
+  esac
+  compose_files+=("$script_dir/docker-compose.flags.yml")
+  echo "==> flags overlay enabled (flag file verified)"
+}
+
 # Scoped Jev runtime overlay (CHE-1854). Opt-in per installation: the compose
-# dir's .env sets MULTICA_JEV_FLAGS_FILE and/or MULTICA_JEV_GATEWAY_NETWORK.
-# Once either is set, ALL prerequisites must hold (key, flag file, network);
+# dir's .env sets MULTICA_JEV_GATEWAY_NETWORK.
+# Once set, ALL prerequisites must hold (key, flag file, network);
 # any gap refuses here, before the first drain, pull, migration or start, and
-# names the variable but never its value. Unset = overlay not loaded and every
-# compose call is identical to a plain A/B install.
+# names the variable but never its value. Unset = Jev overlay not loaded.
 jev_overlay_prepare() {
   local flags network key
-  flags="$(env_setting MULTICA_JEV_FLAGS_FILE)"
   network="$(env_setting MULTICA_JEV_GATEWAY_NETWORK)"
-  [ -n "$flags$network" ] || return 0
+  [ -n "$network" ] || return 0
+  flags="$(env_setting MULTICA_FEATURE_FLAGS_FILE)"
+  [ -n "$flags" ] || flags="$(env_setting MULTICA_JEV_FLAGS_FILE)"
   key="$(env_setting MULTICA_JEV_SECRET_KEY)"
   jev_refuse() {
     echo "!! jev overlay: $1 $2; refusing before any change" >&2
     exit 1
   }
-  case "$flags" in
-    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a readable, non-empty file"
-      # Both colours mount this file and the backend refuses to start on a
-      # malformed one, so a bad file must stop us before the incumbent drains.
-      node "$script_dir/flagfile-check.mjs" "$flags" || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a valid feature-flag file (see the line above)" ;;
-    *) jev_refuse MULTICA_JEV_FLAGS_FILE "is unset or not an absolute path" ;;
-  esac
-  [ -n "$network" ] || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "is unset"
+  [ -n "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is unset (or set MULTICA_FEATURE_FLAGS_FILE)"
   docker network inspect "$network" >/dev/null 2>&1 || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "names a network that does not exist"
   # Same contract as the server's credential.DecodeKey: standard base64 of 32 bytes.
   printf '%s' "$key" | node -e '
@@ -251,7 +265,11 @@ published_port_matches() {
 conf_upstreams() {
   awk '
     /listen 127\.0\.0\.1:[0-9]+/ { match($0, /:[0-9]+/); listen = substr($0, RSTART + 1, RLENGTH - 1) }
-    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ { match($0, /127\.0\.0\.1:[0-9]+/); print listen "=" substr($0, RSTART + 10, RLENGTH - 10) }
+    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ {
+      match($0, /127\.0\.0\.1:[0-9]+/)
+      route = listen "=" substr($0, RSTART + 10, RLENGTH - 10)
+      if (!seen[route]++) print route
+    }
   '
 }
 
@@ -451,7 +469,10 @@ if ! flock -w "$lock_wait_seconds" 9; then
   exit 1
 fi
 
-[ "$command" = status ] || jev_overlay_prepare
+if [ "$command" != status ]; then
+  flags_overlay_prepare
+  jev_overlay_prepare
+fi
 
 case "$command" in
   status)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // The workflow edge engine (CHE-2152). A trigger on issue.status keeps one
@@ -163,7 +166,7 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 		return facts, err
 	}
 	for _, p := range prs {
-		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha})
+		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
 	facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges)
 	return facts, err
@@ -207,11 +210,20 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 
 // onRunBudgetExhausted blocks an issue whose workflow run budget is spent, so
 // a person sees why nothing more runs. It leaves an issue that is already
-// blocked alone (something else parked it), and one whose workflow has no
-// blocked status, where the refusal alone holds the line.
+// blocked alone (something else parked it), one whose workflow has no blocked
+// status, where the refusal alone holds the line, and one that is no longer in
+// the status the refused run was for: the hook runs after the refusal, and a
+// finish written in between (CHE-2226) must stay. An issue in a review status is
+// blocked only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
-	if err != nil || issue.Status == issuestatus.Blocked {
+	if err != nil || issue.Status == issuestatus.Blocked || issue.Status != e.Status ||
+		service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return
+	}
+	// A refused run for anyone but the reviewer must not block the review: the
+	// reviewer's own first run on a head is still admitted.
+	if service.IsReviewStatus(issue.Status) && issue.AssigneeID != e.Target.AgentID {
 		return
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
@@ -219,7 +231,12 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
 		return
 	}
-	details := map[string]any{"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs}
+	raise := h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+	refused := h.runBudgetRefusedRun(ctx, e)
+	details := map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
+		"refused_run": refused, "raise_command": raise,
+	}
 	if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); !moved {
 		return
 	}
@@ -234,4 +251,72 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
+	h.postSystemComment(ctx, issue, runBudgetBlockedMessage(refused, int(e.Runs), e.Max, raise))
+}
+
+// runBudgetBlockedMessage is the system comment for a budget block. Without a
+// raise command (the platform maximum leaves no valid raise) it names the
+// maximum and the recovery a person has instead.
+func runBudgetBlockedMessage(refused string, runs, max int, raise string) string {
+	if raise == "" {
+		return fmt.Sprintf(
+			"Blocked: %s was refused because the issue used %d of %d runs. The platform maximum of %d runs is reached, so no raise is possible. A person moves the issue's status to open a new run window.",
+			refused, runs, max, issueworkflow.MaxRunsPerIssueLimit)
+	}
+	return fmt.Sprintf(
+		"Blocked: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
+		refused, runs, max, raise)
+}
+
+// runBudgetRefusedRun names the run the budget refused in one phrase: the
+// agent that would have received it, what asked, and the status the issue was
+// in.
+func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetExhausted) string {
+	who := "an agent"
+	if e.Target.AgentID.Valid {
+		if agent, err := h.Queries.GetAgent(ctx, e.Target.AgentID); err == nil {
+			who = "agent " + agent.Name
+		}
+	}
+	trigger := e.Target.Trigger
+	if trigger == "" {
+		trigger = "derived"
+	}
+	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
+}
+
+// runBudgetRaiseCommand is the command that lifts this issue's cap to leave
+// 10 runs after the ones already used, using the issue's identifier when the
+// workspace prefix is known. It is empty when the platform maximum leaves no
+// valid raise.
+func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
+	ref := uuidToString(issue.ID)
+	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
+		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
+	}
+	target := service.SuggestedRaiseTarget(max, used)
+	if target == 0 {
+		return ""
+	}
+	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target)
+}
+
+// postSystemComment adds a top-level system comment to the issue.
+func (h *Handler) postSystemComment(ctx context.Context, issue db.Issue, content string) {
+	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
+	})
+	if err != nil {
+		slog.Warn("system comment failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
+		"comment":             commentToResponse(created.Comment(), nil, nil),
+		"issue_title":         issue.Title,
+		"issue_assignee_type": textToPtr(issue.AssigneeType),
+		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
+		"issue_status":        issue.Status,
+		"issue_revision":      created.IssueRevision,
+	})
 }
