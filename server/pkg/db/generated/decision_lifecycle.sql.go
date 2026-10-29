@@ -129,13 +129,16 @@ const decisionLifecycleReason = `-- name: DecisionLifecycleReason :one
 SELECT CASE
     WHEN issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved') THEN 'issue_closed'
     WHEN NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id) THEN 'human_removed'
-    WHEN agent.archived_at IS NOT NULL THEN 'agent_archived'
+    WHEN agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL) THEN 'agent_archived'
     WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' THEN 'expired'
     ELSE ''
 END::text AS reason
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.workspace_id = $1 AND request.id = $2
 `
 
@@ -289,9 +292,12 @@ const listDecisionLifecycleCancellations = `-- name: ListDecisionLifecycleCancel
 SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.status IN ('open', 'answered') AND (
     issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
-    OR agent.archived_at IS NOT NULL
+    OR (agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL))
     OR NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id)
     OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours')
 )
