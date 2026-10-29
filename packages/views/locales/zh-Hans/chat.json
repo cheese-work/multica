@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你决定",
+    "loading": "正在加载待处理请求…",
+    "error": "无法加载待处理请求。",
+    "retry": "重试",
+    "empty": "没有待处理请求。"
+  },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
     "interactive_login_action": "登录",

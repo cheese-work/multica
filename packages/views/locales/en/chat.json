@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "Needs you",
+    "loading": "Loading open asks…",
+    "error": "Could not load open asks.",
+    "retry": "Retry",
+    "empty": "No open asks."
+  },
   "page": {
     "interactive_login_required": "Sign in again to use Chat",
     "interactive_login_action": "Sign in",

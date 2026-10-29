@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "À vous de décider",
+    "loading": "Chargement des demandes…",
+    "error": "Impossible de charger les demandes.",
+    "retry": "Réessayer",
+    "empty": "Aucune demande ouverte."
+  },
   "page": {
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "interactive_login_action": "Se connecter",
