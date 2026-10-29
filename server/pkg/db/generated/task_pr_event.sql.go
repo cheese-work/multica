@@ -280,6 +280,119 @@ func (q *Queries) GetTaskPREventCapability(ctx context.Context, taskID pgtype.UU
 	return i, err
 }
 
+const listAcceptedPRNoticeEvents = `-- name: ListAcceptedPRNoticeEvents :many
+SELECT id FROM issue_pr_event
+WHERE issue_id = $1
+  AND pull_request_id = $2
+  AND kind IN ('draft', 'ready')
+  AND status = 'accepted'
+ORDER BY observed_at, created_at
+`
+
+type ListAcceptedPRNoticeEventsParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+}
+
+// Draft and ready events of the PR still waiting for a live run to take them.
+func (q *Queries) ListAcceptedPRNoticeEvents(ctx context.Context, arg ListAcceptedPRNoticeEventsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAcceptedPRNoticeEvents, arg.IssueID, arg.PullRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPROnlyRunIDs = `-- name: ListPROnlyRunIDs :many
+
+SELECT t.id
+FROM agent_task_queue t
+WHERE t.issue_id = $1
+  AND t.status IN ('queued', 'dispatched', 'running')
+  AND EXISTS (SELECT 1 FROM issue_wakeup_receipt r WHERE r.task_id = t.id)
+  AND NOT EXISTS (
+      SELECT 1 FROM issue_wakeup_receipt r
+      WHERE r.task_id = t.id
+        AND NOT (r.event_type IN ('pr.checks_failed', 'pr.checks_passed', 'pr.mergeability', 'pr.returned_to_draft')
+                 AND (r.event_key = $2::text
+                      OR left(r.event_key, length($2::text) + 1) = $2::text || ':'))
+  )
+ORDER BY t.created_at
+`
+
+type ListPROnlyRunIDsParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	KeyPrefix string      `json:"key_prefix"`
+}
+
+// PR lifecycle (CHE-2298 c1).
+// Unfinished runs of the issue that exist only to act on this PR: every wakeup
+// receipt that started the run is a PR wake for the PR, and the PR's own
+// pr.merged wake is not among them (it is the work a merge asks for).
+// @key_prefix is 'github:<owner>/<repo>#<number>', lower-cased.
+func (q *Queries) ListPROnlyRunIDs(ctx context.Context, arg ListPROnlyRunIDsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPROnlyRunIDs, arg.IssueID, arg.KeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunningPREventTaskIDs = `-- name: ListRunningPREventTaskIDs :many
+SELECT t.id
+FROM agent_task_queue t
+JOIN task_pr_event_capability cap ON cap.task_id = t.id
+WHERE t.issue_id = $1
+  AND t.status = 'running'
+  AND cap.capability = 'task-supplement-pr-event-v1'
+ORDER BY t.created_at
+`
+
+// Running runs of the issue that negotiated typed PR-event delivery.
+func (q *Queries) ListRunningPREventTaskIDs(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listRunningPREventTaskIDs, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordTaskPREventCapability = `-- name: RecordTaskPREventCapability :execrows
 
 INSERT INTO task_pr_event_capability (task_id, workspace_id, issue_id, capability)
@@ -331,6 +444,43 @@ SELECT event_id FROM settled
 // in the task update's transaction. Undelivered events return to next_turn.
 func (q *Queries) SettleTerminalTaskPREventDeliveries(ctx context.Context, taskIds []pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, settleTerminalTaskPREventDeliveries, taskIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedeOpenPREventsForPR = `-- name: SupersedeOpenPREventsForPR :execrows
+WITH failed AS (
+    UPDATE task_pr_event_delivery d
+    SET status = 'failed', failure_reason = 'pr_closed', updated_at = now()
+    FROM issue_pr_event e
+    WHERE e.id = d.event_id
+      AND e.issue_id = $1
+      AND e.pull_request_id = $2
+      AND e.kind NOT IN ('merged', 'closed')
+      AND d.status = 'pending'
+    RETURNING d.event_id
+)
+UPDATE issue_pr_event e
+SET status = 'superseded'
+WHERE e.issue_id = $1
+  AND e.pull_request_id = $2
+  AND e.kind NOT IN ('merged', 'closed')
+  AND (e.status IN ('accepted', 'next_turn')
+       OR e.id IN (SELECT event_id FROM failed))
+`
+
+type SupersedeOpenPREventsForPRParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+}
+
+// A merged or closed PR has nothing left to fix: undelivered conflict, head,
+// check, draft and ready events of the PR are superseded, and their pending
+// deliveries fail. A delivery already in flight (delivering) is left to finish.
+func (q *Queries) SupersedeOpenPREventsForPR(ctx context.Context, arg SupersedeOpenPREventsForPRParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeOpenPREventsForPR, arg.IssueID, arg.PullRequestID)
 	if err != nil {
 		return 0, err
 	}
