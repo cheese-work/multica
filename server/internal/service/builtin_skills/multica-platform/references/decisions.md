@@ -77,9 +77,10 @@ multica workspace update <id> --context-file ./c.md --expected-before-digest <he
   `--expected-before-digest`. The CLI computes `after_sha256` from the file.
 - Workflow commands hash the live workflow read just before the write (steps as
   canonical JSON wrapped with the workflow id), so no `--expected-before-digest`.
-  A `--steps-file` should be the full `workflow get` shape; the server adds
-  missing `todo`, `done` and `cancelled` steps, and a file that relies on that
-  hashes differently and is refused with 403.
+  `after_sha256` is the hash of the steps as the server stores them: the CLI
+  applies the server's own trim, handler-default and board-order rules (and adds
+  missing `todo`, `done` and `cancelled` steps), so a newline-terminated
+  instruction file or a partial `--steps-file` hashes like the stored result.
 - A bound write carries one field: no other update flag, and for workflows no
   run-rule flag. `--decision-id` and `--vote-issue` are alternatives.
 - 409 means the live value moved or the decision was used: read it again and
