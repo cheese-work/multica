@@ -100,6 +100,13 @@ if [ "\$1" = "inspect" ]; then
   # the local image that tag resolves to now. Kept distinct so a stale
   # container (image-<service> not refreshed by "up") is detectable.
   case "\$*" in
+    *'{{json .Mounts}}'*)
+      if [ -f "\$control_dir/flags-mount-\${ref#cid-}" ]; then
+        printf '[{"Destination":"/app/feature-flags.yaml"}]\n'
+      else
+        printf '[]\n'
+      fi
+      exit 0 ;;
     *'{{.Image}}'*) cat "\$control_dir/image-\${ref#cid-}" 2>/dev/null; exit 0 ;;
     *'--format {{.Id}}'*) printf 'imgid-%s\n' "\$ref"; exit 0 ;;
     # Drift receipt (CHE-2396): env key names of a container (cid-<service>)
@@ -398,6 +405,15 @@ if printf '%s' "$url" | grep -q '/health$'; then
     cat "$control_dir/health-commit-override-$port"
   else
     printf '{"status":"ok","pid":%s,"commit":"%s","started_at":"t-%s"}\n' "${#service}$(printf '%s' "$service" | cksum | cut -c1-4)" "$(cat "$control_dir/commit-$service")" "$service"
+  fi
+fi
+if [[ "$url" = */api/config ]]; then
+  printf '%s\n' "$url" >>"$control_dir/config-calls.log"
+  [ ! -f "$control_dir/config-unavailable-$service" ] || exit 22
+  if [ -f "$control_dir/config-$service" ]; then
+    cat "$control_dir/config-$service"
+  else
+    printf '{"feature_flags":{"project_workflows_v1":false,"plugins_v1":false,"composio_mcp_apps":false,"billing_workspace_subscriptions":false}}\n'
   fi
 fi
 exit 0
@@ -1555,5 +1571,35 @@ drift_case() {
 drift_case drift-env-key-missing env-missing-frontend-green "" "frontend-green env: missing key MULTICA_APP_URL"
 drift_case drift-env-key-unexpected env-extra-backend-green "" "backend-green env: unexpected key STALE_FLAG"
 drift_case drift-image-digest running-digest-web "sha256:$(printf 'e%.0s' {1..64})" "frontend-green image: running digest"
+
+flag_guard_failures=0
+for regression in unset-file missing-public-flag; do
+  (
+    state_dir="$(fresh_scenario_dir "flags-guard-$regression")"
+    mkdir -p "$state_dir/control"
+    if [ "$regression" = unset-file ]; then
+      write_jev_env
+      touch "$state_dir/control/flags-mount-backend-blue"
+      want="flags continuity: MULTICA_FEATURE_FLAGS_FILE and MULTICA_JEV_FLAGS_FILE are unset"
+    else
+      printf 'project_workflows_v1:\n  default: true\n' >"$jev_flags"
+      write_jev_env "MULTICA_FEATURE_FLAGS_FILE=$jev_flags"
+      printf '{"feature_flags":{}}\n' >"$state_dir/control/config-backend-green"
+      want="frontend flag mismatch: project_workflows_v1"
+    fi
+    output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+    expect_exit 1 "$status" "flags-guard-$regression"
+    expect_contains "$output" "$want" "flags-guard-$regression"
+    [ ! -f "$state_dir/cutover-state.json" ] || exit 1
+    [ -f "$state_dir/control/running-backend-blue" ] || exit 1
+    [ ! -f "$state_dir/control/running-backend-green" ] || exit 1
+    if [ "$regression" = unset-file ] && mutated "$state_dir"; then
+      echo "scenario flags-guard-$regression: mutated before refusing" >&2
+      exit 1
+    fi
+    echo "flags-guard-$regression passed"
+  ) || flag_guard_failures=$((flag_guard_failures + 1))
+done
+[ "$flag_guard_failures" -eq 0 ] || exit 1
 
 echo "cutover.sh control-flow fixtures passed"
