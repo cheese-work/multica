@@ -31,7 +31,7 @@ func TestPRLinkKindMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		applyMigrationFile(t, ctx, tx, "773_issue_pull_request_link_kind.up.sql")
+		applyMigrationFile(t, ctx, tx, "775_issue_pull_request_link_kind.up.sql")
 	}
 	var kind string
 	if err := tx.QueryRow(ctx, `SELECT link_kind FROM issue_pull_request`).Scan(&kind); err != nil {
@@ -53,7 +53,7 @@ func TestPRLinkKindMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		applyMigrationFile(t, ctx, tx, "773_issue_pull_request_link_kind.down.sql")
+		applyMigrationFile(t, ctx, tx, "775_issue_pull_request_link_kind.down.sql")
 	}
 	var count int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM issue_pull_request`).Scan(&count); err != nil {
@@ -62,5 +62,5 @@ func TestPRLinkKindMigration(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("links after rollback = %d, want 2", count)
 	}
-	applyMigrationFile(t, ctx, tx, "773_issue_pull_request_link_kind.up.sql")
+	applyMigrationFile(t, ctx, tx, "775_issue_pull_request_link_kind.up.sql")
 }
