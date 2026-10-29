@@ -1361,35 +1361,16 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 	}
 	if isPRWakeup || deferring {
-		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		_, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			// A deferring rule keeps every fact for the next idle pass; a
-			// suppressing one consumes what arrived after the run started.
-			if deferring {
-				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
-					return err
-				}
-				return commit()
-			}
-			var suppressed []db.IssueWakeupReceipt
-			for _, receipt := range receipts {
-				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
-					suppressed = append(suppressed, receipt)
-				}
-			}
-			if len(suppressed) > 0 {
-				activeFacts := systemWakeupFacts(w, suppressed)
-				activeFacts["target_type"], activeFacts["target_id"] = current.Type, util.UUIDToString(current.ID)
-				activeFacts["outcome"] = "suppressed_active_run"
-				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(suppressed)}); err != nil {
-					return err
-				}
-				if err := note(wakeupActivityTriggered, activeFacts); err != nil {
-					return err
-				}
+			// Every fact waits for the next idle pass. A PR rule that did not
+			// choose defer still keeps what it captured (CHE-2298 a3): its
+			// facts are queued, never dropped, and never expire.
+			if err := deferForActiveRun(ctx, q, w, current, receipts, now, note, !deferring); err != nil {
+				return err
 			}
 			return commit()
 		}
