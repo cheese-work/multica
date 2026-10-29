@@ -161,6 +161,7 @@ var concurrentIndexCleanups = map[string]string{
 	"723_github_webhook_delivery_unique_index":                  "idx_github_webhook_delivery_guid",
 	"724_github_webhook_revision_unique_index":                  "idx_github_webhook_revision_key",
 	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
+	"797_chat_wakeup_fired_task_index":                          "idx_chat_wakeup_fired_task",
 	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
 	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
 	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
