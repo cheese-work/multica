@@ -750,6 +750,16 @@ type DecisionAnswer struct {
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
 }
 
+type DecisionBoundWrite struct {
+	DecisionID   pgtype.UUID        `json:"decision_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	Field        string             `json:"field"`
+	BeforeSha256 string             `json:"before_sha256"`
+	AfterSha256  string             `json:"after_sha256"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type DecisionClassChange struct {
 	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
 	FromClass         string             `json:"from_class"`
