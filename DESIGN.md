@@ -91,7 +91,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | viewer-media-pages | 1 | A | 403 | `462bf2fecdc4e3b63e911347a20638ca55671dff` |
 | own-comment-background | 1 | C | 405 | `87dc762d3f23755f66dbc532156e9294e65d156e` |
 | dm-search-web-desktop | 3 | A | 346 | `78d53cf894f7a89beff98c0e9af7c94a7c69c905` |
-| dm-wakeup-event-row | doop `-Yr2vfvBHn` @ 2026-10-29T11:07:11.362Z | C | PR_NUM | n/a (`design/dm-wakeup-event-row/approved/`) |
+| dm-wakeup-event-row | doop `-Yr2vfvBHn` @ 2026-10-29T11:07:11.362Z | C | 581 | n/a (`design/dm-wakeup-event-row/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`. The merge commit is read from GitHub and is not written here.
 
@@ -109,3 +109,5 @@ The `dm-decision-quote-cards` row records a selection only. Cheese chose directi
 The `own-comment-background` row records a selection only. Cheese chose direction C (fill + "You" label) on CHE-2133, comment `01a17b8a-b0d9-7b52-8123-83de7ddddd0c` ("C"). C scored 44/60 in the UX verdict, comment `01a177dd-00aa-78d1-8656-0848b58ab034`; the reviewer pick was B. The commit in that row is the scored `rev-1` revision commit, not the commit that records the selection. No approval exists until PR 405 merges.
 
 The `dm-search-web-desktop` row records a selection only. Cheese chose direction A (field above the list) on CHE-1794, native answer `A` in decision-record comment `01a160fd-22c9-75b8-9cb4-ca7421f09464` on ask `01a15fbf-91b0-7e0f-adc6-a56e398b8862`. Cheese then chose A on all four product choices (CHE-1794 comment `01a181fc-3992-777d-8315-c078f2150219`, "I choose A for four decisions", answering packet `01a16163-894a-70d8-a9fe-3915f38d7db4`): Back restores the query and results, keep the three-line result row, inline Unarchive on an archived hit, and bare `/` binds to DM search outside editable controls. The commit in that row is the scored `rev-3` revision commit, not the commit that records the selections. Its static UX verdict (x99-codex-luna) is CHE-1794 comment `01a1615c-86ec-7b9b-a19a-596efb694215`. No approval exists until PR 346 merges.
+
+The `dm-wakeup-event-row` row records a selection only. Cheese chose direction C (thread rail) on CHE-2459, decision record `01a18753-e957-7ba2-a312-4400a43808a1`. The row names the doop frame `-Yr2vfvBHn` at `updatedAt` `2026-10-29T11:07:11.362Z`, locked in `design/dm-wakeup-event-row/approved/`. Its UX verdict (x99-agy-gemini-ux, 55/60) is CHE-2459 comment `01a1875a-c9e1-7656-a1a7-965a9b0d1628`. No approval exists until PR 581 merges.
