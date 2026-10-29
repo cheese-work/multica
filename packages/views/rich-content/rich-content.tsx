@@ -366,11 +366,9 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     </a>
   );
 
-  // A bare in-app issue URL with `#comment-<uuid>` renders as the comment chip.
-  const commentRef =
-    href && childrenToLabel(children) === href
-      ? parseWorkspaceCommentLink(href, appOrigin)
-      : null;
+  // An in-app issue URL with `#comment-<uuid>` renders as the comment chip,
+  // bare or labeled; a miss keeps the author's link and label.
+  const commentRef = href ? parseWorkspaceCommentLink(href, appOrigin) : null;
   if (commentRef && (commentRef.slug === null || commentRef.slug === slug)) {
     return <CommentMentionCard commentId={commentRef.commentId} fallback={plainLink} />;
   }

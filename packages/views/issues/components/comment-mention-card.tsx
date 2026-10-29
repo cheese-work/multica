@@ -6,16 +6,18 @@ import { commentPreviewOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
-import { IssueChip } from "./issue-chip";
+import { ISSUE_CHIP_CLASS } from "./issue-chip";
 
 /**
  * Navigable chip for a comment reference: `CHE-1 · <author>: <first line>`,
  * linking to the comment on its issue page.
  *
- * Until the server resolves the id — and for good when it will not (unknown,
- * deleted, another workspace) — it renders `fallback` (the text the author wrote), so a
- * comment the viewer cannot read never shows a preview and a miss looks exactly
- * like the text the author wrote.
+ * While the server resolves the id, `fallback` (the text the author wrote)
+ * sits inside the chip's own box with a transparent border, so resolving swaps
+ * content without changing the box the line was laid out around. When the
+ * server will not resolve it (unknown, deleted, another workspace, or a refetch
+ * that now fails) it renders bare `fallback`, so a comment the viewer cannot
+ * read never shows a preview.
  */
 export function CommentMentionCard({
   commentId,
@@ -26,9 +28,12 @@ export function CommentMentionCard({
 }) {
   const wsId = useWorkspaceId();
   const p = useWorkspacePaths();
-  const { data } = useQuery(commentPreviewOptions(wsId, commentId));
+  const { data, isError } = useQuery(commentPreviewOptions(wsId, commentId));
 
-  if (!data) return <>{fallback}</>;
+  if (isError) return <>{fallback}</>;
+  if (!data) {
+    return <span className={`${ISSUE_CHIP_CLASS} border-transparent`}>{fallback}</span>;
+  }
 
   const author = data.author_name ? `${data.author_name}: ` : "";
   return (
@@ -37,10 +42,7 @@ export function CommentMentionCard({
       newTabTitle={data.issue_identifier}
       className="issue-mention align-middle"
     >
-      <IssueChip
-        issueId={data.issue_id}
-        className="cursor-pointer hover:bg-accent transition-colors"
-      >
+      <span className={`${ISSUE_CHIP_CLASS} cursor-pointer hover:bg-accent transition-colors`}>
         <span className="font-medium text-muted-foreground shrink-0">
           {data.issue_identifier} ·
         </span>
@@ -48,7 +50,7 @@ export function CommentMentionCard({
           {author}
           {data.preview}
         </span>
-      </IssueChip>
+      </span>
     </AppLink>
   );
 }
