@@ -96,4 +96,10 @@ describe("orientChart state-diagram comments", () => {
       "stateDiagram-v2\n  state X { %% }\n    direction LR\n  }\n  direction TB\n  [*] --> A",
     );
   });
+
+  it("keeps %% inside a quoted state label", () => {
+    const source =
+      'stateDiagram-v2\n  state "Auth %% complete" as Auth {\n    direction LR\n    A --> B\n  }\n  direction LR';
+    expect(orientChart(source, "vertical")).toBe(source.replace("  }\n  direction LR", "  }\n  direction TB"));
+  });
 });

@@ -36,6 +36,16 @@ function stateDirection(current: string, to: Orientation): string {
   return current === "RL" ? "BT" : current === "LR" ? "TB" : current;
 }
 
+/** The line without a trailing `%%` comment; a `%%` inside a quoted label stays. */
+function stripComment(line: string): string {
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') quoted = !quoted;
+    else if (!quoted && line.startsWith("%%", i)) return line.slice(0, i);
+  }
+  return line;
+}
+
 /** Index of the first line that is neither frontmatter, blank nor a `%%` comment. */
 function headerIndex(lines: string[]): number {
   let i = 0;
@@ -81,7 +91,7 @@ export function orientChart(source: string, orientation: Orientation): string {
       lines[i] = `${direction[1]}${next}${direction[3]}`;
       return lines.join("\n");
     }
-    const code = text.replace(/%%.*$/, "");
+    const code = stripComment(text);
     depth += (code.match(/\{/g)?.length ?? 0) - (code.match(/\}/g)?.length ?? 0);
   }
   if (orientation === "vertical") return source;
