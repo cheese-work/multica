@@ -2,7 +2,7 @@
 # compaction happened; no page, tab, composer control or existing message type is added, moved or
 # removed. Mobile is layer L4b.
 issue: CHE-2169
-design: waiver PENDING   # no approved design revision exists for this divider; Cheese owns the waiver or the design pick. The text and timezone are fixed by plan revision 2, closed question 2.
+design: waived   # Cheese waived the design gate for the compaction divider (decision 00:51 ICT 30/10/2026, CHE-2349 request 71ee7138, item C; CHE-2169 request 50eb17d8). Text and timezone fixed by plan revision 2, closed question 2.
 pages:
   - id: chat-dm
     url: /<workspace-slug>/chat?session=<dm-id>   # same path on base and preview
