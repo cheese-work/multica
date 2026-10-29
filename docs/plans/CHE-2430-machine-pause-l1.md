@@ -32,7 +32,7 @@ None of these is unsafe, so none blocks.
 
 ## Data model
 
-Migration `776_daemon_pause`:
+Migration `785_daemon_pause`:
 
 ```sql
 CREATE TABLE daemon_pause (
