@@ -35,6 +35,29 @@ test("a zero-key PR fails with an actionable issue-link fix", () => {
   assert.match(result.stdout, /title.*whole issue/i);
 });
 
+for (const { name, overrides } of [
+  { name: "utf-8 title", overrides: { title: "fix: utf-8 decoding [squash]" } },
+  { name: "sha-256 title", overrides: { title: "chore: pin sha-256 digests [squash]" } },
+  { name: "node-22 title", overrides: { title: "build: move to node-22 [squash]" } },
+  { name: "agent-name branch", overrides: { head: { ref: "agent/x99-codex-luna-2/1a2b3c4d" } } },
+  { name: "non-CHE Part of directive", overrides: { body: "Part of MUL-5" } },
+]) {
+  test(`a ${name} does not supply a CHE issue link`, () => {
+    const result = run(overrides);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /PR has no issue link/);
+  });
+}
+
+test("a CHE Part of directive supplies a link beside a utf-8 title", () => {
+  const result = run({
+    title: "fix: utf-8 decoding [squash]",
+    body: "Part of CHE-2389",
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /reference.*CHE-2389/i);
+});
+
 test("a Part of-only PR passes without declaring completion", () => {
   const result = run({ body: "Part of CHE-2387" });
   assert.equal(result.status, 0, result.stdout + result.stderr);

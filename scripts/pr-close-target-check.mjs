@@ -130,7 +130,7 @@ export function checkCloseTarget({ title = "", body = "", headRef = "", author =
     closeTargets: [...closeTargets],
     strays,
     referenceTargets,
-    missingIssueLink: linkedKeys.size === 0 && closeTargets.size === 0 && referenceTargets.length === 0,
+    missingIssueLink: ![...linkedKeys, ...closeTargets, ...referenceTargets].some((key) => /^CHE-\d+$/.test(key)),
   };
 }
 
