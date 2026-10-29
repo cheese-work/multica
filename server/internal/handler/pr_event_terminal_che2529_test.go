@@ -54,6 +54,7 @@ func TestSnapshotCauseAfterTerminalPRIsNotActionable(t *testing.T) {
 					f.terminate(t, state)
 					tasks, receipts := f.taskCount(t), f.prEventReceipts(t)
 					f.refresh(t, snapshot(f))
+					tick(t)
 					if got := f.actionRequiredEvents(t); got != 0 {
 						t.Fatalf("%s PR stored %d action-required events from a late %s snapshot, want 0", state, got, cause)
 					}
@@ -72,6 +73,24 @@ func TestSnapshotCauseAfterTerminalPRIsNotActionable(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// Positive control for the terminal cases: on an open PR the same route, snapshot
+// then fallback tick, records a pr.event receipt.
+func TestSnapshotCauseOnOpenPRReachesFallbackReceipt(t *testing.T) {
+	for cause, snapshot := range map[string]func(liveDeliveryFixture) ghsnapshot.PRSnapshot{
+		"conflict":      liveDeliveryFixture.conflicting,
+		"checks_failed": liveDeliveryFixture.checksFailed,
+	} {
+		t.Run(cause, func(t *testing.T) {
+			f := newLiveDeliveryFixture(t, "running", false)
+			f.refresh(t, snapshot(f))
+			tick(t)
+			if got := f.prEventReceipts(t); got != 1 {
+				t.Fatalf("pr.event receipts after a %s snapshot on an open PR = %d, want 1", cause, got)
+			}
+		})
 	}
 }
 
