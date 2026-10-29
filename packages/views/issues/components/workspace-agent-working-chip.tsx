@@ -92,10 +92,21 @@ export function WorkingAgentsHoverContent({
     );
   }
 
+  // Same unit as each row's count, so the total reads down the same column.
+  const totalRuns = agents.reduce(
+    (sum, agent) => sum + agent.running_task_count,
+    0,
+  );
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-caption font-medium text-muted-foreground">
-        {t(($) => $.agent_activity.hover_header, { count: agents.length })}
+      <div className="flex items-center justify-between gap-2 text-caption font-medium text-muted-foreground">
+        <span className="min-w-0 truncate">
+          {t(($) => $.agent_activity.hover_header, { count: agents.length })}
+        </span>
+        <span className="shrink-0 tabular-nums">
+          {t(($) => $.agent_activity.tasks_count, { count: totalRuns })}
+        </span>
       </div>
       <div className="flex flex-col gap-1.5">
         {agents.map((agent) => (

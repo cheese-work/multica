@@ -34,6 +34,48 @@ refer to the fork pin unless explicitly identified as upstream.
 The issue holds the detailed paired-code evidence and the two product choices.
 This is a static audit, not a runtime qualification of a reconciled tree.
 
+## Upstream sync preservation check
+
+The `Fork sync preservation` CI check detects sync PRs by an `upstream-sync/`
+head branch, a title containing `sync upstream` or `merge upstream` (including
+`sync with upstream`), or a change to `UPSTREAM_VERSION`. This includes sync
+PRs #138, #377 (CHE-2005), and #483 (CHE-2241), whose branches used `agent/`.
+Other PRs pass without applying the preservation policy.
+
+The check reads this ledger from the PR base, not from the proposed tree.
+Deleted or renamed backtick-quoted `Source:` paths need an acknowledgement.
+Directory pointers protect all descendant files; `*` matches within a filename.
+An abbreviated filename after a full path uses the preceding path's directory.
+Prose-only source descriptions are not machine-readable protection.
+
+Fork-authored tests are files added or modified in the base tree relative to
+the fork's last upstream tag, `v<base UPSTREAM_VERSION>`. The check recognizes
+`.test.*`, `.spec.*`, `_test.*`, `-test.*`, and Python `test_*.py` filenames.
+Deleting or renaming these tests needs an acknowledgement even without a
+ledger entry. Missing history, the upstream tag, or parseable Source paths fails
+the sync check rather than silently skipping protection.
+
+For each protected old path, put a visible line in the PR body:
+
+```text
+Ported: packages/views/settings/components/old.tsx -> packages/views/settings/components/new.tsx
+```
+
+The new path must be a different file that exists at the exact PR head.
+Backtick-quoted paths and Markdown list lines are accepted. Quoted, fenced,
+and HTML-comment examples do not count. Body edits rerun the check.
+An acknowledgement records the author's port claim; independent review must
+still verify equivalent behavior and assertions. In-place content loss is
+outside this deletion/rename check.
+
+The workflow runs only trusted default-branch code on a GitHub-hosted runner.
+The PR head is fetched as Git data, never checked out or executed. The new
+workflow becomes active after it lands on the default branch; candidate
+fixture tests also run in the existing CI scope job before that first merge.
+The CHE-867 fixture replays the actual `github-tab.tsx` and
+`github-tab.test.tsx` deletions from merge `2b558f361`. Its H01 row models the
+corrected pre-sync UI inventory; the historical ledger did not list that UI.
+
 ## Collaboration and direct messages
 
 | Feature | Area | Fork PRs | CHE issues | Upstream status | Recommendation |
@@ -80,7 +122,7 @@ This is a static audit, not a runtime qualification of a reconciled tree.
 | W12 Wakeup activity identifies trigger, agent and run | Wakeup activity | #253 | CHE-1726 | overlaps 5ed09342a / MUL-7680 | Merge both without losing fork attribution (R06). Source: wakeup presentation and service activity. |
 | W13 Comment triggers fold into queued work, wake blocked leaders and avoid author self-trigger | Trigger admission | #177, #185 | CHE-1285, CHE-1418 | fork-only | Keep dedupe and self-trigger protection. Source: comment reconciliation and issue trigger handlers. |
 | W14 Idle squad-leader failure markers | Squad recovery | #186 | CHE-1443 | fork-only | Keep durable failure visibility. Source: squad leader failure handlers and migrations. |
-| H01 Multi-organization GitHub installations with verified account authority | GitHub integration | #13, #19 | CHE-268 | overlaps caeb146ba | Merge both (R15). Do not replace OAuth/account-authority verification with an installation ID alone. Source: `server/internal/handler/github.go`. |
+| H01 Multi-organization GitHub installations with verified account authority | GitHub integration | #13, #19 | CHE-268 | overlaps caeb146ba | Merge both (R15). Do not replace OAuth/account-authority verification with an installation ID alone. Source: `server/internal/handler/github.go`, `packages/views/settings/components/repositories-section.tsx`. |
 | H02 Explicit PR close intent, quoted-code stripping and open-child completion gate | PR lifecycle | #40, #42 | CHE-511, CHE-520 | overlaps 0da0b46bb / MUL-7672 | Merge both (R11). Retain fork code-span and direct-child safeguards. Source: `server/internal/handler/github.go`, `pr_auto_complete.go`. |
 | H03 Merged PRs advance custom done-category review states | PR lifecycle | #371 | CHE-1990 | overlaps fc4a61570 / MUL-7726 | Keep ours (R12). Only literal `done` and `cancelled` suppress the fork transition. Source: `server/internal/handler/pr_auto_complete.go`. |
 | H04 Actor/task-aware automatic PR linking and CLI unlink repair | PR linking | #339, #373 | CHE-1933, CHE-1991 | overlaps 0da0b46bb / MUL-7672 | Merge both (R13). Keep fork policy, CLI repair and transactional exclusion handling. Source: GitHub/PR handlers and `server/cmd/multica/cmd_issue.go`. |

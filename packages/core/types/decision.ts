@@ -1,11 +1,18 @@
 export type DecisionState = "pending" | "effective" | "disclaimed";
 
+/** One answer button on an open decision card. */
+export interface DecisionRequestOption {
+  label: string;
+  what_happens?: string;
+}
+
 export interface DecisionRequestCard {
   id: string;
   issue_id: string;
   issue_identifier: string;
   source_comment_id?: string | null;
   ask: string;
+  options?: DecisionRequestOption[];
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;

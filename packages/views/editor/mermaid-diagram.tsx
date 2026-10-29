@@ -33,6 +33,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -42,6 +43,7 @@ import {
 import { Check, Copy, Frame, Maximize2, Minus, Plus } from "lucide-react";
 import { parse, stringify } from "yaml";
 import type { MermaidConfig } from "mermaid";
+import { useMermaidOrientationSetting } from "@multica/core/workspace/mermaid-orientation";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useT } from "../i18n";
@@ -51,6 +53,7 @@ import { useInlineZoom, type InlineZoom } from "./hooks/use-inline-zoom";
 import { useThemeVersion } from "./hooks/use-theme-version";
 import { MermaidViewer, MermaidViewerStandalone } from "./mermaid-viewer";
 import { useStandaloneMedia } from "../media/media-context";
+import { orientChart, pickOrientation, type Orientation } from "./utils/mermaid-orientation";
 import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
 
@@ -241,6 +244,8 @@ export function framedMermaidBodyHeightPx(chart: string): number {
 }
 
 interface CachedLayout extends Size {
+  /** Direction the diagram was drawn in; absent when drawn as the author wrote it. */
+  orientation?: Orientation;
   /**
    * Height the fitted preview drew at, which depends on the column's width
    * and so can only be recorded after the preview has been measured.
@@ -274,7 +279,11 @@ function readCachedLayout(chart: string): CachedLayout | null {
         typeof parsed.previewHeight === "number" && parsed.previewHeight > 0
           ? parsed.previewHeight
           : undefined;
-      return { width: parsed.width, height: parsed.height, previewHeight };
+      const orientation =
+        parsed.orientation === "horizontal" || parsed.orientation === "vertical"
+          ? parsed.orientation
+          : undefined;
+      return { width: parsed.width, height: parsed.height, previewHeight, orientation };
     }
     return null;
   } catch {
@@ -292,6 +301,7 @@ function writeCachedLayout(chart: string, layout: CachedLayout | null): void {
         width: layout.width,
         height: layout.height,
         previewHeight: layout.previewHeight,
+        orientation: layout.orientation,
       }),
     );
   } catch {
@@ -386,6 +396,8 @@ const FALLBACK_LAYOUT: Size = { width: 800, height: MERMAID_SKELETON_HEIGHT_PX }
 
 interface RenderedDiagram {
   svg: string;
+  /** Direction this was drawn in; null when drawn as the author wrote it. */
+  orientation: Orientation | null;
   inlineDocument: string;
   /**
    * Natural size. Always concrete — neither the inline zoom nor the viewer can
@@ -426,6 +438,12 @@ export function MermaidDiagram({
   // old layout) would size the viewer's iframe against the wrong diagram.
   const standalone = useStandaloneMedia();
   const [rendered, setRendered] = useState<RenderedDiagram | null>(null);
+  const auto = useMermaidOrientationSetting() === "auto";
+  // undefined: not measured yet, so nothing renders; null: draw as written.
+  const [orientation, setOrientation] = useState<Orientation | null | undefined>(undefined);
+  // The viewer's own direction, from its canvas width, and the diagram drawn in it.
+  const [viewerOrientation, setViewerOrientation] = useState<Orientation | null>(null);
+  const [viewerVariant, setViewerVariant] = useState<RenderedDiagram | null>(null);
   // Lazy initial value: if we've rendered this exact chart already in the
   // current session, the cached layout lets us reserve correct space on the
   // very first paint — eliminating the 0px → real-height shift that breaks
@@ -437,16 +455,50 @@ export function MermaidDiagram({
   const [ownViewerOpen, setOwnViewerOpen] = useState(false);
   const viewerOpen = frame ? frame.viewerOpen : ownViewerOpen;
   const setViewerOpen = frame ? frame.onViewerOpenChange : setOwnViewerOpen;
+  // The inline diagram, unless the viewer's width picks the other direction.
+  const viewed =
+    viewerVariant && viewerVariant.orientation === viewerOrientation ? viewerVariant : rendered;
   const viewerDocument = useMemo(
-    () => (viewerOpen || standalone) && rendered
-      ? buildViewerMermaidDocument(rendered.svg, containerRef.current, rendered.layout)
+    () => (viewerOpen || standalone) && viewed
+      ? buildViewerMermaidDocument(viewed.svg, containerRef.current, viewed.layout)
       : null,
-    [viewerOpen, standalone, rendered],
+    [viewerOpen, standalone, viewed],
   );
   const onErrorChange = frame?.onErrorChange;
   const [copied, setCopied] = useState(false);
 
+  // Measure before the first render: drawing the author's direction and then
+  // redrawing flashes the wrong layout, and the first draw is the costly one.
+  useLayoutEffect(() => {
+    const host = containerRef.current;
+    if (!auto || !host) {
+      setOrientation(null);
+      return;
+    }
+    const measure = () => {
+      const width = host.getBoundingClientRect().width;
+      // 0 means hidden or not laid out; keep the direction we have.
+      setOrientation((previous) =>
+        width > 0 ? pickOrientation(width, previous ?? undefined) : (previous ?? null),
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [auto]);
+
+  const handleViewerWidth = useCallback(
+    (width: number) => {
+      if (!auto || width <= 0) return;
+      setViewerOrientation((previous) => pickOrientation(width, previous ?? undefined));
+    },
+    [auto],
+  );
+
   useEffect(() => {
+    if (orientation === undefined) return;
     let cancelled = false;
 
     async function renderDiagram() {
@@ -457,19 +509,23 @@ export function MermaidDiagram({
         // closing it, and with it the user's zoom and position. Keeping the
         // previous diagram on screen until the new one is ready also removes
         // a flash of the loading skeleton on every theme toggle.
-        setSkeletonLayout(readCachedLayout(chart));
+        // A layout cached in the other direction is the wrong height to reserve.
+        const cached = readCachedLayout(chart);
+        setSkeletonLayout(cached?.orientation === (orientation ?? undefined) ? cached : null);
         const mermaid = await getMermaid();
         if (cancelled) return;
-        const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(chart, containerRef.current));
+        const source = orientation ? orientChart(chart, orientation) : chart;
+        const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(source, containerRef.current));
         if (cancelled) return;
 
         const measured = getMermaidLayout(renderedSvg);
         const layout = measured ?? FALLBACK_LAYOUT;
         const exportStyle = getExportStyle(containerRef.current);
-        writeCachedLayout(chart, measured);
-        setSkeletonLayout(measured);
+        writeCachedLayout(chart, measured && { ...measured, orientation: orientation ?? undefined });
+        setSkeletonLayout(measured && { ...measured, orientation: orientation ?? undefined });
         setRendered({
           svg: renderedSvg,
+          orientation: orientation ?? null,
           inlineDocument: buildSandboxedMermaidDocument(renderedSvg, containerRef.current),
           layout,
           exportBackground: exportStyle.background,
@@ -488,7 +544,49 @@ export function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [chart, diagramId, themeVersion]);
+  }, [chart, diagramId, themeVersion, orientation]);
+
+  // The viewer's variant, drawn only while it is open and wants the other direction.
+  const variantOrientation =
+    auto && viewerOpen && rendered && viewerOrientation && viewerOrientation !== rendered.orientation
+      ? viewerOrientation
+      : null;
+  useEffect(() => {
+    if (!variantOrientation) {
+      setViewerVariant((previous) => (previous ? null : previous));
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = await getMermaid();
+        if (cancelled) return;
+        const { svg } = await mermaid.render(
+          `${diagramId}-viewer`,
+          themedChart(orientChart(chart, variantOrientation), containerRef.current),
+        );
+        if (cancelled) return;
+        setViewerVariant({
+          svg,
+          orientation: variantOrientation,
+          inlineDocument: "",
+          layout: getMermaidLayout(svg) ?? FALLBACK_LAYOUT,
+          exportBackground: "",
+          exportFontFamily: "",
+        });
+      } catch {
+        // The inline diagram stays in the viewer; the next change retries.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, diagramId, themeVersion, variantOrientation]);
+
+  // A reopened viewer measures itself afresh.
+  useEffect(() => {
+    if (!viewerOpen) setViewerOrientation(null);
+  }, [viewerOpen]);
 
   useEffect(() => {
     onErrorChange?.(error);
@@ -506,7 +604,11 @@ export function MermaidDiagram({
   const fittedHeight = zoom.fitted ? zoom.size.height : null;
   useEffect(() => {
     if (!rendered || fittedHeight === null) return;
-    writeCachedLayout(chart, { ...rendered.layout, previewHeight: fittedHeight });
+    writeCachedLayout(chart, {
+      ...rendered.layout,
+      previewHeight: fittedHeight,
+      orientation: rendered.orientation ?? undefined,
+    });
   }, [chart, rendered, fittedHeight]);
 
   const overflow = useHorizontalOverflow(scrollRef, [
@@ -640,11 +742,12 @@ export function MermaidDiagram({
             open={viewerOpen}
             onOpenChange={setViewerOpen}
             chart={chart}
-            svg={rendered.svg}
+            svg={(viewed ?? rendered).svg}
             viewerDocument={viewerDocument}
-            layout={rendered.layout}
+            layout={(viewed ?? rendered).layout}
             exportBackground={rendered.exportBackground}
             exportFontFamily={rendered.exportFontFamily}
+            onViewportWidth={handleViewerWidth}
             finalFocusRef={frame ? frame.finalFocusRef : expandButtonRef}
           />
         </>

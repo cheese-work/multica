@@ -347,6 +347,9 @@ func hasGuard(edges []Edge, kind string) bool {
 	return false
 }
 
+// HasGuard reports whether any edge of the step uses a guard of this kind.
+func (s Step) HasGuard(kind string) bool { return hasGuard(s.Edges, kind) }
+
 // MoveNotAllowedError refuses an agent's status write the current step has no
 // exit for. Its message lists the allowed moves because agents read it verbatim.
 type MoveNotAllowedError struct {

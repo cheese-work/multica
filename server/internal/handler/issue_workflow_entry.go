@@ -49,6 +49,17 @@ type workflowHandoff struct {
 // handoff that write triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
 	run := caller.run
+	// A review superseded by a newer head has no say on the status, in any
+	// workflow (CHE-2307).
+	if oldHead, stale := staleVerdictRun(run); stale && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+		h.recordReviewActivity(ctx, prev.ID, "agent", uuidToString(run.AgentID), "review_verdict_stale", map[string]string{
+			"message": "verdict for " + oldHead + " is stale", "task_id": uuidToString(run.ID), "head_sha": oldHead,
+		})
+		return nil, &issueworkflow.StaleVerdictError{
+			IssueIdentifier: h.getIssuePrefix(ctx, prev.WorkspaceID) + "-" + strconv.Itoa(int(prev.Number)),
+			ReviewedSHA:     oldHead,
+		}
+	}
 	if err := h.checkAgentMove(ctx, q, prev, params, statusExplicit, caller); err != nil {
 		return nil, err
 	}
@@ -242,6 +253,15 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":           "workflow_step_moved",
 			"step":           moved.Step,
 			"current_status": moved.Current,
+		})
+		return true
+	}
+	var stale *issueworkflow.StaleVerdictError
+	if errors.As(err, &stale) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        stale.Error(),
+			"code":         "review_verdict_stale",
+			"reviewed_sha": stale.ReviewedSHA,
 		})
 		return true
 	}

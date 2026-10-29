@@ -59,7 +59,7 @@ export interface GitHubInstallation {
 
 /** Why a PR is on an issue: linked by hand, or matched in its title / branch.
  * "auto" is any other automatic link, such as "Closes MUL-1" in the body. */
-export type PullRequestLinkSource = "manual" | "title" | "branch" | "auto";
+export type PullRequestLinkSource = "manual" | "title" | "branch" | "reference" | "auto";
 
 /** What "every linked PR merged → move the issue to the workspace's target
  * status" will do for one issue. The server computes it; the issue page only
@@ -73,7 +73,8 @@ export type PRAutoCompleteState =
   | "at_target"
   | "waiting"
   | "not_merged"
-  | "all_merged";
+  | "all_merged"
+  | "workflow_owned";
 
 export interface PRAutoComplete {
   /** Unknown future states are kept as strings; the UI renders nothing for them. */
