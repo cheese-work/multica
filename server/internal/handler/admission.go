@@ -73,9 +73,9 @@ const (
 	ReasonAgentCommentImplicitRouteSuppressed = dispatch.ReasonAgentCommentImplicitRouteSuppressed
 	ReasonAgentCommentRequiresAgentMention    = dispatch.ReasonAgentCommentRequiresAgentMention
 	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
-	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
-	ReasonInternalError                       = dispatch.ReasonInternalError
-	ReasonProviderHold                        = dispatch.ReasonProviderHold
+	ReasonRunBudgetExhausted    = dispatch.ReasonRunBudgetExhausted
+	ReasonInternalError         = dispatch.ReasonInternalError
+	ReasonProviderHold          = dispatch.ReasonProviderHold
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name
