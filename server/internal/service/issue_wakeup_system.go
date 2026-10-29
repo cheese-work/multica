@@ -865,6 +865,9 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		}
 		return text + "Read the current issue and repository state, then decide what follow-up is needed."
 	case SystemRulePRAttention:
+		if text, ok := prEventInstruction(receipts, pr); ok {
+			return text
+		}
 		headSHA, _ := facts["head_sha"].(string)
 		base, _ := facts["base_branch"].(string)
 		if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
