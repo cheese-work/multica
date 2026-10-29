@@ -54,7 +54,7 @@ func reviewRun(t *testing.T, agentID, runtimeID, issueID, prID, step, head strin
 	t.Helper()
 	return dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id": runtimeID, "issue_id": issueID, "status": "running", "workflow_step": step,
-		"pull_request_id": prID, "context": testutil.Raw(fmt.Sprintf(`'{"head_sha":"%s"}'::jsonb`, head)),
+		"pull_request_id": prID, "context": testutil.Raw(fmt.Sprintf(`'{"head_sha":%q}'::jsonb`, head)),
 		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
 	})
 }
