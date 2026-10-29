@@ -3992,6 +3992,14 @@ export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
   z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
   z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
+  z.object({
+    type: z.literal("github_run"),
+    repo: z.string(),
+    run_id: z.number().int().optional(),
+    workflow: z.string().optional(),
+    head_sha: z.string().optional(),
+    state: z.enum(["completed", "waiting"]),
+  }),
 ]);
 
 export const WakeupRunSchema = z.object({

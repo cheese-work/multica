@@ -163,6 +163,43 @@ The comment, queued run, and review receipt commit together. GitHub redelivery c
 
 After deployment, submit a review on a test PR linked to a test issue. Read back the issue comment and the author's run. Redeliver the same review and confirm that the comment/run counts do not increase. Confirm that a bot review does not queue a run, and that a request with an invalid webhook signature is rejected.
 
+## Wait for a GitHub Actions run
+
+A wakeup can wait for a GitHub Actions run, such as a deploy that stops at an environment approval gate, without polling. The run needs no linked PR.
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` takes one of three forms:
+
+| Form | Selects |
+|---|---|
+| `owner/repo:RUN_ID` | The run with that ID |
+| `owner/repo:WORKFLOW_FILE@SHA` | The run of that workflow file whose own `head_sha` is the full 40-character SHA |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | The run with that ID |
+
+`--until-gh-run-state` is `completed` (default) or `waiting`. `waiting` fires each time a job in the run starts waiting at an environment gate. Check `waiting_now` in the facts before you ask a person to approve a gate: it is `false` when the gate has already closed. The `SHA` form matches the run's own commit. A deploy run that deploys another commit, such as `cd-deploy.yml`, needs its run ID.
+
+The App must be installed for the repository owner in this workspace. The App must also subscribe to **Workflow run** and **Workflow job** events, which need **Actions: read**. Rows are kept for 30 days.
+
+### Limitation: observed events only
+
+The rule is satisfied by webhook events that Multica received after the App subscribed. It is not a lookup of a run's current state.
+
+- GitHub does not redeliver a failed delivery by itself. A lost `completed` event leaves the stored run `in_progress`.
+- A run or gate that began before the App subscribed is invisible.
+- To recover, redeliver the event by hand from the App's **Advanced → Recent Deliveries** page.
+- Always set `--expires-in` with `--on-timeout wake`. The default at the deadline is `end`, which starts no run.
+
+### Recipe: wait for a deploy after a merge
+
+1. Wait for the qualification run of the merge commit `M`:
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. The woken run finds the deploy run ID: `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`. Pick the run whose title contains `M`.
+3. Wait for the approval gate: `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. After the approval, wait for the finish with the same rule and `--until-gh-run-state completed`.
+
 ## Self-hosting setup
 
 Multica Cloud doesn't need this section. Self-hosting requires creating your own GitHub App first.
