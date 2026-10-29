@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -69,6 +69,8 @@ import { AppLink } from "../../navigation";
 import { DecisionDmCard } from "./decision-dm-card";
 import { DecisionRequestCard } from "./decision-request-card";
 import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
+import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
+import { stripWakeupHeader } from "@multica/core/chat/wakeup";
 import { PredecessorDms } from "./predecessor-dms";
 import { predecessorChain } from "../lib/predecessor-chain";
 
@@ -160,6 +162,10 @@ interface ChatListContext {
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
   availability: AgentAvailability | undefined;
+  /** Agent behind each fired-wakeup task, so its running pill joins the rail. */
+  wakeupAgentByTask: ReadonlyMap<string, string>;
+  /** The live assistant row is showing, so it owns the reply avatar. */
+  hasLive: boolean;
 }
 
 /**
@@ -228,14 +234,20 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
       {context?.showStatusPill && context.pendingTask ? (
-        <TaskStatusPill
-          pendingTask={context.pendingTask}
-          taskMessages={context.liveTaskMessages ?? []}
-          availability={context.availability}
-        />
+        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")} avatar={!context.hasLive}>
+          <TaskStatusPill
+            pendingTask={context.pendingTask}
+            taskMessages={context.liveTaskMessages ?? []}
+            availability={context.availability}
+          />
+        </WithWakeupRail>
       ) : null}
     </div>
   );
+}
+
+function WithWakeupRail({ agentId, avatar = true, children }: { agentId?: string; avatar?: boolean; children: ReactNode }) {
+  return agentId ? <WakeupReplyRail agentId={agentId} avatar={avatar}>{children}</WakeupReplyRail> : <>{children}</>;
 }
 
 function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
@@ -590,6 +602,14 @@ export function ChatMessageList({
     [],
   );
 
+  const wakeupAgentByTask = useMemo(() => {
+    const byTask = new Map<string, string>();
+    for (const m of messages) {
+      if (m.scheduled_wakeup && m.task_id) byTask.set(m.task_id, m.scheduled_wakeup.agent_id);
+    }
+    return byTask;
+  }, [messages]);
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
@@ -601,6 +621,8 @@ export function ChatMessageList({
     pendingTask,
     liveTaskMessages,
     availability,
+    wakeupAgentByTask,
+    hasLive,
   };
 
   // Every previewable file in this session, in message order, so opening one
@@ -713,6 +735,7 @@ export function ChatMessageList({
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
+              wakeupAgentId={item.taskId ? wakeupAgentByTask.get(item.taskId) : undefined}
               transformContent={transformContent}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
@@ -794,6 +817,7 @@ function ChatSkeletonBody() {
 const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
+  wakeupAgentId,
   transformContent,
   onQuickAction,
   quickActionsDisabled,
@@ -804,6 +828,7 @@ const MessageBubble = memo(function MessageBubble({
 }: {
   item: ChatRenderItem;
   isPending: boolean;
+  wakeupAgentId?: string;
   transformContent?: (content: string) => string;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
@@ -817,13 +842,15 @@ const MessageBubble = memo(function MessageBubble({
   // so React reconciles rather than remounts at task completion.
   if (item.kind === "live") {
     return (
-      <AssistantMessage
-        taskId={item.taskId}
-        isPending={isPending}
-        transformContent={transformContent}
-        onQuickAction={onQuickAction}
-        quickActionsDisabled={quickActionsDisabled}
-      />
+      <WithWakeupRail agentId={wakeupAgentId}>
+        <AssistantMessage
+          taskId={item.taskId}
+          isPending={isPending}
+          transformContent={transformContent}
+          onQuickAction={onQuickAction}
+          quickActionsDisabled={quickActionsDisabled}
+        />
+      </WithWakeupRail>
     );
   }
 
@@ -855,7 +882,15 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
+  // A fired wakeup is a system event, not something the member typed.
+  if (message.scheduled_wakeup) {
+    return <WakeupEventRow wakeup={message.scheduled_wakeup} />;
+  }
+
   if (message.role === "user") {
+    // Without structured wakeup data (malformed or older server) the model-facing
+    // header is still dropped; the instruction shows as an ordinary bubble.
+    const userContent = stripWakeupHeader(message.content);
     return (
       <div className="flex flex-col items-end">
         <div data-testid="chat-user-message" className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
@@ -865,14 +900,14 @@ const MessageBubble = memo(function MessageBubble({
            * too. `compact` trims the leading/trailing block margins so a
            * single-line bubble stays as tight as the plain-text version. */}
           <RichContent
-            content={message.content}
+            content={userContent}
             attachments={message.attachments}
             density="compact"
             phase="settled"
           />
           <AttachmentList
             attachments={message.attachments}
-            content={message.content}
+            content={userContent}
             className="mt-1.5"
           />
         </div>
@@ -885,18 +920,20 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   return (
-    <AssistantMessage
-      taskId={message.task_id ?? null}
-      message={message}
-      isPending={isPending}
-      transformContent={transformContent}
-      onQuickAction={onQuickAction}
-      quickActionsDisabled={quickActionsDisabled}
-      onRegenerateQuickActions={onRegenerateQuickActions}
-      canRegenerateQuickActions={message.id === latestAssistantMessageId}
-      quickActionsPending={quickActionsPendingMessageId === message.id}
-      showStarterCards={message.id === starterCardsMessageId}
-    />
+    <WithWakeupRail agentId={wakeupAgentId}>
+      <AssistantMessage
+        taskId={message.task_id ?? null}
+        message={message}
+        isPending={isPending}
+        transformContent={transformContent}
+        onQuickAction={onQuickAction}
+        quickActionsDisabled={quickActionsDisabled}
+        onRegenerateQuickActions={onRegenerateQuickActions}
+        canRegenerateQuickActions={message.id === latestAssistantMessageId}
+        quickActionsPending={quickActionsPendingMessageId === message.id}
+        showStarterCards={message.id === starterCardsMessageId}
+      />
+    </WithWakeupRail>
   );
 });
 

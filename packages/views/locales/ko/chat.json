@@ -328,5 +328,15 @@
     "from_original_dm": "원본 DM에서",
     "inherited": "상속됨",
     "message_unavailable": "더 이상 사용할 수 없는 메시지입니다"
+  },
+  "wakeup": {
+    "node_label": "예약된 깨우기가 실행되었습니다",
+    "scheduled_at": "예약 {{time}}",
+    "set_by": "{{agent}}이(가) {{time}}에 설정",
+    "show_instruction": "지시 보기",
+    "hide_instruction": "지시 숨기기",
+    "instruction_region": "에이전트에게 보낸 지시",
+    "instruction_note": "에이전트에게 보낸 지시(원문). 에이전트는 이 내용을 모두 받습니다.",
+    "issue_fallback": "이슈"
   }
 }

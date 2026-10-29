@@ -55,3 +55,24 @@ export const formatCompactionTime = (iso: string): string | null =>
   Number.isNaN(new Date(iso).getTime())
     ? null
     : format(iso, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, "en-GB", "Asia/Bangkok");
+
+/**
+ * `HH:MM ZONE` (24h) in the reader's zone, e.g. "17:00 ICT". Intl names UTC+7
+ * "GMT+7"; the workspace writes it as ICT.
+ */
+export function formatTimeWithZone(iso: string, locale?: string, timeZone?: string): string {
+  const time = format(iso, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, locale, timeZone);
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  let zone = "";
+  try {
+    zone = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  } catch {
+    zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  }
+  return `${time} ${zone === "GMT+7" ? "ICT" : zone}`.trim();
+}
