@@ -38,6 +38,7 @@ import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
+import { NeedsYouList } from "./needs-you-list";
 
 const apiLogger = createLogger("chat.api");
 
@@ -490,6 +491,7 @@ export function ChatThreadList({
   if (view === "archived") {
     return (
       <>
+        <NeedsYouList />
         <button
           type="button"
           onClick={() => setView("history")}
@@ -525,6 +527,7 @@ export function ChatThreadList({
   if (historySessions.length === 0) {
     return (
       <>
+        <NeedsYouList />
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
@@ -535,6 +538,7 @@ export function ChatThreadList({
 
   return (
     <>
+      <NeedsYouList />
       {historySessions.map(renderRow)}
       {archivedEntry}
     </>
