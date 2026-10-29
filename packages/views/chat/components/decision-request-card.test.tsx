@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -181,6 +181,57 @@ describe("DecisionRequestCard answering", () => {
     await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalled());
     rerender(view({ ...withOptions, state: "answered" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
+  describe("a send whose answered event and HTTP response arrive in either order", () => {
+    const setup = () => {
+      let resolveAnswer: (value?: unknown) => void = () => { throw new Error("response not initialized"); };
+      answerDecisionRequest.mockReturnValue(new Promise((resolve) => { resolveAnswer = resolve; }));
+      const client = new QueryClient();
+      const view = (value: RequestCard) => (
+        <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>
+      );
+      return { ...renderWithI18n(view(withOptions)), view, resolve: () => act(async () => { resolveAnswer(); await Promise.resolve(); }) };
+    };
+
+    it("event first, then 201: never shows the unposted-draft warning", async () => {
+      const { rerender, view, resolve } = setup();
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+      rerender(view({ ...withOptions, state: "answered", record_comment_id: "own" }));
+      expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+      await resolve();
+      await vi.waitFor(() => expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull());
+      expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+    });
+
+    it("201 first, then event: clears the draft and shows no warning", async () => {
+      const { rerender, view, resolve } = setup();
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+      await resolve();
+      expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+      rerender(view({ ...withOptions, state: "answered", record_comment_id: "own" }));
+      expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+    });
+
+    it("event first, then 409: shows the refused draft once the send settles", async () => {
+      let rejectAnswer: (error: unknown) => void = () => { throw new Error("response not initialized"); };
+      answerDecisionRequest.mockReturnValue(new Promise((_, reject) => { rejectAnswer = reject; }));
+      const client = new QueryClient();
+      const view = (value: RequestCard) => (
+        <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>
+      );
+      const { rerender } = renderWithI18n(view(withOptions));
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+      rerender(view({ ...withOptions, state: "answered" }));
+      await act(async () => { rejectAnswer(new ApiError("answered first", 409, "Conflict")); await Promise.resolve(); });
+      expect(await screen.findByTestId("decision-request-kept-draft")).toHaveTextContent("Ship C");
+    });
   });
 
   it("shows the draft back with Discard draft when the server refuses with a conflict", async () => {

@@ -23,21 +23,25 @@ const isConflict = (error: unknown) => error instanceof ApiError && error.status
 const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
 const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
 
-// The parent owns the draft so a card that turns answered under the reader
-// (another tab, the DM) does not unmount the form and delete what was typed.
+type AnswerMutation = ReturnType<typeof useAnswerDecisionRequest>;
+
+// The parent owns the draft and the send, so a card that turns answered under
+// the reader (another tab, the DM, our own realtime event arriving before the
+// HTTP 201) does not unmount the form and drop the draft or the send callbacks.
 function DecisionAnswerForm({
   card,
   draft,
+  answer,
   onDraftChange,
-  onRefused,
+  onSend,
 }: {
   card: RequestCard;
   draft: AnswerDraft;
+  answer: AnswerMutation;
   onDraftChange: (draft: AnswerDraft) => void;
-  onRefused: () => void;
+  onSend: () => void;
 }) {
   const { t } = useT("chat");
-  const answer = useAnswerDecisionRequest(card.issue_id);
   const online = useOnline();
   const { option, text } = draft;
   const setOption = (next: string) => onDraftChange({ option: next, text });
@@ -46,14 +50,7 @@ function DecisionAnswerForm({
   const textId = useId();
   const canSend = online && !answer.isPending && (option !== "" || text.trim() !== "");
   const send = () => {
-    if (!canSend) return;
-    answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined },
-      {
-        onSuccess: () => onDraftChange(EMPTY_DRAFT),
-        onError: (error) => isConflict(error) && onRefused(),
-      },
-    );
+    if (canSend) onSend();
   };
 
   return (
@@ -155,6 +152,15 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
+  const answer = useAnswerDecisionRequest(card.issue_id);
+  const sendAnswer = () =>
+    answer.mutate(
+      { requestId: card.id, option: draft.option || undefined, text: draft.text.trim() || undefined },
+      {
+        onSuccess: () => setDraft(EMPTY_DRAFT),
+        onError: (error) => isConflict(error) && setRefused(true),
+      },
+    );
   const discardDraft = () => {
     setDraft(EMPTY_DRAFT);
     setRefused(false);
@@ -213,11 +219,11 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
             <RichContent content={card.ask} density="compact" phase="settled" />
           </AnnotatableAnswer>
         </div>
-        {(refused || card.state !== "open") && hasDraft(draft) ? (
+        {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm card={card} draft={draft} onDraftChange={setDraft} onRefused={() => setRefused(true)} />
+            <DecisionAnswerForm card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} />
           )
         )}
         {validDate && (
