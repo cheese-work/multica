@@ -13,6 +13,7 @@ import { isOfficialMarketingHost } from "./lib/public-host";
 // and post-revert-and-reapply users don't hit 404.
 const LEGACY_ROUTE_SEGMENTS = new Set([
   "issues",
+  "issue",
   "projects",
   "agents",
   "squads",
@@ -48,7 +49,12 @@ function nextWithLocale(req: NextRequest): NextResponse {
 // edge.
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  const runtimeDestination = runtimeRewriteDestination(pathname, process.env);
+  const isSearchApi =
+    pathname === "/api/search/suggestions" ||
+    pathname === "/api/issues/search" ||
+    pathname === "/api/projects/search";
+  const runtimeDestination =
+    isSearchApi ? undefined : runtimeRewriteDestination(pathname, process.env);
   if (runtimeDestination) {
     const url = new URL(runtimeDestination);
     url.search = req.nextUrl.search;
@@ -72,7 +78,10 @@ export function proxy(req: NextRequest) {
 
     if (lastSlug) {
       // Preserve deep-link path + query: /issues/abc → /{lastSlug}/issues/abc
-      url.pathname = `/${lastSlug}${pathname}`;
+      const workspacePath = firstSegment === "issue"
+        ? pathname.replace(/^\/issue(?=\/|$)/, "/issues")
+        : pathname;
+      url.pathname = `/${lastSlug}${workspacePath}`;
       return NextResponse.redirect(url);
     }
 
@@ -108,7 +117,11 @@ export function proxy(req: NextRequest) {
 
   // --- Default: forward locale header to RSC, no redirect/rewrite ---
   // Covers logged-out root path, /login, /:slug/*, and everything else.
-  return nextWithLocale(req);
+  const response = nextWithLocale(req);
+  if (/^\/[^/]+\/search\/?$/.test(pathname)) {
+    response.headers.set("Referrer-Policy", "origin");
+  }
+  return response;
 }
 
 export const config = {

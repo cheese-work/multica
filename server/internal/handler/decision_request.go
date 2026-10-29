@@ -31,6 +31,10 @@ type decisionRequestInput struct {
 	EscalationClass string
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
+	// Options are the card's answer buttons; the flat Ask carries their labels.
+	Options []decisiontx.AskOption
+	// AskJSON is the decoded structured Ask, stored whole for the card to render.
+	AskJSON []byte
 }
 
 type decisionRequestResult struct {
@@ -194,17 +198,11 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return db.ChatSession{}, deny
 	}
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID, SessionID: session.ID})
 	if err != nil {
 		return db.ChatSession{}, err
 	}
-	listed := false
-	for _, lane := range lanes {
-		if lane.ID == session.ID {
-			listed = true
-		}
-	}
-	if !listed {
+	if len(lanes) == 0 {
 		return db.ChatSession{}, deny
 	}
 	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
@@ -219,7 +217,7 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 // the lane of the latest request on this issue, else the newest lane that
 // mentions this issue. The zero value means: open a new Decisions DM.
 func defaultDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID) (pgtype.UUID, error) {
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, IssueID: issue.ID})
 	if err != nil || len(lanes) == 0 {
 		return pgtype.UUID{}, err
 	}
@@ -283,6 +281,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		if input.HumanUserID.Valid && session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
+		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+			return empty, err
+		}
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, located.CommentID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -307,6 +308,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	}
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request refuses a terminal issue"}
+	}
+	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+		return empty, err
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
@@ -406,8 +410,12 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		commentID = tag.ID
 	}
+	options, err := json.Marshal(append([]decisiontx.AskOption{}, input.Options...))
+	if err != nil {
+		return empty, err
+	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint})
 	if err != nil {
 		return empty, err
 	}
@@ -491,6 +499,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		if session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
+		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+			return empty, err
+		}
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && root != nil && root.IssueID != issue.ID {
@@ -508,6 +519,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	if agent.Kind == "system" {
 		return empty, deny
+	}
+	if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
 		return empty, err

@@ -1,0 +1,12 @@
+
+> @multica/desktop@0.7.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/desktop
+> vitest run src/shared/issue-window.test.ts src/renderer/src/platform/navigation.test.tsx src/renderer/src/platform/issue-window-navigation.test.tsx src/renderer/src/hooks/use-tab-selection-shortcut.test.tsx src/renderer/src/hooks/use-open-settings-shortcut.test.tsx
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/apps/desktop
+
+
+ Test Files  5 passed (5)
+      Tests  76 passed (76)
+   Start at  17:44:36
+   Duration  5.75s (transform 5.97s, setup 812ms, import 10.73s, tests 500ms, environment 6.05s)

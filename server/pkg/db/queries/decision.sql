@@ -48,13 +48,13 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_json)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.narg('ask_json')::jsonb)
 RETURNING *;
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id)
-VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id)
+VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
@@ -201,14 +201,40 @@ WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('d
 ORDER BY target.human_user_id;
 
 -- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.updated_at
+-- With issue_id, lanes that name the issue (a message mention or a decision
+-- request on it) rank first, newest reference first, before the limit applies.
+-- session_id narrows the result to one lane for an eligibility check.
+SELECT session.id, session.title, session.updated_at, ref.referenced_at::timestamptz AS referenced_at
 FROM chat_session session
+LEFT JOIN LATERAL (
+    SELECT max(refs.referenced_at) AS referenced_at FROM (
+        SELECT message.created_at AS referenced_at
+        FROM chat_message message
+        WHERE message.chat_session_id = session.id
+          AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
+          AND message.failure_reason IS NULL
+          AND lower(message.content) LIKE '%](mention://issue/' || lower(sqlc.narg('issue_id')::uuid::text) || ')%'
+        UNION ALL
+        SELECT request.created_at
+        FROM decision_request request
+        WHERE request.workspace_id = session.workspace_id AND request.issue_id = sqlc.narg('issue_id')::uuid
+          AND request.chat_session_id = session.id
+    ) refs
+) ref ON sqlc.narg('issue_id')::uuid IS NOT NULL
 WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.agent_id = sqlc.arg('agent_id')
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
-ORDER BY session.updated_at DESC, session.id DESC
+  AND (sqlc.narg('session_id')::uuid IS NULL OR session.id = sqlc.narg('session_id')::uuid)
+ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10;
+
+-- name: OpenDecisionAsksSince :many
+SELECT ask, created_at FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND status = 'open' AND created_at > now() - interval '24 hours'
+ORDER BY created_at DESC;
 
 -- name: ListDecisionLaneMentions :many
 WITH scoped_mentions AS MATERIALIZED (
@@ -376,32 +402,34 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 
 -- name: ListDecisionCards :many
 -- One row per answer that a DM bubble was quoted into, or that a comment/
--- reference message names. Matches on the source messages (GIN index) and on
--- explicit answer ids so one call serves the issue timeline and the DM list.
-SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id,
-       answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.disclaimed_at,
+-- reference message names. Matches on the source messages (GIN index), on
+-- explicit answer ids and on the source comment a member answered in, so one
+-- call serves the issue timeline and the DM list.
+SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
+       answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
+       answer.chosen_option_index, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
+       request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix
 FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id
 JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id')
-  AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[])
+  AND (answer.id = ANY(sqlc.arg('answer_ids')::uuid[]) OR answer.chat_message_ids && sqlc.arg('message_ids')::uuid[]
+       OR answer.source_comment_id = ANY(sqlc.arg('source_comment_ids')::uuid[]))
 ORDER BY answer.created_at, answer.id;
 
 -- name: ListChatDecisionContext :many
 -- The asks a bare reply in a DM may be answering: open, asked, in this
 -- workspace and DM, with the ping before the first reply being claimed. The ping
 -- is an assistant row no task produced, so it is in neither the resumed provider
--- session nor the user-only prompt input. total counts every eligible ask in the
--- same snapshot before the display limit, so a limit never turns several asks
--- into one. Answered or cancelled asks, newer pings and decision notes are not
--- eligible and never counted.
-SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask,
+-- session nor the user-only prompt input. Every eligible ask is returned, so the
+-- run can explain any open card. Answered or cancelled asks, newer pings and
+-- decision notes are not eligible.
+SELECT request.id, request.issue_id, request.issue_comment_id, request.ping_message_id, request.ask, request.options,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key,
-       COALESCE(issue.title, '')::text AS issue_title,
-       count(*) OVER ()::bigint AS total
+       COALESCE(issue.title, '')::text AS issue_title
 FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
@@ -409,8 +437,7 @@ LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < sqlc.arg('before')
-ORDER BY ping.created_at DESC, request.id DESC
-LIMIT sqlc.arg('row_limit');
+ORDER BY ping.created_at DESC, request.id DESC;
 
 -- name: ListChatDecisionReferences :many
 -- Server-authored decision notes (cancellations, recorded answers) posted after

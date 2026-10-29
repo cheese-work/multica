@@ -176,10 +176,23 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   }, [enabled, editable]);
   const capture = () => {
     const captured = readSelection();
-    if (captured) { claimEditor(); setSelection(captured); setEditor(null); setError(false); }
+    if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
   useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
+
+  // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
+  // a document-level pointerup; captureCommentSelection then decides from the selection alone.
+  const armed = useRef(false);
+  const captureRef = useRef(capture);
+  captureRef.current = capture;
+  useEffect(() => {
+    const onUp = () => { if (armed.current) { armed.current = false; captureRef.current(); } };
+    const disarm = () => { armed.current = false; };
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", disarm);
+    return () => { document.removeEventListener("pointerup", onUp); document.removeEventListener("pointercancel", disarm); };
+  }, []);
 
   // Dismiss on the next press, never on the click completing the opening drag.
   useEffect(() => {
@@ -285,6 +298,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     if (annotation && !root) return onRevealSource?.(annotation) ?? false;
     const range = root && annotation && annotationRange(root, annotation, editable);
     if (!root || !range || !annotation) return false;
+    pendingMarkerFocus.current = null;
     if (scrollToSource) {
       const element = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       element?.scrollIntoView({ block: "center", behavior: "instant" });
@@ -311,6 +325,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
         : Lref.current.countLimit(MAX_REPLY_ANNOTATIONS));
       return false;
     }
+    pendingMarkerFocus.current = null;
     claimEditor();
     setSelection(captured);
     const next = duplicate ?? {
@@ -366,9 +381,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     addSelection,
     captureProps: {
       "data-annotation-thread": draftKey,
-      onPointerUp: (event: React.PointerEvent) => {
-        if (!editable && event.target instanceof Element && event.target.closest("[data-comment-content]") &&
-          !event.target.closest("button, [contenteditable=true]")) capture();
+      onPointerDown: (event: React.PointerEvent) => {
+        armed.current = !editable && event.target instanceof Element && !!event.target.closest("[data-comment-content]") &&
+          !event.target.closest("button, [contenteditable=true]");
       },
       onKeyUp: (event: React.KeyboardEvent) => {
         if (!editable && event.shiftKey && event.key.startsWith("Arrow")) capture();
@@ -403,7 +418,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
             onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
         </CommentSelectionBubble>;
       })}
-      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
+      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
           {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}

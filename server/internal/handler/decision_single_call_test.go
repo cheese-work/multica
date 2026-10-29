@@ -28,7 +28,7 @@ func newSingleCallFixture(test *testing.T) singleCallFixture {
 	dbfx.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, fixture.issueID)
 	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
 	details := structuredDecisionAsk(fixture.issueID, sourceID, "Approve the reversible change?")
-	return singleCallFixture{intentFixture: fixture, ask: details.Content(), footer: "Next owner: none", sourceID: sourceID, details: details}
+	return singleCallFixture{intentFixture: fixture, ask: details.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 func (fixture singleCallFixture) body() map[string]any {
@@ -63,7 +63,7 @@ func TestDecisionSingleCallOwnerRecipientIDs(test *testing.T) {
 					body["for"] = memberID
 				}
 				if lane == "session" {
-					body["session_id"] = dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Owner decisions"})
+					body["session_id"] = laneNamingIssue(test, fixture.issueID, fixture.agentID, fixture.humanID, "Owner decisions")
 				} else if lane == "new_dm" || lane == "intent" {
 					body["new_dm"] = true
 				}
@@ -75,12 +75,15 @@ func TestDecisionSingleCallOwnerRecipientIDs(test *testing.T) {
 				if created["human_user_id"] != fixture.humanID {
 					test.Fatalf("recipient = %v, want user ID %s", created["human_user_id"], fixture.humanID)
 				}
-				wantComments := 1
+				wantComments, wantMessages := 1, 1
 				if lane == "intent" {
 					wantComments++
 				}
-				if comments, messages, pings := fixture.counts(test); comments != wantComments || messages != 1 || pings != 1 {
-					test.Fatalf("comments=%d messages=%d pings=%d, want %d/1/1", comments, messages, pings, wantComments)
+				if lane == "session" {
+					wantMessages++ // the seeded message that names the issue
+				}
+				if comments, messages, pings := fixture.counts(test); comments != wantComments || messages != wantMessages || pings != 1 {
+					test.Fatalf("comments=%d messages=%d pings=%d, want %d/%d/1", comments, messages, pings, wantComments, wantMessages)
 				}
 			})
 		}
@@ -155,13 +158,16 @@ func TestDecisionSingleCallLaneSelection(test *testing.T) {
 	test.Run("latest_request_lane_on_this_issue", func(test *testing.T) {
 		fixture := newSingleCallFixture(test)
 		first := lane(test, fixture, "first")
+		fixture.discussIn(test, first)
 		lane(test, fixture, "newer unrelated")
 		var created map[string]any
 		body := fixture.body()
 		body["session_id"] = first
 		testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
 		dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() WHERE title = 'newer unrelated' AND creator_id = $1`, fixture.humanID)
-		testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&created)
+		next := fixture.body()
+		next["ask"] = structuredDecisionAsk(fixture.issueID, fixture.sourceID, "A second question?")
+		testutil.Call(test, testHandler.RequestDecision, fixture.call(next)).Want(http.StatusCreated).JSON(&created)
 		if sessionID, _ := sessionOf(test, fixture, created); sessionID != first {
 			test.Fatalf("second ask went to %s, want the lane of the latest request %s", sessionID, first)
 		}
@@ -378,7 +384,7 @@ func TestDecisionSingleCallComposedCommentLimit(test *testing.T) {
 			fixture := newSingleCallFixture(test)
 			body := fixture.body()
 			ask := fixture.details
-			ask.Decision = strings.Repeat("a", tc.ask-len(ask.Content())+len(ask.Decision))
+			ask.Decision = strings.Repeat("a", tc.ask-len(ask.Content(handlerTestWorkspaceSlug))+len(ask.Decision))
 			body["ask"] = ask
 			body["footer"] = strings.Repeat("f", tc.footer)
 			testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(tc.want)

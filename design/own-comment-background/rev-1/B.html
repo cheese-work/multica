@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>B — Fill + accent bar · CHE-2133</title><style>:root {
+    /* Dialog motion, shared by popup and backdrop. */
+    --dialog-enter-duration: 100ms;
+    --dialog-exit-duration: 100ms;
+    --dialog-enter-easing: ease;
+    --dialog-exit-easing: ease;
+
+    color-scheme: light;
+    /* Button geometry. Text and icon-only buttons share the height ladder.
+       Keep the defaults aligned with the existing compact product controls. */
+    --button-height-xs: 1.5rem;
+    --button-height-sm: 1.75rem;
+    --button-height-default: 2rem;
+    --button-height-lg: 2.25rem;
+    --button-padding-xs: 0.5rem;
+    --button-padding-sm: 0.625rem;
+    --button-padding-default: 0.625rem;
+    --button-padding-lg: 0.625rem;
+    --button-gap-xs: 0.25rem;
+    --button-gap-sm: 0.25rem;
+    --button-gap-default: 0.375rem;
+    --button-gap-lg: 0.375rem;
+    /* Surface system: the app shell is the quiet outer frame; the page canvas
+       is where lists, boards, and conversations live; surfaces are reserved
+       for bounded content groups; raised surfaces are ephemeral overlays. */
+    --app-shell: oklch(0.964435 0.001327 286.375);
+    --page-canvas: oklch(0.988087 0 0);
+    --surface: oklch(1 0 0);
+    --surface-foreground: oklch(0.141 0.005 285.823);
+    --surface-raised: oklch(1 0 0);
+    --surface-hover: oklch(0.967 0.001 286.375);
+    --surface-selected: oklch(0.95 0.002 286.375);
+    --surface-selected-foreground: oklch(0.141 0.005 285.823);
+    --surface-border: oklch(0.92 0.004 286.32);
+    --surface-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 1px rgb(15 23 42 / 0.03);
+    --floating-shadow: 0 16px 40px rgb(15 23 42 / 0.14), 0 3px 10px rgb(15 23 42 / 0.08);
+
+    /* The chat launcher is an overlay pinned to the dashboard's bottom-right
+       corner on every workspace page, so that corner is not available to page
+       content. Its geometry lives here rather than in the button so that the
+       clearance is derived from it: anything reaching that corner — a footer's
+       action buttons, a floating toolbar — reserves --chat-launcher-clearance
+       and stays correct if the launcher ever moves or changes size. */
+    --chat-launcher-size: 2.5rem;
+    --chat-launcher-inset: 0.5rem;
+    --chat-launcher-clearance: calc(
+      var(--chat-launcher-size) + var(--chat-launcher-inset) * 2
+    );
+    /* Menus (dropdown/context/select/popover) hover just above their trigger,
+       so they carry a lighter shadow than window-level overlays (dialogs,
+       sheets), which keep --floating-shadow. */
+    --menu-shadow: 0 8px 24px rgb(15 23 42 / 0.08), 0 2px 6px rgb(15 23 42 / 0.05);
+    /* Tooltips are a dark surface in both themes, so a passive label never
+       reads as one of the interactive panels above. Near-black here; in dark
+       mode it sits one step above every surface and carries a ring instead of
+       a drop shadow. */
+    --tooltip: oklch(0.21 0.006 285.885);
+    --tooltip-shadow: 0 4px 12px rgb(15 23 42 / 0.16), 0 1px 3px rgb(15 23 42 / 0.12);
+    --background: var(--page-canvas);
+    --foreground: oklch(0.141 0.005 285.823);
+    --card: var(--surface);
+    --card-foreground: oklch(0.141 0.005 285.823);
+    --popover: var(--surface-raised);
+    --popover-foreground: oklch(0.141 0.005 285.823);
+    --primary: oklch(0.21 0.006 285.885);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.967 0.001 286.375);
+    /* Lightness is pinned by WCAG AA, not by taste: muted text sits on every
+       light surface we have, and the darkest of them — --sidebar-accent, the
+       nav hover state — is the binding constraint. At the old 0.552 that pair
+       was 3.98:1; 0.505 clears 4.5:1 on all of app-shell / page-canvas /
+       sidebar / sidebar-accent / muted / surface-selected / surface, with the
+       worst case at 4.88:1. Raise it and the nav labels fail again. Hue and
+       chroma are unchanged so the neutral ramp keeps its cast. */
+    --muted-foreground: oklch(0.505 0.016 285.938);
+    /* The quiet step below muted, for marks that are not text: disclosure
+       chevrons, separator glyphs, the em dash standing in for an empty cell,
+       the large icon in an empty state. It exists because the alternative
+       people reached for was alpha — 152 call sites of
+       text-muted-foreground/30..80 — and alpha on light surfaces lands
+       between 1.5:1 and 3.8:1, which fails even the 3:1 floor for non-text.
+       0.606 is the lightest step that still clears 3:1 (WCAG 1.4.11) on every
+       surface, worst case --sidebar-accent at 3.19:1. Deliberately NOT valid
+       for text: text has one floor, --muted-foreground, and there is no room
+       for a third readable step (AA caps a lighter text tone at L 0.523 here,
+       0.018 away from muted — a difference no one can see). */
+    --faint-foreground: oklch(0.606 0.016 285.938);
+    --accent: oklch(0.967 0.001 286.375);
+    --accent-foreground: oklch(0.21 0.006 285.885);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.945 0.003 286.32);
+    --input: oklch(0.92 0.004 286.32);
+    --ring: oklch(0.705 0.015 286.067);
+    /* Brand-derived blue gradient (h=255 = brand hue). chart-1 equals brand
+       so the most important series visually anchors to the product colour;
+       chart-2..5 step lighter + less saturated so a stacked bar reads
+       "primary → secondary → tertiary" at a glance instead of fighting
+       for attention as five equally-weighted greys. */
+    --chart-1: oklch(0.55 0.16 255);
+    --chart-2: oklch(0.66 0.13 255);
+    --chart-3: oklch(0.76 0.10 255);
+    --chart-4: oklch(0.85 0.06 255);
+    --chart-5: oklch(0.92 0.03 255);
+    --radius: 0.5rem;
+    --issue-row-height: 36px;
+    --sidebar: oklch(0.964435 0.001327 286.375);
+    --sidebar-foreground: oklch(0.141 0.005 285.823);
+    --sidebar-primary: oklch(0.21 0.006 285.885);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.935 0.003 286.375);
+    --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+    --sidebar-border: oklch(0.92 0.004 286.32);
+    --sidebar-ring: oklch(0.705 0.015 286.067);
+    --brand: oklch(0.56079497 0.19449888 256.41258418);
+    --brand-foreground: oklch(0.985 0 0);
+    --success: oklch(0.55 0.16 145);
+    --warning: oklch(0.75 0.16 85);
+    --info: oklch(0.55 0.18 250);
+    /* High priority sits between --destructive (urgent) and --warning (medium). */
+    --priority-high: oklch(0.68 0.18 50);
+    --scrollbar-thumb: oklch(0 0 0 / 10%);
+    --scrollbar-thumb-hover: oklch(0 0 0 / 18%);
+    --scrollbar-track: transparent;
+    /* In-page find (Cmd/Ctrl+F) match tints, painted via the CSS Custom
+       Highlight API. Bright fill + dark text so matches stay legible in
+       both themes; the active match steps to orange. */
+    --find-match: oklch(0.92 0.15 100);
+    --find-match-active: oklch(0.82 0.17 62);
+    --find-match-foreground: oklch(0.22 0.03 92);
+}
+.dark {
+    color-scheme: dark;
+    --app-shell: oklch(0.155 0.005 285.823);
+    --page-canvas: oklch(0.18 0.005 285.823);
+    --surface: oklch(0.21 0.006 285.885);
+    --surface-foreground: oklch(0.985 0 0);
+    --surface-raised: oklch(0.235 0.007 285.885);
+    --surface-hover: oklch(0.274 0.006 286.033);
+    --surface-selected: oklch(0.3 0.006 286.033);
+    --surface-selected-foreground: oklch(0.985 0 0);
+    --surface-border: oklch(1 0 0 / 10%);
+    --surface-shadow: 0 1px 2px rgb(0 0 0 / 0.2), 0 1px 1px rgb(0 0 0 / 0.16);
+    --floating-shadow: 0 20px 48px rgb(0 0 0 / 0.46), 0 4px 12px rgb(0 0 0 / 0.28);
+    --menu-shadow: 0 10px 28px rgb(0 0 0 / 0.3), 0 2px 8px rgb(0 0 0 / 0.18);
+    --tooltip: oklch(0.3 0.006 286.033);
+    --tooltip-shadow: 0 0 0 1px oklch(1 0 0 / 10%), 0 8px 24px rgb(0 0 0 / 0.4);
+    --background: var(--page-canvas);
+    --foreground: oklch(0.985 0 0);
+    --card: var(--surface);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: var(--surface-raised);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.92 0.004 286.32);
+    --primary-foreground: oklch(0.21 0.006 285.885);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.274 0.006 286.033);
+    --muted-foreground: oklch(0.705 0.015 286.067);
+    /* Same role as light mode, mirrored: fainter means darker here. 0.60 is
+       the darkest step still clearing 3:1 on every dark surface, worst case
+       --surface-selected at 3.45:1. The step away from muted (0.105 L) matches
+       light mode's, so a chevron reads equally quiet in both themes. */
+    --faint-foreground: oklch(0.60 0.015 286.067);
+    --accent: oklch(0.274 0.006 286.033);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 6%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.552 0.016 285.938);
+    /* Dark mode mirrors light mode's "primary → secondary" gradient on the
+       brand hue, but flips the lightness curve: the most important series
+       is the brightest (so it pops on the dark background) and trailing
+       series get progressively darker / less saturated. */
+    --chart-1: oklch(0.72 0.16 255);
+    --chart-2: oklch(0.62 0.13 255);
+    --chart-3: oklch(0.52 0.10 255);
+    --chart-4: oklch(0.42 0.06 255);
+    --chart-5: oklch(0.32 0.03 255);
+    --sidebar: oklch(0.21 0.006 285.885);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.274 0.006 286.033);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.552 0.016 285.938);
+    /* Brand also paints body-text links; keep it readable on dark surfaces. */
+    --brand: oklch(0.65 0.16 255);
+    --brand-foreground: oklch(0.985 0 0);
+    --success: oklch(0.65 0.15 145);
+    --warning: oklch(0.70 0.16 85);
+    --info: oklch(0.65 0.18 250);
+    --priority-high: oklch(0.72 0.17 50);
+    --scrollbar-thumb: oklch(1 0 0 / 8%);
+    --scrollbar-thumb-hover: oklch(1 0 0 / 18%);
+    --scrollbar-track: transparent;
+    --find-match: oklch(0.82 0.16 100);
+    --find-match-active: oklch(0.76 0.18 60);
+    --find-match-foreground: oklch(0.18 0.02 92);
+}
+
+:root { --radius-md: calc(var(--radius) * 0.75); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page-canvas); color: var(--foreground); font: 14px/20px system-ui, sans-serif; }
+button, textarea { font: inherit; }
+button, summary, a { touch-action: manipulation; }
+button, summary { cursor: pointer; }
+button { background: var(--surface); color: var(--foreground); border: 1px solid var(--surface-border); border-radius: var(--radius); padding: 7px 12px; min-height: 36px; }
+button:focus-visible, summary:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+a { color: var(--brand); }
+.frame { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 100vh; }
+aside { padding: 22px 18px; background: var(--app-shell); border-right: 1px solid var(--surface-border); }
+aside p { margin: 22px 0 8px; color: var(--muted-foreground); font-size: 12px; }
+aside div { padding: 9px; border-radius: var(--radius); }
+aside .selected { background: var(--surface-selected); }
+.page { width: 100%; max-width: 1056px; margin: auto; padding: 24px 48px 48px; min-width: 0; }
+.breadcrumb, .meta, .muted { color: var(--muted-foreground); }
+.breadcrumb { font-size: 12px; margin-bottom: 18px; }
+.design-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--surface-border); padding-bottom: 16px; margin-bottom: 20px; }
+.design-header strong { font-size: 16px; }
+.design-header small { display: block; color: var(--muted-foreground); margin-top: 3px; }
+.design-header a { white-space: nowrap; font-size: 13px; }
+h1 { font-size: 24px; line-height: 32px; margin: 0 0 12px; }
+h2 { font-size: 16px; line-height: 24px; margin: 24px 0 12px; }
+h3 { font-size: 14px; margin: 0 0 6px; }
+p { margin: 8px 0; }
+.issue-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; font-size: 12px; }
+.pill { display: inline-flex; padding: 1px 7px; border-radius: var(--radius-md); border: 1px solid var(--surface-border); font-size: 12px; }
+.thread { border: 1px solid var(--surface-border); border-radius: calc(var(--radius) * 1.5); overflow: hidden; margin: 14px 0; background: var(--surface); }
+.comment { padding: 14px 16px; min-width: 0; }
+.comment + .comment { border-top: 1px solid var(--surface-border); }
+.author { display: flex; gap: 9px; align-items: center; min-height: 28px; margin-bottom: 8px; flex-wrap: wrap; }
+.avatar { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-selected); font-size: 11px; font-weight: 600; }
+.author strong { font-size: 14px; font-weight: 600; }
+.meta { font-size: 12px; }
+.body { margin-left: 35px; overflow-wrap: anywhere; }
+.replies { border-top: 1px solid var(--surface-border); }
+.own { background: color-mix(in oklab, var(--brand) 8%, var(--surface)); }
+.dark .own { background: color-mix(in oklab, var(--brand) 15%, var(--surface)); }
+body[data-direction="B"] .own { box-shadow: inset 3px 0 var(--brand); }
+.you { display: none; padding: 0 6px; font-size: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border); background: var(--surface); }
+body[data-direction="C"] .own .you { display: inline; }
+.target { background: color-mix(in srgb, var(--surface) 95%, var(--brand) 5%) !important; outline: 2px solid var(--ring); outline-offset: -2px; }
+.target-note { color: var(--muted-foreground); font-size: 12px; }
+.mention { color: var(--brand); background: var(--surface-hover); border-radius: var(--radius-md); padding: 0 4px; white-space: nowrap; }
+.mention-self { color: var(--foreground); background: color-mix(in oklab, var(--warning) 25%, var(--background)); font-weight: 700; }
+pre { background: var(--page-canvas); border: 1px solid var(--surface-border); border-radius: var(--radius-md); padding: 12px; overflow-x: auto; font: 12px/18px ui-monospace, monospace; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; border-bottom: 1px solid var(--surface-border); padding: 7px 10px; }
+th { font-weight: 600; background: var(--page-canvas); }
+summary { padding: 10px 16px; min-height: 44px; color: var(--muted-foreground); font-size: 13px; }
+details[open] > summary { border-bottom: 1px solid var(--surface-border); }
+.composer { border: 1px solid var(--surface-border); border-radius: var(--radius); padding: 12px; background: var(--surface); margin-top: 18px; }
+textarea { display: block; width: 100%; background: var(--surface); color: var(--foreground); border: 0; resize: vertical; min-height: 70px; }
+.composer footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.state { padding: 14px; border: 1px solid var(--surface-border); border-radius: var(--radius); background: var(--surface); }
+.state p { color: var(--muted-foreground); font-size: 13px; }
+.state[role="alert"] { border-color: var(--warning); }
+.state button { margin-top: 6px; }
+.footnote { font-size: 12px; color: var(--muted-foreground); margin-top: 18px; }
+@media (max-width: 767px) {
+  .frame { display: block; }
+  aside { display: none; }
+  .page { padding: 16px 12px 28px; }
+  h1 { font-size: 20px; line-height: 28px; }
+  .comment { padding: 12px; }
+  .body { margin-left: 0; }
+  .meta { font-size: 11px; }
+  button, .design-header a { min-height: 44px; display: inline-flex; align-items: center; }
+  textarea { font-size: 16px; }
+  .state-grid { grid-template-columns: 1fr; }
+}
+</style><script>document.documentElement.classList.toggle('dark', new URLSearchParams(location.search).get('theme') === 'dark');</script></head>
+<body data-direction="B"><div class="frame"><aside aria-label="Workspace context"><strong>Multica / Cheese</strong><p>Workspace</p><div>Inbox</div><div class="selected">Issues</div><div>Projects</div><div>Agents</div><p>Cheese Work Setup</p><div>All issues</div></aside><main class="page"><div class="design-header"><div><strong>B · Fill + accent bar</strong><small>Design exploration · rev-1 · not approved</small></div><a id="theme-link" href="?theme=dark">Dark theme</a></div><div class="breadcrumb">Cheese Work Setup / CHE-2133</div><h1>Highlight the viewer’s own comments</h1><div class="issue-meta"><span class="pill">In progress</span><span>Viewer: Cheese</span><span>Long-thread fixture · roots and replies</span></div><p class="muted">Your comments have a cool background. Mentions that need you stay amber.</p><h2>Discussion</h2><section class="thread" aria-label="Delivery discussion"><article class="comment" aria-label="Comment by x99-claude-sonnet"><header class="author"><span class="avatar" aria-hidden="true">AI</span><strong>x99-claude-sonnet</strong><span class="meta">26 Oct · 16:40 ICT</span></header><div class="body"><p>The long thread is ready for review. <span class="mention mention-self">@Cheese</span> please check the comment treatment before implementation.</p><p>Agent comments stay on the normal surface, even when they mention you.</p></div></article><div class="replies"><article class="comment own" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 16:43 ICT</span></header><div class="body"><p>Make my comments stand out while I scroll. A background fill should be enough.</p></div></article><article class="comment" aria-label="Comment by Linh"><header class="author"><span class="avatar" aria-hidden="true">LI</span><strong>Linh</strong><span class="meta">26 Oct · 16:45 ICT</span></header><div class="body"><p>Keep my reply neutral. The amber <span class="mention mention-self">@Cheese</span> tag still means someone needs you.</p></div></article><article class="comment own" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 16:48 ICT</span></header><div class="body"><p>Keep the original author, time and rich content readable. <span class="mention mention-self">@Cheese</span> remains amber inside my filled comment.</p><pre><code>const isOwn = entry.actor_type === "member"
+  &amp;&amp; entry.actor_id === currentUserId;</code></pre><div class="table-scroll"><table><thead><tr><th>Surface</th><th>Expected</th></tr></thead><tbody><tr><td>Web + desktop</td><td>Shared comment style</td></tr><tr><td>Native mobile</td><td>Separate implementation noted</td></tr></tbody></table></div></div></article><article class="comment" aria-label="Comment by x99-codex-sol"><header class="author"><span class="avatar" aria-hidden="true">AI</span><strong>x99-codex-sol</strong><span class="meta">26 Oct · 16:51 ICT</span></header><div class="body"><p>The fill applies to each comment, not the whole thread. An agent reply under your root stays neutral.</p></div></article></div></section><section class="thread" aria-label="Viewer-authored root and another author reply"><article class="comment own" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 16:55 ICT</span></header><div class="body"><p>This is my root comment. Its reply must not inherit my background.</p><pre><code>flowchart LR
+  Review --&gt; Select
+  Select --&gt; Approve</code></pre><p class="muted">Mermaid source shown; rendered Mermaid requires application verification.</p></div></article><div class="replies"><article class="comment" aria-label="Comment by x99-claude-sonnet"><header class="author"><span class="avatar" aria-hidden="true">AI</span><strong>x99-claude-sonnet</strong><span class="meta">26 Oct · 16:57 ICT</span></header><div class="body"><p>This agent reply stays neutral. <span class="mention">@Linh</span> is not a self-mention.</p></div></article></div></section><section class="thread" aria-label="Resolved collapsed discussion"><details><summary>Resolved · folded thread · typography check</summary><article class="comment own" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 16:59 ICT</span></header><div class="body"><p>Resolved content keeps its own fill when expanded.</p></div></article></details></section><section class="thread" aria-label="Resolved expanded discussion"><details open><summary>Resolved · 2 comments · spacing check</summary><article class="comment own" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 17:01 ICT</span></header><div class="body"><p>Resolved is a thread state, not a replacement for authorship.</p></div></article><article class="comment" aria-label="Comment by Linh"><header class="author"><span class="avatar" aria-hidden="true">LI</span><strong>Linh</strong><span class="meta">26 Oct · 17:02 ICT</span></header><div class="body"><p>The adjacent resolved reply remains neutral.</p></div></article></details></section><section class="thread" aria-label="Deep-link target priority"><article class="comment own target" aria-label="Comment by Cheese"><header class="author"><span class="avatar" aria-hidden="true">CH</span><strong>Cheese</strong><span class="you">You</span><span class="meta">26 Oct · 17:04 ICT</span></header><div class="body"><p>Jump target: the existing target fill takes precedence while the target is active.</p><p class="target-note">Focus outline is shown here to identify the target in this static mock.</p></div></article></section><section class="composer" aria-label="Comment composer"><label for="draft" class="muted">Reply as Cheese</label><textarea id="draft" placeholder="Write a comment…"></textarea><footer><span class="meta">Static preview · sending is disabled</span><button disabled>Send</button></footer></section><h2>Unchanged thread states</h2><div class="state-grid"><section class="state" role="status"><h3>Loading comments…</h3><p>No ownership fill before the author is known.</p></section><section class="state"><h3>No comments yet</h3><p>Start the discussion below.</p></section><section class="state" role="alert"><h3>Comments could not load</h3><p>Your draft is kept.</p><button onclick="this.previousElementSibling.textContent='Retry requested — static preview only.'">Retry</button></section><section class="state" role="status"><h3>Disconnected</h3><p>Saved comments remain readable. Reconnect to send.</p><button disabled>Send unavailable offline</button></section></div><p class="footnote">Self-contained, synthetic content. Product tokens copied from packages/ui/styles/tokens.css. This is not a live application capture. Native mobile uses separate React Native views; phone captures demonstrate shared web/desktop responsiveness only.</p></main></div><script>if(document.documentElement.classList.contains('dark')){document.getElementById('theme-link').href='?theme=light';document.getElementById('theme-link').textContent='Light theme';}</script></body></html>

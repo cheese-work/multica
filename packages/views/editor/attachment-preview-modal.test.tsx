@@ -1174,12 +1174,13 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(currentScale()).toBeCloseTo(0.5, 5);
   });
 
-  it("zooms on wheel without scrolling the page behind the modal", () => {
+  it("zooms on ctrl + wheel without scrolling the page behind the modal", () => {
     stubNaturalSize({ width: 1600, height: 800 });
     renderImagePreview();
 
     const wheel = new WheelEvent("wheel", {
       deltaY: -100,
+      ctrlKey: true,
       clientX: 400,
       clientY: 200,
       bubbles: true,
@@ -1193,6 +1194,18 @@ describe("AttachmentPreviewModal — image zoom", () => {
 
     expect(currentScale()).toBeGreaterThan(0.5);
     expect(wheel.defaultPrevented).toBe(true);
+  });
+
+  it("pans on a plain wheel without changing the scale", () => {
+    stubNaturalSize({ width: 1600, height: 800 });
+    renderImagePreview();
+    const scale = currentScale();
+    const before = canvasContent().style.transform;
+
+    fireEvent.wheel(zoomCanvas(), { deltaX: 20, deltaY: 30, clientX: 400, clientY: 200 });
+
+    expect(currentScale()).toBe(scale);
+    expect(canvasContent().style.transform).not.toBe(before);
   });
 
   it("pans on drag", () => {
