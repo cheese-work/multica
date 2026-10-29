@@ -66,7 +66,7 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	} else if err != nil {
 		return nil, err
 	}
-	if decision.ChatSessionID != session.ID || decision.HumanUserID != humanID || decision.AskingAgentID != session.AgentID {
+	if decision.ChatSessionID != session.ID || decision.HumanUserID != humanID {
 		return nil, deny
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, session.WorkspaceID, decision.IssueCommentID)
@@ -83,6 +83,21 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	if err != nil {
 		return nil, err
 	}
+	// An ask by an agent other than the DM's steward is answered task-less, and
+	// only inside the topic DM that was opened for its root.
+	foreign := decision.AskingAgentID != session.AgentID
+	if foreign {
+		topic, err := resolveDecisionTopic(ctx, queries, issue)
+		if err != nil {
+			return nil, err
+		}
+		if !session.DecisionTopicID.Valid || session.DecisionTopicID != topic.ID {
+			return nil, deny
+		}
+		if len(attachmentIDs) > 0 {
+			return nil, decisionIntentRefusal{http.StatusBadRequest, "a reply to another agent's request takes no attachments"}
+		}
+	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil {
 		return nil, err
@@ -97,14 +112,23 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	if current.ChatSessionID != decision.ChatSessionID || current.HumanUserID != decision.HumanUserID || current.AskingAgentID != decision.AskingAgentID || current.IssueID != decision.IssueID || current.IssueCommentID != decision.IssueCommentID || current.Status != "open" || current.Origin != "asked" {
 		return nil, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
 	}
-	sent, err := h.TaskService.SendDirectChatMessageTx(ctx, queries, plan, session, humanID, content, attachmentIDs, "member", humanID, "interactive_jwt")
-	if err != nil {
+	var sent service.DirectChatSendResult
+	if foreign {
+		message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content, MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}})
+		if err != nil {
+			return nil, err
+		}
+		if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+			return nil, err
+		}
+		sent.Message = message
+	} else if sent, err = h.TaskService.SendDirectChatMessageTx(ctx, queries, plan, session, humanID, content, attachmentIDs, "member", humanID, "interactive_jwt"); err != nil {
 		return nil, err
 	}
 	result, err := h.persistDecisionRecord(ctx, queries, issue, current, decisionRecordInput{
 		ParentID: current.IssueCommentID, MessageIDs: []pgtype.UUID{sent.Message.ID},
 	}, decisionRecordSource{
-		TaskID: sent.Task.ID, AgentID: session.AgentID, SessionID: session.ID, SourceSessionID: session.ID,
+		TaskID: sent.Task.ID, AgentID: decision.AskingAgentID, SessionID: session.ID, SourceSessionID: session.ID,
 		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content),
 	}, root)
 	if err != nil {
@@ -119,10 +143,12 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	h.TaskService.RecordHumanDelegation(ctx, plan.Attribution)
-	h.TaskService.NotifyDirectChatSent(ctx, sent.Task)
+	if !foreign {
+		h.TaskService.RecordHumanDelegation(ctx, plan.Attribution)
+		h.TaskService.NotifyDirectChatSent(ctx, sent.Task)
+	}
 	h.DecisionWorker.Notify()
-	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(session.AgentID)
+	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(decision.AskingAgentID)
 	response := commentToResponse(result.Comment, nil, nil)
 	response.DecisionCommentFields = h.decisionCommentFields(ctx, issue.WorkspaceID, []db.Comment{result.Comment}, pgtype.UUID{})[response.ID]
 	h.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": response, "issue_title": issue.Title, "issue_status": issue.Status})

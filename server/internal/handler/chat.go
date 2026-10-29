@@ -1037,18 +1037,21 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	taskContext := h.TaskService.AnalyticsContextForTask(r.Context(), task)
-	platform, _, _ := middleware.ClientMetadataFromContext(r.Context())
-	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.ChatMessageSent(
-		userID,
-		workspaceID,
-		uuidToString(session.ID),
-		uuidToString(task.ID),
-		uuidToString(session.AgentID),
-		taskContext.RuntimeMode,
-		taskContext.Provider,
-		platform,
-	))
+	// A decision reply for another agent's ask starts no task.
+	if task.ID.Valid {
+		taskContext := h.TaskService.AnalyticsContextForTask(r.Context(), task)
+		platform, _, _ := middleware.ClientMetadataFromContext(r.Context())
+		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.ChatMessageSent(
+			userID,
+			workspaceID,
+			uuidToString(session.ID),
+			uuidToString(task.ID),
+			uuidToString(session.AgentID),
+			taskContext.RuntimeMode,
+			taskContext.Provider,
+			platform,
+		))
+	}
 
 	// Broadcast the user message.
 	resolvedSessionID := uuidToString(session.ID)
@@ -1079,7 +1082,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		TaskID:        uuidToString(task.ID),
 		SupportsQueue: true,
 		Queued:        sent.Queued,
-		CreatedAt:     timestampToString(task.CreatedAt),
+		CreatedAt:     timestampToString(msg.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
 }
