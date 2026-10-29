@@ -1872,6 +1872,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-2454: delegated governed writes. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
+					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
