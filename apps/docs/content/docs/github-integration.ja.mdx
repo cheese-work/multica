@@ -123,6 +123,43 @@ PR の紐づけ方は結果に影響しません。タイトル、ブランチ�
 
 GitHub 側のリポジトリアクセスを取り消す場合は、個人または organization の GitHub App installations ページで App をアンインストールするか、リポジトリの範囲を変更してください。App をアンインストールすると、その installation に接続していたすべての Multica ワークスペースがイベントを受信しなくなります。
 
+## GitHub Actions の実行を待つ
+
+ウェイクアップは、環境の承認ゲートで止まるデプロイなど、GitHub Actions の実行をポーリングなしで待てます。その実行に PR のリンクは不要です。
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` は次の 3 つの形式のいずれかを受け付けます。
+
+| 形式 | 選択される実行 |
+|---|---|
+| `owner/repo:RUN_ID` | その ID の実行 |
+| `owner/repo:WORKFLOW_FILE@SHA` | そのワークフローファイルの実行のうち、自身の `head_sha` が 40 文字の完全な SHA と一致するもの |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | その ID の実行 |
+
+`--until-gh-run-state` は `completed`（デフォルト）または `waiting` です。`waiting` は、実行内のジョブが環境ゲートで待機を始めるたびに発火します。人にゲートの承認を依頼する前に、facts の `waiting_now` を確認してください。ゲートがすでに閉じている場合は `false` です。`SHA` 形式は実行自身のコミットに一致します。別のコミットをデプロイする実行（例: `cd-deploy.yml`）には実行 ID が必要です。
+
+App は、このワークスペースのリポジトリ所有者にインストールされている必要があります。また、**Workflow run** と **Workflow job** のイベントを購読している必要があり、これらには **Actions: read** 権限が必要です。レコードは 30 日間保持されます。
+
+### 制限: 観測したイベントのみ
+
+ルールは、App が購読した後に Multica が受信した webhook イベントで満たされます。実行の現在の状態を問い合わせるものではありません。
+
+- GitHub は失敗した配信を自動では再配信しません。`completed` イベントが失われると、保存された実行は `in_progress` のままになります。
+- App が購読する前に始まった実行やゲートは見えません。
+- 復旧するには、App の **Advanced → Recent Deliveries** ページでイベントを手動で再配信します。
+- 必ず `--expires-in` と `--on-timeout wake` を一緒に設定してください。期限時のデフォルトは `end` で、実行は開始されません。
+
+### レシピ: マージ後にデプロイを待つ
+
+1. マージコミット `M` の認定実行を待ちます。
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. 起こされた実行がデプロイ実行の ID を探します: `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`。タイトルに `M` を含む実行を選びます。
+3. 承認ゲートを待ちます: `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. 承認後、同じルールと `--until-gh-run-state completed` で完了を待ちます。
+
 ## セルフホスト設定
 
 Multica Cloud ではこのセクションの作業は不要です。セルフホスト環境では、自分の GitHub App を先に作成します。
