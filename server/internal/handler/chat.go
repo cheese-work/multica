@@ -1316,9 +1316,12 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
+	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
+
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1335,6 +1338,42 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 		}
 	}
 	return resp
+}
+
+// scheduledWakeupsForMessages maps message id to the fired wakeup that sent it,
+// in one query. A user message matches when its task is the wakeup's fired task
+// in the same session.
+func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db.ChatMessage) map[string]*ScheduledWakeupResponse {
+	var taskIDs []pgtype.UUID
+	for _, m := range messages {
+		if m.Role == "user" && m.TaskID.Valid {
+			taskIDs = append(taskIDs, m.TaskID)
+		}
+	}
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	rows, err := h.Queries.ListChatWakeupsByFiredTasks(ctx, taskIDs)
+	if err != nil {
+		slog.Warn("list scheduled wakeups for chat messages failed", "error", err)
+		return nil
+	}
+	byTask := make(map[string]db.ChatWakeup, len(rows))
+	for _, w := range rows {
+		byTask[uuidToString(w.FiredTaskID)] = w
+	}
+	out := make(map[string]*ScheduledWakeupResponse)
+	for _, m := range messages {
+		w, ok := byTask[uuidToString(m.TaskID)]
+		if !ok || m.Role != "user" || w.ChatSessionID != m.ChatSessionID {
+			continue
+		}
+		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
+			ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), Title: w.Title, Instruction: w.Instruction,
+			FireAt: timestampToString(w.FireAt), CreatedAt: timestampToString(w.CreatedAt),
+		}
+	}
+	return out
 }
 
 func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
@@ -2218,6 +2257,18 @@ type ChatMessageResponse struct {
 	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
 	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
 	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
+	// ScheduledWakeup is set on the user message a fired DM wakeup sent, so
+	// clients can render it as an event row. content stays the model-facing text.
+	ScheduledWakeup *ScheduledWakeupResponse `json:"scheduled_wakeup,omitempty"`
+}
+
+type ScheduledWakeupResponse struct {
+	ID          string `json:"id"`
+	AgentID     string `json:"agent_id"`
+	Title       string `json:"title"`
+	Instruction string `json:"instruction"`
+	FireAt      string `json:"fire_at"`
+	CreatedAt   string `json:"created_at"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {

@@ -49,9 +49,11 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		return err
 	}
 	var edges []issueworkflow.Edge
+	var sub *issueworkflow.SubWorkflow
 	if def != nil {
 		if step, ok := def.Step(issue.Status); ok {
 			edges = issueworkflow.FactEdges(step.Edges)
+			sub = step.SubWorkflow
 		}
 	}
 	if len(edges) == 0 {
@@ -64,7 +66,20 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			return nil
 		}
 	}
-	facts, err := h.loadEdgeFacts(ctx, issue, edges, def.IncludeChildPRs)
+	if sub != nil {
+		switch err := h.spawnSubWorkflowChild(ctx, issue, *sub); {
+		case errors.Is(err, errSubWorkflowMissing):
+			// No retry can fix this: the join finds no child, so the step's
+			// deadline edge, if it has one, still moves the issue.
+			slog.Warn("workflow edge: sub-workflow is not in this workspace", "issue_id", uuidToString(issue.ID), "workflow_id", sub.WorkflowID)
+		case errors.Is(err, errSubWorkflowRefused):
+			slog.Warn("workflow edge: sub-workflow child refused", "issue_id", uuidToString(issue.ID), "workflow_id", sub.WorkflowID, "error", err)
+		case err != nil:
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+	}
+	facts, err := h.loadEdgeFacts(ctx, issue, edges, def.IncludeChildPRs, sub)
 	if err != nil {
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 		return err
@@ -140,25 +155,32 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 }
 
 // loadEdgeFacts reads what the edges' guards need: the PRs of the issue and,
-// when includeChildren, of its direct children; whether every child is done;
-// and the status of each issue an issue_status guard names.
-func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, includeChildren bool) (issueworkflow.Facts, error) {
+// when includeChildren, of its direct children; whether every child is done
+// (on a sub-workflow step, every child of the step's stage); and the status of
+// each issue an issue_status guard names.
+func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, includeChildren bool, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	var facts issueworkflow.Facts
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
 	}
 	ids := []pgtype.UUID{issue.ID}
-	facts.ChildrenDone = len(children) > 0
+	joined := 0
+	facts.ChildrenDone = true
 	for _, c := range children {
 		if includeChildren {
 			ids = append(ids, c.ID)
 		}
+		if sub != nil && (!c.Stage.Valid || c.Stage.Int32 != int32(sub.Stage)) {
+			continue
+		}
+		joined++
 		if facts.ChildrenDone {
 			cat := issuestatus.Category(ctx, h.Queries, c.WorkspaceID, c.Status)
 			facts.ChildrenDone = cat == issuestatus.CategoryDone || cat == issuestatus.CategoryClosed
 		}
 	}
+	facts.ChildrenDone = facts.ChildrenDone && joined > 0
 	prs, err := h.Queries.ListEdgePullRequests(ctx, ids)
 	if err != nil {
 		return facts, err
