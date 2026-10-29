@@ -34,6 +34,8 @@ export const chatKeys = {
   all: (wsId: string) => ["chat", wsId] as const,
   /** Full sessions list (active + archived); the dropdown splits locally. */
   sessions: (wsId: string) => [...chatKeys.all(wsId), "sessions"] as const,
+  /** Mutation key shared by the pin and archive mutations; search refreshes when they settle. */
+  sessionAction: (wsId: string) => [...chatKeys.all(wsId), "session-action"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
   /** Statistics for one session (`GET /api/chat/sessions/{id}/usage`). */
   usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,

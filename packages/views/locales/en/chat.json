@@ -367,5 +367,26 @@
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"
+  },
+  "search": {
+    "label": "Search chats",
+    "placeholder": "Search chats",
+    "shortcut_hint": "/",
+    "clear": "Clear search",
+    "results_label": "Search results",
+    "count_one": "{{count}} result",
+    "count_other": "{{count}} results",
+    "searching": "Searching…",
+    "empty": "No chats match “{{query}}”",
+    "failed": "Search failed. Try again.",
+    "timed_out": "Search took too long. Try a shorter or more specific query.",
+    "disconnected": "You're offline. Search needs a connection.",
+    "retry": "Retry",
+    "too_long": "Search is limited to {{max}} characters.",
+    "show_more": "Show more",
+    "loading_more": "Loading…",
+    "archived_badge": "Archived",
+    "title_match": "Title match",
+    "actions_aria": "Actions for {{title}}"
   }
 }

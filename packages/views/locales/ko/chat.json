@@ -359,5 +359,25 @@
     "from_original_dm": "원본 DM에서",
     "inherited": "상속됨",
     "message_unavailable": "더 이상 사용할 수 없는 메시지입니다"
+  },
+  "search": {
+    "label": "채팅 검색",
+    "placeholder": "채팅 검색",
+    "shortcut_hint": "/",
+    "clear": "검색 지우기",
+    "results_label": "검색 결과",
+    "count_other": "결과 {{count}}개",
+    "searching": "검색 중…",
+    "empty": "“{{query}}”와(과) 일치하는 채팅이 없습니다",
+    "failed": "검색에 실패했습니다. 다시 시도해 주세요.",
+    "timed_out": "검색 시간이 너무 오래 걸렸습니다. 더 짧거나 구체적인 검색어를 사용해 보세요.",
+    "disconnected": "오프라인입니다. 검색하려면 연결이 필요합니다.",
+    "retry": "다시 시도",
+    "too_long": "검색은 {{max}}자까지 가능합니다.",
+    "show_more": "더 보기",
+    "loading_more": "불러오는 중…",
+    "archived_badge": "보관됨",
+    "title_match": "제목 일치",
+    "actions_aria": "{{title}} 작업"
   }
 }

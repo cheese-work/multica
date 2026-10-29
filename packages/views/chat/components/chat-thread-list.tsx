@@ -30,7 +30,7 @@ import {
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
+import type { Agent, ChatSearchHit, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
@@ -43,21 +43,10 @@ import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
+import { ChatSearch } from "./chat-search";
+import { formatChatTime } from "./format-chat-time";
 
 const apiLogger = createLogger("chat.api");
-
-// IM-style timestamp: today → clock, this year → M/D, else full date.
-function formatChatTime(dateStr: string, locale: string): string {
-  const d = new Date(dateStr);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
-  }
-  if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString(locale, { month: "numeric", day: "numeric" });
-  }
-  return d.toLocaleDateString(locale);
-}
 
 // Collapse a (possibly markdown / multi-line) message into a one-line preview.
 function toPreview(content: string): string {
@@ -84,13 +73,32 @@ function toPreview(content: string): string {
  * unarchive + delete). Both views read the same flat sessions cache and split
  * on `status` locally.
  */
-export function ChatThreadList({
-  sessions,
-  agents,
-  activeSessionId,
-  onSelectSession,
-  onArchive,
-}: {
+export function ChatThreadList(props: ChatThreadListProps) {
+  const { sessions, agents, activeSessionId, onSelectSession, onArchive, onOpenSearchHit } = props;
+  const setPinned = useSetChatSessionPinned();
+  const sessionActions = useChatSessionActions();
+  return (
+    <ChatSearch
+      scope="page"
+      bindShortcut
+      sessions={sessions}
+      agents={agents}
+      activeSessionId={activeSessionId}
+      onOpenHit={(hit) => {
+        if (onOpenSearchHit) return onOpenSearchHit(hit);
+        const session = sessions.find((s) => s.id === hit.session_id);
+        if (session) onSelectSession(session);
+      }}
+      onUnarchive={(session) => void sessionActions.unarchive(session)}
+      onTogglePin={(session) => setPinned.mutate({ sessionId: session.id, pinned: !session.pinned })}
+      onArchive={onArchive}
+    >
+      <ChatThreadListBody {...props} />
+    </ChatSearch>
+  );
+}
+
+interface ChatThreadListProps {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
@@ -99,7 +107,17 @@ export function ChatThreadList({
   // aware (desktop advances to the next chat; mobile drops back to the list)
   // and routes through the shared controller — see ChatPage.handleArchive.
   onArchive: (session: ChatSession) => void;
-}) {
+  /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
+  onOpenSearchHit?: (hit: ChatSearchHit) => void;
+}
+
+function ChatThreadListBody({
+  sessions,
+  agents,
+  activeSessionId,
+  onSelectSession,
+  onArchive,
+}: ChatThreadListProps) {
   const { t } = useT("chat");
   const locale = useLocale();
   const wsId = useWorkspaceId();

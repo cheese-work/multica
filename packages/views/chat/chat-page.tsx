@@ -24,7 +24,7 @@ import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
 import { useQuery } from "@tanstack/react-query";
-import type { Agent, ChatSession } from "@multica/core/types";
+import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
 import { useT } from "../i18n";
@@ -110,6 +110,26 @@ export function ChatPage() {
     if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
     replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
   };
+
+  const showsMessageList =
+    c.hasMessages ||
+    !!c.currentSession?.continued_from_session_id ||
+    !!c.currentSession?.continued_into_session_id ||
+    !!c.currentSession?.forked_from_session_id;
+  // The list reports a missing target; an empty chat never mounts it, so the
+  // jump settles here once the chat has loaded and has nothing to scroll to.
+  const emptyChatLoaded =
+    !!c.currentSession && c.messagesLoaded && !c.showSkeleton && !showsMessageList;
+  const jumpTargetsEmptyChat = !!urlMessage && urlSession === c.activeSessionId && emptyChatLoaded;
+  const settledEmptyJump = useRef<string | null>(null);
+  useEffect(() => {
+    // Forget the target once the URL drops it, so the same hit can settle again.
+    if (!urlMessage) settledEmptyJump.current = null;
+    if (!jumpTargetsEmptyChat || settledEmptyJump.current === urlMessage) return;
+    settledEmptyJump.current = urlMessage;
+    settleJump("missing");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target
+  }, [jumpTargetsEmptyChat, urlMessage]);
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -314,6 +334,20 @@ export function ChatPage() {
     </PageHeader>
   );
 
+  // A message hit pushes the same `?session=&message=` entry a decision card
+  // links to, so the existing one-shot jump scrolls to the message and Back
+  // returns to the list with the search still in the field. A title hit is a
+  // plain selection.
+  const handleOpenSearchHit = (hit: ChatSearchHit) => {
+    const session = c.sessions.find((s) => s.id === hit.session_id);
+    if (!hit.message_id) {
+      if (session) handleSelect(session);
+      return;
+    }
+    supersedeAgentIntent();
+    push(`${wsPaths.chat()}?session=${hit.session_id}&message=${hit.message_id}`);
+  };
+
   const listBody = (
     <div className="px-2 py-1">
       <ChatThreadList
@@ -322,6 +356,7 @@ export function ChatPage() {
         activeSessionId={c.activeSessionId}
         onSelectSession={handleSelect}
         onArchive={handleArchive}
+        onOpenSearchHit={handleOpenSearchHit}
       />
     </div>
   );
@@ -370,7 +405,7 @@ export function ChatPage() {
       )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : c.hasMessages || c.currentSession?.continued_from_session_id || c.currentSession?.continued_into_session_id || c.currentSession?.forked_from_session_id ? (
+      ) : showsMessageList ? (
         <ChatMessageList
           key={c.activeSessionId}
           onQuoteMessage={quote}

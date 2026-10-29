@@ -367,5 +367,26 @@
     "from_original_dm": "du DM d'origine",
     "inherited": "Hérité",
     "message_unavailable": "Ce message n'est plus disponible"
+  },
+  "search": {
+    "label": "Rechercher dans les discussions",
+    "placeholder": "Rechercher dans les discussions",
+    "shortcut_hint": "/",
+    "clear": "Effacer la recherche",
+    "results_label": "Résultats de recherche",
+    "count_one": "{{count}} résultat",
+    "count_other": "{{count}} résultats",
+    "searching": "Recherche…",
+    "empty": "Aucune discussion ne correspond à « {{query}} »",
+    "failed": "La recherche a échoué. Réessayez.",
+    "timed_out": "La recherche a pris trop de temps. Essayez une requête plus courte ou plus précise.",
+    "disconnected": "Vous êtes hors ligne. La recherche nécessite une connexion.",
+    "retry": "Réessayer",
+    "too_long": "La recherche est limitée à {{max}} caractères.",
+    "show_more": "Afficher plus",
+    "loading_more": "Chargement…",
+    "archived_badge": "Archivée",
+    "title_match": "Titre correspondant",
+    "actions_aria": "Actions pour {{title}}"
   }
 }
