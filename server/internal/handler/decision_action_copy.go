@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -68,7 +68,7 @@ func executeAgentCopyAction(ctx context.Context, execution decisionActionExecuti
 	if params.Instructions != nil {
 		instructions = *params.Instructions
 	}
-	if tokens := jev.EstimateInstructionTokens(instructions); tokens > 4000 {
+	if tokens := util.EstimateInstructionTokens(instructions); tokens > 4000 {
 		return nil, actionFailure{Code: "instructions_too_long", Message: fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens)}
 	}
 	if utf8.RuneCountInString(params.Description) > maxAgentDescriptionLength {
