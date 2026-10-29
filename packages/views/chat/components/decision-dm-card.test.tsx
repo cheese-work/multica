@@ -21,7 +21,7 @@ vi.mock("@multica/core/issues/decision-disclaim", async (importActual) => ({
   }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}` }),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}`, chatSession: (id: string) => `/acme/chat?session=${id}` }),
 }));
 vi.mock("../../navigation", () => ({
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
@@ -62,10 +62,28 @@ describe("DecisionDmCard", () => {
     renderCard(card());
     const el = screen.getByTestId("decision-dm-card");
     expect(el).toHaveAttribute("data-state", "effective");
-    expect(el).toHaveTextContent("Quoted in CHE-1870");
+    expect(el).toHaveTextContent("Recorded for CHE-1870");
     expect(el).toHaveTextContent("In effect");
     expect(screen.getByTestId("decision-dm-card-link")).toHaveAttribute("href", "/acme/issues/issue-1#comment-comment-1");
     expect(screen.getByTestId("decision-dm-disclaim")).toBeEnabled();
+  });
+
+  it("names the chosen option, shows Delivered once the agent was woken, and jumps back to the ask card", () => {
+    renderCard(card({
+      delivered: true, chosen_option_index: 1, option_label: "Ship now",
+      request_session_id: "session-0", request_message_id: "ask-1",
+    }));
+    const el = screen.getByTestId("decision-dm-card");
+    expect(el).toHaveTextContent("Recorded for CHE-1870");
+    expect(el).toHaveTextContent("Option 2");
+    expect(el).toHaveTextContent("Delivered");
+    expect(screen.getByTestId("decision-dm-jump")).toHaveAttribute("href", "/acme/chat?session=session-0&message=ask-1");
+    expect(screen.getByTestId("decision-dm-jump")).toHaveTextContent("Jump to card");
+  });
+
+  it("offers no jump when the ask card is unknown or the card is a disclaimed copy", () => {
+    renderCard(card());
+    expect(screen.queryByTestId("decision-dm-jump")).toBeNull();
   });
 
   it("is read-only provenance on a fork: labelled, still linked to the original comment, no Disclaim", () => {

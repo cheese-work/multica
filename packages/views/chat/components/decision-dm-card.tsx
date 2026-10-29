@@ -45,6 +45,11 @@ export function DecisionDmCard({ card }: { card: DecisionCard }) {
   const state = conflict === "withdrawn" ? "disclaimed" : card.state;
   const href = `${paths.issueDetail(card.issue_id)}#comment-${card.issue_comment_id}`;
   const canDisclaim = !card.inherited && state !== "disclaimed";
+  const delivered = state !== "disclaimed" && !!card.delivered;
+  const jumpHref =
+    card.request_session_id && card.request_message_id
+      ? `${paths.chatSession(card.request_session_id)}&message=${encodeURIComponent(card.request_message_id)}`
+      : undefined;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
@@ -86,7 +91,7 @@ export function DecisionDmCard({ card }: { card: DecisionCard }) {
         >
           <MessageSquareQuote className="size-3.5 shrink-0" aria-hidden />
           <span>
-            {t(($) => $.decision.quoted_in, { issue: card.issue_identifier })}
+            {t(($) => $.decision.receipt_recorded, { issue: card.issue_identifier })}
             {card.inherited && (
               <span className="text-muted-foreground"> · {t(($) => $.decision.from_original_dm)}</span>
             )}
@@ -96,12 +101,22 @@ export function DecisionDmCard({ card }: { card: DecisionCard }) {
           className={cn(
             "rounded-full px-2 text-micro font-medium",
             state === "pending" && "bg-warning/10 text-warning",
-            state === "effective" && "bg-success/10 text-success",
+            (state === "effective" || delivered) && "bg-success/10 text-success",
             state === "disclaimed" && "bg-muted text-muted-foreground",
           )}
         >
-          {ti(($) => $.decision.state[state])}
+          {delivered ? ti(($) => $.decision.state.delivered) : ti(($) => $.decision.state[state])}
         </span>
+        {card.chosen_option_index !== undefined && (
+          <span className="rounded-xs border px-1.5 text-micro" title={card.option_label}>
+            {ti(($) => $.decision.option_n, { number: card.chosen_option_index + 1 })}
+          </span>
+        )}
+        {jumpHref && state !== "disclaimed" && (
+          <AppLink href={jumpHref} data-testid="decision-dm-jump" className="flex min-h-9 items-center text-muted-foreground hover:underline">
+            ↑ {t(($) => $.decision.jump_to_card)}
+          </AppLink>
+        )}
         {card.inherited && (
           <span className="rounded-xs border px-1.5 text-micro text-muted-foreground">
             {t(($) => $.decision.inherited)}

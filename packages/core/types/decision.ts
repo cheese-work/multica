@@ -32,6 +32,17 @@ export interface DecisionRequestCard {
   reason?: string;
   /** The issue comment that recorded the answer, set once the request is answered. */
   record_comment_id?: string | null;
+  /** Latest answer, kept after a disclaim so the card can say so. */
+  answer?: DecisionRequestAnswer;
+}
+
+/** Receipt half of a request card: recorded, then delivered once the asking agent was woken. */
+export interface DecisionRequestAnswer {
+  state: "recorded" | "delivered" | "disclaimed";
+  /** 0-based into the card's options; absent for a free-text answer. */
+  chosen_option_index?: number;
+  option_label?: string;
+  answered_at: string;
 }
 
 export type DecisionCommentKind = "ask" | "quote" | "disclaim" | "delivery" | "cancel" | "veto";
@@ -48,6 +59,14 @@ export interface DecisionCard {
   disclaimed_at?: string | null;
   /** Shown on a forked copy: read-only provenance, no Disclaim. */
   inherited: boolean;
+  /** True once the asking agent was woken with the answer. */
+  delivered?: boolean;
+  /** 0-based into the card's options; absent for a free-text answer. */
+  chosen_option_index?: number;
+  option_label?: string;
+  /** The ask card in its own session, so the receipt can jump back to it. */
+  request_session_id?: string;
+  request_message_id?: string;
 }
 
 /**
@@ -64,6 +83,9 @@ export interface DecisionCommentFields {
   decision_recorder_agent_id?: string;
   decision_class?: string;
   decision_state?: DecisionState;
+  decision_delivered?: boolean;
+  decision_chosen_option_index?: number;
+  decision_option_label?: string;
   decision_issue_comment_id?: string;
   effective_at?: string | null;
   disclaimed_at?: string | null;

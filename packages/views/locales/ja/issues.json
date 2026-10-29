@@ -1813,11 +1813,13 @@
     "state": {
       "pending": "保留中",
       "effective": "有効",
-      "disclaimed": "撤回済み"
+      "disclaimed": "撤回済み",
+      "delivered": "配信済み"
     },
     "via_dm": "DM 経由",
     "recorded_by": "{{name}} が記録",
-    "asked_in_dm": "DM での質問",
+    "option_n": "選択肢 {{number}}",
+    "jump_to_card": "カードへ移動",
     "answered_in_dm": "DM での回答",
     "private_dm": "非公開 DM から",
     "disclaim_action": "撤回",

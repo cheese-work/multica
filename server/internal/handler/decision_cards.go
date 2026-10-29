@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -30,6 +32,14 @@ type DecisionCard struct {
 	State           string  `json:"state"`
 	EffectiveAt     string  `json:"effective_at"`
 	DisclaimedAt    *string `json:"disclaimed_at,omitempty"`
+	// Delivered is true once the asking agent was woken with the answer.
+	Delivered bool `json:"delivered"`
+	// ChosenOptionIndex is 0-based into the card's options, absent for a free-text answer.
+	ChosenOptionIndex *int   `json:"chosen_option_index,omitempty"`
+	OptionLabel       string `json:"option_label,omitempty"`
+	// The request pointers name the ask card in its own session, so the receipt can jump back to it.
+	RequestSessionID string `json:"request_session_id,omitempty"`
+	RequestMessageID string `json:"request_message_id,omitempty"`
 	// Inherited marks a card shown on a forked copy: read-only provenance that
 	// still points at the original issue comment. Clients show no Disclaim on it.
 	Inherited bool `json:"inherited,omitempty"`
@@ -43,6 +53,10 @@ type DecisionCommentFields struct {
 	DecisionRecorderAgentID string  `json:"decision_recorder_agent_id,omitempty"`
 	DecisionClass           string  `json:"decision_class,omitempty"`
 	DecisionState           string  `json:"decision_state,omitempty"`
+	DecisionDelivered       bool    `json:"decision_delivered,omitempty"`
+	// ChosenOptionIndex is 0-based into the ask's options, absent for a free-text answer.
+	DecisionChosenOptionIndex *int   `json:"decision_chosen_option_index,omitempty"`
+	DecisionOptionLabel       string `json:"decision_option_label,omitempty"`
 	DecisionIssueCommentID  string  `json:"decision_issue_comment_id,omitempty"`
 	EffectiveAt             *string `json:"effective_at,omitempty"`
 	DisclaimedAt            *string `json:"disclaimed_at,omitempty"`
@@ -67,8 +81,34 @@ func decisionAnswerState(wokenAt, disclaimedAt pgtype.Timestamptz) string {
 	}
 }
 
+// decisionAnswerDelivered is true once the wake reached the asking agent: woken
+// and not skipped as ineligible, and not withdrawn since.
+func decisionAnswerDelivered(wokenAt pgtype.Timestamptz, wakeOutcome pgtype.Text, disclaimedAt pgtype.Timestamptz) bool {
+	return wokenAt.Valid && !disclaimedAt.Valid && wakeOutcome.String != "skipped_ineligible"
+}
+
+// chosenOption resolves a stored 0-based option index against the request's
+// options, so a receipt names the option the human picked.
+func chosenOption(options []byte, index pgtype.Int4) (*int, string) {
+	if !index.Valid {
+		return nil, ""
+	}
+	chosen := int(index.Int32)
+	var parsed []decisiontx.AskOption
+	if json.Unmarshal(options, &parsed) != nil || chosen >= len(parsed) {
+		return &chosen, ""
+	}
+	return &chosen, parsed[chosen].Label
+}
+
 func decisionCardFromRow(row db.ListDecisionCardsRow) DecisionCard {
+	index, label := chosenOption(row.RequestOptions, row.ChosenOptionIndex)
 	return DecisionCard{
+		Delivered:         decisionAnswerDelivered(row.WokenAt, row.WakeOutcome, row.DisclaimedAt),
+		ChosenOptionIndex: index,
+		OptionLabel:       label,
+		RequestSessionID:  uuidToString(row.RequestChatSessionID),
+		RequestMessageID:  uuidToString(row.RequestPingMessageID),
 		AnswerID:        uuidToString(row.AnswerID),
 		IssueID:         uuidToString(row.IssueID),
 		IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
@@ -114,7 +154,11 @@ func (handler *Handler) decisionCommentFields(ctx context.Context, workspaceID p
 		if !ok {
 			continue
 		}
+		index, label := chosenOption(row.RequestOptions, row.ChosenOptionIndex)
 		entry := DecisionCommentFields{
+			DecisionDelivered:         decisionAnswerDelivered(row.WokenAt, row.WakeOutcome, row.DisclaimedAt),
+			DecisionChosenOptionIndex: index,
+			DecisionOptionLabel:       label,
 			DecisionHumanUserID:     uuidToString(row.HumanUserID),
 			DecisionRecorderAgentID: uuidToString(row.AskingAgentID),
 			DecisionClass:           row.EscalationClass,

@@ -1885,11 +1885,13 @@
     "state": {
       "pending": "Pending",
       "effective": "In effect",
-      "disclaimed": "Disclaimed"
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
-    "asked_in_dm": "Asked in DM",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",

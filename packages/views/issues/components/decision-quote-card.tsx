@@ -69,6 +69,8 @@ export function DecisionQuoteCard({
   const dmHref = dmLink(entry.decision_source_session_id, entry.decision_source_message_id);
   const askedHref = dmLink(entry.decision_request_session_id, entry.decision_request_message_id);
   const klass = entry.decision_class ?? "";
+  const delivered = state !== "disclaimed" && !!entry.decision_delivered;
+  const optionIndex = entry.decision_chosen_option_index;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
@@ -115,8 +117,13 @@ export function DecisionQuoteCard({
           {t(($) => $.decision.class[klass as keyof typeof $.decision.class] ?? klass, { defaultValue: klass })}
         </span>
         <span className={cn("rounded-full px-2 text-micro font-medium", STATE_TONE[state])}>
-          {t(($) => $.decision.state[state])}
+          {delivered ? t(($) => $.decision.state.delivered) : t(($) => $.decision.state[state])}
         </span>
+        {optionIndex !== undefined && (
+          <span className="rounded-xs border px-1.5 text-micro" title={entry.decision_option_label}>
+            {t(($) => $.decision.option_n, { number: optionIndex + 1 })}
+          </span>
+        )}
         <span className="text-micro text-muted-foreground">{t(($) => $.decision.via_dm)}</span>
       </div>
       <p className="whitespace-pre-wrap break-words px-2.5 py-2 text-body">{quote}</p>
@@ -133,7 +140,7 @@ export function DecisionQuoteCard({
             nativeButton={false}
             render={<AppLink href={askedHref} data-testid="decision-quote-asked-dm" />}
           >
-            {t(($) => $.decision.asked_in_dm)}
+            ↑ {t(($) => $.decision.jump_to_card)}
           </Button>
         )}
         {isHuman && dmHref && state !== "disclaimed" ? (

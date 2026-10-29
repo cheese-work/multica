@@ -70,6 +70,14 @@ beforeEach(() => {
 });
 
 describe("DecisionQuoteCard", () => {
+  it("names the chosen option, shows Delivered and offers Jump to card", () => {
+    renderCard(quote({ decision_state: "effective", decision_delivered: true, decision_chosen_option_index: 1, decision_option_label: "Hold" }));
+    const card = screen.getByTestId("decision-quote-card");
+    expect(card).toHaveTextContent("Option 2");
+    expect(card).toHaveTextContent("Delivered");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
+  });
+
   it("shows the human's words, the state and the recorder as a sub-line", () => {
     renderCard(quote({ content: "Agent note here.\n\n> Yes, ship it.\n> Keep the words." }));
     const card = screen.getByTestId("decision-quote-card");
@@ -92,7 +100,7 @@ describe("DecisionQuoteCard", () => {
   it("links the request card and the answering message, each in its own DM session", () => {
     renderCard(quote());
     expect(screen.getByTestId("decision-quote-asked-dm")).toHaveAttribute("href", "/acme/chat?session=session-0&message=ask-1");
-    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Asked in DM");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
     expect(screen.getByTestId("decision-quote-open-dm")).toHaveAttribute("href", "/acme/chat?session=session-1&message=msg-1");
     expect(screen.getByTestId("decision-quote-open-dm")).toHaveTextContent("Answered");
   });
