@@ -76,7 +76,23 @@ func (s *TaskService) stopPROnlyWork(ctx context.Context, issueID pgtype.UUID, e
 	return nil
 }
 
-// noticePRLifecycle hands the issue's accepted draft/ready events to a live run
+// NoticePRSnapshotEvents runs after a snapshot is applied (CHE-2436): it hands
+// the conflict and checks-failed events the snapshot stored to live runs of the
+// PR's issues. Safe to repeat: an event already taken is no longer accepted.
+func (s *TaskService) NoticePRSnapshotEvents(ctx context.Context, prID pgtype.UUID) error {
+	issueIDs, err := s.Queries.ListIssueIDsForPR(ctx, prID)
+	if err != nil {
+		return fmt.Errorf("list issues of pull request: %w", err)
+	}
+	for _, issueID := range issueIDs {
+		if err := s.noticePRLifecycle(ctx, issueID, PRLifecycleEvent{PRID: prID}); err != nil {
+			return fmt.Errorf("issue %s: %w", util.UUIDToString(issueID), err)
+		}
+	}
+	return nil
+}
+
+// noticePRLifecycle hands the issue's accepted notice events to a live run
 // that negotiated typed PR-event delivery. With no such run the event stays
 // accepted for the next-turn path; it never starts a run.
 func (s *TaskService) noticePRLifecycle(ctx context.Context, issueID pgtype.UUID, ev PRLifecycleEvent) error {
