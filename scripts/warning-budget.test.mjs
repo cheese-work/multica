@@ -37,6 +37,13 @@ test("PID and ANSI noise do not turn an existing warning into a new one", () => 
   assert.deepEqual(warningRegressions(baseline, current), [])
 })
 
+test("the shed-load counter does not turn an existing warning into a new one", () => {
+  const line = (n) => ({ name: "backend-tests", log: `time=2026-10-29T10:00:00.000Z level=WARN msg="plugins: event dispatch queue full, dropping event" event_type=issue:created dropped_total=${n}`, annotations: [] })
+  const baseline = warningCounts([line(729)])
+  assert.equal(Object.keys(baseline).length, 1)
+  assert.deepEqual(warningRegressions(baseline, warningCounts([line(856)])), [])
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
