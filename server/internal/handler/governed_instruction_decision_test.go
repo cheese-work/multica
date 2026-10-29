@@ -180,3 +180,21 @@ func TestDecisionGate_VoteAndDecisionTogetherAreBadRequest(t *testing.T) {
 		}
 	})
 }
+
+// An approval names one field. Identical bytes in another field do not
+// carry it over: the ask's field must be the write's field.
+func TestDecisionGate_ApprovalForAnotherFieldRefused(t *testing.T) {
+	initial, next := voteAgent("before")+"\n"+voteHuman, voteAgent("after")+"\n"+voteHuman
+	eachDecisionCase(t, initial, next, func(t *testing.T, tg ownerCASTarget, f decisionWriteFixture, id string) {
+		other := "project.description"
+		if tg.name == other {
+			other = "squad.instructions"
+		}
+		dbfx.Exec(t, `UPDATE decision_request SET ask = $2 WHERE id = $1`, f.decision.ID,
+			decisiontx.BoundWriteDecision(other, testDigest(initial), testDigest(next)))
+		wantDenied(t, tg, id, initial, f.write(tg, id, next, testDigest(initial)))
+		if f.used(t) != 0 {
+			t.Fatal("refused write consumed the decision")
+		}
+	})
+}
