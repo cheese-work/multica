@@ -344,3 +344,37 @@ func TestSearchSuggestionsFailureReturnsEmptyRows(test *testing.T) {
 		test.Fatalf("error returned rows: %v", rows)
 	}
 }
+
+// Suggestions are title/identifier only, so a held lock on the comment table
+// (a stand-in for the 49k-row comment scan that timed out on C00) must not
+// delay them, and comment-only matches must not surface.
+func TestSearchSuggestionsDoNotScanComments(test *testing.T) {
+	fx := testutil.New(testPool, testWorkspaceID, testUserID)
+	marker := fmt.Sprintf("noscan%d", time.Now().UnixNano())
+	fx.Issue(test, marker+" title hit")
+	commentOnly := fx.Issue(test, "comment only")
+	fx.Comment(test, commentOnly, marker+" body hit")
+	slug := fmt.Sprintf("noscan-ident-%d", time.Now().UnixNano())
+	workspace := fx.Workspace(test, "NoScan", slug, testutil.Cols{"issue_prefix": "NS"})
+	fx.Member(test, workspace, testUserID, "owner")
+	fx.Issue(test, "identifier hit", testutil.Cols{"workspace_id": workspace, "number": 456})
+	router := suggestionsRouter(test)
+	tx, err := testPool.Begin(context.Background())
+	if err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() { tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(context.Background(), `LOCK TABLE comment IN ACCESS EXCLUSIVE MODE`); err != nil {
+		test.Fatal(err)
+	}
+	response := testutil.Call(test, router, suggestionsRequest(marker, integrationTestWorkspaceSlug, testToken)).ResponseRecorder
+	rows := suggestionsRows(test, response, marker, "rows", 200)
+	if len(rows) != 1 || !strings.HasSuffix(rows[0], marker+" title hit") {
+		test.Fatalf("title rows = %v, want only the title match", rows)
+	}
+	response = testutil.Call(test, router, suggestionsRequest("ns-456", slug, testToken)).ResponseRecorder
+	rows = suggestionsRows(test, response, "ns-456", "rows", 200)
+	if len(rows) != 1 || rows[0] != "NS-456 identifier hit" {
+		test.Fatalf("identifier rows = %v", rows)
+	}
+}

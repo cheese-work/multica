@@ -199,7 +199,7 @@ func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target Run
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}
-	head, err = q.GetIssueReviewHeadSha(ctx, issue.ID)
+	head, err = issueReviewHead(ctx, q, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
 		return "", false, nil
 	}

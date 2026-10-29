@@ -98,7 +98,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		}
 		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
