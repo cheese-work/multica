@@ -55,3 +55,29 @@ with `paused_reason=rate` after 12 runs in an hour. Other paused rules stay off
 until re-enabled. A PR system rule keeps events received during a rate pause
 pending; the scheduler resumes them once fewer than 12 runs remain in the
 preceding hour, without requiring another PR event.
+
+## Managing a wakeup
+
+```bash
+multica issue wakeup list <issue-id>
+multica issue wakeup get <issue-id> <wakeup-id>
+multica issue wakeup events                          # event types and filters
+multica issue wakeup runs <issue-id> <wakeup-id>     # latest runs it started
+multica issue wakeup update <issue-id> <wakeup-id> --kind every --every 1h ...
+multica issue wakeup disable <issue-id> <wakeup-id>
+multica issue wakeup trigger <issue-id> <wakeup-id>  # wake the target now
+multica issue wakeup delete <issue-id> <wakeup-id>
+```
+
+- `update` creates or replaces the complete configuration, so pass every flag
+  you want to keep. It takes the same flags as `create` and explicitly
+  re-enables the wakeup.
+- `disable` stops it firing and keeps the rule. Use it before `delete` when you
+  are unsure.
+- `trigger` fires the rule now, as if its condition held. It starts a real run:
+  do not use it to test.
+- `delete` removes the wakeup and withdraws its runs that have not started.
+- `events` lists the event types `--event` accepts and the filters each
+  supports. Read it before writing an event rule.
+- `runs` shows what a wakeup actually started; use it first when a wakeup
+  "did nothing".
