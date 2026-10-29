@@ -2,12 +2,21 @@
 import { describe, expect, it } from "vitest";
 import {
   encodeIssueWindowArgument,
+  encodeMediaWindowArgument,
+  parseMediaWindowRequest,
   parseIssueWindowPath,
   parseIssueWindowRequest,
   readDesktopWindowContext,
 } from "./issue-window";
 
 describe("issue window request", () => {
+  it("round trips only allowlisted media pages in a dedicated app window", () => {
+    const request = { path: "/acme/media/issues/issue-1/html/content-id", title: "HTML" };
+    expect(readDesktopWindowContext([encodeMediaWindowArgument(request)])).toEqual({ ...request, kind: "media", workspaceSlug: "acme" });
+    expect(parseMediaWindowRequest({ path: "https://example.test", title: "HTML" })).toBeNull();
+    expect(parseMediaWindowRequest({ path: "/acme/issues/issue-1" })).toBeNull();
+    expect(parseMediaWindowRequest({ path: "/acme/media/chats/chat-1/html/../secret" })).toBeNull();
+  });
   it("accepts and canonicalizes a workspace-scoped issue detail path", () => {
     expect(
       parseIssueWindowRequest({

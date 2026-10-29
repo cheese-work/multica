@@ -1,0 +1,139 @@
+DESKTOP warning %cElectron Security Warning (Disabled webSecurity) font-weight: bold; This renderer process has "webSecurity" disabled. This
+  exposes users of this app to severe security risks.
+
+
+DESKTOP warning %cElectron Security Warning (allowRunningInsecureContent) font-weight: bold; This renderer process has "allowRunningInsecureContent"
+  enabled. This exposes users of this app to se
+DESKTOP warning %cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security
+  Policy set or a policy with "unsafe-eval" e
+DESKTOP info %c16:51:44.163 [api] color:#2196F3 → GET /api/config {rid: b0ff44ed}
+DESKTOP info %c16:51:44.276 [api] color:#2196F3 ← 200 /api/config {rid: b0ff44ed, duration: 113ms}
+DESKTOP warning %cElectron Security Warning (Disabled webSecurity) font-weight: bold; This renderer process has "webSecurity" disabled. This
+  exposes users of this app to severe security risks.
+
+
+DESKTOP warning %cElectron Security Warning (allowRunningInsecureContent) font-weight: bold; This renderer process has "allowRunningInsecureContent"
+  enabled. This exposes users of this app to se
+DESKTOP warning %cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security
+  Policy set or a policy with "unsafe-eval" e
+DESKTOP info %c16:51:45.040 [api] color:#2196F3 → GET /api/config {rid: 018c8b02}
+DESKTOP info %c16:51:45.041 [api] color:#2196F3 → GET /api/me {rid: 4c2f7cfb}
+DESKTOP info %c16:51:45.050 [api] color:#2196F3 ← 200 /api/config {rid: 018c8b02, duration: 10ms}
+DESKTOP info %c16:51:45.052 [api] color:#2196F3 ← 200 /api/me {rid: 4c2f7cfb, duration: 11ms}
+DESKTOP info %c16:51:45.054 [api] color:#2196F3 → POST /api/auth/refresh {rid: a12869e2}
+DESKTOP info %c16:51:45.056 [api] color:#2196F3 → GET /api/workspaces {rid: cef20dcb}
+DESKTOP info %c16:51:45.085 [api] color:#2196F3 ← 200 /api/auth/refresh {rid: a12869e2, duration: 31ms}
+DESKTOP info %c16:51:45.085 [api] color:#2196F3 ← 200 /api/workspaces {rid: cef20dcb, duration: 29ms}
+DESKTOP error Failed to sync daemon on login Error: Error invoking remote method 'daemon:set-target-api-url': Error: No handler registered for 'daemon:set-target-api-url'
+DESKTOP info %c16:51:45.221 [api] color:#2196F3 → GET /api/agents?workspace_id=ws-1&include_archived=true {rid: d0d4ea02}
+DESKTOP info %c16:51:45.225 [api] color:#2196F3 → GET /api/runtimes?workspace_id=ws-1 {rid: 77f9f18f}
+DESKTOP info %c16:51:45.228 [api] color:#2196F3 → GET /api/agent-task-snapshot {rid: fe1e8e7d}
+DESKTOP info %c16:51:45.231 [api] color:#2196F3 → GET /api/squads {rid: fe5a2ef6}
+DESKTOP info %c16:51:45.235 [api] color:#2196F3 → GET /api/issue-view-preferences?scope_type=workspace {rid: 2b4cb9b6}
+DESKTOP info %c16:51:45.240 [api] color:#2196F3 → GET /api/workspaces/ws-1/members {rid: 7fa4bb40}
+DESKTOP info %c16:51:45.244 [api] color:#2196F3 → GET /api/pins?include=view {rid: dbc08345}
+DESKTOP info %c16:51:45.248 [api] color:#2196F3 → GET /api/issue-statuses?include_archived=true {rid: 98d0e130}
+DESKTOP info %c16:51:45.252 [api] color:#2196F3 → GET /api/properties {rid: 519bf92e}
+DESKTOP info %c16:51:45.257 [api] color:#2196F3 → GET /api/issue-views?scope_type=workspace {rid: ea3894de}
+DESKTOP info %c16:51:45.261 [api] color:#2196F3 → GET /api/issue-wakeup-summaries {rid: 6227aece}
+DESKTOP info %c16:51:45.265 [api] color:#2196F3 → GET /api/issue-workflows {rid: 10ee9874}
+DESKTOP info %c16:51:45.269 [api] color:#2196F3 → POST /api/issues/table/facets {rid: c3dd152f}
+DESKTOP info %c16:51:45.272 [api] color:#2196F3 → POST /api/issues/table/facets {rid: 6e2df06d}
+DESKTOP info %c16:51:45.276 [api] color:#2196F3 → GET /api/projects? {rid: 03ef24e4}
+DESKTOP info %c16:51:45.280 [api] color:#2196F3 → GET /api/issues/child-progress {rid: cd85f75f}
+DESKTOP info %c16:51:45.284 [api] color:#2196F3 → GET /api/issues?limit=1&workspace_id=ws-1&statuses=done&assignee_types=agent%2Csquad {rid: 4b892fe8}
+DESKTOP info %c16:51:45.310 [chat.store] color:#2196F3 workspace rehydration {prevSession: null, nextSession: null, prevAgent: null, nextAgent: null, prevProject: null}
+DESKTOP info %c16:51:45.378 [api] color:#2196F3 → GET /api/inbox/unread-summary {rid: 71e413dd}
+DESKTOP info %c16:51:45.380 [api] color:#2196F3 → GET /api/invitations {rid: a5b483d6}
+DESKTOP info %c16:51:45.383 [api] color:#2196F3 → GET /api/chat/sessions?status=all {rid: 92575c46}
+DESKTOP info %c16:51:45.386 [api] color:#2196F3 → GET /api/chat/pending-tasks {rid: 2054ced1}
+DESKTOP info %c16:51:45.432 [chat.ui] color:#2196F3 ChatWindow mount {isOpen: false, activeSessionId: null, pendingTaskId: null, selectedAgentId: null, wsId: ws-1}
+DESKTOP info %c16:51:45.444 [api] color:#2196F3 → GET /api/chat/pending-tasks/has-any {rid: 5fd0384c}
+DESKTOP info %c16:51:45.517 [api] color:#2196F3 ← 200 /api/agents?workspace_id=ws-1&include_archived=true {rid: d0d4ea02, duration: 296ms}
+DESKTOP info %c16:51:45.518 [api] color:#2196F3 ← 200 /api/runtimes?workspace_id=ws-1 {rid: 77f9f18f, duration: 293ms}
+DESKTOP info %c16:51:45.518 [api] color:#2196F3 ← 200 /api/agent-task-snapshot {rid: fe1e8e7d, duration: 290ms}
+DESKTOP info %c16:51:45.518 [api] color:#2196F3 ← 200 /api/squads {rid: fe5a2ef6, duration: 287ms}
+DESKTOP info %c16:51:45.519 [api] color:#2196F3 ← 200 /api/issue-view-preferences?scope_type=workspace {rid: 2b4cb9b6, duration: 284ms}
+DESKTOP info %c16:51:45.519 [api] color:#2196F3 ← 200 /api/workspaces/ws-1/members {rid: 7fa4bb40, duration: 279ms}
+DESKTOP info %c16:51:45.520 [api] color:#2196F3 ← 200 /api/pins?include=view {rid: dbc08345, duration: 276ms}
+DESKTOP info %c16:51:45.520 [api] color:#2196F3 ← 200 /api/issue-statuses?include_archived=true {rid: 98d0e130, duration: 272ms}
+DESKTOP info %c16:51:45.521 [api] color:#2196F3 ← 200 /api/properties {rid: 519bf92e, duration: 269ms}
+DESKTOP info %c16:51:45.521 [api] color:#2196F3 ← 200 /api/issue-views?scope_type=workspace {rid: ea3894de, duration: 264ms}
+DESKTOP info %c16:51:45.521 [api] color:#2196F3 ← 200 /api/issue-wakeup-summaries {rid: 6227aece, duration: 260ms}
+DESKTOP info %c16:51:45.522 [api] color:#2196F3 ← 200 /api/issue-workflows {rid: 10ee9874, duration: 257ms}
+DESKTOP info %c16:51:45.522 [api] color:#2196F3 ← 200 /api/issues/table/facets {rid: c3dd152f, duration: 253ms}
+DESKTOP info %c16:51:45.522 [api] color:#2196F3 ← 200 /api/projects? {rid: 03ef24e4, duration: 246ms}
+DESKTOP info %c16:51:45.523 [api] color:#2196F3 ← 200 /api/issues/child-progress {rid: cd85f75f, duration: 243ms}
+DESKTOP info %c16:51:45.523 [api] color:#2196F3 ← 200 /api/issues?limit=1&workspace_id=ws-1&statuses=done&assignee_types=agent%2Csquad {rid: 4b892fe8, duration: 239ms}
+DESKTOP info %c16:51:45.523 [api] color:#2196F3 ← 200 /api/inbox/unread-summary {rid: 71e413dd, duration: 145ms}
+DESKTOP info %c16:51:45.524 [api] color:#2196F3 ← 200 /api/invitations {rid: a5b483d6, duration: 144ms}
+DESKTOP info %c16:51:45.524 [api] color:#2196F3 ← 200 /api/chat/sessions?status=all {rid: 92575c46, duration: 142ms}
+DESKTOP info %c16:51:45.524 [api] color:#2196F3 ← 200 /api/chat/pending-tasks {rid: 2054ced1, duration: 138ms}
+DESKTOP info %c16:51:45.526 [api] color:#2196F3 ← 200 /api/chat/pending-tasks/has-any {rid: 5fd0384c, duration: 82ms}
+DESKTOP info %c16:51:45.537 [api] color:#2196F3 ← 200 /api/issues/table/facets {rid: 6e2df06d, duration: 265ms}
+DESKTOP error WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=desktop&client_version=0.7.0-659-g6aa9943b2-dirty&client_os=linux' failed:
+DESKTOP warning %c16:51:45.552 [api-schema] color:#FF9800 API response failed schema validation: GET /api/issue-view-preferences {endpoint: GET /api/issue-view-preferences, issues: Array(1), recei
+DESKTOP warning %c16:51:45.552 [api-schema] color:#FF9800 API response failed schema validation: GET /api/issue-statuses {endpoint: GET /api/issue-statuses, issues: Array(1), received: Array(0)}
+DESKTOP warning %c16:51:45.553 [api-schema] color:#FF9800 API response failed schema validation: GET /api/properties {endpoint: GET /api/properties, issues: Array(1), received: Array(0)}
+DESKTOP warning %c16:51:45.554 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/facets {endpoint: POST /api/issues/table/facets, issues: Array(1), received:
+DESKTOP warning %c16:51:45.554 [api-schema] color:#FF9800 API response failed schema validation: GET /api/issues/child-progress {endpoint: GET /api/issues/child-progress, issues: Array(1), receive
+DESKTOP warning %c16:51:45.557 [ws] color:#FF9800 ws: disconnected, reconnecting in 1196ms (attempt 1)
+DESKTOP info %c16:51:45.593 [api] color:#2196F3 → POST /api/issues/table/rows {rid: c0e2fd91}
+DESKTOP info %c16:51:45.597 [api] color:#2196F3 → POST /api/issues/table/rows {rid: 848c1fe0}
+DESKTOP info %c16:51:45.601 [api] color:#2196F3 → POST /api/issues/table/rows {rid: bef91b6b}
+DESKTOP info %c16:51:45.604 [api] color:#2196F3 → POST /api/issues/table/rows {rid: 7b5bffe8}
+DESKTOP info %c16:51:45.607 [api] color:#2196F3 → POST /api/issues/table/rows {rid: 54449c9c}
+DESKTOP info %c16:51:45.610 [api] color:#2196F3 → POST /api/issues/table/rows {rid: fa7663c0}
+DESKTOP warning %c16:51:45.614 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/facets {endpoint: POST /api/issues/table/facets, issues: Array(1), received:
+DESKTOP info %c16:51:45.628 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: c0e2fd91, duration: 35ms}
+DESKTOP info %c16:51:45.630 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: 848c1fe0, duration: 33ms}
+DESKTOP info %c16:51:45.630 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: bef91b6b, duration: 29ms}
+DESKTOP info %c16:51:45.631 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: 7b5bffe8, duration: 27ms}
+DESKTOP warning %c16:51:45.632 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP warning %c16:51:45.633 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP warning %c16:51:45.633 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP info %c16:51:45.633 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: 54449c9c, duration: 26ms}
+DESKTOP warning %c16:51:45.643 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP info %c16:51:45.652 [api] color:#2196F3 ← 200 /api/issues/table/rows {rid: fa7663c0, duration: 42ms}
+DESKTOP info %c16:51:45.655 [api] color:#2196F3 → GET /api/search-index/manifest {rid: 05ac6986}
+DESKTOP warning %c16:51:45.656 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP warning %c16:51:45.665 [api-schema] color:#FF9800 API response failed schema validation: POST /api/issues/table/rows {endpoint: POST /api/issues/table/rows, issues: Array(1), received: Arr
+DESKTOP info %c16:51:45.667 [api] color:#2196F3 ← 200 /api/search-index/manifest {rid: 05ac6986, duration: 12ms}
+DESKTOP warning %c16:51:45.680 [api-schema] color:#FF9800 API response failed schema validation: GET /api/search-index/manifest {endpoint: GET /api/search-index/manifest, issues: Array(1), receive
+DESKTOP main body Issues
+Issues
+All
+Members
+Agents
+Agents working: —
+Filter
+Display
+Board
+
+No issues yet
+
+New chat
+You need an agent to start chatting.
+
+
+
+
+No agents
+DESKTOP mermaid
+DESKTOP info %c16:51:46.554 [api] color:#2196F3 → GET /api/issue-workflows {rid: 5862619c}
+DESKTOP info %c16:51:46.559 [api] color:#2196F3 ← 200 /api/issue-workflows {rid: 5862619c, duration: 5ms}
+DESKTOP error WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=desktop&client_version=0.7.0-659-g6aa9943b2-dirty&client_os=linux' failed:
+DESKTOP warning %c16:51:46.757 [ws] color:#FF9800 ws: disconnected, reconnecting in 1627ms (attempt 2)
+DESKTOP error WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=desktop&client_version=0.7.0-659-g6aa9943b2-dirty&client_os=linux' failed:
+DESKTOP warning %c16:51:48.388 [ws] color:#FF9800 ws: disconnected, reconnecting in 4216ms (attempt 3)
+DESKTOP table
+DESKTOP image
+DESKTOP info %c16:51:52.656 [api] color:#2196F3 → GET /api/search-index/manifest {rid: 31cce88b}
+DESKTOP info %c16:51:52.661 [api] color:#2196F3 ← 200 /api/search-index/manifest {rid: 31cce88b, duration: 5ms}
+DESKTOP error WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=desktop&client_version=0.7.0-659-g6aa9943b2-dirty&client_os=linux' failed:
+DESKTOP warning %c16:51:52.662 [ws] color:#FF9800 ws: disconnected, reconnecting in 8754ms (attempt 4)
+DESKTOP warning %c16:51:52.662 [api-schema] color:#FF9800 API response failed schema validation: GET /api/search-index/manifest {endpoint: GET /api/search-index/manifest, issues: Array(1), receive
+DESKTOP info %c16:51:55.554 [api] color:#2196F3 → GET /api/issue-wakeup-summaries {rid: ea0d5092}
+DESKTOP info %c16:51:55.566 [api] color:#2196F3 ← 200 /api/issue-wakeup-summaries {rid: ea0d5092, duration: 12ms}
+DESKTOP html
+DESKTOP PASS: native IPC windows; four kinds; reload; public copy links

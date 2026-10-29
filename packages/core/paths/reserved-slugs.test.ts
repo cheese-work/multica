@@ -6,6 +6,10 @@ describe("reserved slugs", () => {
     expect(isReservedSlug("login")).toBe(true);
   });
 
+  it("reserves `issue`, the singular segment /issue/<id> redirects from", () => {
+    expect(isReservedSlug("issue")).toBe(true);
+  });
+
   it("returns false for an unreserved slug", () => {
     expect(isReservedSlug("my-cool-workspace")).toBe(false);
   });

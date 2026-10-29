@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +23,7 @@ func init() { issueCmd.AddCommand(newIssueWakeupCommand()) }
 func newIssueWakeupCommand() *cobra.Command {
 	wake := &cobra.Command{Use: "wakeup", Short: "Manage event and time wakeups that start ordinary runs"}
 	wake.AddCommand(&cobra.Command{Use: "events", Short: "List supported event types and filters", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.PrintJSON(os.Stdout, map[string]any{"event_types": eventcontract.WakeupTypes, "platform_only_event_types": eventcontract.LifecycleTypes, "platform_only_reason": "Creation precedes subscription; deletion withdraws the issue's wakeups. Cross-issue subscriptions are not supported.", "scope": "current issue", "filters": []string{"filter_agent_id (task events; legacy mutation alias)", "filter_task_id (task events only)", "filter_actor_type + filter_actor_id (member or agent; mutation events only)"}, "modes": []string{"once (default)", "continuous"}, "conditions": []string{"--until-status KEY", "--until-assignee member|agent|squad:ID", "--until-label LABEL_ID", "--until-property PROPERTY_ID=VALUE", "--until-children-done [--stage N]", "--until-pr checks|merged|conflicts", "--until-issue ISSUE [--until-issue-state done|ended|in_review]"}, "loop_protection": "Events from the registering run and runs started by the same rule are excluded when source identity is available. Repeating rules stop after --max-fires runs (default 20 for continuous event rules). A rule is paused when its trigger chain passes through it a third time without a person in between, or when it starts more than 12 runs in an hour."})
+		return cli.PrintJSON(os.Stdout, map[string]any{"event_types": eventcontract.WakeupTypes, "platform_only_event_types": eventcontract.LifecycleTypes, "platform_only_reason": "Creation precedes subscription; deletion withdraws the issue's wakeups. Cross-issue subscriptions are not supported.", "scope": "current issue", "filters": []string{"filter_agent_id (task events; legacy mutation alias)", "filter_task_id (task events only)", "filter_actor_type + filter_actor_id (member or agent; mutation events only)"}, "modes": []string{"once (default)", "continuous"}, "conditions": []string{"--until-status KEY", "--until-assignee member|agent|squad:ID", "--until-label LABEL_ID", "--until-property PROPERTY_ID=VALUE", "--until-children-done [--stage N]", "--until-pr checks|merged|conflicts", "--until-gh-run owner/repo:RUN_ID|owner/repo:WORKFLOW_FILE@SHA|RUN_URL [--until-gh-run-state completed|waiting]", "--until-issue ISSUE [--until-issue-state done|ended|in_review|blocked]"}, "loop_protection": "Events from the registering run and runs started by the same rule are excluded when source identity is available. Repeating rules stop after --max-fires runs (default 20 for continuous event rules). A rule is paused when its trigger chain passes through it a third time without a person in between, or when it starts more than 12 runs in an hour."})
 	}})
 	for _, action := range []string{"list", "get", "disable", "create", "update", "trigger", "delete", "checkin", "runs"} {
 		action := action
@@ -82,8 +84,10 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Flags().Bool("until-children-done", false, "Condition: every sub-issue is closed (or those up to --stage)")
 			c.Flags().Int32("stage", 0, "With --until-children-done: wait for this stage and earlier ones")
 			c.Flags().String("until-pr", "", "Condition: a linked pull request's checks finish (checks), it merges (merged), or it has merge conflicts on its current head (conflicts; GitHub only)")
+			c.Flags().String("until-gh-run", "", "Condition: a GitHub Actions run, owner/repo:RUN_ID, owner/repo:WORKFLOW_FILE@SHA or a run URL; observed webhook events only")
+			c.Flags().String("until-gh-run-state", "completed", "With --until-gh-run: completed or waiting (a job waits at an environment gate)")
 			c.Flags().String("until-issue", "", "Condition: another issue in this workspace reaches --until-issue-state")
-			c.Flags().String("until-issue-state", "done", "With --until-issue: done, ended (done or cancelled) or in_review")
+			c.Flags().String("until-issue-state", "done", "With --until-issue: done, ended (done or cancelled), in_review or blocked")
 			c.Flags().Int32("max-fires", 0, "Repeating rules: stop after this many runs (1-1000; continuous event rules default to 20)")
 		}
 		wake.AddCommand(c)
@@ -305,6 +309,20 @@ func wakeupConditionFromFlags(ctx context.Context, cmd *cobra.Command, client *c
 		}
 		conditions = append(conditions, map[string]any{"type": "pull_request", "event": event})
 	}
+	if v, _ := cmd.Flags().GetString("until-gh-run"); v != "" {
+		c, err := githubRunCondition(v)
+		if err != nil {
+			return nil, err
+		}
+		state, _ := cmd.Flags().GetString("until-gh-run-state")
+		if state != "completed" && state != "waiting" {
+			return nil, fmt.Errorf("--until-gh-run-state takes completed or waiting")
+		}
+		c["state"] = state
+		conditions = append(conditions, c)
+	} else if cmd.Flags().Changed("until-gh-run-state") {
+		return nil, fmt.Errorf("--until-gh-run-state requires --until-gh-run")
+	}
 	if v, _ := cmd.Flags().GetString("until-issue"); v != "" {
 		ref, err := resolveIssueRef(ctx, client, v)
 		if err != nil {
@@ -321,4 +339,35 @@ func wakeupConditionFromFlags(ctx context.Context, cmd *cobra.Command, client *c
 	default:
 		return nil, fmt.Errorf("use one --until-* condition per wakeup")
 	}
+}
+
+var githubRunURL = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/actions/runs/(\d+)(?:/.*)?$`)
+
+// githubRunCondition parses one --until-gh-run selector: owner/repo:RUN_ID,
+// owner/repo:WORKFLOW_FILE@SHA or a run URL. The server validates the rest.
+func githubRunCondition(v string) (map[string]any, error) {
+	bad := fmt.Errorf("--until-gh-run takes owner/repo:RUN_ID, owner/repo:WORKFLOW_FILE@SHA or https://github.com/owner/repo/actions/runs/RUN_ID")
+	repo, selector := "", ""
+	if m := githubRunURL.FindStringSubmatch(v); m != nil {
+		repo, selector = m[1], m[2]
+	} else if r, sel, ok := strings.Cut(v, ":"); ok && !strings.Contains(r, "//") {
+		repo, selector = r, sel
+	}
+	if owner, name, ok := strings.Cut(repo, "/"); !ok || owner == "" || name == "" || selector == "" {
+		return nil, bad
+	}
+	c := map[string]any{"type": "github_run", "repo": repo}
+	if workflow, sha, ok := strings.Cut(selector, "@"); ok {
+		if workflow == "" || sha == "" {
+			return nil, bad
+		}
+		c["workflow"], c["head_sha"] = workflow, sha
+		return c, nil
+	}
+	id, err := strconv.ParseInt(selector, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, bad
+	}
+	c["run_id"] = id
+	return c, nil
 }

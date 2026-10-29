@@ -61,9 +61,9 @@ const agent = { id: "agent-1", name: "Alpha" } as unknown as Agent;
 // A legacy cache row can still carry a pin on an archived DM; the list must
 // ignore it. The pinned archived row is the OLDER one.
 const sessions = [
-  makeSession({ id: "live", updated_at: "2026-07-08T05:00:00Z" }),
-  makeSession({ id: "old-pinned", status: "archived", pinned: true, updated_at: "2026-07-08T01:00:00Z" }),
-  makeSession({ id: "new-plain", status: "archived", pinned: false, updated_at: "2026-07-08T03:00:00Z" }),
+  makeSession({ id: "live", created_at: "2026-07-08T05:00:00Z" }),
+  makeSession({ id: "old-pinned", status: "archived", pinned: true, created_at: "2026-07-08T01:00:00Z" }),
+  makeSession({ id: "new-plain", status: "archived", pinned: false, created_at: "2026-07-08T03:00:00Z" }),
 ];
 
 function openArchivedView() {

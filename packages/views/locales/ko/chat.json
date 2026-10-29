@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "내 결정이 필요해요",
+    "loading": "미응답 요청을 불러오는 중…",
+    "error": "요청을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "empty": "미응답 요청이 없습니다."
+  },
   "page": {
     "interactive_login_required": "채팅을 사용하려면 다시 로그인하세요",
     "interactive_login_action": "로그인",
@@ -69,6 +76,7 @@
     "continuation_summary": "대화 요약",
     "earlier_dm": "이전 대화",
     "quote_message": "인용",
+    "speaker_you": "나",
     "load_older_messages": "이전 메시지 더 보기",
     "show_details": "세부 정보 보기",
     "replied_in": "{{elapsed}} 만에 답변",
@@ -285,6 +293,7 @@
     "unpin": "채팅 고정 해제"
   },
   "annotations": {
+    "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
     "add": "댓글 추가",
     "confirm_add": "추가",
@@ -349,11 +358,45 @@
   "decision": {
     "request_title": "결정 요청",
     "request_label": "결정 요청: {{state}}",
-    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨" },
+    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨", "recorded": "기록됨", "delivered": "전달됨", "disclaimed": "철회됨" },
+    "answer_options": "선택지",
+    "answer_text": "또는 답변 입력",
+    "answer_send": "보내기",
+    "answer_error": "보내지 못했습니다. 다시 시도하세요.",
+    "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
+    "answer_hint": "Enter로 보내기 · Shift+Enter로 줄바꿈",
+    "answer_offline": "오프라인입니다. 답변은 유지됩니다. 다시 연결되면 보내기가 켜집니다.",
+    "answer_conflict": "이 카드는 더 이상 답변을 받을 수 없습니다(예: 먼저 답변이 있었던 경우). 초안은 게시되지 않았습니다. 초안:",
+    "answer_discard": "초안 삭제",
     "source_comment": "원본 댓글",
     "quoted_in": "{{issue}}에 인용됨",
+    "receipt_recorded": "{{issue}}에 기록됨",
+    "receipt_option": "선택지 {{number}}",
+    "jump_to_card": "카드로 이동",
+    "withdrawn_in": "{{issue}}에서 철회됨",
+    "recorded_on": "{{issue}}에 기록됨",
     "from_original_dm": "원본 DM에서",
     "inherited": "상속됨",
     "message_unavailable": "더 이상 사용할 수 없는 메시지입니다"
+  },
+  "search": {
+    "label": "채팅 검색",
+    "placeholder": "채팅 검색",
+    "shortcut_hint": "/",
+    "clear": "검색 지우기",
+    "results_label": "검색 결과",
+    "count_other": "결과 {{count}}개",
+    "searching": "검색 중…",
+    "empty": "“{{query}}”와(과) 일치하는 채팅이 없습니다",
+    "failed": "검색에 실패했습니다. 다시 시도해 주세요.",
+    "timed_out": "검색 시간이 너무 오래 걸렸습니다. 더 짧거나 구체적인 검색어를 사용해 보세요.",
+    "disconnected": "오프라인입니다. 검색하려면 연결이 필요합니다.",
+    "retry": "다시 시도",
+    "too_long": "검색은 {{max}}자까지 가능합니다.",
+    "show_more": "더 보기",
+    "loading_more": "불러오는 중…",
+    "archived_badge": "보관됨",
+    "title_match": "제목 일치",
+    "actions_aria": "{{title}} 작업"
   }
 }

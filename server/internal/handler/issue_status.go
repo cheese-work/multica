@@ -82,15 +82,26 @@ type CreateIssueStatusRequest struct {
 	Icon        string `json:"icon"`
 }
 
-// UpdateIssueStatusRequest deliberately has no Key or Category field. Both are
-// immutable: changing a category would silently rewrite the machine semantics
-// of every issue already on that status, and changing a key would strand them.
+// UpdateIssueStatusRequest accepts Key only to reject a change: a key is the
+// value stored in issue.status, so renaming it would strand every issue on it.
+// Category may change, but it rewrites the machine semantics of every issue
+// already on the status, so a change needs ConfirmCategoryChange.
 type UpdateIssueStatusRequest struct {
-	Name        *string  `json:"name"`
-	Description *string  `json:"description"`
-	Color       *string  `json:"color"`
-	Icon        *string  `json:"icon"`
-	Position    *float64 `json:"position"`
+	Key                   *string  `json:"key"`
+	Name                  *string  `json:"name"`
+	Description           *string  `json:"description"`
+	Category              *string  `json:"category"`
+	ConfirmCategoryChange bool     `json:"confirm_category_change"`
+	Color                 *string  `json:"color"`
+	Icon                  *string  `json:"icon"`
+	Position              *float64 `json:"position"`
+}
+
+// updateIssueStatusResponse adds IssueCount, set only when the category
+// changed: the number of issues whose lifecycle category changed with it.
+type updateIssueStatusResponse struct {
+	IssueStatusResponse
+	IssueCount *int64 `json:"issue_count,omitempty"`
 }
 
 // ListIssueStatuses returns the workspace's status catalog in display order.
@@ -213,7 +224,7 @@ func (h *Handler) CreateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create issue status")
 		return
 	}
-	h.publishIssueStatusChanged(workspaceID, member, "created")
+	h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	writeJSON(w, http.StatusCreated, issueStatusToResponse(entry))
 }
 
@@ -289,9 +300,10 @@ func createIssueStatusEntryLocked(ctx context.Context, qtx *db.Queries, workspac
 	return entry, "", nil
 }
 
-// UpdateIssueStatus edits a custom status's presentation. Built-in statuses are
-// immutable in v1 — name and color included — so the default workspace looks
-// and behaves identically for everyone who never opens this settings page.
+// UpdateIssueStatus edits a custom status: presentation, and with explicit
+// confirmation its lifecycle category. Built-in statuses are immutable in v1 —
+// name, color and category included — so the default workspace looks and
+// behaves identically for everyone who never opens this settings page.
 func (h *Handler) UpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
 	entry, wsUUID, member, ok := h.loadIssueStatusForAdmin(w, r)
 	if !ok {
@@ -310,6 +322,11 @@ func (h *Handler) UpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry.ArchivedAt.Valid {
 		writeError(w, http.StatusConflict, "archived statuses cannot be modified")
+		return
+	}
+
+	if req.Key != nil && *req.Key != entry.Key {
+		writeError(w, http.StatusBadRequest, "key is immutable")
 		return
 	}
 
@@ -351,12 +368,76 @@ func (h *Handler) UpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
 	if req.Position != nil {
 		position = pgtype.Float8{Float64: *req.Position, Valid: true}
 	}
+	var category pgtype.Text
+	if req.Category != nil {
+		parsed, valid := issuestatus.ParseCategory(*req.Category)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "category must be one of: "+strings.Join(issuestatus.Categories(), ", "))
+			return
+		}
+		category = pgtype.Text{String: parsed, Valid: true}
+	}
 
-	updated, err := h.Queries.UpdateIssueStatusEntry(r.Context(), db.UpdateIssueStatusEntryParams{
+	// The count, the confirmation check and the write share one transaction
+	// under the exclusive catalog lock, so the count the admin confirmed is the
+	// count of issues the change applies to.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Warn("UpdateIssueStatus begin failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update issue status")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueStatusCatalog(r.Context(), wsUUID); err != nil {
+		slog.Warn("UpdateIssueStatus lock failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update issue status")
+		return
+	}
+	// Re-read under the lock: the row may have been archived or moved since the
+	// admin gate loaded it.
+	entry, err = qtx.GetIssueStatusEntryByID(r.Context(), db.GetIssueStatusEntryByIDParams{ID: entry.ID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "issue status not found")
+			return
+		}
+		slog.Warn("UpdateIssueStatus reload failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update issue status")
+		return
+	}
+	var changedIssueCount *int64
+	if category.Valid && category.String != entry.Category {
+		count, err := qtx.CountIssuesUsingStatusKey(r.Context(), db.CountIssuesUsingStatusKeyParams{
+			WorkspaceID: wsUUID,
+			Key:         entry.Key,
+		})
+		if err != nil {
+			slog.Warn("UpdateIssueStatus count failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to check issues using status")
+			return
+		}
+		if !req.ConfirmCategoryChange {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":         fmt.Sprintf("changing the category moves %d issues from %s to %s; resend with confirm_category_change to proceed", count, entry.Category, category.String),
+				"code":          "category_change_requires_confirmation",
+				"issue_count":   count,
+				"from_category": entry.Category,
+				"to_category":   category.String,
+			})
+			return
+		}
+		changedIssueCount = &count
+	} else {
+		category = pgtype.Text{}
+	}
+
+	updated, err := qtx.UpdateIssueStatusEntry(r.Context(), db.UpdateIssueStatusEntryParams{
 		ID:          entry.ID,
 		WorkspaceID: wsUUID,
 		Name:        name,
 		Description: description,
+		Category:    category,
 		Color:       color,
 		Icon:        icon,
 		Position:    position,
@@ -376,8 +457,18 @@ func (h *Handler) UpdateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update issue status")
 		return
 	}
-	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "updated")
-	writeJSON(w, http.StatusOK, issueStatusToResponse(updated))
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("UpdateIssueStatus commit failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update issue status")
+		return
+	}
+	// Issue rows carry a server-resolved status_category, so a category move
+	// also tells clients to refresh their issue projections.
+	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "updated", changedIssueCount != nil)
+	writeJSON(w, http.StatusOK, updateIssueStatusResponse{
+		IssueStatusResponse: issueStatusToResponse(updated),
+		IssueCount:          changedIssueCount,
+	})
 }
 
 // These identifiers describe geometry, not workflow semantics. Empty selects
@@ -492,7 +583,7 @@ func (h *Handler) ArchiveIssueStatus(w http.ResponseWriter, r *http.Request) {
 	// After the commit, never before: an event that announced a change the
 	// transaction then rolled back would have every other tab re-read the
 	// catalog and cache the pre-archive row as the new truth.
-	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "archived")
+	h.publishIssueStatusChanged(uuidToString(wsUUID), member, "archived", false)
 	h.publishIssueWorkflowChanged(uuidToString(wsUUID), member, "updated")
 	writeJSON(w, http.StatusOK, issueStatusToResponse(archived))
 }
@@ -537,10 +628,12 @@ func (h *Handler) loadIssueStatusForAdmin(w http.ResponseWriter, r *http.Request
 // changed row travels here on purpose — a client that merged an entry out of
 // an event would have to reconcile it against a concurrent write it cannot
 // see, and the catalog is a handful of rows to re-read.
-func (h *Handler) publishIssueStatusChanged(workspaceID string, actor db.Member, action string) {
-	h.publish(protocol.EventIssueStatusChanged, workspaceID, "member", uuidToString(actor.UserID), map[string]any{
-		"action": action,
-	})
+func (h *Handler) publishIssueStatusChanged(workspaceID string, actor db.Member, action string, categoryChanged bool) {
+	payload := map[string]any{"action": action}
+	if categoryChanged {
+		payload["category_changed"] = true
+	}
+	h.publish(protocol.EventIssueStatusChanged, workspaceID, "member", uuidToString(actor.UserID), payload)
 }
 
 // ReorderIssueStatusesRequest orders a category's active statuses. IncludeSystem
@@ -725,7 +818,7 @@ func (h *Handler) ReorderIssueStatuses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to reorder issue statuses")
 		return
 	}
-	h.publishIssueStatusChanged(workspaceID, member, "reordered")
+	h.publishIssueStatusChanged(workspaceID, member, "reordered", false)
 
 	resp := make([]IssueStatusResponse, len(entries))
 	for i, e := range entries {

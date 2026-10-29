@@ -1,0 +1,46 @@
+◇ injected env (101) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+
+Running 2 tests using 1 worker
+
+(node:39) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:39) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+  ✘  1 e2e/plan-revisions.spec.ts:51:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths (1.7m)
+(node:183) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:183) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+◇ injected env (0) from .env // tip: ⌘ enable debugging { debug: true }
+  ✓  2 e2e/plan-revisions.spec.ts:101:3 › plan revision viewer › enforces membership for discovery, current metadata and either content body (1.3s)
+
+
+  1) e2e/plan-revisions.spec.ts:51:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoBeVisible[2m([22m[2m)[22m failed
+
+    Locator: getByRole('menuitemradio', { name: 'Split', exact: true })
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+    [2m  - Expect "toBeVisible" with timeout 5000ms[22m
+    [2m  - waiting for getByRole('menuitemradio', { name: 'Split', exact: true })[22m
+
+
+      91 |     await capture("web-390-unify");
+      92 |     await page.getByRole("button", { name: "More options", exact: true }).click();
+    > 93 |     await expect(page.getByRole("menuitemradio", { name: "Split", exact: true })).toBeVisible();
+         |                                                                                   ^
+      94 |     await expect(page.getByRole("menuitemradio", { name: /plan-rev-2.md/ })).toContainText("ICT · Plan reviewer");
+      95 |     await capture("web-390-base");
+      96 |     const downloaded = page.waitForEvent("download");
+        at /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/e2e/plan-revisions.spec.ts:93:83
+
+    Error Context: ../.capture-output/impl-e2e-results/plan-revisions-plan-revisi-dc5f7-at-desktop-and-phone-widths/error-context.md
+
+  1 failed
+    e2e/plan-revisions.spec.ts:51:3 › plan revision viewer › reads, compares, navigates and downloads at desktop and phone widths 
+  1 passed (2.0m)

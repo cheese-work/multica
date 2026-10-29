@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, matchesGlob } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { checkGate, decideScopes, filters } from "./ci-scope.mjs";
+import * as ciScope from "./ci-scope.mjs";
+
+const { checkGate, decideScopes, filters, hasGreenMergeGroup } = ciScope;
 
 // The filters use only literal paths, * and **; Node's matcher exercises those
 // against realistic changes, including files removed or renamed by a PR.
@@ -38,6 +40,8 @@ for (const [name, files, selected] of [
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
   ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
+  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts"]],
+  ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
@@ -64,9 +68,10 @@ for (const [name, files, selected] of [
 
 test("scheduled and manual runs select every scope without a path-filter result", () => {
   for (const event of ["schedule", "workflow_dispatch"]) {
-    const { quality_only, ...scopes } = decideScopes(event, {});
+    const { quality_only, merge_group_green, ...scopes } = decideScopes(event, {});
     assert.ok(Object.values(scopes).every((value) => value === "true"));
     assert.equal(quality_only, "false", "the full frontend build owns quality checks");
+    assert.equal(merge_group_green, "false");
   }
 });
 
@@ -99,7 +104,7 @@ test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive 
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m);
+    assert.match(jobs[job], /^    runs-on: ubuntu-24\.04$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
@@ -137,13 +142,7 @@ function productionNeeds(gate, outputs, headRef = "") {
   const dependencies = field(jobs[gate], /^    needs: \[(.+)\]$/m).split(", ");
   return Object.fromEntries(dependencies.map((job) => {
     if (job === "changes") return [job, { result: "success", outputs }];
-    // CHE-748 moved several jobs (sqlc-check, frontend-build, frontend-test,
-    // go-vulnerability-scan, go-lint, backend-tests) off job-level `if:`
-    // scoping entirely -- they now always run, and the aggregate gate below
-    // accounts for that through JOB_SCOPES rather than a skipped dependency.
-    // A dependency with no job-level if: scope is unconditional: it always
-    // succeeds regardless of the simulated path-filter outputs.
-    const match = jobs[job].match(/^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true'( && !startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\))? \}\}$/m);
+    const match = jobs[job].match(/^    if: \$\{\{ (?:!cancelled\(\) && )?needs\.changes\.outputs\.(\w+) == 'true'( && !startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\))? \}\}$/m);
     if (!match) return [job, { result: "success" }];
     const [, scope, syncExclusion] = match;
     const excluded = syncExclusion && headRef.startsWith("upstream-sync/");
@@ -151,11 +150,131 @@ function productionNeeds(gate, outputs, headRef = "") {
   }));
 }
 
+test("deploy admission accepts skipped push tests only after green merge-group CI on the same SHA", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "ci-push-admission-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const sourceSha = "a".repeat(40);
+  const outputs = decideScopes("push", filterFiles([".github/ci-paths.json"]), "main", true);
+  const contexts = { mobile: "success", "cd-qualification": "success" };
+  for (const gate of ["backend", "frontend"]) {
+    const needs = productionNeeds(gate, outputs);
+    for (const job of Object.keys(productionMapping(gate))) {
+      needs[job].result = "skipped";
+    }
+    checkGate(needs, productionMapping(gate));
+    contexts[gate] = "success";
+    assert.ok(Object.values(productionNeeds(gate, outputs)).slice(1).every((job) => job.result === "skipped"));
+  }
+  const checks = join(directory, "checks.json");
+  writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts }));
+  const admission = spawnSync(process.execPath, ["deploy/cd/admission.mjs", "checks", "--checks", checks, "--source-sha", sourceSha], { encoding: "utf8" });
+  assert.equal(admission.status, 0, admission.stderr);
+  writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts: { ...contexts, backend: "skipped" } }));
+  const skippedAggregate = spawnSync(process.execPath, ["deploy/cd/admission.mjs", "checks", "--checks", checks, "--source-sha", sourceSha], { encoding: "utf8" });
+  assert.equal(skippedAggregate.status, 1);
+  assert.match(skippedAggregate.stderr, /required check backend is not success/);
+
+  const directPush = decideScopes("push", filterFiles([".github/ci-paths.json"]), "main", false);
+  assert.equal(directPush.push_full, "true");
+  assert.equal(directPush.backend, "true");
+  assert.equal(directPush.frontend, "true");
+  for (const gate of ["backend", "frontend"]) {
+    const needs = productionNeeds(gate, directPush);
+    checkGate(needs, productionMapping(gate));
+    assert.equal(needs[Object.keys(productionMapping(gate))[0]].result, "success");
+    needs[Object.keys(productionMapping(gate))[0]].result = "skipped";
+    assert.throws(() => checkGate(needs, productionMapping(gate)), /expected success, got skipped/);
+  }
+});
+
+test("only successful merge-group CI from this repository on this exact main SHA can suppress push tests", () => {
+  const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
+  const green = { event: "merge_group", head_sha: env.GITHUB_SHA, status: "completed", conclusion: "success", head_repository: { full_name: env.GITHUB_REPOSITORY } };
+  const query = (endpoint) => {
+    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&status=success&head_sha=${env.GITHUB_SHA}&per_page=1`);
+    return { workflow_runs: [green] };
+  };
+  assert.equal(hasGreenMergeGroup(env, query), true);
+  for (const patch of [
+    { CI_PUSH_FULL: "true" }, { EVENT_NAME: "pull_request" }, { EVENT_NAME: "merge_group" },
+    { EVENT_NAME: "schedule" }, { EVENT_NAME: "workflow_dispatch" }, { GITHUB_REF: "refs/heads/feature" },
+    { GITHUB_SHA: "" }, { GITHUB_REPOSITORY: "" },
+  ]) {
+    assert.equal(hasGreenMergeGroup({ ...env, ...patch }, () => assert.fail("must not query Actions")), false);
+  }
+  for (const run of [
+    { ...green, event: "pull_request" }, { ...green, head_sha: "b".repeat(40) },
+    { ...green, status: "in_progress" }, { ...green, head_repository: { full_name: "fork/multica" } },
+    ...["failure", "cancelled", "skipped", "neutral", null].map((conclusion) => ({ ...green, conclusion })),
+  ]) {
+    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] })), false);
+  }
+  assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] })), false);
+  assert.equal(hasGreenMergeGroup(env, () => { throw new Error("API unavailable"); }), false);
+  assert.equal(hasGreenMergeGroup(env, () => ({})), false);
+  for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
+    assert.equal(decideScopes(event, filterFiles([]), "main", true).push_full, "true");
+  }
+  assert.equal(decideScopes("push", filterFiles([]), "feature", true).push_full, "true");
+});
+
+test("the decide CLI queries merge-group evidence and preserves full CI on lookup errors or the kill switch", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "ci-push-lookup-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const output = join(directory, "outputs");
+  const fixture = join(directory, "runs.json");
+  const command = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
+  const sha = "a".repeat(40);
+  const green = { event: "merge_group", head_sha: sha, status: "completed", conclusion: "success", head_repository: { full_name: "cheese-work/multica" } };
+  writeFileSync(join(directory, "gh"), `#!/usr/bin/env node
+const {readFileSync} = require('node:fs');
+if (process.env.LOOKUP_FAIL === 'true') process.exit(1);
+process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
+`, { mode: 0o700 });
+  for (const [runs, forceFull, failure, expected] of [
+    [[green], "", "", "false"], [[], "", "", "true"],
+    [[green], "true", "", "true"], [[green], "", "true", "true"],
+  ]) {
+    writeFileSync(fixture, JSON.stringify({ workflow_runs: runs }));
+    writeFileSync(output, "");
+    const result = spawnSync(process.execPath, [command, "decide"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
+        EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", HEAD_REF: "main", GITHUB_SHA: sha,
+        GITHUB_REPOSITORY: "cheese-work/multica", CI_PUSH_FULL: forceFull,
+        FILTER_RESULTS: JSON.stringify(filterFiles([".github/ci-paths.json"])), GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("=")));
+    assert.equal(outputs.push_full, expected);
+    assert.equal(outputs.merge_group_green, String(expected === "false"));
+    for (const scope of Object.keys(filters)) assert.equal(outputs[scope], expected);
+  }
+});
+
+test("merge-group reuse is wired to authenticated Actions reads and separate hosted cache warmers", () => {
+  assert.match(jobs.changes, /^      actions: read$/m);
+  assert.match(jobs.changes, /CI_PUSH_FULL: \$\{\{ vars\.CI_PUSH_FULL \}\}/);
+  assert.match(jobs.changes, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  for (const name of ["push-go-cache-warm", "push-turbo-cache-warm"]) {
+    assert.match(jobs[name], /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && needs\.changes\.outputs\.merge_group_green == 'true'/);
+    assert.match(jobs[name], /^    runs-on: ubuntu-24\.04$/m);
+  }
+  assert.match(jobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
+  for (const prefix of ["go-mod-", "go-build-race-"]) {
+    assert.ok(jobs["backend-tests"].includes(prefix));
+    assert.ok(jobs["push-go-cache-warm"].includes(prefix));
+  }
+  assert.match(jobs["push-turbo-cache-warm"], /key: turbo-build-/);
+  assert.match(jobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
+  assert.match(jobs["daemon-artifact"], /if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/);
+});
+
 test("merge groups filter the complete candidate against the queue base", () => {
   assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
   assert.match(jobs.changes, /if: github\.event_name == 'pull_request' \|\| github\.event_name == 'push' \|\| github\.event_name == 'merge_group'/);
-  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| github\.base_ref\) \}\}/);
-  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| github\.sha \}\}/);
+  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| ''\) \}\}/);
+  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| \(github\.event_name == 'push' && github\.sha \|\| ''\) \}\}/);
 });
 
 test("a merge-group migration failure cannot pass the backend gate", () => {
@@ -165,8 +284,8 @@ test("a merge-group migration failure cannot pass the backend gate", () => {
   ]));
   assert.equal(outputs.backend, "true");
   assert.equal(outputs.sqlc, "true");
-  assert.equal(productionMapping("backend")["backend-tests"], "always");
-  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.equal(productionMapping("backend")["backend-tests"], "push_full");
+  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_full == 'true' \}\}$/m);
   const needs = productionNeeds("backend", outputs);
   checkGate(needs, productionMapping("backend"));
   needs["backend-tests"].result = "failure";
@@ -247,7 +366,7 @@ for (const gate of ["frontend", "backend"]) {
 // assertion together with the matrix entry when a macOS runner exists.
 test("the backend gate owns the Linux-only installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /- ubuntu-latest/);
+  assert.match(jobs.installer, /- ubuntu-24\.04/);
   assert.doesNotMatch(jobs.installer, /- macos-/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });

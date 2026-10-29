@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -296,21 +297,26 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 // broadcastAgentEnvUpdated publishes the redacted agent:status update after an
 // env commit. Returns false after writing the error response.
 func (h *Handler) broadcastAgentEnvUpdated(w http.ResponseWriter, r *http.Request, updated db.Agent, member db.Member) bool {
-	// Broadcast an agent:status update so connected clients refresh the
-	// "N variables configured" indicator. Payload is the redacted
-	// AgentResponse — no env values are sent. Skills are reloaded so the
-	// broadcast doesn't tell subscribers the agent has no skills (#3459).
-	resp := h.agentToResponse(updated)
-	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
+	if err := h.publishAgentEnvUpdated(r.Context(), updated, member.UserID); err != nil {
 		slog.Warn("load agent skills after env update failed",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(updated.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
 		return false
 	}
-	workspaceID := uuidToString(updated.WorkspaceID)
-	h.publish(protocol.EventAgentStatus, workspaceID, "member", uuidToString(member.UserID), map[string]any{"agent": broadcastAgentResponse(resp)})
-
 	return true
+}
+
+// publishAgentEnvUpdated broadcasts the redacted agent:status update so
+// connected clients refresh the "N variables configured" indicator. The
+// payload carries no env values. Skills are reloaded so subscribers do not
+// see an agent with none (#3459).
+func (h *Handler) publishAgentEnvUpdated(ctx context.Context, updated db.Agent, actor pgtype.UUID) error {
+	resp := h.agentToResponse(updated)
+	if err := h.attachAgentSkills(ctx, &resp, updated.ID); err != nil {
+		return err
+	}
+	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), "member", uuidToString(actor), map[string]any{"agent": broadcastAgentResponse(resp)})
+	return nil
 }
 
 // envAudit summarises the diff between an agent's existing env and the

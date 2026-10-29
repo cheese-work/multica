@@ -12,11 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -108,7 +111,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.ResumeSessionID != "" && b.cfg.CredentialBoundary == nil {
 		snapshot, snapshotErr := captureClaudeUsageSnapshot(cmd.Env, cmd.Dir, opts.ResumeSessionID)
 		if snapshotErr != nil {
-			b.cfg.Logger.Warn("claude usage baseline unavailable; falling back to reported totals", "error", snapshotErr)
+			b.cfg.Logger.Warn("claude usage baseline unavailable; ignoring reported session totals, keeping per-run stream usage", "error", snapshotErr)
 		} else {
 			usageSnapshot = snapshot
 		}
@@ -183,6 +186,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// leaves the child stuck waiting for a response until its own fallback
 	// timeout.
 	writeDone := make(chan error, 1)
+	promptUUID := uuid.NewString()
 	go func() {
 		if supplements != nil {
 			if initErr := supplements.initialize(inputWriter, opts.HandshakeTimeout); initErr != nil {
@@ -190,7 +194,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				supplements.end()
 			}
 		}
-		err := writeClaudeInput(inputWriter, prompt)
+		err := writeClaudeInput(inputWriter, prompt, promptUUID)
 		if err != nil {
 			closeStdin()
 			if supplements != nil {
@@ -298,19 +302,36 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
+				if (msg.ResultIndex != nil || msg.UserMessageUUID != "" || msg.UserMessageUUIDs != nil) &&
+					msg.UserMessageUUID != promptUUID && !slices.Contains(msg.UserMessageUUIDs, promptUUID) {
+					b.cfg.Logger.Debug("ignoring result for another Claude turn", "user_message_uuid", msg.UserMessageUUID)
+					continue
+				}
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
+				// A resume whose baseline capture failed cannot trust the
+				// result's modelUsage: newer Claude Code restores the session's
+				// cumulative counters on resume, so the reported total may span
+				// every prior task (GH #9564), and without a baseline there is
+				// no way to verify it is per-run. Keep the stream-derived
+				// per-run usage in that case; the reported totals are recorded
+				// in lastUsageResult only for the resume-rejected recapture
+				// below, where the run is known to have started a fresh session
+				// whose totals are its own.
+				unverifiableBaseline := usageSnapshot == nil && opts.ResumeSessionID != ""
 				var baseline map[string]TokenUsage
 				if usageSnapshot != nil {
 					baseline = usageSnapshot.baseline
 				}
 				if resultUsage, authoritative := claudeResultUsageSince(msg, opts.Model, baseline); authoritative {
-					usage = resultUsage
 					usageMsg := msg
 					lastUsageResult = &usageMsg
+					if !unverifiableBaseline {
+						usage = resultUsage
+					}
 				}
 				contextWindow = claudeContextWindow(msg.ModelUsage, contextModel)
 				closeStdin()
@@ -678,8 +699,11 @@ type claudeSDKMessage struct {
 	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
 
 	// result fields
-	ResultText string `json:"result,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
+	ResultText       string   `json:"result,omitempty"`
+	IsError          bool     `json:"is_error,omitempty"`
+	ResultIndex      *int     `json:"result_index,omitempty"`
+	UserMessageUUID  string   `json:"user_message_uuid,omitempty"`
+	UserMessageUUIDs []string `json:"user_message_uuids,omitempty"`
 	// TerminalReason is Claude Code's structured statement of why the turn
 	// ended. Read separately from IsError because the CLI computes the two
 	// independently — see claudeTerminalReasonFailure.
@@ -1180,8 +1204,8 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	return args
 }
 
-func writeClaudeInput(w io.Writer, prompt string) error {
-	data, err := buildClaudeInput(prompt)
+func writeClaudeInput(w io.Writer, prompt, promptUUID string) error {
+	data, err := buildClaudeInput(prompt, promptUUID)
 	if err != nil {
 		return err
 	}
@@ -1191,9 +1215,10 @@ func writeClaudeInput(w io.Writer, prompt string) error {
 	return nil
 }
 
-func buildClaudeInput(prompt string) ([]byte, error) {
+func buildClaudeInput(prompt, promptUUID string) ([]byte, error) {
 	payload := map[string]any{
 		"type": "user",
+		"uuid": promptUUID,
 		"message": map[string]any{
 			"role": "user",
 			"content": []map[string]string{

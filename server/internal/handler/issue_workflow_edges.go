@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -163,7 +164,7 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 		return facts, err
 	}
 	for _, p := range prs {
-		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha})
+		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
 	facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges)
 	return facts, err
@@ -206,22 +207,80 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 }
 
 // onRunBudgetExhausted blocks an issue whose workflow run budget is spent, so
-// a person sees why nothing more runs. It leaves an issue that is already
-// blocked alone (something else parked it), and one whose workflow has no
-// blocked status, where the refusal alone holds the line.
+// a person sees why nothing more runs, and writes the run-budget notice (one
+// comment and inbox item per budget window). It leaves an issue that is already
+// blocked (something else parked it) and one whose workflow has no blocked
+// status where they are, with the notice alone, and skips both when the issue is
+// no longer in the status the refused run was for: the hook runs after the
+// refusal, and a finish written in between (CHE-2226) must stay. An issue in a
+// review status is blocked only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
+	var issue db.Issue
+	var raise, refused string
+	moved := false
+	// Another writer (the 80% warning's comment, a person) can bump the issue's
+	// revision between the read and the block. The block then loses, so it
+	// reads the issue again and retries while the revision keeps moving.
+	for try := 0; try < runBudgetBlockTries; try++ {
+		var ok bool
+		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
+			return
+		}
+		raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+		refused = h.runBudgetRefusedRun(ctx, e)
+		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
+			break
+		}
+		if latest, err := h.Queries.GetIssue(ctx, e.IssueID); err != nil || latest.Revision == issue.Revision {
+			break
+		}
+	}
+	h.writeRunBudgetNotice(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
+		exhaustedNoticeText(refused, raise, e, moved))
+}
+
+// runBudgetBlockTries bounds the block's re-reads after losing a revision race.
+const runBudgetBlockTries = 3
+
+// exhaustedIssue reads the issue a refusal is about and reports whether the
+// refusal still applies: not finished, and still in the status that was
+// refused unless it is already blocked.
+func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhausted) (db.Issue, bool) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
-	if err != nil || issue.Status == issuestatus.Blocked {
-		return
+	if err != nil || service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return issue, false
+	}
+	if issue.Status == issuestatus.Blocked {
+		return issue, true
+	}
+	if issue.Status != e.Status {
+		return issue, false
+	}
+	// A refused run for anyone but the reviewer must not block the review: the
+	// reviewer's own first run on a head is still admitted.
+	if service.IsReviewStatus(issue.Status) && issue.AssigneeID != e.Target.AgentID {
+		return issue, false
+	}
+	return issue, true
+}
+
+// blockExhaustedIssue moves the issue to blocked and records why, and reports
+// whether this call moved it.
+func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused, raise string) bool {
+	if issue.Status == issuestatus.Blocked {
+		return false
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
 		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
-		return
+		return false
 	}
-	details := map[string]any{"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs}
+	details := map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
+		"refused_run": refused, "raise_command": raise,
+	}
 	if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); !moved {
-		return
+		return false
 	}
 	reason, _ := json.Marshal(issueworkflow.BlockedReasonRunBudget)
 	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
@@ -234,4 +293,67 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
+	return true
+}
+
+// exhaustedNoticeText is the exhaustion comment: what was refused, whether the
+// issue was blocked by it, and the command that lifts the cap.
+func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, blocked bool) string {
+	lead := "Run budget used up"
+	if blocked {
+		lead = "Blocked"
+	}
+	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise)
+}
+
+// runBudgetBlockedMessage is the system comment for a budget block.
+func runBudgetBlockedMessage(refused string, runs, max int, raise string) string {
+	return runBudgetNoticeMessage("Blocked", refused, runs, max, raise)
+}
+
+// runBudgetNoticeMessage words a budget notice. Without a raise command (the
+// platform maximum leaves no valid raise) it names the maximum and the
+// recovery a person has instead.
+func runBudgetNoticeMessage(lead, refused string, runs, max int, raise string) string {
+	if raise == "" {
+		return fmt.Sprintf(
+			"%s: %s was refused because the issue used %d of %d runs. The platform maximum of %d runs is reached, so no raise is possible. A person moves the issue's status to open a new run window.",
+			lead, refused, runs, max, issueworkflow.MaxRunsPerIssueLimit)
+	}
+	return fmt.Sprintf(
+		"%s: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
+		lead, refused, runs, max, raise)
+}
+
+// runBudgetRefusedRun names the run the budget refused in one phrase: the
+// agent that would have received it, what asked, and the status the issue was
+// in.
+func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetExhausted) string {
+	who := "an agent"
+	if e.Target.AgentID.Valid {
+		if agent, err := h.Queries.GetAgent(ctx, e.Target.AgentID); err == nil {
+			who = "agent " + agent.Name
+		}
+	}
+	trigger := e.Target.Trigger
+	if trigger == "" {
+		trigger = "derived"
+	}
+	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
+}
+
+// runBudgetRaiseCommand is the command that lifts this issue's cap to leave
+// 10 runs after the ones already used, using the issue's identifier when the
+// workspace prefix is known. It is empty when the platform maximum leaves no
+// valid raise.
+func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
+	ref := uuidToString(issue.ID)
+	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
+		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
+	}
+	target := service.SuggestedRaiseTarget(max, used)
+	if target == 0 {
+		return ""
+	}
+	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target)
 }

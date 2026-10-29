@@ -546,7 +546,7 @@ describe("workflow editor draft preservation during a save", () => {
 
     expect(screen.getByDisplayValue("Delivery v3")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(saveButton().disabled).toBe(false);
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
 
     apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
     await startSave();

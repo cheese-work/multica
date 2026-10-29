@@ -15,12 +15,21 @@ type HTTPMetrics struct {
 	duration                    *prometheus.HistogramVec
 	daemonWorkspaceResponseSize *prometheus.HistogramVec
 	inFlight                    prometheus.Gauge
+	suggestions                 *prometheus.CounterVec
+	suggestionsDuration         *prometheus.HistogramVec
 }
 
 const daemonWorkspaceRoutePattern = "/api/daemon/workspaces"
 
 func NewHTTPMetrics() *HTTPMetrics {
 	return &HTTPMetrics{
+		suggestions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "search_suggestions", Name: "requests_total", Help: "Suggestions requests by query-free outcome.",
+		}, []string{"outcome"}),
+		suggestionsDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "multica", Subsystem: "search_suggestions", Name: "duration_seconds", Help: "Suggestions request latency.",
+			Buckets: []float64{0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2},
+		}, []string{"outcome"}),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica",
 			Subsystem: "http",
@@ -51,7 +60,15 @@ func NewHTTPMetrics() *HTTPMetrics {
 }
 
 func (m *HTTPMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.requests, m.duration, m.daemonWorkspaceResponseSize, m.inFlight}
+	return []prometheus.Collector{m.requests, m.duration, m.daemonWorkspaceResponseSize, m.inFlight, m.suggestions, m.suggestionsDuration}
+}
+
+func (m *HTTPMetrics) RecordSearchSuggestions(outcome string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.suggestions.WithLabelValues(outcome).Inc()
+	m.suggestionsDuration.WithLabelValues(outcome).Observe(duration.Seconds())
 }
 
 func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {

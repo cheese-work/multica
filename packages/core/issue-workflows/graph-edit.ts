@@ -18,6 +18,8 @@ export const EDITABLE_GUARDS = [
   "pr.ready",
   "pr.merged",
   "pr.closed_unmerged",
+  "pr.review_changes_requested",
+  "pr.review_approved",
   "children_done",
 ] as const;
 
@@ -29,6 +31,8 @@ const GUARD_ARITY: Record<string, number> = {
   "pr.ready": 0,
   "pr.merged": 0,
   "pr.closed_unmerged": 0,
+  "pr.review_changes_requested": 0,
+  "pr.review_approved": 0,
   children_done: 0,
   issue_status: 2,
 };

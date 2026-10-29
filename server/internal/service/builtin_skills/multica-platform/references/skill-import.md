@@ -63,6 +63,11 @@ multica skill import --url github.com/owner/repo/blob/main/path/to/SKILL.md --ou
 - A bare ClawHub slug (no host) is accepted and routed to ClawHub.
 - Any other host is rejected with a 400 naming the supported sources.
 
+URL imports and refreshes require every directory listing and eligible
+supporting-file download to succeed before saving the bundle. A failed refresh
+leaves the existing content, supporting files, and agent-skill bindings unchanged;
+a failed listing is not treated as an empty directory.
+
 ## Local archive import
 
 `multica skill import --file <path> --output json` imports a skill from a local
@@ -310,3 +315,28 @@ agent's skill assignments:
 multica agent skills add <agent-id> --skill-ids <skill-id> --output json
 multica agent skills list <agent-id> --output json
 ```
+
+## Authoring and managing skills
+
+`skill import` brings a skill in from outside. These verbs manage skills
+directly:
+
+```bash
+multica skill search <query>                 # installable skills
+multica skill create --name my-skill --description "..." --content-file ./SKILL.md
+multica skill update <id> --content-file ./SKILL.md --description "..."
+multica skill files upsert <skill-id> --path references/x.md --content-file ./x.md
+multica skill files delete <skill-id> <file-id>
+multica skill delete <id> --yes
+```
+
+- Content comes from `--content`, `--content-file` or `--content-stdin`; they
+  are mutually exclusive. Prefer `--content-file`.
+- `skill update` changes only the fields you pass. Agents bound to the skill
+  use the new content.
+- `files upsert` creates or updates one file by `--path`; `files delete` takes
+  the file id from `skill get`.
+- `skill delete` is permanent. It asks for confirmation unless you pass
+  `--yes`; read `skill get` and check which agents use the skill first.
+- Labels on skills use `multica skill label add|list|remove` (see
+  `references/labels.md`).

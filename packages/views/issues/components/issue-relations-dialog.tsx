@@ -3,6 +3,7 @@
 import { useId, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { issueRelationsOptions } from "@multica/core/issues/relations";
 import { Button } from "@multica/ui/components/ui/button";
@@ -18,6 +19,7 @@ export default function IssueRelationsDialog({ issueId, onClose, finalFocusRef }
 }) {
   const { t } = useT("issues");
   const workspaceId = useWorkspaceId();
+  const catalog = useIssueStatuses(workspaceId);
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const [depth, setDepth] = useState<1 | 2>(1);
@@ -42,7 +44,7 @@ export default function IssueRelationsDialog({ issueId, onClose, finalFocusRef }
           <>
             {query.data.edges.length === 0 && <p className="text-caption text-muted-foreground">{t(($) => $.relations.empty)}</p>}
             {query.data.omitted_count > 0 && <p role="status" className="text-caption text-muted-foreground">{t(($) => $.relations.omitted, { count: query.data.omitted_count })}</p>}
-            <IssueRelationsGraph graph={query.data} currentIssueId={issueId} onNavigate={(targetId) => { onClose(); navigation.push(paths.issueDetail(targetId)); }} />
+            <IssueRelationsGraph graph={query.data} currentIssueId={issueId} catalog={catalog} onNavigate={(targetId) => { onClose(); navigation.push(paths.issueDetail(targetId)); }} />
           </>
         )}
       </DialogContent>

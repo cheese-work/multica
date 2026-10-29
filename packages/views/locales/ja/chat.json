@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "あなたの判断待ち",
+    "loading": "未回答の依頼を読み込み中…",
+    "error": "依頼を読み込めませんでした。",
+    "retry": "再試行",
+    "empty": "未回答の依頼はありません。"
+  },
   "page": {
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",
@@ -69,6 +76,7 @@
     "continuation_summary": "会話の要約",
     "earlier_dm": "以前のDM",
     "quote_message": "引用",
+    "speaker_you": "あなた",
     "load_older_messages": "さらに前のメッセージを読み込む",
     "show_details": "詳細を表示",
     "replied_in": "{{elapsed}}で返信",
@@ -285,6 +293,7 @@
     "unpin": "チャットのピン留めを解除"
   },
   "annotations": {
+    "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
     "source_label": "{{name}} のメッセージ",
     "add": "コメントを追加",
     "confirm_add": "追加",
@@ -349,11 +358,45 @@
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "disclaimed": "撤回済み" },
+    "answer_options": "選択肢",
+    "answer_text": "または回答を入力",
+    "answer_send": "送信",
+    "answer_error": "送信できませんでした。もう一度お試しください。",
+    "answer_helper": "送信すると回答が {{issue}} に投稿されます。DM エージェントへの質問は下のメッセージ欄に入力してください。",
+    "answer_hint": "Enter で送信 · Shift+Enter で改行",
+    "answer_offline": "オフラインです。回答は保持されます。再接続すると送信できます。",
+    "answer_conflict": "このカードは回答を受け付けられません（例: 先に回答があった場合）。下書きは投稿されていません。下書き:",
+    "answer_discard": "下書きを破棄",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
+    "receipt_recorded": "{{issue}} に記録",
+    "receipt_option": "選択肢 {{number}}",
+    "jump_to_card": "カードへ移動",
+    "withdrawn_in": "{{issue}} で取り下げ済み",
+    "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",
     "inherited": "継承",
     "message_unavailable": "このメッセージは利用できなくなりました"
+  },
+  "search": {
+    "label": "チャットを検索",
+    "placeholder": "チャットを検索",
+    "shortcut_hint": "/",
+    "clear": "検索をクリア",
+    "results_label": "検索結果",
+    "count_other": "{{count}} 件",
+    "searching": "検索中…",
+    "empty": "「{{query}}」に一致するチャットはありません",
+    "failed": "検索に失敗しました。もう一度お試しください。",
+    "timed_out": "検索に時間がかかりすぎました。より短い、または具体的な語句をお試しください。",
+    "disconnected": "オフラインです。検索には接続が必要です。",
+    "retry": "再試行",
+    "too_long": "検索は {{max}} 文字までです。",
+    "show_more": "さらに表示",
+    "loading_more": "読み込み中…",
+    "archived_badge": "アーカイブ済み",
+    "title_match": "タイトル一致",
+    "actions_aria": "{{title}} の操作"
   }
 }

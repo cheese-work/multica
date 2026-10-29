@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "Needs you",
+    "loading": "Loading open asks…",
+    "error": "Could not load open asks.",
+    "retry": "Retry",
+    "empty": "No open asks."
+  },
   "page": {
     "interactive_login_required": "Sign in again to use Chat",
     "interactive_login_action": "Sign in",
@@ -72,6 +79,7 @@
     "continuation_summary": "Conversation summary",
     "earlier_dm": "Earlier DM",
     "quote_message": "Quote",
+    "speaker_you": "You",
     "load_older_messages": "Load older messages",
     "show_details": "Show details",
     "replied_in": "Replied in {{elapsed}}",
@@ -290,6 +298,7 @@
     "unpin": "Unpin chat"
   },
   "annotations": {
+    "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",
     "add": "Add comment",
     "confirm_add": "Add",
@@ -357,11 +366,46 @@
   "decision": {
     "request_title": "Decision request",
     "request_label": "Decision request: {{state}}",
-    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "disclaimed": "Disclaimed" },
+    "answer_options": "Options",
+    "answer_text": "Or write an answer",
+    "answer_send": "Send",
+    "answer_error": "Could not send. Try again.",
+    "answer_helper": "Send posts your answer to {{issue}}. Questions for the DM agent go in the message box below.",
+    "answer_hint": "Enter sends · Shift+Enter for a new line",
+    "answer_offline": "You are offline. Your answer is kept. Send turns on when you reconnect.",
+    "answer_conflict": "This card can no longer take your answer, for example because it was answered first. Nothing from your draft was posted. Your draft:",
+    "answer_discard": "Discard draft",
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
+    "receipt_recorded": "Recorded for {{issue}}",
+    "receipt_option": "Option {{number}}",
+    "jump_to_card": "Jump to card",
+    "withdrawn_in": "Withdrawn in {{issue}}",
+    "recorded_on": "Recorded on {{issue}}",
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"
+  },
+  "search": {
+    "label": "Search chats",
+    "placeholder": "Search chats",
+    "shortcut_hint": "/",
+    "clear": "Clear search",
+    "results_label": "Search results",
+    "count_one": "{{count}} result",
+    "count_other": "{{count}} results",
+    "searching": "Searching…",
+    "empty": "No chats match “{{query}}”",
+    "failed": "Search failed. Try again.",
+    "timed_out": "Search took too long. Try a shorter or more specific query.",
+    "disconnected": "You're offline. Search needs a connection.",
+    "retry": "Retry",
+    "too_long": "Search is limited to {{max}} characters.",
+    "show_more": "Show more",
+    "loading_more": "Loading…",
+    "archived_badge": "Archived",
+    "title_match": "Title match",
+    "actions_aria": "Actions for {{title}}"
   }
 }
