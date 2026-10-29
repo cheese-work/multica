@@ -35,6 +35,50 @@ The snapshot, PR provenance and recommendations remain the 2026-10-23 record;
 a keep recommendation is not proof that every entry point survived later syncs.
 The issue holds the detailed paired-code evidence and the two product choices.
 This is a static audit, not a runtime qualification of a reconciled tree.
+The H01 restoration note was rechecked at main `f4960da0d9dcfad86ac2435d46b0bbc44dff3682`
+after CHE-2411/#557 landed; the original issue table remains pinned to the earlier audit.
+
+## Upstream sync preservation check
+
+The `Fork sync preservation` CI check detects sync PRs by an `upstream-sync/`
+head branch, a title containing `sync upstream` or `merge upstream` (including
+`sync with upstream`), or a change to `UPSTREAM_VERSION`. This includes sync
+PRs #138, #377 (CHE-2005), and #483 (CHE-2241), whose branches used `agent/`.
+Other PRs pass without applying the preservation policy.
+
+The check reads this ledger from the PR base, not from the proposed tree.
+Deleted or renamed backtick-quoted `Source:` paths need an acknowledgement.
+Directory pointers protect all descendant files; `*` matches within a filename.
+An abbreviated filename after a full path uses the preceding path's directory.
+Prose-only source descriptions are not machine-readable protection.
+
+Fork-authored tests are files added or modified in the base tree relative to
+the fork's last upstream tag, `v<base UPSTREAM_VERSION>`. The check recognizes
+`.test.*`, `.spec.*`, `_test.*`, `-test.*`, and Python `test_*.py` filenames.
+Deleting or renaming these tests needs an acknowledgement even without a
+ledger entry. Missing history, the upstream tag, or parseable Source paths fails
+the sync check rather than silently skipping protection.
+
+For each protected old path, put a visible line in the PR body:
+
+```text
+Ported: packages/views/settings/components/old.tsx -> packages/views/settings/components/new.tsx
+```
+
+The new path must be a different file that exists at the exact PR head.
+Backtick-quoted paths and Markdown list lines are accepted. Quoted, fenced,
+and HTML-comment examples do not count. Body edits rerun the check.
+An acknowledgement records the author's port claim; independent review must
+still verify equivalent behavior and assertions. In-place content loss is
+outside this deletion/rename check.
+
+The workflow runs only trusted default-branch code on a GitHub-hosted runner.
+The PR head is fetched as Git data, never checked out or executed. The new
+workflow becomes active after it lands on the default branch; candidate
+fixture tests also run in the existing CI scope job before that first merge.
+The CHE-867 fixture replays the actual `github-tab.tsx` and
+`github-tab.test.tsx` deletions from merge `2b558f361`. Its H01 row models the
+corrected pre-sync UI inventory; the historical ledger did not list that UI.
 
 ## Collaboration and direct messages
 
@@ -82,7 +126,7 @@ This is a static audit, not a runtime qualification of a reconciled tree.
 | W12 Wakeup activity identifies trigger, agent and run | Wakeup activity | #253 | CHE-1726 | overlaps 5ed09342a / MUL-7680 | Merge both without losing fork attribution (R06). Source: `packages/views/issues/components/issue-detail.tsx`, `packages/views/issues/components/wakeup-activity.tsx`, `server/internal/service/issue_wakeup_activity.go`. |
 | W13 Comment triggers fold into queued work, wake blocked leaders and avoid author self-trigger | Trigger admission | #177, #185 | CHE-1285, CHE-1418 | fork-only | Keep dedupe and self-trigger protection. Source: `server/cmd/multica/cmd_issue.go`, `server/internal/handler/comment.go`, `server/cmd/multica/comment_self_mention.go`. |
 | W14 Idle squad-leader failure markers | Squad recovery | #186 | CHE-1443 | fork-only | Keep durable failure visibility. Source: `server/internal/service/task.go`, `server/migrations/614_squad_leader_failure_marker.up.sql`. |
-| H01 Multi-organization GitHub installations with verified account authority | GitHub integration | #13, #19 | CHE-268 | overlaps caeb146ba | Merge both (R15). Do not replace OAuth/account-authority verification with an installation ID alone. Source: `packages/views/settings/components/code-tab.tsx`, `packages/views/settings/components/repositories-section.tsx`, `server/cmd/server/router.go`, `server/internal/handler/github.go`. API/account-authority checks survive, but the add-organization and per-organization disconnect UI and its original tests were lost in `2b558f361`; tracked by CHE-2411. |
+| H01 Multi-organization GitHub installations with verified account authority | GitHub integration | #13, #19 | CHE-268 | overlaps caeb146ba | Merge both (R15). Do not replace OAuth/account-authority verification with an installation ID alone. Source: `packages/views/settings/components/code-tab.tsx`, `packages/views/settings/components/repositories-section.tsx`, `server/cmd/server/router.go`, `server/internal/handler/github.go`. The audit at `ffa2f9711` found the add-organization and per-organization disconnect UI and its original tests lost in `2b558f361`; CHE-2411/#557 restored these controls and regression coverage on current main. Tests: `packages/views/settings/components/code-tab.test.tsx`, `packages/views/settings/components/repositories-section.test.tsx`. |
 | H02 Explicit PR close intent, quoted-code stripping and open-child completion gate | PR lifecycle | #40, #42 | CHE-511, CHE-520 | overlaps 0da0b46bb / MUL-7672 | Merge both (R11). Retain fork code-span and direct-child safeguards. Source: `.github/PULL_REQUEST_TEMPLATE.md`, `server/internal/handler/github.go`, `server/internal/handler/pr_auto_complete.go`. |
 | H03 Merged PRs advance custom done-category review states | PR lifecycle | #371 | CHE-1990 | overlaps fc4a61570 / MUL-7726 | Keep ours (R12). Only literal `done` and `cancelled` suppress the fork transition. Source: `server/internal/handler/pr_auto_complete.go`, `server/internal/handler/github.go`. |
 | H04 Actor/task-aware automatic PR linking and CLI unlink repair | PR linking | #339, #373 | CHE-1933, CHE-1991 | overlaps 0da0b46bb / MUL-7672 | Merge both (R13). Keep fork policy, CLI repair and transactional exclusion handling. Source: `server/cmd/multica/cmd_issue.go`, `server/internal/handler/github.go`. |
