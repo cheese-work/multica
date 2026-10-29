@@ -89,7 +89,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
+	askJSON, err := json.Marshal(parsed)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
+		return
+	}
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

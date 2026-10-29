@@ -169,7 +169,11 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		return empty, err
 	}
 	commentID := dbid.NewV7()
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt})
+	chosen, err := cardOptionIndex(decision, input)
+	if err != nil {
+		return empty, err
+	}
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -185,7 +189,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nOpen issue: /issue/%s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID), uuidToString(answer.ID))
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nOpen issue: /issue/%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err
@@ -230,4 +234,18 @@ func cardAnswerContent(decision db.DecisionRequest, input decisionCardAnswerInpu
 		return text, nil
 	}
 	return "", decisionIntentRefusal{http.StatusBadRequest, "an answer needs an option or text"}
+}
+
+// cardOptionIndex is the 0-based position of the chosen option on the card, or
+// NULL for a text-only answer.
+func cardOptionIndex(decision db.DecisionRequest, input decisionCardAnswerInput) (pgtype.Int4, error) {
+	if input.Option == "" {
+		return pgtype.Int4{}, nil
+	}
+	var options []decisiontx.AskOption
+	if err := json.Unmarshal(decision.Options, &options); err != nil {
+		return pgtype.Int4{}, err
+	}
+	index := slices.IndexFunc(options, func(option decisiontx.AskOption) bool { return option.Label == input.Option })
+	return pgtype.Int4{Int32: int32(index), Valid: index >= 0}, nil
 }

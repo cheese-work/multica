@@ -312,7 +312,7 @@
   "decision": {
     "request_title": "Demande de décision",
     "request_label": "Demande de décision : {{state}}",
-    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "disclaimed": "Désavouée" },
     "answer_options": "Options",
     "answer_text": "Ou écrivez une réponse",
     "answer_send": "Envoyer",
@@ -324,6 +324,9 @@
     "answer_discard": "Supprimer le brouillon",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
+    "receipt_recorded": "Enregistré pour {{issue}}",
+    "receipt_option": "Option {{number}}",
+    "jump_to_card": "Aller à la carte",
     "withdrawn_in": "Retirée dans {{issue}}",
     "recorded_on": "Enregistré dans {{issue}}",
     "from_original_dm": "du DM d'origine",
