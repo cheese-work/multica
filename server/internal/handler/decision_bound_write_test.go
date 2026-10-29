@@ -188,3 +188,23 @@ func TestDecisionBindingHoldsLocksUntilCommit(test *testing.T) {
 		}
 	}
 }
+
+// The table has no foreign key, so the decision worker's orphan cleanup deletes
+// the audit row with the request it records.
+func TestDecisionBoundWriteLeavesWithOrphanedRequest(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBoundWriteFixture(test, decisiontx.ApproveWriteLabel)
+	if err := fixture.verifyBinding(allowAnyAgent, boundAfter); err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM decision_bound_write WHERE decision_id = $1`, fixture.decision.ID)
+	})
+	dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, fixture.issue.ID)
+	if err := testHandler.cleanupDecisionOrphans(context.Background(), fixture.issue.WorkspaceID, fixture.issue.ID); err != nil {
+		test.Fatal(err)
+	}
+	if rows := boundWriteRows(test, fixture); rows != 0 {
+		test.Fatalf("orphan cleanup left %d audit rows", rows)
+	}
+}

@@ -15,3 +15,12 @@ JOIN member ON member.workspace_id = request.workspace_id AND member.user_id = r
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND request.status = 'answered'
 FOR UPDATE OF answer;
+
+-- name: DeleteDecisionOrphanBoundWrite :exec
+-- The table has no foreign key; this runs before DeleteDecisionOrphanRequest
+-- and removes the audit row under the same orphan condition.
+DELETE FROM decision_bound_write bound
+USING decision_request request
+WHERE request.id = bound.decision_id AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+  AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
+    OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id));

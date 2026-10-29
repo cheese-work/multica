@@ -81,6 +81,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
 	"decision_answer":                    workspaceDeleteWorker,
+	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,
 	"decision_expiry_digest":             workspaceDelete, // workspace_id FK ON DELETE CASCADE removes the day digests with the workspace.
 	"decision_expiry_digest_request":     workspaceDelete, // cascades from its digest and from decision_request (worker orphan cleanup).
@@ -303,7 +304,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_answer", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}

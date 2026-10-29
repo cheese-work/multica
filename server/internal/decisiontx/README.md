@@ -455,3 +455,5 @@ that is exactly that label, after its veto window and within 7 days, for an ask
 whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
 locks the request, then the answer, in the same order as a withdrawal.
 Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
+Orphan cleanup deletes a request's `decision_bound_write` row before the request,
+because the table has no foreign key to cascade from.

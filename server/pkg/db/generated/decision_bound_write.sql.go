@@ -11,6 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteDecisionOrphanBoundWrite = `-- name: DeleteDecisionOrphanBoundWrite :exec
+DELETE FROM decision_bound_write bound
+USING decision_request request
+WHERE request.id = bound.decision_id AND request.workspace_id = $1 AND request.id = $2
+  AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
+    OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id))
+`
+
+type DeleteDecisionOrphanBoundWriteParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// The table has no foreign key; this runs before DeleteDecisionOrphanRequest
+// and removes the audit row under the same orphan condition.
+func (q *Queries) DeleteDecisionOrphanBoundWrite(ctx context.Context, arg DeleteDecisionOrphanBoundWriteParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanBoundWrite, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const getDecisionBindingAnswer = `-- name: GetDecisionBindingAnswer :one
 SELECT answer.content_snapshot, answer.effective_at, answer.created_at,
        member.role AS human_role, clock_timestamp()::timestamptz AS now
