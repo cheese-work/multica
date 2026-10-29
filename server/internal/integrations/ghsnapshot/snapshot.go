@@ -30,6 +30,9 @@ type CheckContext struct {
 // API returned — no incremental inference from webhook events.
 type PRSnapshot struct {
 	HeadSHA string
+	// BaseSHA is the base branch tip the mergeability verdict was computed
+	// against; it moves when the base branch advances while the head stays.
+	BaseSHA string
 	// BaseRef is the base branch the mergeability verdict was computed against.
 	BaseRef          string
 	Mergeable        string // MERGEABLE / CONFLICTING / UNKNOWN (raw enum)
@@ -75,6 +78,7 @@ type restPullRequest struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
@@ -186,6 +190,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		return nil, errors.New("ghsnapshot: pull request head changed during fetch")
 	}
 	snap.BaseRef = latest.Base.Ref
+	snap.BaseSHA = latest.Base.SHA
 	snap.Mergeable = "UNKNOWN"
 	if latest.Mergeable != nil {
 		if *latest.Mergeable {

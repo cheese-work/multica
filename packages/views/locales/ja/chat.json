@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "あなたの判断待ち",
+    "loading": "未回答の依頼を読み込み中…",
+    "error": "依頼を読み込めませんでした。",
+    "retry": "再試行",
+    "empty": "未回答の依頼はありません。"
+  },
   "page": {
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",
@@ -277,6 +284,7 @@
     "unarchive": "アーカイブを解除"
   },
   "annotations": {
+    "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
     "source_label": "{{name}} のメッセージ",
     "add": "コメントを追加",
     "confirm_add": "追加",
@@ -298,9 +306,21 @@
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "disclaimed": "撤回済み" },
+    "answer_options": "選択肢",
+    "answer_text": "または回答を入力",
+    "answer_send": "送信",
+    "answer_error": "送信できませんでした。もう一度お試しください。",
+    "answer_helper": "送信すると回答が {{issue}} に投稿されます。DM エージェントへの質問は下のメッセージ欄に入力してください。",
+    "answer_hint": "Enter で送信 · Shift+Enter で改行",
+    "answer_offline": "オフラインです。回答は保持されます。再接続すると送信できます。",
+    "answer_conflict": "このカードは回答を受け付けられません（例: 先に回答があった場合）。下書きは投稿されていません。下書き:",
+    "answer_discard": "下書きを破棄",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
+    "receipt_recorded": "{{issue}} に記録",
+    "receipt_option": "選択肢 {{number}}",
+    "jump_to_card": "カードへ移動",
     "withdrawn_in": "{{issue}} で取り下げ済み",
     "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ChatMessage } from "@multica/core/types";
 import type { ReactElement } from "react";
@@ -10,6 +11,10 @@ import { ChatAnnotationContext } from "./chat-annotation-context";
 import { ChatAnnotationChip } from "./chat-annotations";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+vi.mock("../../navigation", async (importActual) => ({
+  ...(await importActual<typeof import("../../navigation")>()),
+  AppLink: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
+}));
 vi.mock("react-virtuoso", () => ({
   Virtuoso: ({ data, itemContent, computeItemKey }: {
     data: unknown[];
@@ -27,14 +32,14 @@ const messages: ChatMessage[] = [
 ];
 const key = "chat:s1" as const;
 
-function Harness({ enabled = true }: { enabled?: boolean }) {
-  const annotation = useChatAnnotations({ sessionId: "s1", messages, agentName: "Terra", enabled });
+function Harness({ enabled = true, items = messages }: { enabled?: boolean; items?: ChatMessage[] }) {
+  const annotation = useChatAnnotations({ sessionId: "s1", messages: items, agentName: "Terra", enabled });
   const annotations = useCommentDraftStore((s) => s.getAnnotations(key));
   return (
     <div ref={annotation.cardRef} {...annotation.captureProps}>
       {annotation.popup}
       <ChatAnnotationContext.Provider value={annotation.scope}>
-        <ChatMessageList messages={messages} pendingTask={null} availability="online" sessionId="s1" />
+        <ChatMessageList messages={items} pendingTask={null} availability="online" sessionId="s1" />
       </ChatAnnotationContext.Provider>
       {annotation.input && annotations.length > 0 && (
         <ChatAnnotationChip draftKey={key} annotations={annotations} disabled={false}
@@ -45,8 +50,8 @@ function Harness({ enabled = true }: { enabled?: boolean }) {
   );
 }
 
-function renderHarness(props: { enabled?: boolean } = {}) {
-  return renderWithI18n(<QueryClientProvider client={new QueryClient()}><Harness {...props} /></QueryClientProvider>);
+function renderHarness(props: { enabled?: boolean; items?: ChatMessage[] } = {}) {
+  return renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><Harness {...props} /></WorkspaceSlugProvider></QueryClientProvider>);
 }
 
 function selectReply() {
@@ -68,6 +73,36 @@ beforeEach(() => {
 });
 
 describe("comment on an agent reply in a DM", () => {
+  it("selects card 2, retains its request identity, and refuses notes on another source until sent or cleared", async () => {
+    const requests = [1, 2].map((number) => ({
+      ...messages[1]!, id: `ping-${number}`, message_kind: "decision_request" as const,
+      decision_request: { id: `request-${number}`, issue_id: `issue-${number}`, issue_identifier: `CHE-216${number}`, ask: `C. CHE-216${number}`, state: "open" as const, created_at: messages[1]!.created_at },
+    }));
+    const { container } = renderHarness({ items: [...messages, ...requests] });
+    const select = (source: string) => {
+      const region = container.querySelector(`[data-comment-content="${source}"]`)!;
+      fireEvent.pointerDown(region, { pointerType: "mouse", button: 0 });
+      const range = document.createRange();
+      range.selectNodeContents(region.querySelector("p")!);
+      act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+      fireEvent.pointerUp(region);
+    };
+    select("decision-request:request-2");
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Comment 1" }), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(useCommentDraftStore.getState().getAnnotations(key)).toMatchObject([
+      { sourceCommentId: "decision-request:request-2", quote: "C. CHE-2162", note: "1" },
+    ]);
+    select("decision-request:request-1");
+    expect(screen.queryByRole("button", { name: "Add comment" })).not.toBeInTheDocument();
+    select("m1");
+    expect(screen.queryByRole("button", { name: "Add comment" })).not.toBeInTheDocument();
+    act(() => { useCommentDraftStore.getState().removeAnnotation(key, useCommentDraftStore.getState().getAnnotations(key)[0]!.id); });
+    select("decision-request:request-1");
+    expect(await screen.findByRole("button", { name: "Add comment" })).toBeInTheDocument();
+  });
+
   it("selects text, adds a comment, and lands it in the DM draft with a marker in reading order", async () => {
     const user = userEvent.setup();
     renderHarness();

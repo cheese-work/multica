@@ -150,7 +150,7 @@ test("PR-only scanner runs in parallel and required backend-tests fails closed",
   assert.match(job("migration-prefix-check"), /pull-requests: read/);
   assert.match(job("migration-prefix-check"), /timeout 25s node scripts\/migration-prefix-check.mjs/);
   assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check\]$/m);
-  assert.match(job("backend-tests"), /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.match(job("backend-tests"), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_full == 'true' \}\}$/m);
   const guard = job("backend-tests").match(/      - name: Require migration prefix result[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
   assert.ok(guard, "required check must validate the scanner result before expensive steps");
   const command = guard.replace(/^          /gm, "");

@@ -245,6 +245,12 @@ export function useWakeupText() {
           key: c.state === "ended" ? ("other_ended" as const) : c.state === "in_review" ? ("other_in_review" as const) : c.state === "blocked" ? ("other_blocked" as const) : ("other_done" as const),
           values: { issue: c.identifier || t(($) => $.wakeups.cond.another_issue) },
         };
+      case "github_run": {
+        const run = c.run_id
+          ? t(($) => $.wakeups.cond.gh_run_id, { id: c.run_id, repo: c.repo })
+          : t(($) => $.wakeups.cond.gh_run_sha, { workflow: c.workflow ?? "", sha: (c.head_sha ?? "").slice(0, 7), repo: c.repo });
+        return { key: c.state === "waiting" ? ("gh_run_waiting" as const) : ("gh_run_completed" as const), values: { run } };
+      }
     }
     return { key: "children_all" as const, values: {} };
   };

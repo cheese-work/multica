@@ -138,3 +138,14 @@ test("write failure removes the temp file and reports unavailability", async (co
   assert.equal(data.warnings.length, 1);
   assert.equal(existsSync(data.options.out), false);
 });
+
+test("per-PR content warnings are logged as notes, not annotations", async (context) => {
+  const long = `Changelog: ${"Notes now show shipped changes. ".repeat(8)}`;
+  const notes = [];
+  const data = fixture(context, { note: (message) => notes.push(message), fetchImpl: async () => page([pr(1, { body: long })]) });
+  const result = await fetchChangelog(data.options);
+  assert.equal(result.entries.length, 1);
+  assert.deepEqual(data.warnings, []);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /#1: Truncated to 140 characters/);
+});

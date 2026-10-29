@@ -42,6 +42,14 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: 7 } }).decision_request?.record_comment_id).toBeUndefined();
   });
 
+  it("keeps the receipt fields and degrades a malformed answer on its own", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+    const answer = { state: "delivered", chosen_option_index: 1, option_label: "Hold", answered_at: "2026-10-26T06:00:00Z" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer } }).decision_request?.answer).toEqual(answer);
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: "x" } }).decision_request?.answer).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: { ...answer, state: "future" } } }).decision_request?.answer?.state).toBe("recorded");
+  });
+
   it("keeps request state, source and original ask from additive metadata", () => {
     const request = {
       id: "request", issue_id: "issue", source_comment_id: "source",
@@ -49,10 +57,15 @@ describe("DM decision cards", () => {
       withdrawn_at: "2026-10-26T06:00:00Z", reason: "Superseded",
     };
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request).toEqual({
-      ...request, issue_identifier: "",
+      ...request, issue_identifier: "", options: [],
     });
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, state: "future" } }).decision_request?.state).toBe("open");
     expect(ChatMessageSchema.parse(bubble).decision_request).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", what_happens: "ship" }] } }).decision_request?.options)
+      .toEqual([{ label: "B", what_happens: "ship" }]);
+    // A malformed options list degrades to no buttons, not a dropped card.
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: "B" } }).decision_request?.options).toEqual([]);
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ nolabel: 1 }] } }).decision_request?.options).toEqual([]);
     expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [request] }).decision_requests?.[0]?.ask).toBe("Original ask");
   });
 
