@@ -1079,7 +1079,7 @@ multica issue list --project <project-id>
 
 Read and edit project workflows (the per-status handler and `instructions` an
 issue gets when it enters a status). Any member can read; the server allows
-writes only to workspace owners and admins, and a `403` is reported as such.
+writes only to workspace owners and admins using a human credential (an agent task token gets `403`), and a `403` is reported as such.
 
 ```bash
 multica workflow list                          # table; --output json for the raw array
