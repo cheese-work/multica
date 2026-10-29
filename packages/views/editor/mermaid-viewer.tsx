@@ -15,7 +15,7 @@
  * dialog can't hear, which is why Escape used to stop working after a click.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Code as CodeIcon,
@@ -61,6 +61,8 @@ interface MermaidViewerContentProps {
   /** Colors resolved from the host theme, so exports match what is on screen. */
   exportBackground: string;
   exportFontFamily: string;
+  /** Reports the canvas width, so the caller can draw the diagram to fit it. */
+  onViewportWidth?: (width: number) => void;
 }
 
 export interface MermaidViewerProps extends MermaidViewerContentProps {
@@ -141,6 +143,7 @@ function MermaidViewerContent({
   layout,
   exportBackground,
   exportFontFamily,
+  onViewportWidth,
   canvasRef,
   onClose,
 }: MermaidViewerContentProps & {
@@ -151,6 +154,17 @@ function MermaidViewerContent({
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
   const canvas = useZoomCanvas({ content: layout });
+
+  useEffect(() => {
+    const node = canvasRef.current;
+    if (!onViewportWidth || !node) return;
+    const report = () => onViewportWidth(node.getBoundingClientRect().width);
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [canvasRef, onViewportWidth, showSource]);
 
   const handleCopySource = useCallback(async () => {
     if (await copyText(chart)) {
