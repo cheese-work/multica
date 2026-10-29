@@ -241,9 +241,17 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
 ORDER BY session.created_at, session.id
 LIMIT 1;
 
--- name: MoveDecisionTopicSteward :execrows
-UPDATE chat_session SET agent_id = sqlc.arg('agent_id'), runtime_id = (SELECT runtime_id FROM agent WHERE id = sqlc.arg('agent_id'))
+-- name: LockDecisionTopicLane :exec
+-- Serializes the find-or-create of a person's DM for one topic.
+SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || sqlc.arg('workspace_id')::uuid::text || ':' || sqlc.arg('creator_id')::uuid::text || ':' || sqlc.arg('topic_id')::uuid::text, 0));
+
+-- name: ListDecisionTopicSessions :many
+SELECT chat_session.id, chat_session.creator_id FROM chat_session
 WHERE chat_session.workspace_id = sqlc.arg('workspace_id') AND chat_session.decision_topic_id = sqlc.arg('topic_id') AND chat_session.status = 'active' AND chat_session.agent_id <> sqlc.arg('agent_id');
+
+-- name: MoveDecisionSessionSteward :execrows
+UPDATE chat_session SET agent_id = sqlc.arg('agent_id'), runtime_id = (SELECT runtime_id FROM agent WHERE id = sqlc.arg('agent_id'))
+WHERE chat_session.workspace_id = sqlc.arg('workspace_id') AND chat_session.id = sqlc.arg('id') AND chat_session.status = 'active';
 
 -- name: OpenDecisionAsksSince :many
 SELECT ask, created_at FROM decision_request

@@ -100,13 +100,29 @@ func (handler *Handler) moveDecisionStewards(ctx context.Context, issue db.Issue
 	if err != nil {
 		return err
 	}
-	_, err = handler.Queries.MoveDecisionTopicSteward(ctx, db.MoveDecisionTopicStewardParams{WorkspaceID: issue.WorkspaceID, TopicID: issue.ID, AgentID: steward.ID})
-	return err
+	sessions, err := handler.Queries.ListDecisionTopicSessions(ctx, db.ListDecisionTopicSessionsParams{WorkspaceID: issue.WorkspaceID, TopicID: issue.ID, AgentID: steward.ID})
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		// A DM whose person cannot invoke the new steward stays with the old one.
+		if !handler.canInvokeAgent(ctx, steward, "member", uuidToString(session.CreatorID), "", uuidToString(issue.WorkspaceID)) {
+			continue
+		}
+		if _, err := handler.Queries.MoveDecisionSessionSteward(ctx, db.MoveDecisionSessionStewardParams{WorkspaceID: issue.WorkspaceID, ID: session.ID, AgentID: steward.ID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // topicLane locks and returns the person's DM for the topic; found is false
-// when they have none yet.
+// when they have none yet. The advisory lock holds until the transaction ends,
+// so two asks under one topic cannot both create the DM.
 func topicLane(ctx context.Context, queries *db.Queries, issue db.Issue, topic decisionTopic, humanID, agentID pgtype.UUID) (session db.ChatSession, found bool, err error) {
+	if err := queries.LockDecisionTopicLane(ctx, db.LockDecisionTopicLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID}); err != nil {
+		return db.ChatSession{}, false, err
+	}
 	id, err := queries.GetDecisionTopicLane(ctx, db.GetDecisionTopicLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.ChatSession{}, false, nil

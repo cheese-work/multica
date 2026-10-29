@@ -1,7 +1,11 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -174,5 +178,74 @@ func TestDecisionTopicStewardFollowsRootAssignee(test *testing.T) {
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE id = $1 AND status = 'active'`, sessionID) != 1 {
 		test.Fatal("the DM itself must stay")
+	}
+}
+
+func TestDecisionTopicReplySurvivesReparent(test *testing.T) {
+	fixture, requestID, sessionID, _ := foreignAsk(test)
+	dbfx.Exec(test, `UPDATE issue SET parent_issue_id = $2 WHERE id = $1`, fixture.issueID, dbfx.Issue(test, "Elsewhere"))
+	replyToDecision(test, sessionID, requestID, "interactive_jwt").Want(http.StatusCreated)
+	if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'answered'`, requestID) != 1 {
+		test.Fatal("an ask whose issue moved out of the topic was stranded unanswered")
+	}
+}
+
+func TestDecisionTopicConcurrentAsksShareOneDM(test *testing.T) {
+	steward := createHandlerTestAgent(test, "topic-steward-"+uuid.NewString()[:8], []byte("[]"))
+	root := dbfx.Issue(test, "Racing root", testutil.Cols{"assignee_type": "agent", "assignee_id": steward})
+	var fixtures [2]singleCallFixture
+	for i := range fixtures {
+		fixtures[i] = newSingleCallFixture(test)
+		dbfx.Exec(test, `UPDATE issue SET parent_issue_id = $2 WHERE id = $1`, fixtures[i].issueID, root)
+	}
+	var wait sync.WaitGroup
+	var codes [2]int
+	var sessions [2]string
+	for i := range fixtures {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			body := fixtures[i].body()
+			body["for"] = testUserID
+			recorder := httptest.NewRecorder()
+			testHandler.RequestDecision(recorder, fixtures[i].call(body))
+			codes[i] = recorder.Code
+			var created map[string]any
+			_ = json.Unmarshal(recorder.Body.Bytes(), &created)
+			sessions[i], _ = created["chat_session_id"].(string)
+		}()
+	}
+	wait.Wait()
+	test.Cleanup(func() {
+		for _, id := range sessions {
+			dbfx.Exec(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, id)
+			dbfx.Exec(test, `DELETE FROM chat_session WHERE id = $1`, id)
+		}
+	})
+	if codes[0] != http.StatusCreated || codes[1] != http.StatusCreated {
+		test.Fatalf("concurrent asks returned %v", codes)
+	}
+	if sessions[0] != sessions[1] || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE decision_topic_id = $1`, root) != 1 {
+		test.Fatalf("concurrent asks opened %s and %s, want one DM", sessions[0], sessions[1])
+	}
+}
+
+func TestDecisionTopicStewardStaysWhenPersonCannotInvokeSuccessor(test *testing.T) {
+	_, _, sessionID, steward := foreignAsk(test)
+	successor := createHandlerTestAgent(test, "topic-closed-"+uuid.NewString()[:8], []byte("[]"))
+	dbfx.Exec(test, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, successor)
+	dbfx.Exec(test, `UPDATE agent SET owner_id = NULL WHERE id = $1`, successor)
+	var rootID string
+	dbfx.QueryRow(test, `SELECT decision_topic_id::text FROM chat_session WHERE id = $1`, sessionID).Scan(&rootID)
+	dbfx.Exec(test, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, rootID, successor)
+	root, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(rootID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	testHandler.followDecisionSteward(context.Background(), root)
+	var agentID string
+	dbfx.QueryRow(test, `SELECT agent_id::text FROM chat_session WHERE id = $1`, sessionID).Scan(&agentID)
+	if agentID != steward {
+		test.Fatalf("DM moved to %s, an agent its person cannot invoke; want it to stay with %s", agentID, steward)
 	}
 }

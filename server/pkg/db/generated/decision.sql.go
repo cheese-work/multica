@@ -1540,6 +1540,42 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 	return items, nil
 }
 
+const listDecisionTopicSessions = `-- name: ListDecisionTopicSessions :many
+SELECT chat_session.id, chat_session.creator_id FROM chat_session
+WHERE chat_session.workspace_id = $1 AND chat_session.decision_topic_id = $2 AND chat_session.status = 'active' AND chat_session.agent_id <> $3
+`
+
+type ListDecisionTopicSessionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+type ListDecisionTopicSessionsRow struct {
+	ID        pgtype.UUID `json:"id"`
+	CreatorID pgtype.UUID `json:"creator_id"`
+}
+
+func (q *Queries) ListDecisionTopicSessions(ctx context.Context, arg ListDecisionTopicSessionsParams) ([]ListDecisionTopicSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionTopicSessions, arg.WorkspaceID, arg.TopicID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionTopicSessionsRow{}
+	for rows.Next() {
+		var i ListDecisionTopicSessionsRow
+		if err := rows.Scan(&i.ID, &i.CreatorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswer = `-- name: LockDecisionAnswer :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
@@ -1921,6 +1957,22 @@ func (q *Queries) LockDecisionSourceMessages(ctx context.Context, arg LockDecisi
 	return items, nil
 }
 
+const lockDecisionTopicLane = `-- name: LockDecisionTopicLane :exec
+SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || $1::uuid::text || ':' || $2::uuid::text || ':' || $3::uuid::text, 0))
+`
+
+type LockDecisionTopicLaneParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+}
+
+// Serializes the find-or-create of a person's DM for one topic.
+func (q *Queries) LockDecisionTopicLane(ctx context.Context, arg LockDecisionTopicLaneParams) error {
+	_, err := q.db.Exec(ctx, lockDecisionTopicLane, arg.WorkspaceID, arg.CreatorID, arg.TopicID)
+	return err
+}
+
 const markDecisionPingNotified = `-- name: MarkDecisionPingNotified :one
 UPDATE decision_request
 SET ping_notified_at = clock_timestamp()
@@ -2017,19 +2069,19 @@ func (q *Queries) MarkDecisionRequestAnswered(ctx context.Context, arg MarkDecis
 	return i, err
 }
 
-const moveDecisionTopicSteward = `-- name: MoveDecisionTopicSteward :execrows
+const moveDecisionSessionSteward = `-- name: MoveDecisionSessionSteward :execrows
 UPDATE chat_session SET agent_id = $1, runtime_id = (SELECT runtime_id FROM agent WHERE id = $1)
-WHERE chat_session.workspace_id = $2 AND chat_session.decision_topic_id = $3 AND chat_session.status = 'active' AND chat_session.agent_id <> $1
+WHERE chat_session.workspace_id = $2 AND chat_session.id = $3 AND chat_session.status = 'active'
 `
 
-type MoveDecisionTopicStewardParams struct {
+type MoveDecisionSessionStewardParams struct {
 	AgentID     pgtype.UUID `json:"agent_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	TopicID     pgtype.UUID `json:"topic_id"`
+	ID          pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) MoveDecisionTopicSteward(ctx context.Context, arg MoveDecisionTopicStewardParams) (int64, error) {
-	result, err := q.db.Exec(ctx, moveDecisionTopicSteward, arg.AgentID, arg.WorkspaceID, arg.TopicID)
+func (q *Queries) MoveDecisionSessionSteward(ctx context.Context, arg MoveDecisionSessionStewardParams) (int64, error) {
+	result, err := q.db.Exec(ctx, moveDecisionSessionSteward, arg.AgentID, arg.WorkspaceID, arg.ID)
 	if err != nil {
 		return 0, err
 	}

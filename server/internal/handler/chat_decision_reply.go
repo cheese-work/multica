@@ -84,14 +84,11 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 		return nil, err
 	}
 	// An ask by an agent other than the DM's steward is answered task-less, and
-	// only inside the topic DM that was opened for its root.
+	// only in a topic DM. The ask was made in this DM (checked above), and its
+	// topic was fixed then; do not recompute it from the issue's current place.
 	foreign := decision.AskingAgentID != session.AgentID
 	if foreign {
-		topic, err := resolveDecisionTopic(ctx, queries, issue)
-		if err != nil {
-			return nil, err
-		}
-		if !session.DecisionTopicID.Valid || session.DecisionTopicID != topic.ID {
+		if !session.DecisionTopicID.Valid {
 			return nil, deny
 		}
 		if len(attachmentIDs) > 0 {
