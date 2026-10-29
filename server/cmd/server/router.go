@@ -2170,6 +2170,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Post("/run-budget", h.RaiseIssueRunBudget)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
@@ -2689,6 +2690,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {

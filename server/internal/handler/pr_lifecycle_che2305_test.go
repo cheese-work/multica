@@ -78,7 +78,7 @@ func (w c1World) fire(t *testing.T, action, state string, merged, draft bool) {
 			"number": w.number, "html_url": "https://github.com/acme/" + w.repo + "/pull/1",
 			"title": "c1", "body": "", "state": state, "draft": draft, "merged": merged,
 			"merged_at": "2026-10-29T00:00:00Z", "closed_at": "2026-10-29T00:00:00Z",
-			"created_at": "2026-10-28T00:00:00Z", "updated_at": time.Date(2026, 10, 29, 0, 0, int(c1Counter.Add(1)%60), 0, time.UTC).Format(time.RFC3339),
+			"created_at": "2026-10-28T00:00:00Z", "updated_at": time.Now().UTC().Add(time.Hour + time.Duration(c1Counter.Add(1))*time.Second).Format(time.RFC3339),
 			"head": map[string]any{"ref": "c1/branch", "sha": "c1head", "repo": githubRepositoryForTest("acme", w.repo)},
 			"user": map[string]any{"login": "octocat"},
 		},
