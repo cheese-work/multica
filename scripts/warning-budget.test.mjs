@@ -44,6 +44,11 @@ test("the shed-load counter does not turn an existing warning into a new one", (
   assert.deepEqual(warningRegressions(baseline, warningCounts([line(856)])), [])
 })
 
+test("a byte-order mark at a GitHub log chunk boundary does not expose a timestamped application event", () => {
+  const log = "\ufeff2026-10-29T20:35:34.2427295Z 2026/10/29 20:35:34 WARN plugins: event dispatch queue full, dropping event event_type=issue.created dropped_total=970"
+  assert.deepEqual(warningCounts([{ name: "backend-tests", log, annotations: [] }]), {})
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })

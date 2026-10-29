@@ -34,7 +34,8 @@ export function warningCounts(jobs) {
     const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    for (const line of stripVTControlCharacters(job.log).split("\n")) {
+    // GitHub inserts a byte-order mark mid-log at chunk boundaries; it would hide a line from the anchored skips.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\ufeff", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""
