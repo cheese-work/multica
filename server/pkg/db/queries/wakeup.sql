@@ -1,5 +1,5 @@
 -- name: CreateIssueWakeup :one
--- workflow_step: see migration 798. A run registering a wakeup decides from the
+-- workflow_step: see migration 801. A run registering a wakeup decides from the
 -- issue's status now, so its wakeup works on that status (CHE-2298).
 INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires,workflow_step)
 VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),sqlc.narg(expires_at),sqlc.narg(expiry_seconds),sqlc.narg(on_timeout),sqlc.narg(condition),sqlc.narg(max_fires),
@@ -251,11 +251,11 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     -- The workflow step this run works on (MUL-7420). A wakeup an agent run
     -- registered works on the issue's status at registration (wakeup_step,
-    -- migration 798): a status change it makes after someone else moved the
+    -- migration 801): a status change it makes after someone else moved the
     -- issue is refused like the registering run's would be. It is not the
     -- registering run's own step, because a run that was already stale when it
     -- registered would pass that stale step down every wakeup chain and every
-    -- status change would be refused (CHE-2298). Rows from before migration 798
+    -- status change would be refused (CHE-2298). Rows from before migration 801
     -- keep copying the registering run's step. A wakeup a member registered
     -- starts from the issue's status.
     COALESCE(

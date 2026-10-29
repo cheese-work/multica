@@ -374,7 +374,7 @@ type CreateIssueWakeupParams struct {
 	MaxFires        pgtype.Int4        `json:"max_fires"`
 }
 
-// workflow_step: see migration 798. A run registering a wakeup decides from the
+// workflow_step: see migration 801. A run registering a wakeup decides from the
 // issue's status now, so its wakeup works on that status (CHE-2298).
 func (q *Queries) CreateIssueWakeup(ctx context.Context, arg CreateIssueWakeupParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, createIssueWakeup,
@@ -488,11 +488,11 @@ SELECT
     $23,
     -- The workflow step this run works on (MUL-7420). A wakeup an agent run
     -- registered works on the issue's status at registration (wakeup_step,
-    -- migration 798): a status change it makes after someone else moved the
+    -- migration 801): a status change it makes after someone else moved the
     -- issue is refused like the registering run's would be. It is not the
     -- registering run's own step, because a run that was already stale when it
     -- registered would pass that stale step down every wakeup chain and every
-    -- status change would be refused (CHE-2298). Rows from before migration 798
+    -- status change would be refused (CHE-2298). Rows from before migration 801
     -- keep copying the registering run's step. A wakeup a member registered
     -- starts from the issue's status.
     COALESCE(
