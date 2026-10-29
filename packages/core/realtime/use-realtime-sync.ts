@@ -182,6 +182,7 @@ export function applyDecisionAnswerUpdated(
   payload: DecisionAnswerUpdatedPayload,
 ) {
   qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }

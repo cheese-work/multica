@@ -1872,6 +1872,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-2454: delegated governed writes. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
+					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
@@ -2129,6 +2132,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
+
+			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
+			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
 
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.

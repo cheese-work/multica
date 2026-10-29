@@ -366,6 +366,9 @@ deleted_agent_builder_drafts AS (
 deleted_chat_wakeups AS (
     DELETE FROM chat_wakeup WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halts AS (
+    DELETE FROM github_dispatch_halt WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -499,6 +502,9 @@ deleted_issue_review_admissions AS (
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
+),
+deleted_agent_presets AS (
+    DELETE FROM agent_preset WHERE workspace_id = $1
 ),
 deleted_agent_skills AS (
     DELETE FROM agent_skill

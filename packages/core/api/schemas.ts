@@ -978,7 +978,13 @@ const decisionCommentShape = {
   decision_recorder_agent_id: z.string().optional().catch(undefined),
   decision_class: z.string().optional().catch(undefined),
   decision_state: DecisionStateSchema.optional().catch(undefined),
+  decision_delivered: z.boolean().optional().catch(undefined),
+  decision_chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  decision_option_label: z.string().optional().catch(undefined),
   decision_issue_comment_id: z.string().optional().catch(undefined),
+  decision_receipt_answer_id: z.string().optional().catch(undefined),
+  decision_issue_id: z.string().optional().catch(undefined),
+  decision_issue_identifier: z.string().optional().catch(undefined),
   effective_at: z.string().nullable().optional().catch(undefined),
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   decision_source_session_id: z.string().optional().catch(undefined),
@@ -998,6 +1004,11 @@ const DecisionCardSchema = z.object({
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   // A card on a forked copy is read-only provenance; clients show no Disclaim.
   inherited: z.boolean().catch(false).default(false),
+  delivered: z.boolean().optional().catch(undefined),
+  chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  option_label: z.string().optional().catch(undefined),
+  request_session_id: z.string().optional().catch(undefined),
+  request_message_id: z.string().optional().catch(undefined),
 }).loose();
 
 const DecisionRequestCardSchema = z.object({
@@ -1012,6 +1023,12 @@ const DecisionRequestCardSchema = z.object({
   withdrawn_at: z.string().nullish().catch(undefined),
   reason: z.string().optional().catch(undefined),
   record_comment_id: z.string().nullish().catch(undefined),
+  answer: z.object({
+    state: z.enum(["recorded", "delivered", "disclaimed"]).catch("recorded"),
+    chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+    option_label: z.string().optional().catch(undefined),
+    answered_at: z.string().default(""),
+  }).loose().optional().catch(undefined),
 }).loose();
 
 export const OpenDecisionRequestListSchema = z.array(z.object({
@@ -3992,6 +4009,14 @@ export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
   z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
   z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
+  z.object({
+    type: z.literal("github_run"),
+    repo: z.string(),
+    run_id: z.number().int().optional(),
+    workflow: z.string().optional(),
+    head_sha: z.string().optional(),
+    state: z.enum(["completed", "waiting"]),
+  }),
 ]);
 
 export const WakeupRunSchema = z.object({

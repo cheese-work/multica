@@ -389,7 +389,6 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || offered.ChatSessionID != sourceSessionID || offered.Role != "assistant" || offered.MessageKind != "message" || !offered.CreatedAt.Time.Before(earliestSource) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "context message is not an earlier assistant message of this DM"}
 		}
-		quote = "Options offered:\n" + blockQuote(offered.Content) + "\n\nReply:\n" + quote
 	}
 	if input.Content != "" {
 		quote = input.Content + "\n\n" + quote
@@ -433,7 +432,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if messageIDs == nil {
 		messageIDs = []pgtype.UUID{}
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID, ReplyText: pgtype.Text{String: source.Snapshot, Valid: true}, ContextMessageID: input.ContextMessageID})
 	if err != nil {
 		return empty, err
 	}
@@ -452,7 +451,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: %s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), uuidToString(answer.ID))
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: source.SessionID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err

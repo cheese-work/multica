@@ -1597,6 +1597,9 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
+	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
 		// unique index rejected this insert. That is benign — a sibling run
@@ -1731,6 +1734,9 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
+	}
 	if err != nil {
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))

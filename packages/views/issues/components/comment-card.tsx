@@ -1028,7 +1028,12 @@ function CommentRow({
             ) : entry.decision_comment_kind === "disclaim" ? (
               <DecisionWithdrawalLine entry={entry} />
             ) : (
-              <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+              <>
+                <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                {entry.decision_receipt_answer_id && (
+                  <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+                )}
+              </>
             )}
           </div>
           <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-12 pr-4 max-md:pl-3 max-md:pr-3" />
@@ -1585,7 +1590,12 @@ function CommentCardImpl({
                   ) : entry.decision_comment_kind === "disclaim" ? (
                     <DecisionWithdrawalLine entry={entry} />
                   ) : (
-                    <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                    <>
+                      <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                      {entry.decision_receipt_answer_id && (
+                        <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+                      )}
+                    </>
                   )}
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-8 max-md:pl-0" />
