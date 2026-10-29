@@ -1820,11 +1820,15 @@
     "state": {
       "pending": "待生效",
       "effective": "已生效",
-      "disclaimed": "已撤回"
+      "disclaimed": "已撤回",
+      "delivered": "已送达",
+      "recorded": "已记录"
     },
     "via_dm": "来自私信",
     "recorded_by": "由 {{name}} 记录",
-    "asked_in_dm": "私信中的提问",
+    "recorded_for": "已记录到 {{issue}}",
+    "option_n": "选项 {{number}}",
+    "jump_to_card": "跳到卡片",
     "answered_in_dm": "私信中的回答",
     "private_dm": "来自私人私信",
     "disclaim_action": "撤回",
