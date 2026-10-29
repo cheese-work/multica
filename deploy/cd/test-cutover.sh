@@ -102,6 +102,25 @@ if [ "\$1" = "inspect" ]; then
   case "\$*" in
     *'{{.Image}}'*) cat "\$control_dir/image-\${ref#cid-}" 2>/dev/null; exit 0 ;;
     *'--format {{.Id}}'*) printf 'imgid-%s\n' "\$ref"; exit 0 ;;
+    # Drift receipt (CHE-2396): env key names of a container (cid-<service>)
+    # or of its image, and the image's repo digests. env-missing-/env-extra-
+    # <service> and running-digest-<backend|web> model drifted containers.
+    *'{{json .Config.Env}}'*)
+      env='"PATH=/usr/bin"'
+      case "\$ref" in
+        cid-frontend-*) [ -f "\$control_dir/env-missing-\${ref#cid-}" ] || env="\$env,\"MULTICA_APP_URL=\"" ;;
+      esac
+      case "\$ref" in
+        cid-*) [ -f "\$control_dir/env-extra-\${ref#cid-}" ] && env="\$env,\"STALE_FLAG=1\"" ;;
+      esac
+      printf '[%s]\n' "\$env"; exit 0 ;;
+    *'{{json .RepoDigests}}'*)
+      case "\$ref" in
+        *multica-backend*) role=backend; repo=ghcr.io/cheese-work/multica-backend; digest="\${MOCK_BACKEND_DIGEST:-}" ;;
+        *) role=web; repo=ghcr.io/cheese-work/multica-web; digest="\${MOCK_WEB_DIGEST:-}" ;;
+      esac
+      [ -f "\$control_dir/running-digest-\$role" ] && digest="\$(cat "\$control_dir/running-digest-\$role")"
+      printf '["%s@%s"]\n' "\$repo" "\$digest"; exit 0 ;;
   esac
   repo="\${ref%%:*}"
   digest=""
@@ -230,7 +249,7 @@ if [ "\$1" = "compose" ]; then
       bb="\$(render_port BACKEND_BLUE_PORT 18081)"; bg="\$(render_port BACKEND_GREEN_PORT 18082)"
       fb="\$(render_port FRONTEND_BLUE_PORT 13001)"; fg="\$(render_port FRONTEND_GREEN_PORT 13002)"
       printf 'backend-blue=%s\nbackend-green=%s\nfrontend-blue=%s\nfrontend-green=%s\n' "\$bb" "\$bg" "\$fb" "\$fg" >"\$control_dir/rendered-ports"
-      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
+      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
       exit 0
       ;;
     port)
@@ -974,7 +993,8 @@ fi
 # ---------------------------------------------------------------------------
 relocated_root="$work_dir/relocated-controller"
 mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
-cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp docker-compose.selfhost.yml "$relocated_root/"
 cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
 cp -a server/migrations "$relocated_root/server/migrations"
 
@@ -1498,5 +1518,39 @@ expect_exit 1 "$status" jev-rollback-malformed-file
 expect_contains "$output" "MULTICA_JEV_FLAGS_FILE" jev-rollback-malformed-file
 [ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-malformed-file: drained before refusing" >&2; exit 1; }
 cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$jev_flags"
+
+# ---------------------------------------------------------------------------
+# CHE-2396 drift gate. A stale compose dir is overwritten from the released
+# source before anything renders; any env-key or image-digest difference on
+# the started candidate fails the cutover before the router switches.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir drift-stale-compose-synced)"
+stale_dir="$work_dir/stale-compose"
+rm -rf "$stale_dir"; mkdir -p "$stale_dir/deploy/cd"
+printf 'stale base\n' >"$stale_dir/docker-compose.selfhost.yml"
+printf 'stale overlay\n' >"$stale_dir/deploy/cd/docker-compose.ab.yml"
+output="$(run_cutover "$state_dir" "$stale_dir" 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" drift-stale-compose-synced
+for f in docker-compose.selfhost.yml deploy/cd/docker-compose.ab.yml deploy/cd/docker-compose.flags.yml deploy/cd/docker-compose.jev.yml; do
+  cmp -s "$root_dir/$f" "$stale_dir/$f" || { echo "scenario drift-stale-compose-synced: $f was not synced from the released source" >&2; exit 1; }
+done
+[ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$state_dir/drift-receipt.json")" = match ] \
+  || { echo "scenario drift-stale-compose-synced: no match receipt" >&2; exit 1; }
+
+drift_case() {
+  local name=$1 flag=$2 content=$3 want=$4
+  state_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$state_dir/control"
+  printf '%s' "$content" >"$state_dir/control/$flag"
+  output="$(run_cutover "$state_dir" 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "$name"
+  expect_contains "$output" "$want" "$name"
+  [ ! -f "$state_dir/cutover-state.json" ] || { echo "scenario $name: success state written despite drift" >&2; exit 1; }
+  [ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$state_dir/drift-receipt.json")" = drift ] \
+    || { echo "scenario $name: no drift receipt" >&2; exit 1; }
+}
+drift_case drift-env-key-missing env-missing-frontend-green "" "frontend-green env: missing key MULTICA_APP_URL"
+drift_case drift-env-key-unexpected env-extra-backend-green "" "backend-green env: unexpected key STALE_FLAG"
+drift_case drift-image-digest running-digest-web "sha256:$(printf 'e%.0s' {1..64})" "frontend-green image: running digest"
 
 echo "cutover.sh control-flow fixtures passed"
