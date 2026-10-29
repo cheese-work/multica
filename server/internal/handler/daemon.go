@@ -6263,6 +6263,11 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to record cancel ack")
 			return
 		}
+		// The gate may have just opened: release the replacement review a newer
+		// head was waiting on (CHE-2307).
+		if task.IssueID.Valid {
+			h.releaseSupersededReviewReplacement(r.Context(), task.IssueID)
+		}
 	default:
 		slog.Warn("cancel ack without a valid proof; stop gate stays closed", "task_id", taskID)
 	}

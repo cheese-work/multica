@@ -187,6 +187,31 @@ func suggestionText(value string) string {
 	return string(characters)
 }
 
+// buildSuggestionIssueQuery matches issue titles and identifiers only, so it
+// never reads description or comment text (CHE-2402: the full issue search
+// scanned ~50k comments and timed out). The LOWER(title) LIKE predicate is
+// served by idx_issue_title_trgm; $1 is the workspace, filled by the caller.
+func buildSuggestionIssueQuery(phrase string, terms []string, queryNum int, hasNum bool) (string, []any) {
+	phrase = strings.ToLower(phrase)
+	args := []any{nil, "%" + escapeLike(phrase) + "%", escapeLike(phrase) + "%"}
+	match := "LOWER(title) LIKE $2"
+	if len(terms) > 1 {
+		all := make([]string, len(terms))
+		for index, term := range terms {
+			args = append(args, "%"+escapeLike(strings.ToLower(term))+"%")
+			all[index] = fmt.Sprintf("LOWER(title) LIKE $%d", len(args))
+		}
+		match += " OR (" + strings.Join(all, " AND ") + ")"
+	}
+	order := "(LOWER(title) LIKE $3) DESC"
+	if hasNum {
+		args = append(args, queryNum)
+		match += fmt.Sprintf(" OR number = $%d", len(args))
+		order = fmt.Sprintf("(number = $%d) DESC, ", len(args)) + order
+	}
+	return "SELECT number, title FROM issue WHERE workspace_id = $1 AND (" + match + ") ORDER BY " + order + ", updated_at DESC LIMIT 5", args
+}
+
 func (handlers *Handler) SuggestSearch(writer http.ResponseWriter, request *http.Request) {
 	ctx := request.Context()
 	raw := request.URL.Query().Get("q")
@@ -197,18 +222,17 @@ func (handlers *Handler) SuggestSearch(writer http.ResponseWriter, request *http
 	}
 	prefix := handlers.getIssuePrefix(ctx, workspace)
 	number, hasNumber := suggestionNumber(query, prefix)
-	sql, args := buildSearchQuery(query, splitSearchTerms(query), number, hasNumber, true, nil)
-	args[3], args[len(args)-2], args[len(args)-1] = workspace, 50, 0
+	sql, args := buildSuggestionIssueQuery(query, splitSearchTerms(query), number, hasNumber)
+	args[0] = workspace
 	var suggestions []string
 	err := runSearchQueryWithTimeout(ctx, handlers.TxStarter, sql, args, func(rows pgx.Rows) error {
 		for rows.Next() {
-			result, err := scanSearchIssue(rows)
-			if err != nil {
+			var number int32
+			var title string
+			if err := rows.Scan(&number, &title); err != nil {
 				return err
 			}
-			if len(suggestions) < 5 && (result.matchSource == "title" || hasNumber && int(result.issue.Number) == number) {
-				suggestions = append(suggestions, suggestionText(fmt.Sprintf("%s-%d %s", prefix, result.issue.Number, result.issue.Title)))
-			}
+			suggestions = append(suggestions, suggestionText(fmt.Sprintf("%s-%d %s", prefix, number, title)))
 		}
 		return rows.Err()
 	}, suggestionsTimeout)
