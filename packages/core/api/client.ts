@@ -4095,11 +4095,14 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    decisionRequestId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      decision_request_id?: string;
     } = { content };
+    if (decisionRequestId) body.decision_request_id = decisionRequestId;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }

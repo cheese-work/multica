@@ -2202,6 +2202,13 @@ describe("ApiClient", () => {
       ).rejects.toMatchObject({ name: "AbortError" });
     });
 
+    it("sendChatMessage binds a reply to an explicit decision request", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-10-27T02:50:00Z" }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "> C. CHE-2162\n\n1", [], "request-2");
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {

@@ -1078,6 +1078,16 @@ describe("useChatController.handleSend — compose target tracking", () => {
     } as unknown as Awaited<ReturnType<typeof api.sendChatMessage>>);
   });
 
+  it("forwards the selected decision request to the send API", async () => {
+    h.store.activeSessionId = sA.id;
+    h.store.selectedAgentId = "agent-a";
+    h.sessions = [sA];
+    h.agents = [agentA];
+    const { result } = renderHook(() => useChatController());
+    await act(async () => { await result.current.handleSend("> C. CHE-2162\n\n1", undefined, vi.fn(), [], "request-2"); });
+    expect(api.sendChatMessage).toHaveBeenCalledWith(sA.id, "> C. CHE-2162\n\n1", undefined, "request-2");
+  });
+
   function sendFrom(activeSessionId: string | null, whileSending?: () => void) {
     h.store.activeSessionId = activeSessionId;
     h.store.selectedAgentId = "agent-a";

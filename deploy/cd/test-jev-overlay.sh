@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Render test for deploy/cd/docker-compose.jev.yml: the optional overlay that
-# keeps a scoped Jev shadow runtime (feature-flag file, deployment key,
+# Render test for deploy/cd/docker-compose.flags.yml + docker-compose.jev.yml:
+# the optional overlays keep a feature-flag file and a scoped Jev runtime (deployment key,
 # gateway network, collision-safe DB hostname) across blue/green recreation.
 # Uses the real `docker compose config` (no daemon, no containers) with
 # synthetic values only — no real key, workspace or path is read.
@@ -18,9 +18,10 @@ synthetic_key="$(printf 'A%.0s' {1..32} | base64)"
 flags_file="$work_dir/flags.yaml"
 cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$flags_file"
 
-render() { # render <jev:0|1> [VAR=value ...] -> JSON on stdout
+render() { # render <jev:0|1|flags> [VAR=value ...] -> JSON on stdout
   local jev=$1; shift
   local -a files=(-f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml)
+  [ "$jev" = 0 ] || files+=(-f deploy/cd/docker-compose.flags.yml)
   [ "$jev" = 1 ] && files+=(-f deploy/cd/docker-compose.jev.yml)
   env -i HOME="$HOME" PATH="$PATH" JWT_SECRET=synthetic-jwt-secret "$@" \
     docker compose "${files[@]}" config --format json
@@ -36,17 +37,40 @@ fail() { echo "test-jev-overlay: $*" >&2; exit 1; }
 
 off="$(render 0)"
 on="$(render 1 "${jev_env[@]}")"
+flags_only="$(render flags MULTICA_FEATURE_FLAGS_FILE="$flags_file" MULTICA_JEV_FLAGS_FILE=/nonexistent/legacy.yaml)"
+legacy_flags="$(render flags MULTICA_JEV_FLAGS_FILE="$flags_file")"
 
 # Compare the rendered models with node: assertions read both renders.
 printf '%s' "$off" >"$work_dir/off.json"
 printf '%s' "$on" >"$work_dir/on.json"
-node - "$work_dir/off.json" "$work_dir/on.json" "$flags_file" "$synthetic_key" <<'JS'
+printf '%s' "$flags_only" >"$work_dir/flags-only.json"
+printf '%s' "$legacy_flags" >"$work_dir/legacy-flags.json"
+node - "$work_dir/off.json" "$work_dir/on.json" "$flags_file" "$synthetic_key" "$work_dir/flags-only.json" "$work_dir/legacy-flags.json" <<'JS'
 const fs = require("node:fs");
 const [off, on] = process.argv.slice(2, 4).map((p) => JSON.parse(fs.readFileSync(p, "utf8")));
 const [flagsFile, key] = process.argv.slice(4);
 const eq = (a, b, what) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${what}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`); };
 const ok = (c, what) => { if (!c) throw new Error(what); };
 const colours = ["blue", "green"];
+const flagsOnly = JSON.parse(fs.readFileSync(process.argv[6], "utf8"));
+const legacyFlags = JSON.parse(fs.readFileSync(process.argv[7], "utf8"));
+eq(flagsOnly, legacyFlags, "generic and legacy flag paths render identically");
+for (const colour of colours) {
+  const service = flagsOnly.services[`backend-${colour}`];
+  const baseline = off.services[`backend-${colour}`];
+  eq(service.environment.MULTICA_FEATURE_FLAGS_FILE, "/app/feature-flags.yaml", `${colour} generic flags env`);
+  const mount = service.volumes.find((volume) => volume.target === "/app/feature-flags.yaml");
+  ok(mount?.type === "bind" && mount.source === flagsFile && mount.read_only === true, `${colour} generic flags mount`);
+  const withoutFlags = structuredClone(service);
+  delete withoutFlags.environment.MULTICA_FEATURE_FLAGS_FILE;
+  withoutFlags.volumes = withoutFlags.volumes.filter((volume) => volume.target !== "/app/feature-flags.yaml");
+  eq(withoutFlags, baseline, `${colour} flags-only leaves other fields unchanged`);
+}
+ok(!("jev_gateway" in flagsOnly.networks), "flags-only declares no Jev network");
+for (const service of ["postgres", "frontend-blue", "frontend-green"]) {
+  eq(flagsOnly.services[service], off.services[service], `${service} unchanged by flags-only`);
+}
+eq(flagsOnly.volumes, off.volumes, "flags-only named volumes");
 
 // Unconfigured installs: no Jev surface at all.
 for (const c of colours) {
@@ -104,7 +128,7 @@ for form in env flag; do
     project_json="$(render 1 "${jev_env[@]}" COMPOSE_PROJECT_NAME=tenant_synthetic)"
   else
     project_json="$(env -i HOME="$HOME" PATH="$PATH" JWT_SECRET=synthetic-jwt-secret "${jev_env[@]}" \
-      docker compose -p tenant_synthetic -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml -f deploy/cd/docker-compose.jev.yml config --format json)"
+      docker compose -p tenant_synthetic -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml -f deploy/cd/docker-compose.flags.yml -f deploy/cd/docker-compose.jev.yml config --format json)"
   fi
   printf '%s' "$project_json" | node -e '
     let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {

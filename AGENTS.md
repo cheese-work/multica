@@ -26,6 +26,16 @@ Multica is a task management platform where people and agents collaborate on iss
 - Wire shared features into both web routes and the desktop router or overlay. Reuse existing guards/providers such as `DashboardGuard` in `packages/views/layout/`.
 - Each workspace declares its directly imported external dependencies. Use `catalog:` for shared dependencies; mobile pins Expo/React Native dependencies in its own manifest.
 
+## Settings-first features
+
+- Ship an opinionated default that works out of the box; every opinion is a setting. Gates use `off | warn | block`.
+- Generalize the incident into a primitive: for example, catalog-based status entry conditions attached to upstream project-workflow columns, not a one-off "no draft PR in in_review" check.
+- Provide presets such as Solo, Team with review, and Cheese strict so new workspaces are usable without tuning.
+- Keep rules in settings, not prose. Agents read settings through the CLI; skills point to the setting.
+- Keep fork cost low: use a generic settings store, not a new column or migration per feature; prefer shapes upstream can accept.
+
+Each setting has a named default, a reason, and a scope (`workspace`, `project`, or `issue`). Review settings nobody changes for 30 days.
+
 ## Development and Verification
 
 Use `Makefile`, workspace `package.json` files, and `pnpm-workspace.yaml` for current commands and versions. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and worktree operations.
@@ -33,14 +43,14 @@ Use `Makefile`, workspace `package.json` files, and `pnpm-workspace.yaml` for cu
 - Use the checkout's managed environment: `make up`, `make status`, `make down`. `make down` preserves data; `make destroy` removes the environment and its data.
 - Worktrees share PostgreSQL but have isolated databases/ports. Use the environment scripts and `.env.worktree`; do not copy the main checkout's `.env` or manually create a database through an assumed PostgreSQL instance.
 - Regenerate sqlc with `make sqlc` after SQL changes.
-- Run the narrowest useful checks while iterating, then broaden when risk warrants it. Report what actually ran and any skipped checks.
+- Run the narrowest useful checks while iterating, then broaden when risk warrants it. Report what actually ran and any skipped checks. Go: build a binary once with `go build -o` and reuse it, not repeated `go run`; locally run `go test ./<pkg>/... -run <Name>` and leave the full suite to CI unless the issue asks for a local full run.
 
 Run these from the repository root:
 
 | Scope | Checks |
 | --- | --- |
 | Frontend excluding mobile | `pnpm typecheck`, `pnpm lint`, `pnpm test` |
-| Go backend | `make test` |
+| Go backend | `make test` (CI; locally use targeted `go test`, see above) |
 | End-to-end | `pnpm exec playwright test` |
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |

@@ -282,6 +282,7 @@
     "delete": "Supprimer la discussion"
   },
   "annotations": {
+    "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
     "add": "Ajouter un commentaire",
     "confirm_add": "Ajouter",
