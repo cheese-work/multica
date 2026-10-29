@@ -302,3 +302,59 @@ func TestEffectiveMaxRunsDefaultsWhenUnset(t *testing.T) {
 		t.Fatalf("set budget = %d, want 3", got)
 	}
 }
+
+const subWorkflowID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+
+func subWorkflowDefinition(sub *SubWorkflow, edges []Edge) Definition {
+	def := devDefinition()
+	for i, s := range def.Steps {
+		if s.StatusKey == "implement" {
+			def.Steps[i].SubWorkflow = sub
+			def.Steps[i].Edges = edges
+		}
+	}
+	return def
+}
+
+func TestSubWorkflowStepValidation(t *testing.T) {
+	join := []Edge{{To: "code_review", Guard: "children_done"}}
+	cases := []struct {
+		name    string
+		sub     *SubWorkflow
+		edges   []Edge
+		wantErr string
+	}{
+		{"valid", &SubWorkflow{WorkflowID: subWorkflowID, Stage: 1}, join, ""},
+		{"no sub-workflow", nil, nil, ""},
+		{"bad workflow id", &SubWorkflow{WorkflowID: "nope"}, join, "workflow id"},
+		{"negative stage", &SubWorkflow{WorkflowID: subWorkflowID, Stage: -1}, join, "stage"},
+		{"no children_done exit", &SubWorkflow{WorkflowID: subWorkflowID}, []Edge{{To: "code_review", Guard: "agent_done"}}, "children_done"},
+		{"no edges at all", &SubWorkflow{WorkflowID: subWorkflowID}, nil, "children_done"},
+	}
+	for _, c := range cases {
+		def := subWorkflowDefinition(c.sub, c.edges)
+		step, _ := def.Step("implement")
+		err := ValidateHandoff(NormalizeHandoff(step), def)
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("%s: unexpected error %v", c.name, err)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("%s: error = %v, want it to mention %q", c.name, err, c.wantErr)
+		}
+	}
+}
+
+func TestSubWorkflowSurvivesStorage(t *testing.T) {
+	in := []Step{{StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, SubWorkflow: &SubWorkflow{WorkflowID: "11111111-1111-4111-8111-111111111111", Stage: 3}}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].SubWorkflow == nil || *out[0].SubWorkflow != *in[0].SubWorkflow {
+		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
+	}
+}
