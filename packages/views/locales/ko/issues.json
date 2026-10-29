@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "그래프",
+    "list": "목록",
+    "sub_issues": "하위 이슈",
+    "parent_summary": "상위 이슈",
+    "parent_filter": "상위 / 하위 이슈",
+    "done_count": "완료",
+    "in_progress_count": "진행 중",
+    "todo_count": "할 일",
+    "closed_count": "종료",
+    "no_parent": "상위 이슈 없음",
+    "mentions_hint": "켜면 불러옵니다",
+    "navigation_hint": "카드를 클릭하여 열기 · 마우스를 올려 전체 제목 보기 · ← → ↑ ↓ 포커스 이동 · Esc 닫기",
     "title": "관계 그래프",
     "direction": "화살표는 부모에서 하위 태스크로, 감시 대상에서 재개할 태스크로, 멘션에서 참조 대상으로 향합니다. 현재 태스크는 굵은 테두리로 표시됩니다.",
     "depth": "깊이",

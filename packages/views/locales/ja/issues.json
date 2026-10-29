@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "グラフ",
+    "list": "リスト",
+    "sub_issues": "サブ課題",
+    "parent_summary": "親課題",
+    "parent_filter": "親 / サブ課題",
+    "done_count": "完了",
+    "in_progress_count": "進行中",
+    "todo_count": "未着手",
+    "closed_count": "終了",
+    "no_parent": "親課題なし",
+    "mentions_hint": "有効にすると読み込みます",
+    "navigation_hint": "カードをクリックして開く · ホバーで完全なタイトル · ← → ↑ ↓ で移動 · Esc で閉じる",
     "title": "関連グラフ",
     "direction": "矢印は親から子、監視対象タスクから再開するタスク、メンション元から参照先へ向かいます。現在のタスクは太い枠線で表示されます。",
     "depth": "深さ",

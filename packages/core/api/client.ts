@@ -1677,9 +1677,10 @@ export class ApiClient {
     );
   }
 
-  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal): Promise<IssueRelations> {
+  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal, includeMentions = false): Promise<IssueRelations> {
     const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
     const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
+    if (includeMentions) params.set("include", "mentions");
     const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");

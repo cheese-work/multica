@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "Graph",
+    "list": "List",
+    "sub_issues": "Sub-issues",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sub-issues",
+    "done_count": "done",
+    "in_progress_count": "in progress",
+    "todo_count": "todo",
+    "closed_count": "closed",
+    "no_parent": "No parent",
+    "mentions_hint": "Loads when turned on",
+    "navigation_hint": "Click a card to open · hover for full title · ← → ↑ ↓ move focus · Esc to close",
     "title": "Relations graph",
     "direction": "Arrows point from parent to child, from a watched issue to the issue it wakes, and from a mention to its target. The current issue has a thick border.",
     "depth": "Depth",
