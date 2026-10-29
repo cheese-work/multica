@@ -1,8 +1,8 @@
 -- PR event store (CHE-2298 a1).
 
 -- name: LockGitHubPRForEvent :one
--- Serializes event capture per PR row and returns the current head.
-SELECT id, workspace_id, head_sha
+-- Serializes event capture per PR row and returns the current head and state.
+SELECT id, workspace_id, head_sha, state
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;

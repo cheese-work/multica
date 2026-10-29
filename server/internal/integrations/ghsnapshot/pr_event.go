@@ -88,6 +88,11 @@ func capturePREventForIssue(ctx context.Context, q *db.Queries, pr db.LockGitHub
 	if staleHead && in.Kind == PREventChecksFailed {
 		return PREventDropped, nil
 	}
+	// A delayed snapshot can land after the terminal lifecycle stop ran; the
+	// notice would then start work for a finished PR.
+	if in.Kind == PREventHeadChanged && (pr.State == "merged" || pr.State == "closed") {
+		return PREventDropped, nil
+	}
 	if _, err := q.LockIssueForPREvent(ctx, issueID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PREventNotCaptured, nil

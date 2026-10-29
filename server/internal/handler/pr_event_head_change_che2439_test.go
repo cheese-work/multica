@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
@@ -79,5 +80,25 @@ func TestSnapshotHeadChangeSupersedesLiveReviewOnce(t *testing.T) {
 	}
 	if got := f.deliveryRows(t); got != 1 {
 		t.Fatalf("delivery rows to the capable run = %d, want 1", got)
+	}
+}
+
+// A snapshot of a head that lands after the PR merged or closed must not raise
+// a notice: the lifecycle stop already ran and would not see it. Regression for
+// the CHE-2439 review finding.
+func TestSnapshotHeadChangeAfterTerminalPRRaisesNoEvent(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			f := newLiveDeliveryFixture(t, "running", false)
+			f.refresh(t, ghsnapshot.PRSnapshot{HeadSHA: "che2436-head", BaseSHA: "base-1", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
+			dbfx.Exec(t, `UPDATE github_pull_request SET state = $2, head_sha = $3 WHERE id = $1`, f.prID, state, headChangeNewHead)
+			if err := testHandler.TaskService.ApplyPRLifecycleEvent(context.Background(), service.PRLifecycleEvent{PRID: f.prID, Kind: state}); err != nil {
+				t.Fatal(err)
+			}
+			f.refresh(t, ghsnapshot.PRSnapshot{HeadSHA: headChangeNewHead, BaseSHA: "base-1", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"})
+			if kinds := f.nextTurnKinds(t); len(kinds) != 0 {
+				t.Fatalf("%s PR revived next-turn causes after lifecycle stop: %v", state, kinds)
+			}
+		})
 	}
 }
