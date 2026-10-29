@@ -20,13 +20,6 @@ test("CD uses Node 24 actions and never asks setup-node to infer a package cache
   }
 })
 
-test("qualification stops only its builder before removal, even after build failure", () => {
-  const source = workflow("cd-qualification.yml")
-  assert.match(source, /id: buildx\n        uses: docker\/setup-buildx-action@v4/)
-  assert.match(source, /if: \$\{\{ always\(\) && steps\.buildx\.outputs\.name != '' \}\}/)
-  assert.match(source, /docker container stop --time 120 "buildx_buildkit_\$\{BUILDER_NAME\}0"\n          docker buildx rm --timeout 180s "\$BUILDER_NAME"/)
-})
-
 test("the warning gate waits for build, test and lint jobs and has read-only permissions", () => {
   const source = workflow("ci.yml").split("  migration-prefix-check:")[0]
   for (const job of ["frontend-build", "frontend-test", "frontend-views-test", "backend-tests", "backend-agent-tests", "go-lint"]) assert.ok(source.includes(job))

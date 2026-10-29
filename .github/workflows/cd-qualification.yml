@@ -78,6 +78,9 @@ jobs:
       REGISTRY: ghcr.io
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
       WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-web
+      # One named builder per X99 runner, kept between runs so BuildKit cache
+      # mounts (Go build cache, .next/cache) survive (CHE-2415).
+      BUILDER: cheese-x99-cd
     steps:
       - name: Assert trusted main push on X99 amd64
         shell: bash
@@ -130,12 +133,13 @@ jobs:
           bash deploy/cd/test-tuple-snapshot.sh
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
-      # Keep those release requirements and use an isolated BuildKit container.
-      - name: Set up attestation-capable Buildx builder
-        id: buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          driver: docker-container
+      # Keep those release requirements on a docker-container builder, but
+      # reuse it: a fresh builder per run starts with empty compile caches.
+      - name: Use the persistent attestation-capable Buildx builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx inspect "$BUILDER" >/dev/null 2>&1 || docker buildx create --name "$BUILDER" --driver docker-container --bootstrap
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -144,7 +148,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish immutable amd64 backend
+      # Both images build at once on the runner's 4 GiB dind (checked: docker
+      # inspect cheese-x99-dind-N, Memory=4294967296). The warm Go cache keeps
+      # the backend compile small, so Next.js stays the memory peak.
+      - name: Build and publish immutable amd64 backend and web
         shell: bash
         run: |
           set -euo pipefail
@@ -156,6 +163,7 @@ jobs:
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
+            --builder "$BUILDER" \
             --platform linux/amd64 \
             --provenance=mode=max \
             --sbom=true \
@@ -167,21 +175,10 @@ jobs:
             --metadata-file backend-metadata.json \
             --push \
             --tag "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" \
-            --file Dockerfile .
-          node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
-
-      - name: Build and publish immutable amd64 web
-        shell: bash
-        run: |
-          set -euo pipefail
-          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
-          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
-            exit 1
-          fi
-          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
-          build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
+            --file Dockerfile . > backend-build.log 2>&1 &
+          backend_pid=$!
           docker buildx build \
+            --builder "$BUILDER" \
             --platform linux/amd64 \
             --provenance=mode=max \
             --sbom=true \
@@ -194,7 +191,18 @@ jobs:
             --metadata-file web-metadata.json \
             --push \
             --tag "${WEB_IMAGE}:sha-${GITHUB_SHA}" \
-            --file Dockerfile.web .
+            --file Dockerfile.web . > web-build.log 2>&1 &
+          web_pid=$!
+          status=0
+          wait "$backend_pid" || status=1
+          wait "$web_pid" || status=1
+          for log in backend-build.log web-build.log; do
+            echo "::group::$log"
+            cat "$log"
+            echo "::endgroup::"
+          done
+          [ "$status" -eq 0 ]
+          node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
           node -e 'const m=require("./web-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > web.digest
 
       - name: Write immutable build-evidence manifest
@@ -243,11 +251,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Remove this run's builder with a bounded shutdown budget
-        if: ${{ always() && steps.buildx.outputs.name != '' }}
+      # Cache mounts count toward builder storage; keep it bounded so a runner's
+      # dind volume cannot fill (BuildKit's default policy is relative to disk).
+      - name: Bound the persistent builder cache
+        if: ${{ always() }}
         timeout-minutes: 4
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: |
-          docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
-          docker buildx rm --timeout 180s "$BUILDER_NAME"
+        run: docker buildx prune --builder "$BUILDER" --force --keep-storage 20GB

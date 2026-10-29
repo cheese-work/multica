@@ -7,26 +7,31 @@ WORKDIR /src
 
 # Cache dependencies
 COPY server/go.mod server/go.sum ./server/
-RUN cd server && go mod download
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && go mod download
 
 # Copy server source
 COPY server/ ./server/
 COPY scripts/build-daemon-binaries.sh ./scripts/
 
-# Build binaries
+# BuildKit cache mounts keep the Go module and compile caches across commits
+# on a persistent builder, so a change recompiles only what it touches.
+# Binaries without version stamps come first and the version ARGs last: the
+# ARGs change on every commit and must not sit above any compile step that
+# does not use them.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/migrate ./cmd/migrate
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_task_usage_hourly ./cmd/backfill_task_usage_hourly
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_codex_usage_cache ./cmd/backfill_codex_usage_cache
+
 ARG VERSION=dev
 ARG BUILD=
 ARG COMMIT=unknown
 ARG DATE=unknown
-RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.build=${BUILD} -X main.commit=${COMMIT}" -o bin/server ./cmd/server
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build cd server && CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.build=${BUILD} -X main.commit=${COMMIT}" -o bin/server ./cmd/server
 # One build step for the CLI and the daemon builds served to daemons, so the
 # image's own multica and the downloadable ones cannot drift apart.
-RUN VERSION="${VERSION}" BUILD="${BUILD}" COMMIT="${COMMIT}" DATE="${DATE}" sh scripts/build-daemon-binaries.sh /src/server/bin/daemon-binaries \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build VERSION="${VERSION}" BUILD="${BUILD}" COMMIT="${COMMIT}" DATE="${DATE}" sh scripts/build-daemon-binaries.sh /src/server/bin/daemon-binaries \
     && cp "server/bin/daemon-binaries/multica-linux-$(cd server && go env GOARCH)" server/bin/multica
-RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/migrate ./cmd/migrate
-RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
-RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_task_usage_hourly ./cmd/backfill_task_usage_hourly
-RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_codex_usage_cache ./cmd/backfill_codex_usage_cache
 
 # --- Runtime stage ---
 FROM alpine:3.21
