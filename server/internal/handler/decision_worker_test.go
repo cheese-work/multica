@@ -244,6 +244,8 @@ func TestDecisionWorkerOrphans(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
+			dbfx.Exec(test, `INSERT INTO decision_action (workspace_id, decision_request_id, action_type, action_version, params, payload_sha256, expires_at, requested_by_agent_id)
+				SELECT workspace_id, id, 'agent.env.patch', 1, '{}', repeat('a', 64), now() + interval '1 day', $2 FROM decision_request WHERE id = $1`, recorded.Request.ID, fixture.agentID)
 			if missing == "issue" {
 				dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, fixture.issueID)
 			} else if missing == "workspace" {
@@ -264,6 +266,7 @@ func TestDecisionWorkerOrphans(test *testing.T) {
 			for _, query := range []string{
 				`SELECT count(*) FROM decision_request WHERE id = $1`,
 				`SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`,
+				`SELECT count(*) FROM decision_action WHERE decision_request_id = $1`,
 			} {
 				if count := dbfx.Count(test, query, recorded.Request.ID); count != wanted {
 					test.Fatalf("%s orphan rows = %d, want %d", missing, count, wanted)

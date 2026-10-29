@@ -399,6 +399,30 @@ ghcr_login() {
   if [ -z "${GHCR_PULL_TOKEN:-}" ]; then
     return 0
   fi
+  if [ -z "${MULTICA_GHCR_CONFIG:-}" ]; then
+    MULTICA_GHCR_ORIGINAL_PATH="$PATH"
+    MULTICA_GHCR_ORIGINAL_CONFIG="${DOCKER_CONFIG:-}"
+    MULTICA_GHCR_ORIGINAL_CONFIG_SET="${DOCKER_CONFIG+x}"
+    MULTICA_GHCR_CONFIG="$(mktemp -d)" || return 1
+    printf '%s\n' '{"credHelpers":{"ghcr.io":"multica-ghcr"}}' > "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    cat > "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" <<'HELPER' || return 1
+#!/bin/sh
+set -eu
+case "$1" in
+  get)
+    IFS= read -r registry || test -n "$registry"
+    test "$registry" = ghcr.io
+    node -e 'process.stdout.write(JSON.stringify({Username:"token",Secret:process.env.GHCR_PULL_TOKEN}))'
+    ;;
+  store|erase) cat >/dev/null ;;
+  *) exit 1 ;;
+esac
+HELPER
+    chmod 600 "$MULTICA_GHCR_CONFIG/config.json" || return 1
+    chmod 700 "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr" || return 1
+    export DOCKER_CONFIG="$MULTICA_GHCR_CONFIG"
+    export PATH="$MULTICA_GHCR_CONFIG:$PATH"
+  fi
   echo "==> logging in to ghcr.io"
   printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io -u token --password-stdin >/dev/null
 }
@@ -409,7 +433,16 @@ ghcr_login() {
 # ghcr_login ever runs, so it fires on every exit path — success, an early
 # `require`/file-check `exit`, or a failure branch — not just the happy path.
 ghcr_logout() {
-  if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+  if [ -n "${MULTICA_GHCR_CONFIG:-}" ]; then
     docker logout ghcr.io >/dev/null 2>&1 || true
+    rm -f "$MULTICA_GHCR_CONFIG/config.json" "$MULTICA_GHCR_CONFIG/docker-credential-multica-ghcr"
+    rmdir "$MULTICA_GHCR_CONFIG"
+    export PATH="$MULTICA_GHCR_ORIGINAL_PATH"
+    if [ -n "$MULTICA_GHCR_ORIGINAL_CONFIG_SET" ]; then
+      export DOCKER_CONFIG="$MULTICA_GHCR_ORIGINAL_CONFIG"
+    else
+      unset DOCKER_CONFIG
+    fi
+    unset MULTICA_GHCR_CONFIG MULTICA_GHCR_ORIGINAL_PATH MULTICA_GHCR_ORIGINAL_CONFIG MULTICA_GHCR_ORIGINAL_CONFIG_SET
   fi
 }

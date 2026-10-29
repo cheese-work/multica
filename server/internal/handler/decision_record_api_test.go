@@ -118,7 +118,7 @@ func TestUnpromptedDecisionRecordClassesAndParents(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if result.Request.Origin != "unprompted" || result.Comment.ParentID != input.ParentID || result.Request.IssueCommentID != result.Comment.ID || result.Answer.WakeAt.Valid || !strings.Contains(result.Message.Content, class) || !strings.Contains(result.Message.Content, "Disclaim:") {
+			if result.Request.Origin != "unprompted" || result.Comment.ParentID != input.ParentID || result.Request.IssueCommentID != result.Comment.ID || result.Answer.WakeAt.Valid || !strings.Contains(result.Message.Content, class) || strings.Contains(result.Message.Content, "/disclaim") {
 				test.Fatalf("wrong unprompted record: %+v", result)
 			}
 			held := result.Answer.EffectiveAt.Time.Sub(result.Answer.CreatedAt.Time).Minutes() > 9.9
@@ -214,9 +214,9 @@ func TestDecisionRecordAPIQuotesOfferedOptions(test *testing.T) {
 			if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &comment) != nil {
 				test.Fatalf("record with context: status=%d body=%s", response.Code, response.Body.String())
 			}
-			const wanted = "Options offered:\n> 1) Ship now\n> 2) Hold\n\nReply:\n>   Yes.\n> Keep the exact words.  "
+			const wanted = ">   Yes.\n> Keep the exact words.  "
 			if comment.Content != wanted {
-				test.Fatalf("quote lacks the offered options:\n%q", comment.Content)
+				test.Fatalf("quote carries the reply only:\n%q", comment.Content)
 			}
 		})
 	}

@@ -1,0 +1,195 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run attachments/attachment-preview-page.test.tsx -t 'route permission'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ❯ attachments/attachment-preview-page.test.tsx (10 tests | 1 failed | 9 skipped) 1192ms
+     × route permission: removes cached media when read access is denied 1186ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  attachments/attachment-preview-page.test.tsx > AttachmentPreviewPage > route permission: removes cached media when read access is denied
+AssertionError: expected <img alt="private.png" …(3)></img> to be null
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head>[39m
+    [36m<title>[39m
+      [0mprivate.png[0m
+    [36m</title>[39m
+  [36m</head>[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex h-full w-full flex-col bg-black/95"[39m
+      [36m>[39m
+        [36m<header[39m
+          [33mclass[39m=[32m"dark @container grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 pl-3 pr-2 text-foreground"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"flex min-w-0 items-center gap-2.5"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-image size-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"18"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mry[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"18"[39m
+                  [33mx[39m=[32m"3"[39m
+                  [33my[39m=[32m"3"[39m
+                [36m/>[39m
+                [36m<circle[39m
+                  [33mcx[39m=[32m"9"[39m
+                  [33mcy[39m=[32m"9"[39m
+                  [33mr[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"min-w-0"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"flex min-w-0 items-center gap-2"[39m
+              [36m>[39m
+                [36m<p[39m
+                  [33mclass[39m=[32m"truncate text-body font-medium"[39m
+                [36m>[39m
+                  [0mprivate.png[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<p[39m
+                [33mclass[39m=[32m"truncate text-caption text-muted-foreground tabular-nums"[39m
+              [36m>[39m
+                [0mPNG · 1 KB[0m
+              [36m</p>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+          [36m<span[39m
+            [33maria-live[39m=[32m"polite"[39m
+            [33mclass[39m=[32m"select-none text-label tabular-nums text-muted-foreground"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"flex items-center justify-self-end gap-0.5"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"Download"[39m
+              [33mclass[39m=[32m"flex size-8 items-center justify-center rounded-md transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-40 text-muted-foreground"[39m
+              [33mdata-slot[39m=[32m"tooltip-trigger"[39m
+              [33mid[39m=[32m"base-ui-_r_1_"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-download size-4"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 15V3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m7 10 5 5 5-5"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</header>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex min-h-0 flex-1"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"relative min-h-0 min-w-0 flex-1 px-4"[39m
+            [33mstyle[39m=[32m"transform: scale(1);"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"flex h-full flex-col py-4"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33maria-label[39m=[32m"Image canvas. Drag to pan, scroll to zoom, double-click to toggle actual size."[39m
+                [33mclass[39m=[32m"zoom-canvas"[39m
+                [33mdata-autofocused[39m=[32m""[39m
+                [33mrole[39m=[32m"application"[39m
+                [33mtabindex[39m=[32m"0"[39m
+              [36m>[39m
+                [36m<div[39m
+                  [33mclass[39m=[32m"zoom-canvas-fit"[39m
+                [36m>[39m
+                  [36m<img[39m
+                    [33malt[39m=[32m"private.png"[39m
+                    [33mclass[39m=[32m"select-none max-h-full max-w-full rounded-lg object-contain"[39m
+                    [33mdraggable[39m=[32m"false"[39m
+                    [33msrc[39m=[32m"https://cdn.example.test/att-1?Signature=s"[39m
+                  [36m/>[39m
+                [36m</div>[39m
+              [36m</div>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m...
+
+- Expected:
+null
+
++ Received:
+<img
+  alt="private.png"
+  class="select-none max-h-full max-w-full rounded-lg object-contain"
+  draggable="false"
+  src="https://cdn.example.test/att-1?Signature=s"
+/>
+
+ ❯ attachments/attachment-preview-page.test.tsx:103:70
+    101|     await client.invalidateQueries({ queryKey: ["attachment-preview-pa…
+    102|     await waitFor(() => expect(getAttachmentMock).toHaveBeenCalled());
+    103|     await waitFor(() => expect(screen.queryByAltText("private.png")).t…
+       |                                                                      ^
+    104|     expect(document.querySelector("iframe, img, video, audio")).toBeNu…
+    105|     expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
+ ❯ runWithExpensiveErrorDiagnosticsDisabled ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 9 skipped (10)
+   Start at  17:10:47
+   Duration  150.39s (transform 143.52s, setup 277ms, import 147.26s, tests 1.19s, environment 1.20s)
+
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @multica/views@0.0.0 test: `vitest run attachments/attachment-preview-page.test.tsx -t 'route permission'`
+Exit status 1

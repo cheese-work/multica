@@ -37,6 +37,7 @@ import { useT } from "../../i18n";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { ChatAnnotationChip, type ChatInputAnnotations } from "./chat-annotations";
+import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 const logger = createLogger("chat.ui");
 const EMPTY_UPLOADS: DraftUpload[] = [];
@@ -91,6 +92,7 @@ interface ChatInputProps {
     attachmentIds: string[] | undefined,
     commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
     draftAttachments: Attachment[],
+    decisionRequestId?: string,
   ) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: {
     id: string;
@@ -189,13 +191,17 @@ interface ChatInputProps {
  * (id and note). A slash command is not a message about a reply: it is left
  * alone and the comments stay.
  */
-function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[] } {
+function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[]; decisionRequestId?: string; mixedRequests?: boolean } {
   const text = raw.replace(/(\n\s*)+$/, "").trim();
   if (!saved.length || /^\/\S/.test(text)) return { content: text, sent: [] };
   if (!hasReplyIntent(text, saved)) return { content: "", sent: [] };
+  const notes = saved.filter((annotation) => annotation.note.trim());
+  const requestSource = notes.find((annotation) => annotation.sourceCommentId.startsWith(DECISION_REQUEST_SOURCE_PREFIX))?.sourceCommentId;
   return {
     content: composeAnnotatedReply(text, saved, { plainQuotes: true }),
-    sent: saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note })),
+    sent: notes.map(({ id, note }) => ({ id, note })),
+    decisionRequestId: requestSource?.slice(DECISION_REQUEST_SOURCE_PREFIX.length),
+    mixedRequests: !!requestSource && notes.some((annotation) => annotation.sourceCommentId !== requestSource),
   };
 }
 
@@ -553,6 +559,10 @@ export function ChatInput({
       const annotationKeyAtSend = annotationKey;
       const prepared = prepareDmSend(raw, annotationKeyAtSend ? useCommentDraftStore.getState().getAnnotations(annotationKeyAtSend) : EMPTY_REPLY_ANNOTATIONS);
       const sentAnnotations = prepared.content === content ? prepared.sent : [];
+      if (prepared.mixedRequests) {
+        toast.error(t(($) => $.annotations.one_request));
+        return false;
+      }
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
@@ -704,6 +714,7 @@ export function ChatInput({
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
+        ...(prepared.decisionRequestId ? [prepared.decisionRequestId] as const : []),
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for

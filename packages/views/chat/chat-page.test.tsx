@@ -63,15 +63,25 @@ vi.mock("./components/chat-input", () => ({
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
     onSelectSession,
+    onOpenSearchHit,
   }: {
     onSelectSession: (s: { id: string; agent_id: string }) => void;
+    onOpenSearchHit?: (hit: { session_id: string; message_id: string | null }) => void;
   }) => (
-    <button
-      type="button"
-      onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
-    >
-      select-thread
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
+      >
+        select-thread
+      </button>
+      <button
+        type="button"
+        onClick={() => onOpenSearchHit?.({ session_id: "session-9", message_id: "msg-4" })}
+      >
+        open-message-hit
+      </button>
+    </>
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
@@ -111,13 +121,15 @@ vi.mock("@multica/ui/components/ui/resizable", () => ({
 // Same width-driven layout mock the inbox page tests use: the deep-link tests
 // all want the desktop two-pane layout, the breakpoint tests at the bottom set
 // their own width.
-const FOLD_INNER = 851;
-const TABLET = 1024;
+// iPhone Duo's inner screen: 669px wide held upright, 951px held sideways.
+const FOLD_INNER_PORTRAIT = 669;
+const FOLD_INNER_LANDSCAPE = 951;
+const TABLET = 768;
 const DESKTOP = 1440;
 const layout = vi.hoisted(() => ({ width: 1440 }));
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
-  useIsCompact: () => layout.width < 1024,
+  useIsCompact: () => layout.width < 768,
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
@@ -137,6 +149,7 @@ vi.mock("@multica/core/platform", async (importOriginal) => ({
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
+const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -184,7 +197,9 @@ vi.mock("./components/use-chat-controller", async () => {
         ? { id: "session-9", continued_into_session_id: "session-10" }
         : activeSession === "session-compacting"
           ? { id: "session-compacting", compacting: true }
-          : null,
+          : activeSession === "session-empty"
+            ? { id: "session-empty" }
+            : null,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -195,6 +210,7 @@ vi.mock("./components/use-chat-controller", async () => {
       pendingTask: null,
       pendingTaskId: null,
       showSkeleton: false,
+      messagesLoaded: messagesLoadedRef.current,
       hasMessages: false,
       firstItemIndex: 0,
       hasOlderMessages: false,
@@ -299,6 +315,7 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
+  messagesLoadedRef.current = true;
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -326,6 +343,46 @@ describe("ChatPage URL synchronization", () => {
     fireEvent.click(screen.getByText("settle-missing"));
     expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
     expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("toasts and drops ?message= when the chat has no messages left to show", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty&message=gone");
+    expect(screen.getByText("chat-empty-state")).toBeInTheDocument();
+    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-empty");
+  });
+
+  it("settles an empty chat's missing message once under StrictMode", () => {
+    seedSession("session-empty");
+    renderPage("session=session-empty&message=gone", { strict: true });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles the same hit again after the first notice cleared the param", () => {
+    seedSession("session-empty");
+    const { rerender } = renderPage("session=session-empty&message=gone");
+    rerender({ search: "session=session-empty" });
+    rerender({ search: "session=session-empty&message=gone" });
+    expect(mockToastError).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the transcript to load before calling the message gone", () => {
+    seedSession("session-empty");
+    messagesLoadedRef.current = false;
+    const { replace, rerender } = renderPage("session=session-empty&message=m-1");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    messagesLoadedRef.current = true;
+    rerender();
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a session with no ?message= alone when it is empty", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("passes no jump target without ?message=", () => {
@@ -556,11 +613,10 @@ describe("ChatPage ?agent= deep link", () => {
 describe("ChatPage responsive layout", () => {
   const SELECT_PROMPT = "Pick a conversation, or start a new one with +";
 
-  it("folds to a single column on a folded inner screen", () => {
-    // 851px — the reported Pixel Fold inner screen. Too narrow for nav + thread
-    // list + conversation, so with nothing open it spends the whole width on
-    // the list instead of an empty conversation pane.
-    layout.width = FOLD_INNER;
+  it("folds to a single column on a foldable's inner screen held upright", () => {
+    // Below the compact breakpoint, with nothing open, the page spends the
+    // whole width on the thread list instead of an empty conversation pane.
+    layout.width = FOLD_INNER_PORTRAIT;
     renderPage("");
 
     expect(
@@ -569,10 +625,10 @@ describe("ChatPage responsive layout", () => {
     expect(screen.queryByText(SELECT_PROMPT)).not.toBeInTheDocument();
   });
 
-  it("gives the open conversation the whole folded inner screen", () => {
+  it("gives the open conversation the whole upright inner screen", () => {
     // Opening a thread replaces the list, so the way back has to travel with
     // the conversation — same trip the phone layout already had.
-    layout.width = FOLD_INNER;
+    layout.width = FOLD_INNER_PORTRAIT;
     // The page reconciles the store against `?session=`, so the open thread has
     // to be in the URL too — otherwise the sync effect closes it.
     seedSession("session-1");
@@ -585,11 +641,11 @@ describe("ChatPage responsive layout", () => {
     expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
   });
 
-  it("keeps both panes at the compact breakpoint", () => {
-    // 1024px is the first width that keeps two panes. The nav auto-collapses
+  it.each([TABLET, FOLD_INNER_LANDSCAPE])("keeps both panes at %spx", (width) => {
+    // 768px is the first width that keeps two panes. The nav auto-collapses
     // there instead (see the sidebar), so the thread list stays on screen next
     // to an open conversation.
-    layout.width = TABLET;
+    layout.width = width;
     seedSession("session-1");
     renderPage("session=session-1");
 
@@ -726,6 +782,31 @@ describe("ChatPage back stack", () => {
     expect(activeSession()).toBeNull();
     back();
     expect(history.url).toBe("/acme/inbox");
+  });
+
+  it("opens a message hit with one pushed entry that targets the message, and Back returns to the list", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    fireEvent.click(screen.getByRole("button", { name: "open-message-hit" }));
+
+    expect(history.writes).toEqual([
+      { kind: "push", url: "/acme/chat?session=session-9&message=msg-4" },
+    ]);
+    expect(activeSession()).toBe("session-9");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-4");
+
+    // Landing drops ?message= by replace, so the entry count stays at one push.
+    fireEvent.click(screen.getByRole("button", { name: "settle-landed" }));
+    expect(history.entries).toEqual([
+      "/acme/inbox",
+      "/acme/chat",
+      "/acme/chat?session=session-9",
+    ]);
+
+    back();
+    expect(history.url).toBe("/acme/chat");
+    expect(activeSession()).toBeNull();
   });
 
   it("pushes a thread selection instead of replacing the list entry", () => {
@@ -1049,7 +1130,7 @@ describe("ChatPage back stack", () => {
 
   describe("compact back button", () => {
     beforeEach(() => {
-      layout.width = FOLD_INNER;
+      layout.width = FOLD_INNER_PORTRAIT;
     });
 
     it("steps back to the previous session, then to the list", () => {

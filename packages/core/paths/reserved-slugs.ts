@@ -78,6 +78,7 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   // ambiguous (e.g. a workspace named `issues` would make `/issues/abc` mean two
   // things). `workspaces` covers the global `/workspaces/new` workspace-creation
   // page; `teams` is reserved for future team management.
+  "issue",
   "issues",
   "projects",
   "autopilots",

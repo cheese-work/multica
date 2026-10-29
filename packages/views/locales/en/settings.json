@@ -33,7 +33,7 @@
       "key_hint": "Referred to as {{key}} by the API and the CLI.",
       "created": "Status created. The API and the CLI refer to it as {{key}}.",
       "category": "Category",
-      "category_locked": "Category cannot be changed after a status is created.",
+      "category_change_hint": "Changing the category changes how every issue on this status behaves. You will confirm before it is saved.",
       "description": "Description",
       "description_placeholder": "What this status means for your team",
       "color": "Color",
@@ -52,6 +52,13 @@
       "save": "Save",
       "saving": "Saving…",
       "save_failed": "Could not save the status."
+    },
+    "category_change_dialog": {
+      "title": "Change the category?",
+      "description_one": "{{count}} issue on this status will change from {{from}} to {{to}}.",
+      "description_other": "{{count}} issues on this status will change from {{from}} to {{to}}.",
+      "cancel": "Cancel",
+      "confirm": "Change category"
     },
     "archive_dialog": {
       "retry": "Retry archive",
@@ -307,7 +314,8 @@
     "language": {
       "title": "Language",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -398,6 +406,10 @@
       "archiveInboxItem": {
         "label": "Archive notification",
         "description": "Archive the open inbox notification, or restore it while reading the archive."
+      },
+      "searchChat": {
+        "label": "Search chats",
+        "description": "Focus the chat search field on the Chat page."
       },
       "send": {
         "label": "Send",
@@ -1589,6 +1601,20 @@
     "status_not_connected": "Not connected",
     "status_loading": "Checking...",
     "status_unknown": "Status unavailable"
+  },
+  "github_review": {
+    "section_title": "GitHub reviews",
+    "members_label": "Reviewers",
+    "members_description": "Maps a GitHub user ID to the workspace member whose review counts.",
+    "members_key": "GitHub user ID",
+    "members_value": "Member",
+    "authors_label": "Pull request authors",
+    "authors_description": "Pins a pull request to the agent that wrote it. Without a pin, the branch name decides.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Add",
+    "remove": "Remove",
+    "toast_failed": "Failed to save the mapping"
   },
   "pr_merge_status": {
     "label": "After PRs merge, move the issue to",

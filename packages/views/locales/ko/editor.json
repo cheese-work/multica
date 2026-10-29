@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "추가: ",
+    "removed": "삭제: ",
+    "revision": "리비전 {{number}}",
+    "readonly": "읽기 전용",
+    "issue": "원본 태스크",
+    "diff": "차이",
+    "split": "나란히",
+    "unify": "통합",
+    "compare": "비교 대상",
+    "choose_base": "기준 리비전 선택",
+    "change": "변경 {{current}} / {{total}}",
+    "previous": "이전 변경",
+    "next": "다음 변경",
+    "download": "다운로드",
+    "close": "닫기",
+    "more": "추가 옵션",
+    "base": "기준",
+    "current": "현재",
+    "loading_revisions": "리비전 로딩 중…",
+    "revisions_error": "리비전을 불러올 수 없습니다",
+    "no_earlier": "이전 리비전 없음",
+    "loading": "문서 로딩 중…",
+    "current_error": "문서를 불러올 수 없습니다",
+    "loading_diff": "비교 로딩 중…",
+    "comparison_error": "비교를 불러올 수 없습니다",
+    "too_large": "비교 대상이 너무 큽니다. 파일을 다운로드하여 로컬에서 비교하세요.",
+    "identical": "리비전 간 변경 사항 없음",
+    "empty": "이 문서는 비어 있습니다",
+    "unchanged": "변경되지 않은 {{count}}줄",
+    "retry": "다시 시도"
+  },
+  "media": {
+    "title": "미디어",
+    "more": "더 보기",
+    "open_in_new_window": "새 창에서 열기",
+    "open_failed": "미디어 페이지를 열 수 없습니다",
+    "loading": "미디어 로딩 중…",
+    "load_failed": "미디어를 불러올 수 없습니다",
+    "offline": "오프라인 — 마지막으로 불러온 내용을 표시합니다.",
+    "retry": "다시 시도"
+  },
   "bubble_menu": {
     "bold": "굵게",
     "italic": "기울임",
@@ -190,5 +232,8 @@
     "clear_filter": "필터 지우기",
     "no_matches": "일치하는 행이 없습니다",
     "close": "닫기"
+  },
+  "next_self_mention": {
+    "label": "내 다음 멘션"
   }
 }

@@ -11,8 +11,8 @@
  */
 
 .rich-text-editor .mention.mention-self {
-  color: var(--background);
-  background-color: var(--brand);
+  color: var(--mention-self-fg);
+  background-color: var(--mention-self-bg);
   font-weight: 700;
   border-radius: var(--radius-md);
   padding: 0 0.25rem;
