@@ -133,43 +133,6 @@ func runBudgetWarnAt(max int) int64 {
 	return int64((max*4 + 4) / 5)
 }
 
-// runBudgetWindow is one issue's budget state: when its window opened, the runs
-// counted in it and its cap.
-type runBudgetWindow struct {
-	Since time.Time
-	Runs  int64
-	Max   int
-}
-
-// loadRunBudget reads the issue's budget window. ok is false for an issue with
-// no workflow, or a workflow with no stored budget start (the built-in Default
-// nobody saved): it is not budgeted.
-func loadRunBudget(ctx context.Context, q *db.Queries, issue db.Issue) (w runBudgetWindow, ok bool, err error) {
-	if !issue.ProjectID.Valid && !issue.WorkflowID.Valid {
-		return w, false, nil
-	}
-	def, _, err := issueworkflow.ForIssue(ctx, q, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if errors.Is(err, issueworkflow.ErrOverrideMissing) || (err == nil && (def == nil || def.RunBudgetSince.IsZero())) {
-		return w, false, nil
-	}
-	if err != nil {
-		return w, false, fmt.Errorf("run budget: load workflow: %w", err)
-	}
-	w.Since, err = RunBudgetStart(ctx, q, issue.ID, def)
-	if err != nil {
-		return w, false, fmt.Errorf("run budget: window start: %w", err)
-	}
-	w.Runs, err = q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: w.Since, Valid: true}})
-	if err != nil {
-		return w, false, fmt.Errorf("run budget: count runs: %w", err)
-	}
-	w.Max = def.EffectiveMaxRuns()
-	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > w.Max {
-		w.Max = int(issue.MaxRunsOverride.Int32)
-	}
-	return w, true, nil
-}
-
 // noteRunInserted fires the 80% warning when the task row q just inserted is the
 // run that reaches it. It runs after the insert, on the insert's own handle, so
 // the run count includes the new row and the transaction id is the inserting
@@ -184,13 +147,13 @@ func noteRunInserted(ctx context.Context, q *db.Queries, issueID pgtype.UUID) {
 	if err != nil {
 		return
 	}
-	w, ok, err := loadRunBudget(ctx, q, issue)
-	if err != nil || !ok || w.Runs != runBudgetWarnAt(w.Max) {
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil || usage == nil || usage.Runs != runBudgetWarnAt(usage.Max) {
 		return
 	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
 	xid, _ := q.CurrentXactID(ctx)
-	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: w.Runs, Max: w.Max, Since: w.Since, Xid: xid})
+	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid})
 }
 
 var onRunBudgetExhausted atomic.Pointer[func(context.Context, RunBudgetExhausted)]
@@ -233,14 +196,14 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		}
 		return ReviewGate{}, fmt.Errorf("run budget: load issue: %w", err)
 	}
-	w, ok, err := loadRunBudget(ctx, q, issue)
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
 	if err != nil {
 		return ReviewGate{}, err
 	}
-	if !ok {
+	if usage == nil {
 		return ReviewGate{}, nil
 	}
-	runs, max := w.Runs, w.Max
+	runs, max := usage.Runs, usage.Max
 	spent := runs >= int64(max)
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
@@ -261,7 +224,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
-			IssueID: issue.ID, Runs: runs, Max: max, Since: w.Since,
+			IssueID: issue.ID, Runs: runs, Max: max, Since: usage.Since,
 			Status: issue.Status, Target: target,
 		})
 	}
@@ -301,7 +264,7 @@ func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target Run
 		!target.AgentID.Valid || target.AgentID != issue.AssigneeID {
 		return "", false, nil
 	}
-	head, err = q.GetIssueReviewHeadSha(ctx, issue.ID)
+	head, err = issueReviewHead(ctx, q, issue.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && head == "") {
 		return "", false, nil
 	}

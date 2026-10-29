@@ -49,10 +49,15 @@ describe("DM decision cards", () => {
       withdrawn_at: "2026-10-26T06:00:00Z", reason: "Superseded",
     };
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request).toEqual({
-      ...request, issue_identifier: "",
+      ...request, issue_identifier: "", options: [],
     });
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, state: "future" } }).decision_request?.state).toBe("open");
     expect(ChatMessageSchema.parse(bubble).decision_request).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", what_happens: "ship" }] } }).decision_request?.options)
+      .toEqual([{ label: "B", what_happens: "ship" }]);
+    // A malformed options list degrades to no buttons, not a dropped card.
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: "B" } }).decision_request?.options).toEqual([]);
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ nolabel: 1 }] } }).decision_request?.options).toEqual([]);
     expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [request] }).decision_requests?.[0]?.ask).toBe("Original ask");
   });
 

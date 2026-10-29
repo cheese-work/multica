@@ -1,6 +1,6 @@
 ---
 title: プロジェクトリソース
-description: プロジェクトに GitHub リポジトリまたはローカルディレクトリを紐づけ、以後の実行に安定した作業コンテキストを与えます。
+description: プロジェクトにリポジトリ、ローカルディレクトリ、HTTPS の参照リンクを紐づけます。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,12 +11,13 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 
 [プロジェクト](/projects)のリソースは、この一連の作業がどのコードを使い、どこで実行するかをエージェントに伝えます。リソースはプロジェクトに紐づいたまま保たれるため、リポジトリの URL やローカルパスをタスクごとに貼り直す必要はありません。
 
-現在サポートされているリソースは 2 種類です。
+現在サポートされているリソースは 3 種類です。
 
 | リソース | 適した場面 | 実行場所 |
 |---|---|---|
 | **GitHub リポジトリ** | チームで共有するコードベースで、checkout をランタイムに管理させたい場合 | ランタイムが管理する作業ディレクトリ |
 | **ローカルディレクトリ** | 既存の checkout、非常に大きなリポジトリ、またはローカルの変更を直接確認したい場合 | 特定のコンピュータ上の元のディレクトリ |
+| **URL** | メモ付きのデザインファイル、ドキュメント、その他の HTTPS 参照リンク | コンテキストのみ。チェックアウトは行いません |
 
 ## リソースが実行に入る仕組み
 
@@ -35,6 +36,20 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 プロジェクトの作成時に、**リポジトリ** で直接リポジトリを選ぶこともできます。1 つのプロジェクトには複数の GitHub リポジトリを紐づけられます。
 
 リソースの `ref` には、以後の checkout がデフォルトで使うブランチ、タグ、またはコミットを指定できます。`default_branch_hint` はエージェントにデフォルトブランチのヒントを与えるだけで、ブランチの切り替えを強制しません。
+
+## HTTPS の参照リンクを追加する
+
+CLI でリンクを追加します。サイドバーには URL と任意の `label` メモが別々に表示されます。
+
+```bash
+multica project resource add <project-id> --type url \
+  --url https://example.com/design --label "デザインファイル"
+multica project resource list <project-id>
+multica project resource update <project-id> <resource-id> \
+  --url https://example.com/design-v2 --label "更新したデザインファイル"
+```
+
+API は `resource_type: "url"` と `resource_ref: {"url": "https://example.com/design"}` を受け付けます。ホスト名を含む HTTPS リンクのみ有効です。エージェントはリンクをプロジェクトコンテキストとして受け取りますが、URL リソースがリポジトリやチェックアウト対象になることはありません。GitHub リポジトリリソースの既存のチェックアウト動作は変わりません。
 
 ## ローカルディレクトリの追加
 

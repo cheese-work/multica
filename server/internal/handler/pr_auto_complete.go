@@ -29,10 +29,11 @@ import (
 //   - A PR whose title or branch name carries an issue identifier is linked to
 //     that issue, and so is one whose title or body puts it after a closing
 //     keyword ("Closes MUL-1"). A member can also link or remove a PR by hand.
-//     The keyword only links; it has no say in what the merge does.
+//     GitHub body references ("Refs" / "Part of") remain visible but are not
+//     delivery links. A title, branch, or closing keyword takes precedence.
 //   - The workspace picks what a merge does: move the issue to one status (Done
 //     by default, or any started or done status, custom ones included) or leave
-//     it alone. When every PR linked to an issue is merged, the issue moves to
+//     it alone. When every delivery PR linked to an issue is merged, the issue moves to
 //     that status, unless someone turned the automation off for that one issue.
 //
 // The decision is evaluated only when a PR event touches the issue: a linked PR
@@ -227,7 +228,7 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 }
 
 // maybeAutoCompleteIssue runs the decision for one issue after a PR event and
-// moves it to the workspace's target status when every linked PR is merged.
+// moves it to the workspace's target status when every delivery PR is merged.
 // Safe to call for any issue: every guard lives in decidePRAutoComplete, and
 // the status write is conditional on the status the decision saw, so
 // concurrent merges move the issue once. It starts no agent run: a merge is not
