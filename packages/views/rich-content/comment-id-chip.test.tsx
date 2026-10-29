@@ -176,6 +176,11 @@ describe("comment ID chips", () => {
     await waitFor(() => expect(container.querySelector("a")).not.toBeNull());
     const resolved = container.querySelector("a .issue-mention");
     expect(box(resolved)).toBe(pendingBox);
+    // max-width alone lets the box shrink from the UUID's width to the
+    // preview's; both states must pin the same explicit width.
+    for (const el of [pending, resolved]) {
+      expect(el?.className.split(" ")).toContain("w-[min(18rem,100%)]");
+    }
   });
 
   it("falls back to plain text when a loaded preview later stops resolving", async () => {
