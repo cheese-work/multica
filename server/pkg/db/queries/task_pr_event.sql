@@ -210,11 +210,12 @@ WHERE e.issue_id = @issue_id
        OR e.id IN (SELECT event_id FROM failed));
 
 -- name: ListAcceptedPRNoticeEvents :many
--- Draft and ready events of the PR still waiting for a live run to take them.
+-- Draft, ready, conflict and checks-failed events of the PR still waiting for a
+-- live run to take them.
 SELECT id FROM issue_pr_event
 WHERE issue_id = @issue_id
   AND pull_request_id = @pull_request_id
-  AND kind IN ('draft', 'ready')
+  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed')
   AND status = 'accepted'
 ORDER BY observed_at, created_at;
 

@@ -284,7 +284,7 @@ const listAcceptedPRNoticeEvents = `-- name: ListAcceptedPRNoticeEvents :many
 SELECT id FROM issue_pr_event
 WHERE issue_id = $1
   AND pull_request_id = $2
-  AND kind IN ('draft', 'ready')
+  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed')
   AND status = 'accepted'
 ORDER BY observed_at, created_at
 `
@@ -294,7 +294,8 @@ type ListAcceptedPRNoticeEventsParams struct {
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
 }
 
-// Draft and ready events of the PR still waiting for a live run to take them.
+// Draft, ready, conflict and checks-failed events of the PR still waiting for a
+// live run to take them.
 func (q *Queries) ListAcceptedPRNoticeEvents(ctx context.Context, arg ListAcceptedPRNoticeEventsParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listAcceptedPRNoticeEvents, arg.IssueID, arg.PullRequestID)
 	if err != nil {
