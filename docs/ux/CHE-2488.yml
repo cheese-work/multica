@@ -8,7 +8,9 @@ pages:
     keep: [relations-button, relations-dialog]
     change:
       - relations-report: "Replace the Mermaid canvas with native issue links, status KPIs, a bracketed hierarchy, phase ordering and Graph / List tabs"
-    remove: []
+    remove: [relations-canvas-controls]
+    legacy_elements:
+      relations-canvas-controls: "Old Mermaid DiagramViewport zoom/pan/fit controls; replaced by native scrolling and the List tab"
 settings:
   - "Existing relation filters remain persisted; mentions stay off by default and load only when enabled"
   - "Depth remains 1 by default; selecting 2 adds the next hierarchy column"
