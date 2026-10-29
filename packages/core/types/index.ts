@@ -219,6 +219,7 @@ export type {
   ProjectResourceType,
   ProjectResourceRef,
   GithubRepoResourceRef,
+  UrlResourceRef,
   LocalDirectoryResourceRef,
   LocalDirectoryExecutionMode,
   CreateProjectResourceRequest,
