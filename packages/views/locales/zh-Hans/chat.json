@@ -298,6 +298,7 @@
   },
   "decision": {
     "request_title": "决策请求",
+    "asked_by": "来自 {{agent}}",
     "request_label": "决策请求：{{state}}",
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
     "answer_options": "选项",

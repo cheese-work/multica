@@ -19,6 +19,8 @@ type DecisionRequestCard struct {
 	IssueIdentifier string  `json:"issue_identifier"`
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
+	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
+	AskingAgentName string `json:"asking_agent_name,omitempty"`
 	// Options are the answer buttons; empty for a card with no structured options.
 	Options     []decisiontx.AskOption `json:"options"`
 	State       string                 `json:"state"`
@@ -52,7 +54,7 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		card := DecisionRequestCard{
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
 			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
-			Ask:             row.Ask, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 		}
 		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
 			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)

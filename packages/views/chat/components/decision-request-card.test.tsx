@@ -64,6 +64,14 @@ describe("DecisionRequestCard accessibility", () => {
     expect(document.querySelector("time")).toHaveAttribute("datetime", card.created_at);
   });
 
+  it("names the asking agent in the header and omits it when the name is missing", () => {
+    const view = renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, asking_agent_name: "x99-claude-sonnet" }} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.getByTestId("decision-request-asker")).toHaveTextContent("from x99-claude-sonnet");
+    view.unmount();
+    renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.queryByTestId("decision-request-asker")).toBeNull();
+  });
+
   it("links an answered card to the issue comment that recorded it", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, state: "answered", record_comment_id: "record" }} /></WorkspaceSlugProvider></QueryClientProvider>);
     const link = screen.getByRole("link", { name: "Recorded on CHE-2088" });

@@ -298,6 +298,7 @@
   },
   "decision": {
     "request_title": "判断の依頼",
+    "asked_by": "{{agent}} から",
     "request_label": "判断の依頼：{{state}}",
     "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
     "answer_options": "選択肢",

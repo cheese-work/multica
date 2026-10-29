@@ -60,12 +60,14 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
-    record.issue_comment_id AS record_comment_id
+    record.issue_comment_id AS record_comment_id,
+    COALESCE(asker.name, '')::text AS asking_agent_name
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 JOIN chat_message message ON message.chat_session_id = request.chat_session_id
     AND (message.id = request.ping_message_id OR request.id = ANY(message.decision_request_ids))
+LEFT JOIN agent asker ON asker.id = request.asking_agent_id AND asker.workspace_id = request.workspace_id
 LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
@@ -95,6 +97,7 @@ type ListDecisionRequestCardsRow struct {
 	Options         []byte             `json:"options"`
 	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
 	RecordCommentID pgtype.UUID        `json:"record_comment_id"`
+	AskingAgentName string             `json:"asking_agent_name"`
 }
 
 func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecisionRequestCardsParams) ([]ListDecisionRequestCardsRow, error) {
@@ -121,6 +124,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.Options,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
+			&i.AskingAgentName,
 		); err != nil {
 			return nil, err
 		}

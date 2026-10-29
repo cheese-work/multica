@@ -298,6 +298,7 @@
   },
   "decision": {
     "request_title": "결정 요청",
+    "asked_by": "{{agent}}의 요청",
     "request_label": "결정 요청: {{state}}",
     "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨" },
     "answer_options": "선택지",

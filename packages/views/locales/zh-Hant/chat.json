@@ -298,6 +298,7 @@
   },
   "decision": {
     "request_title": "決策請求",
+    "asked_by": "來自 {{agent}}",
     "request_label": "決策請求：{{state}}",
     "request_state": {
       "open": "待答復",

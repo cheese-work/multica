@@ -12,6 +12,8 @@ export interface DecisionRequestCard {
   issue_identifier: string;
   source_comment_id?: string | null;
   ask: string;
+  /** The asking agent's name; absent when the agent is gone or the server is older. */
+  asking_agent_name?: string;
   options?: DecisionRequestOption[];
   state: "open" | "answered" | "withdrawn";
   created_at: string;

@@ -33,6 +33,9 @@ type Ask struct {
 	HumanSteps       []HumanStep `json:"human_steps"`
 	Probes           []string    `json:"probes"`
 	AfterDone        string      `json:"after_done"`
+	// AskedBy is the asking agent's name, set by the server for a new request;
+	// it is not caller input, so it is never decoded or fingerprinted.
+	AskedBy string `json:"-"`
 }
 
 // AskError carries a fixed, field-named message. It never echoes decoder text,
@@ -244,8 +247,15 @@ func (ask Ask) Content(workspaceSlug string) string {
 		}
 		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+}
+
+func (ask Ask) askedByLine() string {
+	if ask.AskedBy == "" {
+		return ""
+	}
+	return "**Asked by** " + ask.AskedBy + "\n\n"
 }
 
 // askSourceTail is the per-run provenance link that ends Content().

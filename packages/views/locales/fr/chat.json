@@ -304,6 +304,7 @@
   },
   "decision": {
     "request_title": "Demande de décision",
+    "asked_by": "de {{agent}}",
     "request_label": "Demande de décision : {{state}}",
     "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée" },
     "answer_options": "Options",

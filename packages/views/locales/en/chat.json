@@ -304,6 +304,7 @@
   },
   "decision": {
     "request_title": "Decision request",
+    "asked_by": "from {{agent}}",
     "request_label": "Decision request: {{state}}",
     "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn" },
     "answer_options": "Options",
