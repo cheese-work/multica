@@ -2469,3 +2469,18 @@ describe("JevCredentialPresenceSchema", () => {
     expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
   });
 });
+
+describe("CommentPreviewSchema", () => {
+  it("defaults optional text fields and requires ids", async () => {
+    const { CommentPreviewSchema } = await import("./schemas");
+    const ok = CommentPreviewSchema.parse({
+      comment_id: "c",
+      issue_id: "i",
+      issue_identifier: "CHE-1",
+      author_name: null,
+    });
+    expect(ok.author_name).toBe("");
+    expect(ok.preview).toBe("");
+    expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});

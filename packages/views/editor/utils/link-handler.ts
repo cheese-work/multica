@@ -10,7 +10,7 @@ import {
   isKnownWorkspacePath,
   workspaceSlugForPath,
 } from "@multica/core/paths";
-import { isIssueIdentifier } from "@multica/ui/markdown";
+import { COMMENT_ID_PATTERN, isIssueIdentifier } from "@multica/ui/markdown";
 import type { LinkClickIntent } from "../../navigation/click-intent";
 
 /**
@@ -273,4 +273,24 @@ export function openLink(
 /** Check if a href is a mention protocol link (should not be opened as a regular link). */
 export function isMentionHref(href: string | null | undefined): href is string {
   return !!href && href.startsWith("mention://");
+}
+
+/**
+ * Parse a link to a single comment: an in-app issue URL whose fragment is
+ * `#comment-<uuid>`. `null` for everything else. Queries are rejected for the
+ * same reason `parseWorkspaceEntityLink` rejects them.
+ */
+export function parseWorkspaceCommentLink(
+  href: string,
+  appOrigin?: string | null,
+): { commentId: string; slug: string | null } | null {
+  const path = toSameOriginPath(href, appOrigin);
+  if (!path || path.includes("?")) return null;
+  const hashAt = path.indexOf("#");
+  if (hashAt < 0) return null;
+  const commentId = path.slice(hashAt + 1).match(/^comment-(.+)$/)?.[1];
+  if (!commentId || !COMMENT_ID_PATTERN.test(commentId)) return null;
+  const issue = parseWorkspaceEntityLink(path.slice(0, hashAt), appOrigin);
+  if (issue?.kind !== "issue") return null;
+  return { commentId, slug: issue.slug };
 }

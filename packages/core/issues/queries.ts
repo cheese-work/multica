@@ -193,9 +193,25 @@ export const issueKeys = {
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
+  commentPreview: (wsId: string, commentId: string) =>
+    [...issueKeys.all(wsId), "comment-preview", commentId] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
+
+/**
+ * Resolve a comment UUID to its issue + first-line preview. A 404 (unknown,
+ * deleted, or another workspace) is a stable answer, so it is not retried.
+ */
+export function commentPreviewOptions(wsId: string, commentId: string) {
+  return queryOptions({
+    queryKey: issueKeys.commentPreview(wsId, commentId),
+    queryFn: () => api.getCommentPreview(commentId),
+    enabled: !!wsId,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 export function sourceContextPreviewOptions(
   wsId: string,

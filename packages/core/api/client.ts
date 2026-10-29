@@ -250,6 +250,7 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
+  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -357,6 +358,7 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
+  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -1552,6 +1554,18 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async getCommentPreview(commentId: string): Promise<CommentPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
+    const preview = parseWithFallback<CommentPreview | null>(
+      raw,
+      CommentPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/preview" },
+    );
+    if (!preview) throw new Error("Invalid comment preview response");
+    return preview;
   }
 
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
