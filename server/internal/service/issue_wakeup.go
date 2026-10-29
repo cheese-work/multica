@@ -1628,7 +1628,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		}
 		if config != nil && config.Eff.Config.Target.Set {
 			// A named target is asked again whether its writer may use it.
-			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 			if err != nil {
 				return err
 			}
@@ -1733,7 +1733,7 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
-		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 		if err != nil {
 			return err
 		}
