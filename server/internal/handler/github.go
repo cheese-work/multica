@@ -1369,6 +1369,11 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	}
 	// A new head retires the reviews of the old one (CHE-2307).
 	h.supersedeStaleReviews(ctx, prID)
+	if pr.HeadRepoSame {
+		if err := h.TaskService.NoticePRSnapshotEvents(ctx, prID); err != nil {
+			slog.Warn("github: failed to deliver pull request snapshot events", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	issueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, prID)
 	if err != nil {
 		return
