@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -68,6 +69,12 @@ func TestDecisionBindingRefusals(test *testing.T) {
 			}},
 		{name: "hash is not in the ask", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, refusal: "ask does not name",
 			after: "3333333333333333333333333333333333333333333333333333333333333333"},
+		{name: "ask's before hash offered as the target", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundBefore, refusal: "ask does not name"},
+		{name: "ask's before hash differs from the write's", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				dbfx.Exec(test, `UPDATE decision_request SET ask = $2 WHERE id = $1`, fixture.decision.ID,
+					decisiontx.BoundWriteDecision(boundField, "4444444444444444444444444444444444444444444444444444444444444444", boundAfter))
+			}},
 		{name: "answer chose another option", option: "Reject", gate: allowAnyAgent, after: boundAfter, refusal: "not the approve option"},
 		{name: "decision expired", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "decision expired",
 			mutate: func(test *testing.T, fixture askedRecordFixture) {
@@ -144,5 +151,40 @@ func TestDecisionBindingAcceptsOnceAndRecordsAudit(test *testing.T) {
 	}
 	if rows := boundWriteRows(test, fixture); rows != 1 {
 		test.Fatalf("audit rows = %d, want 1", rows)
+	}
+}
+
+// A disclaim or veto locks the request, then its answer. An accepted check
+// holds both locks until its transaction ends, so a withdrawal cannot commit
+// between the check and the governed write.
+func TestDecisionBindingHoldsLocksUntilCommit(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBoundWriteFixture(test, decisiontx.ApproveWriteLabel)
+	ctx := context.Background()
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM decision_bound_write WHERE decision_id = $1`, fixture.decision.ID)
+	})
+	writer, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if err := verifyDecisionBinding(ctx, testHandler.Queries.WithTx(writer), allowAnyAgent, fixture.issue.WorkspaceID, fixture.decision.ID, parseUUID(fixture.agentID), boundField, boundBefore, boundAfter); err != nil {
+		test.Fatal(err)
+	}
+	for _, lock := range []string{
+		`SELECT id FROM decision_request WHERE id = $1 FOR UPDATE NOWAIT`,
+		`SELECT id FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL FOR UPDATE NOWAIT`,
+	} {
+		withdrawer, err := testPool.Begin(ctx)
+		if err != nil {
+			test.Fatal(err)
+		}
+		_, err = withdrawer.Exec(ctx, lock, fixture.decision.ID)
+		withdrawer.Rollback(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+			test.Fatalf("%s: error = %v, want lock_not_available", lock, err)
+		}
 	}
 }

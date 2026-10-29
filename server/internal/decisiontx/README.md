@@ -452,5 +452,6 @@ A governed write by an agent is approved by a card whose ask is built with
 include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server
 (`verifyDecisionBinding`) accepts only a live answer, by a workspace owner,
 that is exactly that label, after its veto window and within 7 days, for an ask
-naming the write's `after_sha256`. Each decision is usable once: its row in
-`decision_bound_write` is the lock and the audit record.
+whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
+locks the request, then the answer, in the same order as a withdrawal.
+Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.

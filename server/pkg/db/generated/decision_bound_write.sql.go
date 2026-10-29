@@ -19,6 +19,7 @@ JOIN decision_answer answer ON answer.decision_request_id = request.id AND answe
 JOIN member ON member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id
 WHERE request.workspace_id = $1 AND request.id = $2
   AND request.status = 'answered'
+FOR UPDATE OF answer
 `
 
 type GetDecisionBindingAnswerParams struct {
@@ -34,8 +35,9 @@ type GetDecisionBindingAnswerRow struct {
 	Now             pgtype.Timestamptz `json:"now"`
 }
 
-// The live answer of an answered request, with the human's role and the
-// database clock the expiry window is measured against.
+// The live answer of an answered request, locked like LockDecisionLiveAnswer so
+// a disclaim or veto waits for the caller's transaction, with the human's role
+// and the database clock the expiry window is measured against.
 func (q *Queries) GetDecisionBindingAnswer(ctx context.Context, arg GetDecisionBindingAnswerParams) (GetDecisionBindingAnswerRow, error) {
 	row := q.db.QueryRow(ctx, getDecisionBindingAnswer, arg.WorkspaceID, arg.ID)
 	var i GetDecisionBindingAnswerRow

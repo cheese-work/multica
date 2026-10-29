@@ -20,16 +20,21 @@ import (
 // decisionBindingTTL matches the 7 days an open request lives before it expires.
 const decisionBindingTTL = 7 * 24 * time.Hour
 
-var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	declaredHashLine = regexp.MustCompile(`(?m)^(before_sha256|after_sha256): ([0-9a-f]{64})$`)
+)
 
 // delegatedWriteGate reports whether agentID may make a delegated governed
 // write to field, and whether that write needs a human decision.
 type delegatedWriteGate func(ctx context.Context, qtx *db.Queries, workspaceID, agentID pgtype.UUID, field string) (requiresDecision, ok bool)
 
 // verifyDecisionBinding refuses a governed write unless decisionID is a live,
-// unexpired, unused approval by a workspace owner of exactly afterSHA. On
-// success it records the write in decision_bound_write inside qtx's
-// transaction: the primary key on decision_id makes the decision single-use.
+// unexpired, unused approval by a workspace owner of the change from beforeSHA
+// to afterSHA. It locks the request, then its live answer, as a withdrawal
+// does, so no withdrawal commits before qtx's transaction ends. On success it
+// records the write in decision_bound_write inside qtx's transaction: the
+// primary key on decision_id makes the decision single-use.
 func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegatedWriteGate, workspaceID, decisionID, agentID pgtype.UUID, field, beforeSHA, afterSHA string) error {
 	refuse := func(status int, message string) error { return decisionIntentRefusal{status, message} }
 	if !sha256HexPattern.MatchString(beforeSHA) || !sha256HexPattern.MatchString(afterSHA) {
@@ -38,7 +43,7 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	if _, ok := allowed(ctx, qtx, workspaceID, agentID, field); !ok {
 		return refuse(http.StatusForbidden, "agent is not allowed to write this field")
 	}
-	request, err := qtx.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: workspaceID, ID: decisionID})
+	request, err := qtx.LockDecisionRequest(ctx, db.LockDecisionRequestParams{WorkspaceID: workspaceID, ID: decisionID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return refuse(http.StatusNotFound, "decision request not found")
 	}
@@ -55,8 +60,8 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	switch {
 	case answer.HumanRole != "owner":
 		return refuse(http.StatusForbidden, "the decision's human is not a workspace owner")
-	case !askNamesHash(request.Ask, afterSHA):
-		return refuse(http.StatusForbidden, "the ask does not name this after_sha256")
+	case !askDeclaresHashes(request.Ask, beforeSHA, afterSHA):
+		return refuse(http.StatusForbidden, "the ask does not name this before_sha256 and after_sha256")
 	case !answerIsApproval(request.Options, answer.ContentSnapshot):
 		return refuse(http.StatusForbidden, "the answer is not the approve option")
 	case answer.EffectiveAt.Time.After(answer.Now.Time):
@@ -78,9 +83,18 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	return nil
 }
 
-// askNamesHash matches afterSHA as a whole hex token, not a slice of a longer one.
-func askNamesHash(ask, afterSHA string) bool {
-	return regexp.MustCompile(`(?:^|[^0-9a-f])` + afterSHA + `(?:[^0-9a-f]|$)`).MatchString(ask)
+// askDeclaresHashes is true when the ask's declared before_sha256 and
+// after_sha256 lines (see decisiontx.BoundWriteDecision) are exactly the
+// write's hashes. A hash that appears elsewhere in the ask does not count.
+func askDeclaresHashes(ask, beforeSHA, afterSHA string) bool {
+	declared := map[string]string{}
+	for _, match := range declaredHashLine.FindAllStringSubmatch(ask, -1) {
+		if _, repeated := declared[match[1]]; repeated {
+			return false
+		}
+		declared[match[1]] = match[2]
+	}
+	return declared["before_sha256"] == beforeSHA && declared["after_sha256"] == afterSHA
 }
 
 // answerIsApproval is true when the card offered the approve option and the
