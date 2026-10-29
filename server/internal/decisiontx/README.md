@@ -444,3 +444,16 @@ timezone. Worker restarts, retries and deletion of an inbox item cannot resend
 a receipted digest. Asks that expire after that day's digest, or exceed its
 100-request bound, stay pending until a later ICT day. These are implementation
 defaults, not permission to change a person's notification preferences.
+
+## Decision-bound writes
+
+A governed write by an agent is approved by a card whose ask is built with
+`BoundWriteDecision(field, before_sha256, after_sha256)` and whose options
+include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server
+(`verifyDecisionBinding`) accepts only a live answer, by a workspace owner,
+that is exactly that label, after its veto window and within 7 days, for an ask
+whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
+locks the request, then the answer, in the same order as a withdrawal.
+Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
+Orphan cleanup deletes a request's `decision_bound_write` row before the request,
+because the table has no foreign key to cascade from.
