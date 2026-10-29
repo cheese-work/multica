@@ -353,11 +353,24 @@ func contextArgLen(provider string, rest []string) int {
 			return 1
 		}
 	case "codex":
-		if rest[0] == "-c" && len(rest) > 1 {
-			if key, _, _ := strings.Cut(rest[1], "="); codexContextKeys[key] {
+		// Inherited args may spell the override any way codex accepts:
+		// `-c k=v`, `--config k=v`, `-c=k=v`, `--config=k=v`, with TOML
+		// whitespace around the key. A preset's own args stay strict (Validate).
+		for _, flag := range []string{"-c", "--config"} {
+			if rest[0] == flag && len(rest) > 1 && isCodexContextKV(rest[1]) {
 				return 2
+			}
+			if kv, ok := strings.CutPrefix(rest[0], flag+"="); ok && isCodexContextKV(kv) {
+				return 1
 			}
 		}
 	}
 	return 0
+}
+
+// isCodexContextKV reports whether kv is `key=value` for an allow-listed codex
+// context key, ignoring whitespace around the key.
+func isCodexContextKV(kv string) bool {
+	key, _, ok := strings.Cut(kv, "=")
+	return ok && codexContextKeys[strings.TrimSpace(key)]
 }

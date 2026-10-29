@@ -40,3 +40,32 @@ func TestMergeContextArgs(t *testing.T) {
 		})
 	}
 }
+
+// F1 (CHE-2246 review): every spelling of an inherited codex context override
+// is cleared by an explicit empty preset and recorded in the claim snapshot;
+// unrelated config overrides keep their bytes.
+func TestCodexContextArgSpellings(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"short split", []string{"-c", "model_context_window=100000"}},
+		{"long split", []string{"--config", "model_context_window=100000"}},
+		{"long inline", []string{"--config=model_context_window=100000"}},
+		{"short inline", []string{"-c=model_context_window=100000"}},
+		{"toml whitespace", []string{"-c", "model_context_window = 100000"}},
+		{"auto compact long inline", []string{"--config=model_auto_compact_token_limit=90000"}},
+	}
+	keep := []string{"--sandbox", "workspace-write", "--config", "model_reasoning_effort=high", "-c=sandbox_mode=x"}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			custom := append(append([]string{}, keep...), c.args...)
+			if got := MergeContextArgs("codex", custom, []string{}); !reflect.DeepEqual(got, keep) {
+				t.Errorf("explicit clear = %q, want %q", got, keep)
+			}
+			if got := ContextArgsOf("codex", custom); !reflect.DeepEqual(got, c.args) {
+				t.Errorf("snapshot = %q, want %q", got, c.args)
+			}
+		})
+	}
+}
