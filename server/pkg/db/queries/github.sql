@@ -236,6 +236,29 @@ SELECT EXISTS (
       AND context->>'github_review_key' = sqlc.arg(review_key)::text
 );
 
+-- name: RecordGitHubPRReview :exec
+-- Keeps the latest approved, changes_requested or commented review of a PR; a
+-- review that was submitted before the stored one is dropped.
+UPDATE github_pull_request
+SET review_state = sqlc.arg(review_state)::text,
+    review_head_sha = sqlc.arg(head_sha)::text,
+    review_id = sqlc.arg(review_id)::bigint,
+    review_at = sqlc.arg(submitted_at)::timestamptz
+WHERE id = sqlc.arg(id) AND (review_at IS NULL OR review_at <= sqlc.arg(submitted_at)::timestamptz);
+
+-- name: ClearGitHubPRReview :exec
+-- Withdraws the stored review when GitHub dismisses that exact review. A
+-- dismissal of any other review leaves it alone. review_at stays as the
+-- ordering watermark, so an older review delivered late is still dropped.
+UPDATE github_pull_request
+SET review_state = '', review_head_sha = '', review_id = 0
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND installation_id = sqlc.arg(installation_id)
+  AND repo_owner = sqlc.arg(repo_owner)
+  AND repo_name = sqlc.arg(repo_name)
+  AND pr_number = sqlc.arg(pr_number)
+  AND review_id = sqlc.arg(review_id)::bigint;
+
 -- name: ListGitHubReviewAuthorCandidates :many
 SELECT DISTINCT task.agent_id
 FROM agent_task_queue task
@@ -265,9 +288,8 @@ WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
 -- refresh pipeline — NOT the legacy suite-level webhook aggregation, which is
 -- removed. The `issue_prs` CTE narrows to this issue's PR ids first so the
 -- aggregation only touches check rows for those PRs. Rows for an OLD head are
--- excluded by the snapshot_head_sha filter. Every link row is a delivery PR:
--- the webhook links an identifier it read from the PR title or branch name, and
--- a member can link one by hand (linked_by_type = 'member'). MUL-7429.
+-- excluded by the snapshot_head_sha filter. Both closing and reference links
+-- remain visible; only closing links participate in merge automation.
 WITH issue_prs AS (
     SELECT pr.id, pr.snapshot_head_sha
     FROM github_pull_request pr
@@ -306,6 +328,7 @@ SELECT
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(ipr.linked_by_type, 'system')::text AS linked_by_type,
+    ipr.link_kind,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
     COALESCE(c.failed, 0)::bigint  AS checks_failed,
@@ -349,22 +372,26 @@ LIMIT 1;
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1;
 
+-- name: ListClosingIssueIDsForPullRequest :many
+SELECT issue_id FROM issue_pull_request
+WHERE pull_request_id = $1 AND link_kind = 'closing';
+
 -- =====================
 -- Issue ↔ Pull Request link
 -- =====================
 
 -- name: LinkIssueToPullRequest :execrows
--- Automatic link from a PR title, branch, or closing keyword. Returns 1 only
--- when the link is new, so the webhook evaluates the merge automation on the
--- link event and not on every redelivery. An existing link (automatic or
--- manual) is left untouched. close_intent is no longer read or written
--- (MUL-7726).
+-- Automatic link from a PR title, branch, or keyword. Returns 1 when the link
+-- is new or its kind changes. Manual links are left untouched.
 INSERT INTO issue_pull_request (
-    issue_id, pull_request_id, linked_by_type, linked_by_id
+    issue_id, pull_request_id, linked_by_type, linked_by_id, link_kind
 ) VALUES (
-    $1, $2, 'system', NULL
+    $1, $2, 'system', NULL, COALESCE(sqlc.narg('link_kind')::text, 'closing')
 )
-ON CONFLICT (issue_id, pull_request_id) DO NOTHING;
+ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
+    link_kind = EXCLUDED.link_kind
+WHERE COALESCE(issue_pull_request.linked_by_type, 'system') <> 'member'
+  AND issue_pull_request.link_kind IS DISTINCT FROM EXCLUDED.link_kind;
 
 -- name: LinkIssueToPullRequestManually :execrows
 -- A member linked this PR by hand. Marking an existing automatic link as
@@ -377,8 +404,10 @@ INSERT INTO issue_pull_request (
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
     linked_by_type = 'member',
-    linked_by_id = EXCLUDED.linked_by_id
-WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member';
+    linked_by_id = EXCLUDED.linked_by_id,
+    link_kind = 'closing'
+WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member'
+   OR issue_pull_request.link_kind <> 'closing';
 
 -- name: ListAutoLinkedIssueIDsForPullRequest :many
 -- Issues this PR is linked to automatically. Manual links are not listed: the
@@ -403,3 +432,18 @@ WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower(sqlc.arg('html_url')::text)
 ORDER BY pr_updated_at DESC
 LIMIT 1;
+
+-- name: ListGitHubPRsWithUnverifiedHead :many
+-- CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
+-- repository id, so a repair must read GitHub to tell a real fork PR from a
+-- same-repository PR that the old fork-flag check rejected. Rows whose PR was
+-- last updated before the fork check shipped (CHE-2210, 2026-10-27) hold the
+-- column default and were never judged. pr_updated_at only moves on webhook
+-- writes; updated_at also moves on snapshot refresh, so it can't tell. One row
+-- per PR address (workspaces mirror it), newest first, so a rate limit cuts off
+-- the oldest.
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM github_pull_request
+WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
+GROUP BY installation_id, repo_owner, repo_name, pr_number
+ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number;

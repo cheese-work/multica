@@ -1,4 +1,36 @@
 {
+  "plan_revision": {
+    "added": "Added: ",
+    "removed": "Removed: ",
+    "revision": "Revision {{number}}",
+    "readonly": "Readonly",
+    "issue": "Source issue",
+    "diff": "Diff",
+    "split": "Split",
+    "unify": "Unify",
+    "compare": "Compare with",
+    "choose_base": "Choose a base revision",
+    "change": "Change {{current}} / {{total}}",
+    "previous": "Previous change",
+    "next": "Next change",
+    "download": "Download",
+    "close": "Close",
+    "more": "More options",
+    "base": "Base",
+    "current": "Current",
+    "loading_revisions": "Loading revisions…",
+    "revisions_error": "Could not load revisions",
+    "no_earlier": "No earlier revisions",
+    "loading": "Loading document…",
+    "current_error": "Could not load document",
+    "loading_diff": "Loading comparison…",
+    "comparison_error": "Could not load comparison",
+    "too_large": "This comparison is too large. Download the files to compare locally.",
+    "identical": "No changes between these revisions",
+    "empty": "This document is empty",
+    "unchanged": "{{count}} unchanged lines",
+    "retry": "Retry"
+  },
   "media": {
     "title": "Media",
     "more": "More",
@@ -199,5 +231,8 @@
     "clear_filter": "Clear filter",
     "no_matches": "No matching rows",
     "close": "Close"
+  },
+  "next_self_mention": {
+    "label": "Next mention of me"
   }
 }

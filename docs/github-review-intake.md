@@ -18,7 +18,12 @@ One transaction writes:
   an initial disposition. Revision identity includes workspace, installation,
   repository, object kind/ID, event/action, body hash, sender/author IDs, review
   state and signed object timestamps. Different GUIDs for the same revision
-  share one work item. A same-body edit or state change is a separate revision.
+  share one work item. Comment update timestamps distinguish same-body edits.
+  Reviews carry only `submitted_at`, not `created_at` or `updated_at`. Review
+  edits are distinguished by body hash, action, sender and review state, not
+  edit time. Returning to an earlier edited body with the same identity reuses
+  that row rather than creating a fresh revision. If that row is already denied,
+  it stays denied. A changed review state creates a separate revision.
 
 Only a successful commit returns `202`. A database error returns `500` and
 rolls back both writes. Reusing a GUID with different signed bytes or a
@@ -67,8 +72,8 @@ withdrawals. Intake immediately denies pending revisions for a signed dismissal
 or deletion, scoped to workspace, installation, repository and object kind/ID.
 Dispatched rows remain intact; the projection worker owns any later notify-only
 withdrawal note. Delivery deduplication does not replace revision admission or a
-committed dispatch receipt. The worker, its transaction, and R1/R2/R3
-reconciliation are separate changes (CHE-2208 and CHE-2209).
+committed dispatch receipt. R1/R2/R3 reconciliation is described under
+"Reconciler (R1/R2/R3)" below.
 
 Keep the deployed `github_review_members` mapping unset until gate G. Numeric
 ID `129714106` is not mapped by this change. No actionable dispatch, App
@@ -79,9 +84,27 @@ subscription update, webhook replay or deployment is enabled here.
 The server starts a context-bound worker that drains up to 25 due deliveries
 every 5 seconds. PostgreSQL row locks with `SKIP LOCKED` let multiple servers
 claim different deliveries. Normalized revision rows are locked in workspace
-order, so different GUIDs for the same revision serialize on the same work.
+and canonical delivery order, so different GUIDs for the same revision serialize
+on the same work. Reads match the full normalized revision identity, including
+event/action, sender/author, review state and signed timestamps, not body hash
+alone. State writes address only that canonical revision.
 The original signed payload supplies the content; the worker does not fetch
 replacement content from GitHub.
+
+Before calling admission, the worker denies older pending revisions as
+`superseded` when a newer signed self-edit for the same workspace, installation,
+repository, object and author is stored. For reviews, any stored self-edit
+supersedes the submitted revision, even when the submission arrives later.
+Successive edited review bodies are ordered by the canonical revision's
+server-assigned `created_at` receipt time, with its source GUID breaking ties.
+This is receipt order, not proof of GitHub edit chronology; authoritative
+provenance admission remains required before production projection or dispatch.
+Comments use their signed `updated_at` first, then receipt order for equal
+update timestamps. Foreign edits do not supersede the author's pending work.
+Denied and dispatched history remains intact.
+Redelivery of a dispatched revision with a committed receipt reuses its stored
+disposition without calling admission again. A dispatched state without a
+receipt still requires admission and a committed dispatch transaction.
 
 The production admission function currently rechecks the intake guards and
 leaves eligible items `deferred` with `awaiting_admission`. Full provenance
@@ -109,8 +132,8 @@ Projection and the dormant dispatch primitive write their effects,
 transaction. Receipts use the normalized revision UUID and target issue, not
 the delivery GUID or body hash alone. The worker matches the full signed
 event/action, sender, author, state and timestamps before locking a revision.
-A same-body self-edit is a separate revision; duplicate deliveries share one
-committed receipt.
+Distinct normalized revisions retain separate receipts; repeated review edits
+with the same identity reuse the canonical revision and receipt.
 
 The receipt records `projected` with a comment and no task, `denied` with no
 comment or task, or `dispatched` with both. Each linked issue gets its own
@@ -161,6 +184,34 @@ This is a documented visibility window, not a longer-term retention guarantee.
 R2 must reconcile within that window. Missing revisions without a stored
 signed delivery follow R3 (`unsigned`, exact-snapshot approval required),
 never automatic admission from API text alone.
+
+## Reconciler (R1/R2/R3)
+
+`RunGitHubIntakeReconciler` runs every 10 minutes beside the intake sweep. It is
+stateless: GitHub's delivery log caps attempts and rate-limits redelivery.
+
+- **R1** retries a stored signed payload through the intake worker (CHE-2208).
+- **R2** lists `GET /app/hook/deliveries` with the App JWT (cursor from the
+  `Link` header, URL never followed, at most 20 pages; a log that is not fully read redelivers nothing) and asks
+  `POST /app/hook/deliveries/{id}/attempts` for a failed delivery older than the
+  10-minute grace and newer than 72 hours. The redelivery is signed by GitHub and re-enters the normal
+  webhook path. It stops after 5 attempts per GUID.
+  Off unless `GITHUB_INTAKE_REDELIVER=1`.
+- **R3** reads open, same-repo pull requests through the REST API and records
+  each review, inline comment or PR comment with no stored signed event as an
+  `unsigned` revision. The body is hashed, never stored. Only the newest stored revision
+  of the object is compared (body, review state and timestamps), so an edit back
+  to an earlier body or a same-body edit is recorded. Insert is idempotent on
+  the revision identity index; a repeat pass records nothing. `unsigned` is never dispatched automatically.
+  Off unless `GITHUB_INTAKE_UNSIGNED=1`.
+- A revision with no `source_delivery_guid` settles as `unsigned`
+  (`no_signed_delivery`), not as a retrying error.
+- **Alert:** a `deferred` or `unsigned` row older than 1 hour logs
+  `slog.Error` with `alert=github_intake_stale` (item, ref, state, reason,
+  `age_seconds`). Routing that log line to a pager is an operator step.
+
+The approval half of R3 (exact-snapshot approval) lands in 5b. Notify-only until
+gate G: no actionable dispatch, no webhook replay, no App subscription change.
 
 ## Normalization and dispatch-time admission
 
@@ -213,9 +264,10 @@ update timestamps may differ. GraphQL review-state enums are compared with their
 signed lowercase equivalents. No GraphQL author login is used for trust.
 
 Tests cover T3, T4, T13, T14, T15, T22, T23, T24 and T25 in
-`admission_test.go` and `github_admission_test.go`. Dispatch exactly-once receipts,
-replacement of pending self-edits and withdrawal projection remain worker duties
-(CHE-2208/CHE-2209), not side effects of this admission check.
+`admission_test.go` and `github_admission_test.go`. Dispatch exactly-once receipts
+and replacement of pending self-edits are worker duties (CHE-2208), not side
+effects of this admission check. Withdrawal projection is not part of the
+reconciler.
 
 Migrations 728/729 replace body-only uniqueness with revision identity using
 concurrent indexes. Rolling back 729 can fail safely if newer revisions share a

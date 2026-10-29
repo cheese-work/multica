@@ -36,6 +36,43 @@ WHERE installation_id = $1 AND repository_id = $2
 ORDER BY workspace_id
 FOR UPDATE;
 
+-- name: SupersedePendingGitHubWebhookRevisions :exec
+WITH revisions AS MATERIALIZED (
+    SELECT scoped.* FROM github_webhook_revision scoped
+    WHERE scoped.installation_id = $1 AND scoped.repository_id = $2
+      AND scoped.object_kind = $3 AND scoped.object_id = $4
+    ORDER BY scoped.workspace_id, scoped.source_delivery_guid
+    FOR UPDATE
+)
+UPDATE github_webhook_revision revision
+SET state = 'denied', reason = 'superseded', updated_at = now()
+FROM revisions pending
+WHERE revision.workspace_id = pending.workspace_id
+  AND revision.installation_id = pending.installation_id
+  AND revision.repository_id = pending.repository_id
+  AND revision.object_kind = pending.object_kind AND revision.object_id = pending.object_id
+  AND revision.source_delivery_guid = pending.source_delivery_guid
+  AND revision.state IN ('deferred', 'quarantined', 'unsigned', 'projected')
+  AND EXISTS (
+    SELECT 1 FROM revisions newer
+    WHERE newer.workspace_id = pending.workspace_id
+      AND newer.author_id = pending.author_id AND newer.sender_id = newer.author_id
+      AND newer.author_type = 'User' AND newer.action = 'edited' AND newer.state <> 'denied'
+      AND (
+        (pending.object_kind = 'review' AND (
+          pending.action = 'submitted'
+          OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+        ))
+        OR (pending.object_kind <> 'review' AND newer.object_updated_at IS NOT NULL AND (
+          newer.object_updated_at > COALESCE(pending.object_updated_at, pending.object_created_at)
+          OR (newer.object_updated_at = COALESCE(pending.object_updated_at, pending.object_created_at) AND (
+            pending.action = 'created'
+            OR (newer.created_at, newer.source_delivery_guid) > (pending.created_at, pending.source_delivery_guid)
+          ))
+        ))
+      )
+  );
+
 -- name: SetGitHubWebhookRevisionState :exec
 UPDATE github_webhook_revision SET state = $3, reason = $4, updated_at = now()
 WHERE workspace_id = $1 AND id = $2;
@@ -55,6 +92,10 @@ ORDER BY received_at LIMIT $1;
 
 -- name: GetGitHubWebhookDispatch :one
 SELECT * FROM github_webhook_dispatch WHERE workspace_id = $1 AND revision_id = $2 AND issue_id = $3;
+
+-- name: HasGitHubWebhookRevisionDispatch :one
+SELECT EXISTS (SELECT 1 FROM github_webhook_dispatch
+WHERE workspace_id = $1 AND revision_id = $2 AND state = 'dispatched');
 
 -- name: RecordGitHubWebhookDispatch :execrows
 INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id, revision_id, state, reason)
@@ -100,3 +141,30 @@ UPDATE github_webhook_revision SET state = 'denied', reason = $6, updated_at = n
 WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
     AND object_kind = $4 AND object_id = $5
     AND state IN ('deferred', 'quarantined', 'unsigned', 'projected');
+
+-- name: ListGitHubReconcilePullRequests :many
+SELECT DISTINCT pull.id, pull.workspace_id, pull.installation_id, pull.repo_owner, pull.repo_name, pull.pr_number
+FROM github_pull_request pull
+JOIN issue_pull_request link ON link.pull_request_id = pull.id
+JOIN github_installation installation ON installation.workspace_id = pull.workspace_id AND installation.installation_id = pull.installation_id
+WHERE pull.state = 'open' AND pull.head_repo_same
+ORDER BY pull.id;
+
+-- name: GetLatestGitHubWebhookRevision :one
+SELECT * FROM github_webhook_revision
+WHERE workspace_id = $1 AND installation_id = $2 AND repository_id = $3
+  AND object_kind = $4 AND object_id = $5
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListStaleGitHubWebhookItems :many
+SELECT 'intake'::text AS item, delivery_guid AS ref, state, reason,
+       EXTRACT(EPOCH FROM (now() - received_at))::bigint AS age_seconds
+FROM github_webhook_intake
+WHERE state = 'deferred' AND received_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
+UNION ALL
+SELECT 'revision'::text, id::text, state, reason,
+       EXTRACT(EPOCH FROM (now() - created_at))::bigint
+FROM github_webhook_revision
+WHERE state = 'unsigned' AND created_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
+ORDER BY 5 DESC;

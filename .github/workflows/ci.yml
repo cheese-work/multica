@@ -119,6 +119,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       frontend: ${{ steps.decide.outputs.frontend }}
       backend: ${{ steps.decide.outputs.backend }}
@@ -130,6 +131,8 @@ jobs:
       deploy_cd: ${{ steps.decide.outputs.deploy_cd }}
       images: ${{ steps.decide.outputs.images }}
       full: ${{ steps.decide.outputs.full }}
+      merge_group_green: ${{ steps.decide.outputs.merge_group_green }}
+      push_full: ${{ steps.decide.outputs.push_full }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -140,7 +143,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/ci-runners.test.mjs deploy/cd/release-manifest.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -161,10 +164,13 @@ jobs:
           # must not select the X99 self-hosted jobs (CHE-1381).
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           FILTER_RESULTS: ${{ toJSON(steps.filter.outputs) }}
+          CI_PUSH_FULL: ${{ vars.CI_PUSH_FULL }}
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-scope.mjs decide
 
   sqlc-check:
     needs: changes
+    if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -197,6 +203,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
+    if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
@@ -258,6 +265,7 @@ jobs:
 
   frontend-test:
     needs: changes
+    if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
     env:
       TURBO_CACHE_DIR: .turbo/cache
@@ -362,7 +370,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"always","frontend-test":"always","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -410,7 +418,7 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
     needs: [changes, migration-prefix-check]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -628,6 +636,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
+    if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -655,6 +664,7 @@ jobs:
   # merge base to diff against, and its branch was already checked.
   go-lint:
     needs: changes
+    if: ${{ needs.changes.outputs.push_full == 'true' }}
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
     runs-on: ubuntu-24.04
@@ -698,8 +708,84 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"always","backend-agent-tests":"backend","sqlc-check":"always","go-vulnerability-scan":"always","go-lint":"always","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
+          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
+
+  push-go-cache-warm:
+    needs: changes
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      CI: "true"
+      GOFLAGS: -count=1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        id: go
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache: false
+      - name: Restore Go module cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+      - name: Resolve Go build cache key
+        id: gocache
+        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.gocache.outputs.prefix }}
+      - name: Mark Go build cache epoch
+        id: goepoch
+        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
+      - name: Compile race test binaries without executing TestMain
+        working-directory: server
+        run: ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -run '^$' -exec /bin/true ./...
+      - name: Prune Go build cache to this run's entries
+        if: ${{ !cancelled() && steps.goepoch.outcome == 'success' }}
+        run: |
+          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
+            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
+      - name: Save Go build cache
+        if: ${{ !cancelled() && steps.gocache.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+
+  push-turbo-cache-warm:
+    needs: changes
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      TURBO_CACHE_DIR: .turbo/cache
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install
+      - name: Resolve runtime for cache key
+        id: runtime
+        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+      - name: Restore turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
+      - name: Warm build, type check, and lint cache
+        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
 
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
@@ -864,6 +950,13 @@ jobs:
           node scripts/generate-reserved-slugs.mjs
           git diff --exit-code -- packages/core/paths/reserved-slugs.ts
 
+      - name: Verify attachment text-preview whitelist is up to date
+        # The Go handler embeds the JSON source directly while the shared
+        # web/desktop view consumes the checked-in generated TypeScript file.
+        run: |
+          node scripts/generate-attachment-text-preview.mjs
+          git diff --exit-code -- packages/views/editor/utils/text-preview-whitelist.generated.ts
+
       - name: Setup Helm
         uses: azure/setup-helm@v5
 
@@ -904,6 +997,7 @@ jobs:
           bash deploy/cd/ensure-pyyaml.sh
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-build-cache.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
 

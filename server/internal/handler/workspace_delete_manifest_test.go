@@ -93,6 +93,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
+	"github_dispatch_halt":               workspaceDelete,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_route_grant":                 workspaceDelete,
@@ -100,6 +101,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
+	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
+	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
@@ -139,6 +142,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pr_automation":                workspaceDelete,
 	"issue_pull_request":                 workspaceDelete,
 	"issue_pull_request_exclusion":       workspaceDelete,
+	"issue_pr_event":                     workspaceDelete, // CHE-2298 a1 PR event store; no FKs, swept by DeleteWorkspace.
+	"issue_review_admission":             workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -179,6 +184,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
+	"run_budget_notice":                  workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -195,6 +201,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"task_message":                       workspaceDelete,
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
+	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
+	"task_pr_event_delivery":             workspaceDelete, // CHE-2298 a2
 	"task_token":                         workspaceDelete,
 	"task_usage":                         workspaceDelete,
 	"task_usage_hourly":                  workspaceDelete,

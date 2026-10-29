@@ -9,20 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestGitHubAdmissionSignedMetadata(test *testing.T) {
 	fixture := newGitHubIntakeFixture(test)
 	fixture.payload["review"].(map[string]any)["body"] = nil
-	fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:02:00Z"
 	delivery := fixture.issueID + "-T22-metadata"
 	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
 		test.Fatalf("intake = %d", response.Code)
 	}
 	var event, action, kind, hash, head, state string
 	var objectID, senderID, authorID int64
-	var createdAt, updatedAt, submittedAt time.Time
+	var createdAt, updatedAt, submittedAt pgtype.Timestamptz
 	if err := testPool.QueryRow(context.Background(), `SELECT event, action, object_kind, object_id, body_hash,
 head_sha, sender_id, author_id, review_state, object_created_at, object_updated_at, object_submitted_at
 FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(
@@ -34,8 +34,8 @@ FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(
 	if event != "pull_request_review" || action != "submitted" || kind != "review" || objectID != 77 || hash != hex.EncodeToString(digest[:]) || head != "review-head" || senderID != 42 || authorID != 42 || state != "changes_requested" {
 		test.Fatalf("signed metadata changed: %s/%s/%s/%d/%s/%s/%d/%d/%s", event, action, kind, objectID, hash, head, senderID, authorID, state)
 	}
-	if updatedAt.Sub(createdAt) != 2*time.Minute || submittedAt.Sub(createdAt) != time.Minute {
-		test.Fatal("signed review timestamps were not retained independently")
+	if createdAt.Valid || updatedAt.Valid || !submittedAt.Valid || submittedAt.Time.UTC().Format(time.RFC3339) != "2026-10-26T08:01:00Z" {
+		test.Fatalf("review timestamps = %v/%v/%v, want only signed submitted_at", createdAt, updatedAt, submittedAt)
 	}
 	assertGitHubIntakeNoEffects(test, fixture)
 }
@@ -98,6 +98,21 @@ func TestGitHubAdmissionT3ForeignEditQuarantined(test *testing.T) {
 	assertGitHubIntakeNoEffects(test, fixture)
 }
 
+func TestGitHubAdmissionMissingForkFlag(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	delete(fixture.payload["pull_request"].(map[string]any)["head"].(map[string]any)["repo"].(map[string]any), "fork")
+	delivery := fixture.issueID + "-missing-fork-flag"
+	if response := fixture.post("pull_request_review", fixture.secret, delivery); response.Code != http.StatusAccepted {
+		test.Fatalf("intake: %d %s", response.Code, response.Body.String())
+	}
+	var state, reason string
+	dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, delivery).Scan(&state, &reason)
+	if state != "deferred" || reason != "missing_pull_request_metadata" {
+		test.Fatalf("missing fork flag = %s/%s, want deferred/missing_pull_request_metadata", state, reason)
+	}
+	assertGitHubIntakeNoEffects(test, fixture)
+}
+
 func TestGitHubAdmissionForeignEditPermanentDenials(test *testing.T) {
 	for _, scenario := range []struct{ name, reason string }{
 		{"fork", "fork_pull_request"},
@@ -134,7 +149,6 @@ func TestGitHubAdmissionT23SameBodySelfEditIsNewRevision(test *testing.T) {
 	for _, suffix := range []string{"initial", "edit", "redelivery"} {
 		if suffix != "initial" {
 			fixture.payload["action"] = "edited"
-			fixture.payload["review"].(map[string]any)["updated_at"] = "2026-10-26T08:05:00Z"
 		}
 		if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-T23-"+suffix); response.Code != http.StatusAccepted {
 			test.Fatalf("%s = %d", suffix, response.Code)
@@ -142,6 +156,38 @@ func TestGitHubAdmissionT23SameBodySelfEditIsNewRevision(test *testing.T) {
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != 2 {
 		test.Fatalf("initial plus same-body self-edit = %d revisions, want 2", count)
+	}
+	assertGitHubIntakeNoEffects(test, fixture)
+}
+
+func TestGitHubAdmissionReviewRepeatedBodyReusesRevision(test *testing.T) {
+	fixture := newGitHubIntakeFixture(test)
+	fixture.payload["action"] = "edited"
+	review := fixture.payload["review"].(map[string]any)
+	for _, revision := range []struct {
+		suffix, body, state string
+		count               int
+	}{
+		{"first", "first edited body", "changes_requested", 1},
+		{"second", "second edited body", "changes_requested", 2},
+		{"return", "first edited body", "changes_requested", 2},
+		{"state", "first edited body", "approved", 3},
+	} {
+		review["body"], review["state"] = revision.body, revision.state
+		if response := fixture.post("pull_request_review", fixture.secret, fixture.issueID+"-identity-"+revision.suffix); response.Code != http.StatusAccepted {
+			test.Fatalf("%s = %d: %s", revision.suffix, response.Code, response.Body.String())
+		}
+		if count := dbfx.Count(test, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID); count != revision.count {
+			test.Fatalf("%s: %d revisions, want %d", revision.suffix, count, revision.count)
+		}
+		if revision.suffix == "first" {
+			dbfx.Exec(test, `UPDATE github_webhook_revision SET state='denied', reason='superseded' WHERE source_delivery_guid=$1`, fixture.issueID+"-identity-first")
+		}
+	}
+	var state, reason string
+	dbfx.QueryRow(test, `SELECT state, reason FROM github_webhook_revision WHERE source_delivery_guid=$1`, fixture.issueID+"-identity-first").Scan(&state, &reason)
+	if state != "denied" || reason != "superseded" {
+		test.Fatalf("repeated review body revived revision: %s/%s", state, reason)
 	}
 	assertGitHubIntakeNoEffects(test, fixture)
 }

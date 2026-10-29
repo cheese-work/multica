@@ -1,0 +1,9 @@
+issue: CHE-2175
+design: design/dm-agent-message-annotation/rev-2/A.html @ 283b80a1a7b27cfa95ab211f3dfec7b2ec2770fa
+pages:
+  - id: chat-decision-request
+    url: /<workspace-slug>/chat
+    keep: [decision-request-card, decision-request-source-issue, decision-request-source-comment, chat-annotation-chip, chat-send-button]
+    change:
+      - decision-request-ask: "Open asks reuse the annotation popup and named tab stop; notes answer only this request. Answered and withdrawn asks remain copyable."
+    remove: []

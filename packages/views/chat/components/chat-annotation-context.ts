@@ -11,3 +11,5 @@ export interface ChatAnnotationScope {
 export const ChatAnnotationContext = createContext<ChatAnnotationScope>({ enabled: false });
 
 export const useChatAnnotationScope = () => useContext(ChatAnnotationContext);
+
+export const DECISION_REQUEST_SOURCE_PREFIX = "decision-request:";

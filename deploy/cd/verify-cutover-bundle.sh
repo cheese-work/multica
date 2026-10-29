@@ -7,6 +7,8 @@ for path in \
   controller-files.sha256 \
   evidence/manifest.json \
   evidence/release-packet.json \
+  docker-compose.selfhost.yml \
+  deploy/cd/drift-receipt.mjs \
   deploy/cd/cutover.sh \
   deploy/cd/release-packet.mjs \
   deploy/cd/migration-inventory.mjs \

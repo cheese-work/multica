@@ -170,6 +170,8 @@ export interface PropertyChangedPayload {
  */
 export interface IssueStatusChangedPayload {
   action?: "created" | "updated" | "archived" | "reordered";
+  /** True when the write moved a status to another category, which stales issue-row projections. */
+  category_changed?: boolean;
 }
 
 export interface IssueWorkflowChangedPayload {
@@ -431,6 +433,7 @@ export interface ChatMessageEventPayload {
   content: string;
   task_id?: string;
   created_at: string;
+  message_kind?: import("./chat").ChatMessageKind;
 }
 
 export interface ChatDonePayload {

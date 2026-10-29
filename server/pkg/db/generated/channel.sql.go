@@ -368,6 +368,8 @@ type ClaimNextChannelMediaPendingObjectForReconcileParams struct {
 // while earlier rows ran, and could expire and be reclaimed before its own
 // DELETE was ever tried, inflating attempt/backoff for work that never
 // happened. One row per claim means attempt counts attempts.
+// MATERIALIZED pins the bounded candidate set so a nested-loop rescan cannot
+// move the LIMIT window to another row after an update.
 //
 // Due means (a) 'pending' rows older than the settle delay — an operational
 // buffer only; correctness comes from the state flip, after which a bind can

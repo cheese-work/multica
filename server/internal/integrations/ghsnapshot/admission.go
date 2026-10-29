@@ -50,14 +50,14 @@ func ReviewEventKind(event, action string) (string, string) {
 	}
 }
 
-func (m *Manager) CheckReviewRevision(ctx context.Context, installationID int64, revision ReviewRevision, trustedID int64) ReviewAdmission {
-	if m == nil {
+func (manager *Manager) CheckReviewRevision(ctx context.Context, installationID int64, revision ReviewRevision, trustedID int64) ReviewAdmission {
+	if manager == nil {
 		return (*Client)(nil).CheckReviewRevision(ctx, installationID, revision, trustedID)
 	}
-	return m.client.CheckReviewRevision(ctx, installationID, revision, trustedID)
+	return manager.client.CheckReviewRevision(ctx, installationID, revision, trustedID)
 }
 
-func (c *Client) CheckReviewRevision(ctx context.Context, installationID int64, revision ReviewRevision, trustedID int64) ReviewAdmission {
+func (client *Client) CheckReviewRevision(ctx context.Context, installationID int64, revision ReviewRevision, trustedID int64) ReviewAdmission {
 	objectKind, revisionKind := ReviewEventKind(revision.Event, revision.Action)
 	if revisionKind == "" {
 		return ReviewAdmission{"denied", "unsupported_event_action"}
@@ -74,10 +74,10 @@ func (c *Client) CheckReviewRevision(ctx context.Context, installationID int64, 
 	if objectKind == "review" && revision.ReviewState != "approved" && revision.ReviewState != "commented" && revision.ReviewState != "changes_requested" {
 		return ReviewAdmission{"denied", "unsupported_review_state"}
 	}
-	if !c.Enabled() || installationID <= 0 || revision.ObjectID <= 0 || revision.NodeID == "" {
+	if !client.Enabled() || installationID <= 0 || revision.ObjectID <= 0 || revision.NodeID == "" {
 		return ReviewAdmission{"deferred", "provenance_lookup_failed"}
 	}
-	node, err := c.reviewProvenance(ctx, installationID, revision.NodeID)
+	node, err := client.reviewProvenance(ctx, installationID, revision.NodeID)
 	databaseID, databaseErr := node.DatabaseID.Int64()
 	if err != nil || databaseErr != nil || node.ID != revision.NodeID || databaseID != revision.ObjectID || node.Type != map[string]string{
 		"review": "PullRequestReview", "review_comment": "PullRequestReviewComment", "issue_comment": "IssueComment",
@@ -121,14 +121,14 @@ type reviewProvenance struct {
 	State        *string         `json:"state"`
 }
 
-func (c *Client) reviewProvenance(ctx context.Context, installationID int64, nodeID string) (reviewProvenance, error) {
+func (client *Client) reviewProvenance(ctx context.Context, installationID int64, nodeID string) (reviewProvenance, error) {
 	const query = `query($id: ID!) { node(id: $id) { id __typename
 ... on IssueComment { databaseId: fullDatabaseId body lastEditedAt editor { __typename ... on User { databaseId } } }
 ... on PullRequestReviewComment { databaseId: fullDatabaseId body lastEditedAt editor { __typename ... on User { databaseId } } }
 ... on PullRequestReview { databaseId: fullDatabaseId body state lastEditedAt editor { __typename ... on User { databaseId } } }
 } }`
 	var node reviewProvenance
-	token, err := c.installationToken(ctx, installationID)
+	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return node, err
 	}
@@ -136,14 +136,14 @@ func (c *Client) reviewProvenance(ctx context.Context, installationID int64, nod
 	if err != nil {
 		return node, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.apiBase, "/")+"/graphql", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(client.apiBase, "/")+"/graphql", bytes.NewReader(body))
 	if err != nil {
 		return node, err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/vnd.github+json")
-	response, err := c.httpClient.Do(request)
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return node, errors.New("github: provenance lookup failed")
 	}
