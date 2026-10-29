@@ -354,13 +354,14 @@ func contextArgLen(provider string, rest []string) int {
 		}
 	case "codex":
 		// Inherited args may spell the override any way codex accepts:
-		// `-c k=v`, `--config k=v`, `-c=k=v`, `--config=k=v`, with TOML
-		// whitespace around the key. A preset's own args stay strict (Validate).
-		for _, flag := range []string{"-c", "--config"} {
-			if rest[0] == flag && len(rest) > 1 && isCodexContextKV(rest[1]) {
-				return 2
-			}
-			if kv, ok := strings.CutPrefix(rest[0], flag+"="); ok && isCodexContextKV(kv) {
+		// `-c k=v`, `--config k=v`, `-c=k=v`, `--config=k=v`, compact `-ck=v`,
+		// with TOML whitespace around the key. A preset's own args stay strict
+		// (Validate).
+		if len(rest) > 1 && (rest[0] == "-c" || rest[0] == "--config") && isCodexContextKV(rest[1]) {
+			return 2
+		}
+		for _, prefix := range []string{"--config=", "-c=", "-c"} {
+			if kv, ok := strings.CutPrefix(rest[0], prefix); ok && isCodexContextKV(kv) {
 				return 1
 			}
 		}

@@ -55,6 +55,10 @@ func TestCodexContextArgSpellings(t *testing.T) {
 		{"short inline", []string{"-c=model_context_window=100000"}},
 		{"toml whitespace", []string{"-c", "model_context_window = 100000"}},
 		{"auto compact long inline", []string{"--config=model_auto_compact_token_limit=90000"}},
+		{"compact window", []string{"-cmodel_context_window=100000"}},
+		{"compact auto compact", []string{"-cmodel_auto_compact_token_limit=90000"}},
+		{"compact whitespace key", []string{"-cmodel_context_window =100000"}},
+		{"long inline whitespace key", []string{"--config=model_context_window =100000"}},
 	}
 	keep := []string{"--sandbox", "workspace-write", "--config", "model_reasoning_effort=high", "-c=sandbox_mode=x"}
 	for _, c := range cases {
