@@ -1,6 +1,7 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
@@ -124,5 +125,45 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "hi{Enter}");
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not send");
+  });
+
+  it("explains where Send posts and the keyboard contract, with a visible field label", () => {
+    renderCard();
+    expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
+    expect(screen.getByText("Enter sends · Shift+Enter for a new line")).toBeVisible();
+    expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Or write an answer")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
+  });
+
+  it("keeps the answer and disables Send while offline", async () => {
+    const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      renderCard();
+      const user = userEvent.setup();
+      const field = screen.getByRole("textbox", { name: "Or write an answer" });
+      await user.type(field, "Ship C{Enter}");
+      expect(field).toHaveValue("Ship C");
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("You are offline. Your answer is kept.");
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+    } finally {
+      online.mockRestore();
+    }
+  });
+
+  it("shows the draft back with Discard draft when the server refuses with a conflict", async () => {
+    answerDecisionRequest.mockRejectedValue(new ApiError("this request cannot accept another answer", 409, "Conflict"));
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "with a note{Enter}");
+    const kept = await screen.findByTestId("decision-request-kept-draft");
+    expect(kept).toHaveTextContent("Nothing from your draft was posted.");
+    expect(kept).toHaveTextContent("Option A");
+    expect(kept).toHaveTextContent("with a note");
+    expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
   });
 });

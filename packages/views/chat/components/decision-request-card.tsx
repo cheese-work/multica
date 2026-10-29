@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { Loader2, MessageSquareQuote } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
+import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
@@ -8,18 +9,32 @@ import { cn } from "@multica/ui/lib/utils";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
+import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
-function DecisionAnswerForm({ card }: { card: RequestCard }) {
+interface AnswerDraft {
+  option: string;
+  text: string;
+}
+
+const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
+
+function DecisionAnswerForm({ card, onConflict }: { card: RequestCard; onConflict: (draft: AnswerDraft) => void }) {
   const { t } = useT("chat");
   const answer = useAnswerDecisionRequest(card.issue_id);
+  const online = useOnline();
   const [option, setOption] = useState("");
   const [text, setText] = useState("");
   const group = useId();
-  const canSend = !answer.isPending && (option !== "" || text.trim() !== "");
+  const textId = useId();
+  const canSend = online && !answer.isPending && (option !== "" || text.trim() !== "");
   const send = () => {
-    if (canSend) answer.mutate({ requestId: card.id, option: option || undefined, text: text.trim() || undefined });
+    if (!canSend) return;
+    answer.mutate(
+      { requestId: card.id, option: option || undefined, text: text.trim() || undefined },
+      { onError: (error) => isConflict(error) && onConflict({ option, text }) },
+    );
   };
 
   return (
@@ -31,14 +46,17 @@ function DecisionAnswerForm({ card }: { card: RequestCard }) {
         send();
       }}
     >
+      <p className="text-caption text-muted-foreground">
+        {t(($) => $.decision.answer_helper, { issue: card.issue_identifier || card.issue_id })}
+      </p>
       {!!card.options?.length && (
-        <fieldset className="space-y-1">
+        <fieldset role="radiogroup" className="space-y-1">
           <legend className="sr-only">{t(($) => $.decision.answer_options)}</legend>
           {card.options.map((item) => (
             <label
               key={item.label}
               className={cn(
-                "flex min-h-9 cursor-pointer items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-ring",
+                "flex min-h-9 cursor-pointer items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring",
                 option === item.label && "border-primary bg-primary/5",
               )}
             >
@@ -58,9 +76,12 @@ function DecisionAnswerForm({ card }: { card: RequestCard }) {
           ))}
         </fieldset>
       )}
+      <label htmlFor={textId} className="block text-label font-medium">
+        {t(($) => $.decision.answer_text)}
+      </label>
       <textarea
-        aria-label={t(($) => $.decision.answer_text)}
-        placeholder={t(($) => $.decision.answer_text)}
+        id={textId}
+        aria-describedby={`${textId}-hint`}
         value={text}
         rows={2}
         onChange={(event) => setText(event.target.value)}
@@ -70,16 +91,38 @@ function DecisionAnswerForm({ card }: { card: RequestCard }) {
             send();
           }
         }}
-        className="block w-full resize-y rounded-lg border border-surface-border bg-transparent px-2 py-1.5 focus-visible:outline-2 focus-visible:outline-ring"
+        className="block w-full resize-y rounded-lg border border-surface-border bg-transparent px-2 py-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       />
-      <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" disabled={!canSend}>
+      <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
+        {t(($) => $.decision.answer_hint)}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
           {t(($) => $.decision.answer_send)}
         </Button>
-        {answer.isError && <span role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_error)}</span>}
+        {!online && <span role="status" className="text-caption text-warning">{t(($) => $.decision.answer_offline)}</span>}
+        {answer.isError && !isConflict(answer.error) && (
+          <span role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_error)}</span>
+        )}
       </div>
     </form>
+  );
+}
+
+/** The server refused the answer with a 409: it posted nothing, so the draft is shown back, not sent. */
+function KeptDraft({ draft, onDiscard }: { draft: AnswerDraft; onDiscard: () => void }) {
+  const { t } = useT("chat");
+  return (
+    <div data-testid="decision-request-kept-draft" role="status" className="space-y-2 rounded-lg border border-surface-border px-2 py-2">
+      <p className="text-label font-medium">{t(($) => $.decision.answer_conflict)}</p>
+      <p className="whitespace-pre-wrap break-words text-caption text-muted-foreground">
+        {[draft.option, draft.text].filter(Boolean).join("\n\n")}
+      </p>
+      <Button type="button" size="sm" variant="outline" onClick={onDiscard}>
+        {t(($) => $.decision.answer_discard)}
+      </Button>
+    </div>
   );
 }
 
@@ -91,6 +134,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
+  const [keptDraft, setKeptDraft] = useState<AnswerDraft | null>(null);
 
   return (
     <section
@@ -145,7 +189,11 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
             <RichContent content={card.ask} density="compact" phase="settled" />
           </AnnotatableAnswer>
         </div>
-        {card.state === "open" && <DecisionAnswerForm card={card} />}
+        {keptDraft ? (
+          <KeptDraft draft={keptDraft} onDiscard={() => setKeptDraft(null)} />
+        ) : (
+          card.state === "open" && <DecisionAnswerForm card={card} onConflict={setKeptDraft} />
+        )}
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">
             {new Intl.DateTimeFormat("en-GB", {

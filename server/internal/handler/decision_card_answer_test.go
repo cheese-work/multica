@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -107,6 +108,37 @@ func TestCardAnswerRefusals(test *testing.T) {
 	}
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err == nil {
 		test.Fatal("an answered card took a second answer")
+	}
+}
+
+// The card shows a draft back with "nothing was posted" when it loses the race
+// to another answer, so the refusal must be a 409 that leaves no trace.
+func TestCardAnswerLosingTheRacePostsNothing(test *testing.T) {
+	fixture := newCardFixture(test)
+	first, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	counts := func() [3]int {
+		return [3]int{
+			dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID),
+			dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID),
+			dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID),
+		}
+	}
+	before := counts()
+	_, err = fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B", Text: "late draft"})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+		test.Fatalf("losing answer = %v, want a 409 refusal", err)
+	}
+	if after := counts(); after != before {
+		test.Fatalf("a refused answer left rows: messages/comments/answers %v -> %v", before, after)
+	}
+	var snapshot string
+	dbfx.QueryRow(test, `SELECT content_snapshot FROM decision_answer WHERE id = $1`, first.Answer.ID).Scan(&snapshot)
+	if snapshot != "Option A" {
+		test.Fatalf("the first answer became %q", snapshot)
 	}
 }
 
