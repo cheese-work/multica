@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -92,61 +94,15 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update env")
 		return
 	}
-	existing := unmarshalCustomEnv(locked)
-	if req.IfRevision != nil && *req.IfRevision != envRevision(existing) {
+	updated, next, err := applyAgentEnvPatch(r.Context(), qtx, locked, req, verifiedApprover{UserID: member.UserID})
+	if errors.Is(err, errEnvRevisionMismatch) {
 		writeError(w, http.StatusPreconditionFailed, "env changed since if_revision; re-read and retry")
 		return
 	}
-
-	next := make(map[string]string, len(existing)+len(req.Set))
-	for k, v := range existing {
-		next[k] = v
-	}
-	for k, v := range req.Set {
-		next[k] = v
-	}
-	for _, k := range req.Unset {
-		delete(next, k)
-	}
-	_, audit := mergeAgentEnv(existing, next)
-
-	envBytes, err := json.Marshal(next)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to encode env")
-		return
-	}
-	updated, err := qtx.UpdateAgentCustomEnv(r.Context(), db.UpdateAgentCustomEnvParams{
-		ID:        agent.ID,
-		CustomEnv: envBytes,
-	})
-	if err != nil {
-		slog.Warn("patch agent custom_env failed",
+		slog.Error("agent_env patch failed; rolling back",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to update env")
-		return
-	}
-
-	details, _ := json.Marshal(map[string]any{
-		"agent_id":     uuidToString(agent.ID),
-		"agent_name":   agent.Name,
-		"operation":    "patch",
-		"conditional":  req.IfRevision != nil,
-		"added_keys":   audit.added,
-		"removed_keys": audit.removed,
-		"changed_keys": audit.changed,
-	})
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
-		ID:          dbid.NewV7(),
-		WorkspaceID: agent.WorkspaceID,
-		IssueID:     pgtype.UUID{},
-		ActorType:   pgtype.Text{String: "member", Valid: true},
-		ActorID:     parseUUID(uuidToString(member.UserID)),
-		Action:      agentEnvActivityUpdated,
-		Details:     details,
-	}); err != nil {
-		slog.Error("agent_env_updated audit write failed; rolling back patch",
-			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
-		writeError(w, http.StatusInternalServerError, "audit log write failed; env update rolled back")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -169,4 +125,69 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 		CustomEnv: masked,
 		Revision:  envRevision(next),
 	})
+}
+
+// verifiedApprover is the human behind an env change. DecisionActionID is set
+// only when the change runs from an approved decision card.
+type verifiedApprover struct {
+	UserID           pgtype.UUID
+	DecisionActionID pgtype.UUID
+}
+
+var errEnvRevisionMismatch = errors.New("env changed since if_revision")
+
+// applyAgentEnvPatch merges req into the locked agent's env and writes the
+// audit row in the caller's transaction. It takes no locks and publishes
+// nothing: the caller owns both, so an approved action and the PATCH
+// endpoint share one write path. An audit failure fails the whole patch.
+func applyAgentEnvPatch(ctx context.Context, queries *db.Queries, locked db.Agent, req PatchAgentEnvRequest, approver verifiedApprover) (db.Agent, map[string]string, error) {
+	existing := unmarshalCustomEnv(locked)
+	if req.IfRevision != nil && *req.IfRevision != envRevision(existing) {
+		return db.Agent{}, nil, errEnvRevisionMismatch
+	}
+	next := make(map[string]string, len(existing)+len(req.Set))
+	for k, v := range existing {
+		next[k] = v
+	}
+	for k, v := range req.Set {
+		next[k] = v
+	}
+	for _, k := range req.Unset {
+		delete(next, k)
+	}
+	_, audit := mergeAgentEnv(existing, next)
+
+	envBytes, err := json.Marshal(next)
+	if err != nil {
+		return db.Agent{}, nil, err
+	}
+	updated, err := queries.UpdateAgentCustomEnv(ctx, db.UpdateAgentCustomEnvParams{ID: locked.ID, CustomEnv: envBytes})
+	if err != nil {
+		return db.Agent{}, nil, err
+	}
+	detail := map[string]any{
+		"agent_id":     uuidToString(locked.ID),
+		"agent_name":   locked.Name,
+		"operation":    "patch",
+		"conditional":  req.IfRevision != nil,
+		"added_keys":   audit.added,
+		"removed_keys": audit.removed,
+		"changed_keys": audit.changed,
+	}
+	if approver.DecisionActionID.Valid {
+		detail["decision_action_id"] = uuidToString(approver.DecisionActionID)
+	}
+	details, _ := json.Marshal(detail)
+	if _, err := queries.CreateActivity(ctx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: locked.WorkspaceID,
+		IssueID:     pgtype.UUID{},
+		ActorType:   pgtype.Text{String: "member", Valid: true},
+		ActorID:     approver.UserID,
+		Action:      agentEnvActivityUpdated,
+		Details:     details,
+	}); err != nil {
+		return db.Agent{}, nil, err
+	}
+	return updated, next, nil
 }

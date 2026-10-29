@@ -465,3 +465,11 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id'
   AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: CreateDecisionCardAnswer :one
+-- A human's click on a decision card (approve or reject of a decision_action).
+-- No task, chat or comment source: the answering turn does not exist, so no
+-- finalizer will ever schedule it. The click schedules the wake itself.
+INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
+VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
+RETURNING *;

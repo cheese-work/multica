@@ -137,6 +137,7 @@ UPDATE agent SET
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
     custom_env = COALESCE(sqlc.narg('custom_env'), custom_env),
+    custom_env_version = custom_env_version + CASE WHEN sqlc.narg('custom_env')::jsonb IS NULL THEN 0 ELSE 1 END,
     custom_args = COALESCE(sqlc.narg('custom_args'), custom_args),
     mcp_config = COALESCE(sqlc.narg('mcp_config'), mcp_config),
     model = COALESCE(sqlc.narg('model'), model),
@@ -186,7 +187,7 @@ RETURNING *;
 -- of custom_env handling so all env mutations flow through here and the
 -- handler's audit-log + **** sentinel guard.
 UPDATE agent
-SET custom_env = $2, updated_at = now()
+SET custom_env = $2, custom_env_version = custom_env_version + 1, updated_at = now()
 WHERE id = $1
 RETURNING *;
 

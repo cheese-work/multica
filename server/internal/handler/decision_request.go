@@ -31,6 +31,7 @@ type decisionRequestInput struct {
 	EscalationClass string
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
+	Action          *decisionActionDraft
 	// Options are the card's answer buttons; the flat Ask carries their labels.
 	Options []decisiontx.AskOption
 	// AskJSON is the decoded structured Ask, stored whole for the card to render.
@@ -45,6 +46,7 @@ type decisionRequestResult struct {
 	ClearedComments  []db.Comment
 	CreatedSession   *db.ChatSession
 	Replayed         bool
+	Action           *db.DecisionAction
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -419,6 +421,14 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err != nil {
 		return empty, err
 	}
+	var action *db.DecisionAction
+	if input.Action != nil {
+		stored, err := createDecisionAction(ctx, queries, issue, created, intent.TaskID, input.Action)
+		if err != nil {
+			return empty, err
+		}
+		action = &stored
+	}
 	var cleared []db.Comment
 	if root != nil {
 		cleared, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
@@ -463,7 +473,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err := queries.CompleteDecisionIntent(ctx, db.CompleteDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: intent.ID, RequestID: created.ID}); err != nil {
 		return empty, err
 	}
-	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared}, nil
+	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action}, nil
 }
 
 // createSingleCallDecisionTx is the request path without an intent comment: it
