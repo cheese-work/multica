@@ -20,12 +20,28 @@ interface AnswerDraft {
 
 const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 
-function DecisionAnswerForm({ card, onConflict }: { card: RequestCard; onConflict: (draft: AnswerDraft) => void }) {
+const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
+const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
+
+// The parent owns the draft so a card that turns answered under the reader
+// (another tab, the DM) does not unmount the form and delete what was typed.
+function DecisionAnswerForm({
+  card,
+  draft,
+  onDraftChange,
+  onRefused,
+}: {
+  card: RequestCard;
+  draft: AnswerDraft;
+  onDraftChange: (draft: AnswerDraft) => void;
+  onRefused: () => void;
+}) {
   const { t } = useT("chat");
   const answer = useAnswerDecisionRequest(card.issue_id);
   const online = useOnline();
-  const [option, setOption] = useState("");
-  const [text, setText] = useState("");
+  const { option, text } = draft;
+  const setOption = (next: string) => onDraftChange({ option: next, text });
+  const setText = (next: string) => onDraftChange({ option, text: next });
   const group = useId();
   const textId = useId();
   const canSend = online && !answer.isPending && (option !== "" || text.trim() !== "");
@@ -33,7 +49,10 @@ function DecisionAnswerForm({ card, onConflict }: { card: RequestCard; onConflic
     if (!canSend) return;
     answer.mutate(
       { requestId: card.id, option: option || undefined, text: text.trim() || undefined },
-      { onError: (error) => isConflict(error) && onConflict({ option, text }) },
+      {
+        onSuccess: () => onDraftChange(EMPTY_DRAFT),
+        onError: (error) => isConflict(error) && onRefused(),
+      },
     );
   };
 
@@ -110,7 +129,7 @@ function DecisionAnswerForm({ card, onConflict }: { card: RequestCard; onConflic
   );
 }
 
-/** The server refused the answer with a 409: it posted nothing, so the draft is shown back, not sent. */
+/** The card can no longer take the answer (a 409, or it turned answered first): the draft is shown back, not sent. */
 function KeptDraft({ draft, onDiscard }: { draft: AnswerDraft; onDiscard: () => void }) {
   const { t } = useT("chat");
   return (
@@ -134,7 +153,12 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
-  const [keptDraft, setKeptDraft] = useState<AnswerDraft | null>(null);
+  const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
+  const [refused, setRefused] = useState(false);
+  const discardDraft = () => {
+    setDraft(EMPTY_DRAFT);
+    setRefused(false);
+  };
 
   return (
     <section
@@ -189,10 +213,12 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
             <RichContent content={card.ask} density="compact" phase="settled" />
           </AnnotatableAnswer>
         </div>
-        {keptDraft ? (
-          <KeptDraft draft={keptDraft} onDiscard={() => setKeptDraft(null)} />
+        {(refused || card.state !== "open") && hasDraft(draft) ? (
+          <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
-          card.state === "open" && <DecisionAnswerForm card={card} onConflict={setKeptDraft} />
+          card.state === "open" && (
+            <DecisionAnswerForm card={card} draft={draft} onDraftChange={setDraft} onRefused={() => setRefused(true)} />
+          )
         )}
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">

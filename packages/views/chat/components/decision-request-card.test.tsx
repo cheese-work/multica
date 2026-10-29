@@ -151,6 +151,38 @@ describe("DecisionRequestCard answering", () => {
     }
   });
 
+  it("keeps an unsent draft when the card turns answered from elsewhere", async () => {
+    const client = new QueryClient();
+    const view = (value: RequestCard) => (
+      <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    const { rerender } = renderWithI18n(view(withOptions));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "my note");
+    rerender(view({ ...withOptions, state: "answered", record_comment_id: "record" }));
+    expect(screen.getByTestId("decision-request-record")).toBeInTheDocument();
+    const kept = screen.getByTestId("decision-request-kept-draft");
+    expect(kept).toHaveTextContent("Option B");
+    expect(kept).toHaveTextContent("my note");
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
+  it("shows no kept draft after a successful send turns the card answered", async () => {
+    const client = new QueryClient();
+    const view = (value: RequestCard) => (
+      <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    const { rerender } = renderWithI18n(view(withOptions));
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalled());
+    rerender(view({ ...withOptions, state: "answered" }));
+    expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
   it("shows the draft back with Discard draft when the server refuses with a conflict", async () => {
     answerDecisionRequest.mockRejectedValue(new ApiError("this request cannot accept another answer", 409, "Conflict"));
     renderCard();
