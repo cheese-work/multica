@@ -10,12 +10,29 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // RaiseIssueRunBudgetRequest sets the issue's own run cap to Runs total.
 type RaiseIssueRunBudgetRequest struct {
 	Runs int `json:"runs"`
+}
+
+// GetIssueRunBudget returns the issue's run budget: runs used in the open
+// window against the limit in force, its state, and the suggested raise. Any
+// reader of the issue may see it; an issue with no budget says so.
+func (h *Handler) GetIssueRunBudget(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	snap, err := service.LoadRunBudgetSnapshot(r.Context(), h.Queries, issue)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // RaiseIssueRunBudget lifts one issue's run cap (CHE-2226) so a person can pay
