@@ -612,6 +612,7 @@ type ChatSession struct {
 	TitleManuallySet       bool               `json:"title_manually_set"`
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
+	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
 }
 
 type ChatWakeup struct {

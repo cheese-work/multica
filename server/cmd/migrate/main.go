@@ -152,6 +152,7 @@ var concurrentIndexCleanups = map[string]string{
 	"760_issue_pr_event_latest_index":                           "idx_issue_pr_event_latest",
 	"770_task_pr_event_capability_index":                        "task_pr_event_capability_task_uidx",
 	"772_task_pr_event_delivery_key_index":                      "task_pr_event_delivery_key_uidx",
+	"797_decision_topic_index":                                  "idx_chat_session_decision_topic",
 	"738_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
 	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
