@@ -1891,11 +1891,15 @@
     "state": {
       "pending": "En attente",
       "effective": "En vigueur",
-      "disclaimed": "Retirée"
+      "disclaimed": "Retirée",
+      "delivered": "Livrée",
+      "recorded": "Enregistrée"
     },
     "via_dm": "via DM",
     "recorded_by": "Enregistré par {{name}}",
-    "asked_in_dm": "Posé dans le DM",
+    "recorded_for": "Enregistrée pour {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Aller à la carte",
     "answered_in_dm": "Répondu dans le DM",
     "private_dm": "d'un DM privé",
     "disclaim_action": "Retirer",

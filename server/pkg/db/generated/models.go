@@ -748,6 +748,9 @@ type DecisionAnswer struct {
 	WithdrawalCommentID     pgtype.UUID        `json:"withdrawal_comment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	ChosenOptionIndex       pgtype.Int4        `json:"chosen_option_index"`
+	ReplyText               pgtype.Text        `json:"reply_text"`
+	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
 }
 
 type DecisionBoundWrite struct {
@@ -834,6 +837,7 @@ type DecisionRequest struct {
 	WithdrawnByTaskID     pgtype.UUID        `json:"withdrawn_by_task_id"`
 	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
 	Options               []byte             `json:"options"`
+	AskJson               []byte             `json:"ask_json"`
 }
 
 type DecisionWorkerLease struct {
