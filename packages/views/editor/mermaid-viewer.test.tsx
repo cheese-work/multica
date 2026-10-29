@@ -500,3 +500,47 @@ describe("MermaidViewer source and export", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("MermaidViewer touch containment", () => {
+  function dialog(): HTMLElement {
+    return document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+  }
+
+  it("keeps every touch inside the dialog, header and edges included", () => {
+    render(<Harness />);
+
+    // Tailwind classes, not computed style: jsdom has no stylesheet. `touch-none`
+    // stops the browser claiming a finger that lands on the header; `overscroll-contain`
+    // stops scroll chaining to the page behind.
+    expect(dialog()).toHaveClass("touch-none", "overscroll-contain");
+  });
+
+  it("fills the screen below md, so there is no backdrop strip to touch", () => {
+    render(<Harness />);
+
+    expect(dialog()).toHaveClass("max-md:!inset-0", "max-md:!w-screen", "max-md:!h-dvh");
+  });
+
+  it("swallows an iOS gesturestart that starts anywhere in the dialog", () => {
+    render(<Harness />);
+
+    // Safari's pinch-to-zoom-page fires `gesturestart`; cancelling it on the
+    // dialog root stops a pinch that begins on the header from zooming the page.
+    const event = new Event("gesturestart", { bubbles: true, cancelable: true });
+    screen.getByTestId("media-toolbar").dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("lets the source view scroll by touch", async () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Show source" }));
+
+    // Its own scroll container: touch-action is resolved up to the nearest
+    // scroller, so the dialog's `touch-none` does not reach it. It must not
+    // opt out itself either.
+    const source = (await screen.findByTestId("code-block-static")).parentElement!;
+    expect(source).toHaveClass("overflow-auto");
+    expect(source.className).not.toMatch(/touch-none/);
+  });
+});
