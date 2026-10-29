@@ -97,8 +97,8 @@ export const issueAttachmentsOptions = (wsId: string | null, id: string) =>
 
 /**
  * Comment-ID chip preview. `null` (404 / malformed) is a settled answer, so it
- * is cached like any other. No WS patching: a 60s stale window bounds how long
- * an edited or deleted comment keeps its old preview.
+ * is cached like any other. `useCommentPreviewRealtime` refetches on comment
+ * edit/delete and reconnect; `staleTime` additionally refetches on remount.
  */
 export const commentPreviewOptions = (wsId: string | null, commentId: string) =>
   queryOptions({
