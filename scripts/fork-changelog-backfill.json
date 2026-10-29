@@ -1,0 +1,427 @@
+{
+  "entries": [
+    {
+      "id": "fork-pr-177",
+      "number": 177,
+      "mergedAt": "2026-10-09T02:24:08.000Z",
+      "date": "2026-10-09",
+      "section": "Bug Fixes",
+      "text": "An agent's own worker-to-leader comment no longer starts the same agent again in another role.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-178",
+      "number": 178,
+      "mergedAt": "2026-10-08T10:27:45.000Z",
+      "date": "2026-10-08",
+      "section": "New Features",
+      "text": "Only owners can change workspace, squad and agent instructions, with compare-and-swap protection against overwriting edits.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-179",
+      "number": 179,
+      "mergedAt": "2026-10-08T03:53:16.000Z",
+      "date": "2026-10-08",
+      "section": "New Features",
+      "text": "Release builds carry one ICT build stamp, and updates keep the correct version order.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-174",
+      "number": 174,
+      "mergedAt": "2026-10-07T02:10:30.000Z",
+      "date": "2026-10-07",
+      "section": "New Features",
+      "text": "Scheduled autopilots and recurring wakeups pause for 60 minutes after a provider server failure and resume only once it answers 401.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-159",
+      "number": 159,
+      "mergedAt": "2026-10-04T11:54:46.000Z",
+      "date": "2026-10-04",
+      "section": "Bug Fixes",
+      "text": "Rate-limited PR wakeups now recover atomically and can no longer be revived by switching them off and on.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-157",
+      "number": 157,
+      "mergedAt": "2026-10-04T03:15:47.000Z",
+      "date": "2026-10-04",
+      "section": "New Features",
+      "text": "Issue owners are now woken by default when a linked PR merges or its CI fails.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-155",
+      "number": 155,
+      "mergedAt": "2026-10-03T01:05:21.000Z",
+      "date": "2026-10-03",
+      "section": "New Features",
+      "text": "multica update and the daemon now update Linux and macOS builds from successful fork main CI artifacts.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-156",
+      "number": 156,
+      "mergedAt": "2026-10-03T01:04:43.000Z",
+      "date": "2026-10-03",
+      "section": "New Features",
+      "text": "Owners can pause a daemon for maintenance with multica daemon maintenance and set agent environment values conditionally.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-151",
+      "number": 151,
+      "mergedAt": "2026-10-02T04:36:52.000Z",
+      "date": "2026-10-02",
+      "section": "New Features",
+      "text": "Hermes agents can opt in to an external memory backend, per agent.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-143",
+      "number": 143,
+      "mergedAt": "2026-09-29T05:18:08.000Z",
+      "date": "2026-09-29",
+      "section": "Bug Fixes",
+      "text": "Hermes and Codex runs on GPT-6 Sol and Luna now report their cost.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-120",
+      "number": 120,
+      "mergedAt": "2026-09-25T08:08:15.000Z",
+      "date": "2026-09-25",
+      "section": "New Features",
+      "text": "The CLI can send an expected digest so governed workspace and squad fields change only if nobody edited them first.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-119",
+      "number": 119,
+      "mergedAt": "2026-09-25T03:52:15.000Z",
+      "date": "2026-09-25",
+      "section": "Bug Fixes",
+      "text": "Long-running Codex issue threads now start fresh instead of resuming with a broken tool setup.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-114",
+      "number": 114,
+      "mergedAt": "2026-09-25T03:47:56.000Z",
+      "date": "2026-09-25",
+      "section": "Bug Fixes",
+      "text": "Codex runs that wrongly claim they have no CLI access are now retried, or failed fast.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-115",
+      "number": 115,
+      "mergedAt": "2026-09-25T02:40:59.000Z",
+      "date": "2026-09-25",
+      "section": "Bug Fixes",
+      "text": "Codex agents on GPT-5.6 and GPT-6 models keep their shell tool.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-105",
+      "number": 105,
+      "mergedAt": "2026-09-24T10:57:10.000Z",
+      "date": "2026-09-24",
+      "section": "New Features",
+      "text": "Workspaces can set how long export audit manifests are kept (90 days by default).",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-101",
+      "number": 101,
+      "mergedAt": "2026-09-24T07:00:41.000Z",
+      "date": "2026-09-24",
+      "section": "Bug Fixes",
+      "text": "Codex runs that died at start with a SQLite init error now retry once.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-104",
+      "number": 104,
+      "mergedAt": "2026-09-24T06:59:42.000Z",
+      "date": "2026-09-24",
+      "section": "New Features",
+      "text": "New multica provenance export command writes an audited, redacted, read-only export of issue and thread records.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-94",
+      "number": 94,
+      "mergedAt": "2026-09-21T18:10:46.000Z",
+      "date": "2026-09-22",
+      "section": "New Features",
+      "text": "multica squad update can read instructions from a file or stdin without shell escaping.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-67",
+      "number": 67,
+      "mergedAt": "2026-09-21T09:48:48.000Z",
+      "date": "2026-09-21",
+      "section": "New Features",
+      "text": "Workspaces can opt in to server-side checks that agent writes cite the required source link of an issue, including raw CLI and API calls.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-71",
+      "number": 71,
+      "mergedAt": "2026-09-21T09:47:25.000Z",
+      "date": "2026-09-21",
+      "section": "New Features",
+      "text": "The provider hold now also blocks task retries and claims, not only new triggers.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-54",
+      "number": 54,
+      "mergedAt": "2026-09-21T09:24:56.000Z",
+      "date": "2026-09-21",
+      "section": "New Features",
+      "text": "Agent runs now start with a checkpoint briefing that tracks which comment threads changed since the last run.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-76",
+      "number": 76,
+      "mergedAt": "2026-09-21T08:15:58.000Z",
+      "date": "2026-09-21",
+      "section": "Bug Fixes",
+      "text": "Sub-issues now close themselves instead of parking at in review, so parent stages no longer stall.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-66",
+      "number": 66,
+      "mergedAt": "2026-09-18T13:52:49.000Z",
+      "date": "2026-09-18",
+      "section": "New Features",
+      "text": "Deploys now switch between blue and green app slots with one atomic cutover.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-65",
+      "number": 65,
+      "mergedAt": "2026-09-18T04:44:23.000Z",
+      "date": "2026-09-18",
+      "section": "New Features",
+      "text": "When a provider is on hold, dispatching to it now fails with a clear policy message instead of a 503 error.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-56",
+      "number": 56,
+      "mergedAt": "2026-09-17T17:41:27.000Z",
+      "date": "2026-09-18",
+      "section": "New Features",
+      "text": "Status questions get an instant answer without a model call, in the issue comment box and in three CLI reads.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-39",
+      "number": 39,
+      "mergedAt": "2026-09-17T17:40:11.000Z",
+      "date": "2026-09-18",
+      "section": "New Features",
+      "text": "Assigning an issue no longer starts a duplicate run when the agent already has one pending.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-47",
+      "number": 47,
+      "mergedAt": "2026-09-17T17:39:50.000Z",
+      "date": "2026-09-18",
+      "section": "New Features",
+      "text": "Qualified main builds now deploy to C00 automatically, with a bounded rollback if the deploy fails.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-61",
+      "number": 61,
+      "mergedAt": "2026-09-17T17:39:28.000Z",
+      "date": "2026-09-18",
+      "section": "Bug Fixes",
+      "text": "Autopilot create-issue no longer fails when a duplicate pending task already exists.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-55",
+      "number": 55,
+      "mergedAt": "2026-09-17T10:02:56.000Z",
+      "date": "2026-09-17",
+      "section": "Bug Fixes",
+      "text": "Completing a stage now wakes the parent issue once instead of twice.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-62",
+      "number": 62,
+      "mergedAt": "2026-09-17T09:42:39.000Z",
+      "date": "2026-09-17",
+      "section": "Bug Fixes",
+      "text": "\"Show N more replies\" now expands a comment thread; the button no longer vanishes mid-click.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-41",
+      "number": 41,
+      "mergedAt": "2026-09-17T09:38:29.000Z",
+      "date": "2026-09-17",
+      "section": "Bug Fixes",
+      "text": "Show more / Show less on issue descriptions is now a visible button with a hover state and a smooth expand animation.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-43",
+      "number": 43,
+      "mergedAt": "2026-09-15T22:12:46.000Z",
+      "date": "2026-09-16",
+      "section": "New Features",
+      "text": "Find (Ctrl/Cmd+F) and notification links now open folded content before jumping to it.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-42",
+      "number": 42,
+      "mergedAt": "2026-09-15T07:05:48.000Z",
+      "date": "2026-09-15",
+      "section": "Bug Fixes",
+      "text": "Quoting \"Closes X\" in code no longer closes an issue, and an issue with open sub-issues no longer auto-closes.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-49",
+      "number": 49,
+      "mergedAt": "2026-09-15T06:36:26.000Z",
+      "date": "2026-09-15",
+      "section": "Bug Fixes",
+      "text": "Fold all no longer re-expands threads that have an active draft or run.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-31",
+      "number": 31,
+      "mergedAt": "2026-09-15T03:24:05.000Z",
+      "date": "2026-09-15",
+      "section": "New Features",
+      "text": "Comment threads can be folded, including Fold all, and replies and agent runs now sit in one chronological order.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-35",
+      "number": 35,
+      "mergedAt": "2026-09-15T03:22:36.000Z",
+      "date": "2026-09-15",
+      "section": "New Features",
+      "text": "multica issue comment resolve --known-as-of refuses to resolve a thread that changed after you last read it.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-34",
+      "number": 34,
+      "mergedAt": "2026-09-15T01:31:22.000Z",
+      "date": "2026-09-15",
+      "section": "Bug Fixes",
+      "text": "Two simultaneous reruns of the same task no longer cancel each other's run.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-33",
+      "number": 33,
+      "mergedAt": "2026-09-14T09:16:17.000Z",
+      "date": "2026-09-14",
+      "section": "New Features",
+      "text": "Double-clicking or retrying Rerun no longer starts a second run.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-27",
+      "number": 27,
+      "mergedAt": "2026-09-13T18:13:52.000Z",
+      "date": "2026-09-14",
+      "section": "New Features",
+      "text": "Long issue descriptions now collapse behind a Show more / Show less control.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-29",
+      "number": 29,
+      "mergedAt": "2026-09-13T17:52:13.000Z",
+      "date": "2026-09-14",
+      "section": "New Features",
+      "text": "Agents can no longer silently change agent, squad, workspace or project instructions through the generic update API.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-13",
+      "number": 13,
+      "mergedAt": "2026-09-12T06:07:43.000Z",
+      "date": "2026-09-12",
+      "section": "New Features",
+      "text": "One GitHub App can now serve several GitHub organizations in the same workspace.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-15",
+      "number": 15,
+      "mergedAt": "2026-09-11T01:32:59.000Z",
+      "date": "2026-09-11",
+      "section": "Bug Fixes",
+      "text": "multica issue update --expected-revision rejects stale writes; resolving a comment and recovery dispatch no longer race.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-12",
+      "number": 12,
+      "mergedAt": "2026-09-10T09:02:43.000Z",
+      "date": "2026-09-10",
+      "section": "Bug Fixes",
+      "text": "Squad leaders no longer risk publishing the same candidate twice when a merge event and a human reply arrive together.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-11",
+      "number": 11,
+      "mergedAt": "2026-09-10T06:57:23.000Z",
+      "date": "2026-09-10",
+      "section": "Bug Fixes",
+      "text": "Squad leaders must check the issue before deciding to do nothing, so a human comment no longer leaves a silent, empty run.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-5",
+      "number": 5,
+      "mergedAt": "2026-05-05T11:39:53.000Z",
+      "date": "2026-05-05",
+      "section": "Bug Fixes",
+      "text": "New projects get the default workflow at once, and a project change made together with a status change applies in order.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-3",
+      "number": 3,
+      "mergedAt": "2026-05-05T11:25:31.000Z",
+      "date": "2026-05-05",
+      "section": "New Features",
+      "text": "Issue statuses can follow a customizable workflow; multica issue transitions lists the allowed next statuses.",
+      "group": "week"
+    },
+    {
+      "id": "fork-pr-1",
+      "number": 1,
+      "mergedAt": "2026-05-05T07:30:08.000Z",
+      "date": "2026-05-05",
+      "section": "New Features",
+      "text": "Issue pages now show a Graph in the sidebar with the parent and sub-issue tree.",
+      "group": "week"
+    }
+  ]
+}

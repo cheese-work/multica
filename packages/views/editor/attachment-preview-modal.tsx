@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ComponentProps,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -66,6 +67,7 @@ import {
   UI_MOTION_DURATION,
 } from "@multica/ui/lib/motion";
 import { useT } from "../i18n";
+import { MediaLinkAction, useMediaSource, ViewerActions } from "../media/media-context";
 import { useNavigation } from "../navigation";
 import { openExternal } from "../platform";
 import { isDesktopShell } from "../platform/local-directory";
@@ -98,6 +100,8 @@ import {
 } from "./hooks/use-html-preview-location";
 import { CodeBlockStatic } from "./code-block-static";
 import { TablePreview } from "./table-preview";
+import { PlanRevisionViewer } from "./plan-revision-viewer";
+import { planRevisionNumber } from "@multica/core/attachments";
 import { StructuredTree } from "./structured-tree";
 import {
   HTML_VIEWPORTS,
@@ -660,7 +664,14 @@ function useStructuredParse(state: PreviewState, enabled: boolean) {
 //
 // `surface` is where it is mounted: the viewer overlay, or the "open in new
 // tab" page, which has no close, no sequence and no window drag region.
-function PreviewPanel({
+function PreviewPanel(props: ComponentProps<typeof GenericPreviewPanel>) {
+  if (props.kind === "markdown" && props.source.kind === "full" && props.source.attachment.issue_id && planRevisionNumber(props.source.attachment.filename) !== null) {
+    return <PlanRevisionViewer key={props.source.attachment.id} attachment={props.source.attachment} onDownload={props.onDownload} onClose={props.onClose} onOpenInNewTab={props.onOpenInNewTab} titleAccessory={props.titleAccessory} info={props.info} locate={props.locate} onOpenOverview={props.onOpenOverview} />;
+  }
+  return <GenericPreviewPanel {...props} />;
+}
+
+function GenericPreviewPanel({
   surface,
   kind,
   source,
@@ -700,6 +711,8 @@ function PreviewPanel({
   onHtmlAddressChange?: (attachmentId: string, address: string) => void;
 }) {
   const { t } = useT("editor");
+  const inheritedSource = useMediaSource();
+  const mediaSource = source.kind === "full" && source.attachment.issue_id ? { type: "issues" as const, id: source.attachment.issue_id } : source.kind === "full" && source.attachment.chat_session_id ? { type: "chats" as const, id: source.attachment.chat_session_id } : inheritedSource;
 
   // How the file is shown. Held here rather than in the stage so a choice
   // carries over as the reader pages through the sequence: the next HTML
@@ -839,10 +852,11 @@ function PreviewPanel({
       {/* Three columns so the counter stays centered on the window while a
           long filename truncates before reaching it. */}
       <header
-        className="dark @container grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 pl-3 pr-2 text-foreground"
+        data-testid="media-toolbar"
+        className="dark @container flex min-h-14 shrink-0 flex-wrap items-center gap-4 pl-3 pr-2 py-2 text-foreground max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10"
         style={surface === "viewer" ? DRAG : undefined}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex w-full min-w-0 items-center gap-2.5 md:w-auto">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
             <KindIcon className="size-4" />
           </span>
@@ -879,7 +893,7 @@ function PreviewPanel({
             : null}
         </span>
         <div
-          className="flex items-center justify-self-end gap-0.5"
+          className="ml-auto flex items-center gap-0.5"
           style={NO_DRAG}
         >
           {/* Standalone preview keeps the original gate — no controls until
@@ -896,6 +910,7 @@ function PreviewPanel({
           )}
           {/* View controls stay mounted, disabled where they do not apply —
               toggling the source view must not shift the button just pressed. */}
+          <ViewerActions>
           {kind === "html" && (
             <>
               <ChromeButton
@@ -962,7 +977,7 @@ function PreviewPanel({
               <MessageSquareText className="size-4" />
             </ChromeButton>
           )}
-          {onOpenInNewTab && (
+          {onOpenInNewTab && !mediaSource && (
             <ChromeButton
               label={t(($) => $.attachment.open_in_new_tab)}
               onClick={onOpenInNewTab}
@@ -982,6 +997,7 @@ function PreviewPanel({
           <ChromeButton label={t(($) => $.image.download)} onClick={onDownload}>
             <Download className="size-4" />
           </ChromeButton>
+          <MediaLinkAction kind={state.attachmentId ? "attachment" : "image"} content={source.kind === "url" ? source.url : ""} attachmentId={state.attachmentId ?? undefined} source={mediaSource} copyLink={surface === "page"} />
           {(onOpenOverview || info) && <ChromeDivider />}
           {onOpenOverview && (
             <ChromeButton
@@ -1002,6 +1018,7 @@ function PreviewPanel({
               <PanelRight className="size-4" />
             </ChromeButton>
           )}
+          </ViewerActions>
           {onClose && (
             <>
               <ChromeDivider />
@@ -1012,7 +1029,7 @@ function PreviewPanel({
           )}
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div data-testid="media-stage" className="flex min-h-0 flex-1">
         {/* The stage. In a sequence its sides are 64px gutters holding the
             prev / next buttons, so a fitted image or a page never runs under
             them. */}
@@ -1622,11 +1639,20 @@ export function AttachmentPreviewStandalone({
   initialHtmlAddress?: string;
   onHtmlAddressChange?: (address: string) => void;
 }) {
-  const download = useDownloadAttachment();
   const source = useMemo<PreviewSource>(
     () => ({ kind: "full", attachment }),
     [attachment],
   );
+  return <AttachmentSourceStandalone source={source} renderHtmlFrame={renderHtmlFrame} initialHtmlAddress={initialHtmlAddress} onHtmlAddressChange={onHtmlAddressChange} />;
+}
+
+export function AttachmentSourceStandalone({ source, renderHtmlFrame, initialHtmlAddress, onHtmlAddressChange }: {
+  source: PreviewSource;
+  renderHtmlFrame?: HtmlFrameRenderer;
+  initialHtmlAddress?: string;
+  onHtmlAddressChange?: (address: string) => void;
+}) {
+  const download = useDownloadAttachment();
   const state = normalize(source);
   const handleHtmlAddressChange = useCallback(
     (_attachmentId: string, address: string) => onHtmlAddressChange?.(address),
@@ -1640,7 +1666,7 @@ export function AttachmentPreviewStandalone({
         kind={state.kind}
         source={source}
         state={state}
-        onDownload={() => download(attachment.id)}
+        onDownload={() => state.attachmentId ? download(state.attachmentId) : openExternal(state.mediaUrl)}
         reduceMotion
         renderHtmlFrame={renderHtmlFrame}
         initialHtmlAddress={initialHtmlAddress}

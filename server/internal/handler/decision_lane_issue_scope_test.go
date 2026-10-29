@@ -20,7 +20,7 @@ func otherIssueFixture(test *testing.T, base singleCallFixture) singleCallFixtur
 	dbfx.Cleanup(test, `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": base.agentID, "source_task_id": taskID, "content": "Other source context."})
 	details := structuredDecisionAsk(issueID, sourceID, "Approve the other change?")
-	return singleCallFixture{intentFixture: intentFixture{base.agentID, issueID, taskID, base.humanID}, ask: details.Content(), footer: "Next owner: none", sourceID: sourceID, details: details}
+	return singleCallFixture{intentFixture: intentFixture{base.agentID, issueID, taskID, base.humanID}, ask: details.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 // laneNamingIssue is a DM lane whose history mentions the issue, so decision

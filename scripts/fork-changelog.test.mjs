@@ -746,3 +746,60 @@ test("F1d: dash look-alikes cannot split an issue id or an sk- key", async () =>
     assert.equal(parseChangelogLine(`Changelog: Rotated sk${dash}proj1234567890abcdefghijkl today.`).status, "parse-error");
   }
 });
+
+// --- backfill (CHE-2196) ----------------------------------------------------
+
+const backfillEntry = (n, over = {}) => ({
+  id: `fork-pr-${n}`,
+  number: n,
+  mergedAt: "2026-06-03T05:00:00.000Z",
+  date: "2026-06-03",
+  section: "Bug Fixes",
+  text: `Old change ${n} now works.`,
+  group: "week",
+  ...over,
+});
+
+test("backfill entries join the generated ones, newest first, and count as shown", async () => {
+  const got = await run([pr(7)], null, { backfill: [backfillEntry(2), backfillEntry(3, { mergedAt: "2026-06-04T05:00:00.000Z", date: "2026-06-04" })] });
+  assert.deepEqual(got.entries.map((e) => e.number), [7, 3, 2]);
+  assert.equal(got.entries[2].group, "week");
+  assert.equal(got.counts.shown, 3);
+});
+
+test("a live PR entry wins over a backfill entry with the same number", async () => {
+  const got = await run([pr(7)], null, { backfill: [backfillEntry(7)] });
+  assert.equal(got.entries.length, 1);
+  assert.equal(got.entries[0].text, "Change 7 now works.");
+});
+
+test("the committed backfill file is well formed and ends before the live start date", async () => {
+  const { loadBackfill, parseChangelogLine } = await load();
+  const entries = loadBackfill();
+  assert.ok(entries.length > 0);
+  const numbers = new Set();
+  for (const e of entries) {
+    assert.ok(!numbers.has(e.number), `duplicate #${e.number}`);
+    numbers.add(e.number);
+    assert.equal(e.id, `fork-pr-${e.number}`);
+    assert.equal(e.group, "week");
+    assert.ok(e.date < "2026-10-11" && e.date >= "2026-05-05", `#${e.number} outside window`);
+    assert.ok(["New Features", "Bug Fixes", "Improvements"].includes(e.section));
+    const parsed = parseChangelogLine(`Changelog: ${e.text}`);
+    assert.equal(parsed.status, "text", `#${e.number}`);
+    assert.equal(parsed.text, e.text, `#${e.number} text changes when parsed`);
+    assert.deepEqual(parsed.warnings, [], `#${e.number}`);
+  }
+});
+
+test("preview: --backfill adds the backfill entries to the fixture entries", () => {
+  const out = join(tmp(), "preview.json");
+  const fixture = new URL("./fixtures/fork-changelog-preview.json", import.meta.url).pathname;
+  const backfill = new URL("./fork-changelog-backfill.json", import.meta.url).pathname;
+  const res = cli(["--fixture", fixture, "--out", out, "--backfill", backfill]);
+  assert.equal(res.status, 0, res.stderr);
+  const { entries } = JSON.parse(readFileSync(out, "utf8"));
+  // Fixture PR #1 is also a backfill number: the fixture entry wins, so it is not counted twice.
+  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length);
+  assert.equal(entries.find((e) => e.number === 1).text, "Issue lists now open instantly in large workspaces.");
+});

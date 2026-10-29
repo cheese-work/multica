@@ -555,12 +555,16 @@ func TestValidateCapabilitiesPassThroughUnverifiedCatalog(t *testing.T) {
 		}
 	}
 
-	// A verified catalog still decides: a listed model without the value, or a
-	// model it does not list, drops the value without an error.
+	// A verified catalog rejects listed unsupported effort; an omitted explicit
+	// Codex model stays unknown. Service tiers still require catalog support.
 	verified := func() (Catalog, error) { return Catalog{Models: []Model{listed}}, nil }
 	for _, model := range []string{"listed", "unlisted"} {
-		if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || err != nil {
-			t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, nil)", model, ok, err)
+		var wantThinkingError error
+		if model == "unlisted" {
+			wantThinkingError = errUnverifiedCatalog
+		}
+		if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || !errors.Is(err, wantThinkingError) {
+			t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, %v)", model, ok, err, wantThinkingError)
 		}
 		if ok, err := ValidateServiceTierWith(verified, "codex", model, "priority"); ok || err != nil {
 			t.Errorf("verified catalog, model %q tier: got (%v, %v), want (false, nil)", model, ok, err)

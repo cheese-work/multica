@@ -31,6 +31,7 @@ export function warningCounts(jobs) {
     const logs = {}
     const annotations = {}
     const eslintMessages = new Map()
+    const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
     for (const line of stripVTControlCharacters(job.log).split("\n")) {
@@ -58,7 +59,10 @@ export function warningCounts(jobs) {
         const rule = eslintFile ? eslint[1].match(/\s([@\w-]+(?:\/[\w-]+)*)$/)?.[1] : undefined
         const detail = rule ? eslint[1].slice(0, -rule.length).trim() : eslint[1]
         warning = `${eslintFile ? `${eslintFile}: ` : ""}${rule ?? `warning ${detail}`}`
-        if (eslintFile) eslintMessages.set(`${eslintFile}: ${detail}`, warning)
+        if (eslintFile) {
+          eslintMessages.set(`${eslintFile}: ${detail}`, warning)
+          eslintDetails.add(detail)
+        }
       }
       logs[warning] = (logs[warning] ?? 0) + 1
     }
@@ -66,6 +70,9 @@ export function warningCounts(jobs) {
       if (!["warning", "notice"].includes(annotation.annotation_level)) continue
       const message = normalize(annotation.message)
       const file = /\.[cm]?[jt]sx?$/.test(annotation.path ?? "") ? sourcePath(annotation.path) : ""
+      // GitHub files an eslint annotation under ".github" when its log line has no file reference.
+      // The log counts every eslint warning with its file, so such an annotation adds nothing.
+      if (!file && eslintDetails.has(message)) continue
       const warning = file ? eslintMessages.get(`${file}: ${message}`) ?? `${file}: ${message}` : message
       annotations[warning] = (annotations[warning] ?? 0) + 1
     }

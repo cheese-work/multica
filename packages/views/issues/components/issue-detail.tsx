@@ -12,6 +12,8 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
+import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -452,6 +454,9 @@ function formatActivity(
           return t(($) => $.activity.squad_leader_evaluated);
       }
     }
+    case "stop_not_confirmed":
+      // A review run was refused while a superseded run's stop is unconfirmed.
+      return t(($) => $.activity.stop_not_confirmed, { taskId: details.task_id ?? "" });
     default:
       return entry.action ?? "";
   }
@@ -2332,6 +2337,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
     [items, rowRange],
   );
+  // Per timeline row, whether it mentions the viewer: the root row its own
+  // content, each reply row that reply's. Controls, footers and runs never do.
+  const mentionsViewerText = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () =>
+      items.map((item) => {
+        if (item.kind === "comment" || item.kind === "resolved-bar") return mentionsViewerText(item.entry.content);
+        if (item.kind !== "thread-row" || item.row.kind !== "reply") return false;
+        const reply = timelineView.threadReplies.get(item.entry.id)?.find((r) => r.id === item.row.id);
+        return mentionsViewerText(reply?.content);
+      }),
+    [items, timelineView.threadReplies, mentionsViewerText],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
+  );
   revealFindDocumentRef.current = (documentId) => {
     if (!documentId.startsWith("comment-")) {
       const element = document.getElementById(documentId);
@@ -3602,7 +3624,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     (text-caption, muted icons) and each option leads with the
                     icon the resulting picker uses, so the dropdown reads
                     as a preview of what will show up below. */}
-                <PopoverContent align="start" className="w-44 p-1">
+                <PopoverContent
+                  align="start"
+                  data-testid="add-property-popover"
+                  className="max-h-(--available-height) w-max min-w-44 max-w-[min(388px,var(--available-width))] overflow-y-auto overscroll-contain p-1"
+                >
                   {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k) && (k !== "stage" || issue.parent_issue_id != null)).map((k) => (
                     <button
                       key={k}
@@ -4363,6 +4389,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   ref={descEditorRef}
                   key={id}
                   value={issue.description ?? ""}
+                  persistedMediaMarkdown={issue.description ?? ""}
                   placeholder={t(($) => $.detail.desc_placeholder)}
                   onUpdate={(md, baseMarkdown) => {
                     // Bind any pending uploads still referenced in the markdown
@@ -4668,7 +4695,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </div>
 
-            <LocalDirectoryHint projectId={issue?.project_id} />
+            <LocalDirectoryHint
+              projectId={issue?.project_id}
+              assignedAgent={issue?.assignee_type === "agent"
+                ? agents.find((agent) => agent.id === issue.assignee_id) ?? null
+                : undefined}
+            />
 
             {/* The "agent is working" live signal now lives in the header
                 (IssueAgentHeaderChip) so it stays in one fixed place and
@@ -4767,6 +4799,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             the resize handle's 4px drag strip at the panel edge. Hover
             previews a comment, click jumps to it. Hidden on mobile: no
             hover, and the gutter is too tight. */}
+        <NextSelfMention scrollEl={scrollContainerEl} flags={selfMentionFlags} onJump={jumpToSelfMention} />
         {!isMobile && !isPeek && (
           <ThreadMinimap
             threads={minimapThreads}
@@ -4786,6 +4819,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // open into one sequence. The versions provider lets each comment's file
   // cards mark a re-uploaded file `v2`.
   const withPreview = (layout: ReactNode) => (
+    <MediaSourceProvider source={{ type: "issues", id: issue.id }}>
     <PreviewSequenceProvider
       items={previewSequence}
       describeItem={describeDeliverable}
@@ -4802,6 +4836,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onLocate={locateOrigin}
       />
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 
   // The peek has no room for the properties sidebar: its core properties are
