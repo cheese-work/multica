@@ -83,6 +83,8 @@ cat >"$mock_bin/docker" <<MOCK
 set -euo pipefail
 control_dir="\${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
 log_file="\$control_dir/docker-calls.log"
+flags_overlay=false
+case "\$*" in *docker-compose.flags.yml*) flags_overlay=true ;; esac
 printf '%s\n' "\$*" >>"\$log_file"
 
 fail_if_flagged() {
@@ -276,6 +278,13 @@ if [ "\$1" = "compose" ]; then
       for a in "\$@"; do
         case "\$a" in
           backend-* | frontend-*)
+            if [ "\$sub" = up ] && [[ "\$a" = backend-* ]]; then
+              if [ "\$flags_overlay" = true ]; then
+                touch "\$control_dir/flags-mount-\$a"
+              else
+                rm -f "\$control_dir/flags-mount-\$a"
+              fi
+            fi
             # "up" (re)creates from the candidate image; "start" resumes the
             # stopped container, keeping whatever commit it last ran.
             if [ "\$sub" = up ] || [ ! -f "\$control_dir/commit-\$a" ]; then
@@ -336,6 +345,12 @@ if [ "\$1" = "compose" ]; then
       exit 0
       ;;
     ps)
+      if [ "\$1" = "--all" ] && [ "\$2" = "-q" ]; then
+        if [ -f "\$control_dir/running-\$3" ] || [ -f "\$control_dir/flags-mount-\$3" ]; then
+          printf 'cid-%s\n' "\$3"
+        fi
+        exit 0
+      fi
       # ps -q postgres — deploy-lib.sh's postgres_container_id, resolving
       # the running postgres container for quiescence.mjs's
       # --psql-via-docker-exec (CHE-655). A fixed fake id is enough: this
@@ -571,6 +586,7 @@ bootstrap_incumbent() {
 # Scenario 1: happy path, first-ever cutover (no cutover-state.json) ->
 # treats blue as incumbent, cuts over to green.
 # ---------------------------------------------------------------------------
+if [ "${CUTOVER_FLAGS_GUARD_ONLY:-0}" != 1 ]; then
 state_dir="$(fresh_scenario_dir che1593-privacy-location-upstreams)"
 output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
@@ -1369,6 +1385,8 @@ if drained_before_refusal "$state_dir"; then echo "scenario che823-pull-persiste
 # prerequisite refuses before the first mutation (drain, pull, migrate).
 # Launched CD-shaped (.env sourced, not exported) with synthetic values only.
 # ---------------------------------------------------------------------------
+fi
+
 jev_dir="$work_dir/compose-jev"
 mkdir -p "$jev_dir"
 touch "$jev_dir/docker-compose.selfhost.yml"
@@ -1404,6 +1422,7 @@ flags_overlay_calls() { grep -c 'docker-compose.flags.yml' "$1/control/docker-ca
 compose_calls() { grep -c '^compose ' "$1/control/docker-calls.log" || true; }
 mutated() { [ -f "$1/control/stop-calls.log" ] || grep -qE '^compose .*(pull|up|run) ' "$1/control/docker-calls.log"; }
 
+if [ "${CUTOVER_FLAGS_GUARD_ONLY:-0}" != 1 ]; then
 for flags_setting in MULTICA_FEATURE_FLAGS_FILE MULTICA_JEV_FLAGS_FILE; do
   write_jev_env "$flags_setting=$jev_flags"
   state_dir="$(fresh_scenario_dir "flags-only-$flags_setting")"
@@ -1572,6 +1591,8 @@ drift_case drift-env-key-missing env-missing-frontend-green "" "frontend-green e
 drift_case drift-env-key-unexpected env-extra-backend-green "" "backend-green env: unexpected key STALE_FLAG"
 drift_case drift-image-digest running-digest-web "sha256:$(printf 'e%.0s' {1..64})" "frontend-green image: running digest"
 
+fi
+
 flag_guard_failures=0
 for regression in unset-file missing-public-flag; do
   (
@@ -1601,5 +1622,54 @@ for regression in unset-file missing-public-flag; do
   ) || flag_guard_failures=$((flag_guard_failures + 1))
 done
 [ "$flag_guard_failures" -eq 0 ] || exit 1
+
+for setting in MULTICA_FEATURE_FLAGS_FILE MULTICA_JEV_FLAGS_FILE; do
+  printf 'project_workflows_v1:\n  default: true\nplugins_v1:\n  default: false\n' >"$jev_flags"
+  write_jev_env "$setting=$jev_flags"
+  state_dir="$(fresh_scenario_dir "flags-guard-match-$setting")"
+  mkdir -p "$state_dir/control"
+  config='{"feature_flags":{"project_workflows_v1":true,"plugins_v1":false}}'
+  printf '%s\n' "$config" >"$state_dir/control/config-backend-green"
+  printf '%s\n' "$config" >"$state_dir/control/config-backend-blue"
+  output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-guard-match-$setting"
+  state_before="$(cat "$state_dir/cutover-state.json")"
+  printf '{"feature_flags":{}}\n' >"$state_dir/control/config-backend-blue"
+  output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "flags-guard-rollback-mismatch-$setting"
+  expect_contains "$output" 'frontend flag mismatch: project_workflows_v1' "flags-guard-rollback-mismatch-$setting"
+  [ "$(cat "$state_dir/cutover-state.json")" = "$state_before" ] || exit 1
+  [ -f "$state_dir/control/running-backend-green" ] || exit 1
+  [ ! -f "$state_dir/control/running-backend-blue" ] || exit 1
+  [ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).colour)' "$state_dir/router-state/active.json")" = green ] || exit 1
+  write_jev_env
+  output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "flags-guard-rollback-unset-$setting"
+  expect_contains "$output" 'flags continuity:' "flags-guard-rollback-unset-$setting"
+  [ "$(cat "$state_dir/cutover-state.json")" = "$state_before" ] || exit 1
+  write_jev_env "$setting=$jev_flags"
+  printf '%s\n' "$config" >"$state_dir/control/config-backend-blue"
+  output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-guard-rollback-match-$setting"
+  echo "flags-guard-match-and-rollback-$setting passed"
+done
+
+for failure in malformed unavailable false; do
+  state_dir="$(fresh_scenario_dir "flags-guard-$failure")"
+  mkdir -p "$state_dir/control"
+  case "$failure" in
+    malformed) printf 'invalid-json\n' >"$state_dir/control/config-backend-green" ;;
+    unavailable) touch "$state_dir/control/config-unavailable-backend-green" ;;
+    false) printf '{"feature_flags":{"project_workflows_v1":false}}\n' >"$state_dir/control/config-backend-green" ;;
+  esac
+  output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "flags-guard-$failure"
+  expect_contains "$output" 'frontend flag verification failed' "flags-guard-$failure"
+  expect_contains "$output" 'RECOVERED:' "flags-guard-$failure"
+  [ ! -f "$state_dir/cutover-state.json" ] || exit 1
+  [ -f "$state_dir/control/running-backend-blue" ] || exit 1
+  [ ! -f "$state_dir/control/running-backend-green" ] || exit 1
+  echo "flags-guard-$failure passed"
+done
 
 echo "cutover.sh control-flow fixtures passed"
