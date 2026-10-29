@@ -342,7 +342,7 @@ func printWorkflowRules(wf map[string]any) {
 // bindWorkflow hashes steps as the workflow's new steps; before is the hash of
 // the live workflow taken earlier.
 func bindWorkflow(cmd *cobra.Command, live map[string]any, before string, steps []any) (workflowBinding, error) {
-	after, err := workflowStepsHash(strVal(live, "id"), steps)
+	after, err := workflowStoredStepsHash(strVal(live, "id"), steps)
 	if err != nil {
 		return workflowBinding{}, fmt.Errorf("hash new steps: %w", err)
 	}

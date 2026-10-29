@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 )
 
 // CHE-2458: client side of the CHE-2448 decision-bound write. The CLI computes
@@ -53,44 +54,44 @@ func hexSHA256(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Mirrors handler.IssueWorkflowStepPayload and issueworkflow.Edge: the fields
-// the server hashes, with the same omitempty rules.
-type hashEdge struct {
-	To        string `json:"to"`
-	Guard     string `json:"guard"`
-	OnTimeout string `json:"on_timeout,omitempty"`
-	Timeout   string `json:"timeout,omitempty"`
-}
-
-type hashStep struct {
-	StatusKey string `json:"status_key"`
-	Handler   struct {
-		Type string `json:"type"`
-		ID   string `json:"id,omitempty"`
-	} `json:"handler"`
-	Instructions     string     `json:"instructions"`
-	NextStatusKey    string     `json:"next_status_key,omitempty"`
-	BackStatusKey    string     `json:"back_status_key,omitempty"`
-	AdvanceOnCIGreen bool       `json:"advance_on_ci_green,omitempty"`
-	Edges            []hashEdge `json:"edges,omitempty"`
-}
-
 // workflowStepsHash is the server's recipe: {"steps": [...], "workflow_id": id}
 // as canonical JSON (sorted keys, no whitespace, no HTML escaping), sha256,
 // lowercase hex. steps is the "steps" array of "workflow get --output json"
 // or of a --steps-file; fields the server does not store are dropped.
 func workflowStepsHash(workflowID string, steps []any) (string, error) {
-	typed := make([]hashStep, len(steps))
-	for i, s := range steps {
-		raw, err := json.Marshal(s)
-		if err != nil {
-			return "", fmt.Errorf("step %d: %w", i, err)
-		}
-		if err := json.Unmarshal(raw, &typed[i]); err != nil {
-			return "", fmt.Errorf("step %d: %w", i, err)
-		}
+	typed, err := decodeSteps(steps)
+	if err != nil {
+		return "", err
 	}
-	raw, err := json.Marshal(map[string]any{"steps": typed, "workflow_id": workflowID})
+	return hashSteps(workflowID, typed)
+}
+
+// workflowStoredStepsHash hashes steps as the server stores them: trimmed,
+// defaulted and arranged by issueworkflow.Normalize, the same call the PATCH
+// handler makes before it checks after_sha256.
+func workflowStoredStepsHash(workflowID string, steps []any) (string, error) {
+	typed, err := decodeSteps(steps)
+	if err != nil {
+		return "", err
+	}
+	_, _, stored := issueworkflow.Normalize("", "", typed)
+	return hashSteps(workflowID, stored)
+}
+
+func decodeSteps(steps []any) ([]issueworkflow.Step, error) {
+	raw, err := json.Marshal(steps)
+	if err != nil {
+		return nil, err
+	}
+	var typed []issueworkflow.Step
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return nil, fmt.Errorf("steps: %w", err)
+	}
+	return typed, nil
+}
+
+func hashSteps(workflowID string, steps []issueworkflow.Step) (string, error) {
+	raw, err := json.Marshal(map[string]any{"steps": steps, "workflow_id": workflowID})
 	if err != nil {
 		return "", err
 	}

@@ -179,10 +179,12 @@ func TestAgentUpdatePrintHashWritesNothing(t *testing.T) {
 
 // Workflow half. The expected hash is spelled out by hand from the recipe in
 // server/internal/handler/issue_workflow_bound_write.go: keys sorted, no
-// whitespace, omitempty fields absent, wrapped with the workflow id.
+// whitespace, omitempty fields absent, wrapped with the workflow id. The
+// "after" side is the steps as the server stores them (trimmed, arranged).
 const (
-	hashFixtureCanonical = `{"steps":[{"handler":{"id":"a1","type":"agent"},"instructions":"S1","next_status_key":"done","status_key":"todo"},{"handler":{"type":""},"instructions":"","status_key":"done"}],"workflow_id":"` + testWorkflowID + `"}`
-	hashFixtureAfter     = `{"steps":[{"handler":{"id":"a1","type":"agent"},"instructions":"S1 new","next_status_key":"done","status_key":"todo"},{"handler":{"type":""},"instructions":"","status_key":"done"}],"workflow_id":"` + testWorkflowID + `"}`
+	hashFixtureDoneCancelled = `{"handler":{"type":"none"},"instructions":"","status_key":"done"},{"handler":{"type":"none"},"instructions":"","status_key":"cancelled"}`
+	hashFixtureCanonical     = `{"steps":[{"handler":{"id":"a1","type":"agent"},"instructions":"S1","next_status_key":"done","status_key":"todo"},{"handler":{"type":"none"},"instructions":"","status_key":"done"},{"handler":{"type":"none"},"instructions":"","status_key":"cancelled"}],"workflow_id":"` + testWorkflowID + `"}`
+	hashFixtureAfter         = `{"steps":[{"handler":{"id":"a1","type":"agent"},"instructions":"S1 new","next_status_key":"done","status_key":"todo"},{"handler":{"type":"none"},"instructions":"","status_key":"done"},{"handler":{"type":"none"},"instructions":"","status_key":"cancelled"}],"workflow_id":"` + testWorkflowID + `"}`
 )
 
 func hashFixtureWorkflow() map[string]any {
@@ -191,7 +193,8 @@ func hashFixtureWorkflow() map[string]any {
 		"version": "v1",
 		"steps": []any{
 			map[string]any{"status_key": "todo", "handler": map[string]any{"type": "agent", "id": "a1"}, "instructions": "S1", "next_status_key": "done"},
-			map[string]any{"status_key": "done", "handler": map[string]any{"type": ""}, "instructions": ""},
+			map[string]any{"status_key": "done", "handler": map[string]any{"type": "none"}, "instructions": ""},
+			map[string]any{"status_key": "cancelled", "handler": map[string]any{"type": "none"}, "instructions": ""},
 		},
 	}
 }
@@ -261,7 +264,7 @@ func TestWorkflowUpdateDecisionIDNormalisesStepsFile(t *testing.T) {
 	setCLITestServerEnv(t, srv.URL)
 
 	// Empty optional fields in the file must not change the hash: the server
-	// stores and hashes steps without them.
+	// stores and hashes steps without them, and a blank handler type is "none".
 	steps := `[{"status_key":"todo","handler":{"type":"agent","id":"a1"},"instructions":"S1 new","next_status_key":"done","back_status_key":"","edges":[]},{"status_key":"done","handler":{"type":""},"instructions":""}]`
 	cmd := newWorkflowDecisionCmd()
 	_ = cmd.Flags().Set("steps-file", writeTemp(t, steps))
@@ -271,6 +274,50 @@ func TestWorkflowUpdateDecisionIDNormalisesStepsFile(t *testing.T) {
 	}
 	if patched["before_sha256"] != sha256Hex(hashFixtureCanonical) || patched["after_sha256"] != sha256Hex(hashFixtureAfter) {
 		t.Errorf("hashes = %v / %v", patched["before_sha256"], patched["after_sha256"])
+	}
+}
+
+// The server trims, defaults and arranges the steps before it checks
+// after_sha256 (issueworkflow.Normalize), so the CLI must hash that result.
+func TestWorkflowSetInstructionsHashesTheStoredResult(t *testing.T) {
+	var patched map[string]any
+	var patches int32
+	srv := workflowDecisionServer(t, &patched, &patches)
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newWorkflowDecisionCmd()
+	_ = cmd.Flags().Set("status", "todo")
+	_ = cmd.Flags().Set("file", writeTemp(t, "S1 new\n"))
+	_ = cmd.Flags().Set("decision-id", testDecisionID)
+	if _, err := captureStdout(t, func() error { return runWorkflowSetInstructions(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatal(err)
+	}
+	if patched["after_sha256"] != sha256Hex(hashFixtureAfter) {
+		t.Errorf("after_sha256 = %v, want the hash of the trimmed result %s", patched["after_sha256"], sha256Hex(hashFixtureAfter))
+	}
+}
+
+func TestWorkflowUpdateHashesTheStoredStepsFile(t *testing.T) {
+	var patched map[string]any
+	var patches int32
+	srv := workflowDecisionServer(t, &patched, &patches)
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	// Padded keys and text, a missing done/cancelled pair and a stale handler
+	// id and instructions on a "none" handler: the server trims, adds the
+	// required steps and drops what the handler type does not use.
+	steps := `[{"status_key":" todo ","handler":{"type":"agent","id":" a1 "},"instructions":"  S1 new\n","next_status_key":" done "},{"status_key":"backlog","handler":{"type":"none","id":"stale"},"instructions":"dropped"}]`
+	cmd := newWorkflowDecisionCmd()
+	_ = cmd.Flags().Set("steps-file", writeTemp(t, steps))
+	_ = cmd.Flags().Set("decision-id", testDecisionID)
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"steps":[{"handler":{"type":"none"},"instructions":"","status_key":"backlog"},{"handler":{"id":"a1","type":"agent"},"instructions":"S1 new","next_status_key":"done","status_key":"todo"},` + hashFixtureDoneCancelled + `],"workflow_id":"` + testWorkflowID + `"}`
+	if patched["after_sha256"] != sha256Hex(want) {
+		t.Errorf("after_sha256 = %v, want %s", patched["after_sha256"], sha256Hex(want))
 	}
 }
 
