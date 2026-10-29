@@ -33,7 +33,12 @@ export function ScheduledWakeupsChip({
     <Popover>
       <PopoverTrigger
         render={
-          <Button variant="outline" size="sm" className="shrink-0 gap-1.5 text-muted-foreground" />
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 gap-1.5 text-muted-foreground"
+            data-testid="scheduled-chip"
+          />
         }
       >
         <Clock className="h-3.5 w-3.5" />
@@ -49,7 +54,7 @@ export function ScheduledWakeupsChip({
           {wakeups.map((wakeup) => {
             const time = formatMessageDateTime(wakeup.fire_at);
             return (
-              <li key={wakeup.id} className="flex items-start gap-2">
+              <li key={wakeup.id} className="flex items-start gap-2" data-testid="scheduled-row">
                 <div className="min-w-0 flex-1">
                   <div className="text-caption tabular-nums text-muted-foreground">{time}</div>
                   <div className="truncate text-body">{firstLine(wakeup.instruction)}</div>
@@ -57,6 +62,7 @@ export function ScheduledWakeupsChip({
                 <Button
                   variant="ghost"
                   size="sm"
+                  data-testid="scheduled-cancel"
                   disabled={cancel.isPending && cancel.variables?.wakeupId === wakeup.id}
                   aria-label={t(($) => $.scheduled.cancel_label, { time })}
                   onClick={() =>

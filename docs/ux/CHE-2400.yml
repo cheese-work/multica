@@ -1,0 +1,15 @@
+# DM header "Scheduled" chip (CHE-2400). Lists and cancels pending chat wakeups.
+# No design lock and no Cheese waiver is recorded yet; the PR stays draft until one is.
+issue: CHE-2400
+design: waiver pending (none recorded)
+pages:
+  - id: dm-chat-header
+    url: /<workspace-slug>/chat?session=<session-id>   # same path on base and preview
+    keep:
+      - chat-composer
+      - chat-user-message
+    change:
+      - scheduled-chip: "an outline chip 'Scheduled N' before the context meter; hidden when no wakeup is pending; not shown on an archived DM"
+      - scheduled-row: "popover row: fire time in the viewer's timezone, first line of the instruction; the popover title names the creating agent"
+      - scheduled-cancel: "Cancel per row; the row leaves the list without a reload; a failure keeps the row and shows a toast"
+    remove: []
