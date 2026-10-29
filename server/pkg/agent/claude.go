@@ -12,11 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -183,6 +186,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// leaves the child stuck waiting for a response until its own fallback
 	// timeout.
 	writeDone := make(chan error, 1)
+	promptUUID := uuid.NewString()
 	go func() {
 		if supplements != nil {
 			if initErr := supplements.initialize(inputWriter, opts.HandshakeTimeout); initErr != nil {
@@ -190,7 +194,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				supplements.end()
 			}
 		}
-		err := writeClaudeInput(inputWriter, prompt)
+		err := writeClaudeInput(inputWriter, prompt, promptUUID)
 		if err != nil {
 			closeStdin()
 			if supplements != nil {
@@ -298,8 +302,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
-				if msg.Origin != nil && msg.Origin.Kind != "human" {
-					b.cfg.Logger.Debug("ignoring Claude-injected turn result", "origin", msg.Origin.Kind)
+				if (msg.ResultIndex != nil || msg.UserMessageUUID != "" || msg.UserMessageUUIDs != nil) &&
+					msg.UserMessageUUID != promptUUID && !slices.Contains(msg.UserMessageUUIDs, promptUUID) {
+					b.cfg.Logger.Debug("ignoring result for another Claude turn", "user_message_uuid", msg.UserMessageUUID)
 					continue
 				}
 				sawResult = true
@@ -692,13 +697,13 @@ type claudeSDKMessage struct {
 	SessionID       string          `json:"session_id,omitempty"`
 	Model           string          `json:"model,omitempty"`
 	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
-	Origin          *struct {
-		Kind string `json:"kind"`
-	} `json:"origin,omitempty"`
 
 	// result fields
-	ResultText string `json:"result,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
+	ResultText       string   `json:"result,omitempty"`
+	IsError          bool     `json:"is_error,omitempty"`
+	ResultIndex      *int     `json:"result_index,omitempty"`
+	UserMessageUUID  string   `json:"user_message_uuid,omitempty"`
+	UserMessageUUIDs []string `json:"user_message_uuids,omitempty"`
 	// TerminalReason is Claude Code's structured statement of why the turn
 	// ended. Read separately from IsError because the CLI computes the two
 	// independently — see claudeTerminalReasonFailure.
@@ -1199,8 +1204,8 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	return args
 }
 
-func writeClaudeInput(w io.Writer, prompt string) error {
-	data, err := buildClaudeInput(prompt)
+func writeClaudeInput(w io.Writer, prompt, promptUUID string) error {
+	data, err := buildClaudeInput(prompt, promptUUID)
 	if err != nil {
 		return err
 	}
@@ -1210,9 +1215,10 @@ func writeClaudeInput(w io.Writer, prompt string) error {
 	return nil
 }
 
-func buildClaudeInput(prompt string) ([]byte, error) {
+func buildClaudeInput(prompt, promptUUID string) ([]byte, error) {
 	payload := map[string]any{
 		"type": "user",
+		"uuid": promptUUID,
 		"message": map[string]any{
 			"role": "user",
 			"content": []map[string]string{
