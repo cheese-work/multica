@@ -1467,17 +1467,18 @@ type IssuePrAutomation struct {
 }
 
 type IssuePrEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	Kind          string             `json:"kind"`
-	HeadSha       string             `json:"head_sha"`
-	BaseSha       string             `json:"base_sha"`
-	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
-	DedupeKey     string             `json:"dedupe_key"`
-	Status        string             `json:"status"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	PullRequestID   pgtype.UUID        `json:"pull_request_id"`
+	Kind            string             `json:"kind"`
+	HeadSha         string             `json:"head_sha"`
+	BaseSha         string             `json:"base_sha"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	DedupeKey       string             `json:"dedupe_key"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	PreviousHeadSha string             `json:"previous_head_sha"`
 }
 
 type IssueProperty struct {

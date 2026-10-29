@@ -73,7 +73,7 @@ WITH next AS MATERIALIZED (
 )
 SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
        pr.pr_number,
-       COALESCE((
+       COALESCE(NULLIF(e.previous_head_sha, ''), (
            SELECT prev.head_sha FROM issue_pr_event prev
            WHERE e.kind = 'head_changed'
              AND prev.issue_id = e.issue_id
@@ -210,12 +210,12 @@ WHERE e.issue_id = @issue_id
        OR e.id IN (SELECT event_id FROM failed));
 
 -- name: ListAcceptedPRNoticeEvents :many
--- Draft, ready, conflict and checks-failed events of the PR still waiting for a
--- live run to take them.
+-- Draft, ready, conflict, checks-failed and head-changed events of the PR still
+-- waiting for a live run to take them.
 SELECT id FROM issue_pr_event
 WHERE issue_id = @issue_id
   AND pull_request_id = @pull_request_id
-  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed')
+  AND kind IN ('draft', 'ready', 'conflict', 'checks_failed', 'head_changed')
   AND status = 'accepted'
 ORDER BY observed_at, created_at;
 

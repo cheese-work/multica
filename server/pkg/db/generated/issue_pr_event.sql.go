@@ -71,21 +71,22 @@ func (q *Queries) GetLatestIssuePREventObservedAt(ctx context.Context, arg GetLa
 
 const insertIssuePREvent = `-- name: InsertIssuePREvent :execrows
 INSERT INTO issue_pr_event (
-    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key, status, previous_head_sha
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (issue_id, pull_request_id, dedupe_key) DO NOTHING
 `
 
 type InsertIssuePREventParams struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	PullRequestID pgtype.UUID        `json:"pull_request_id"`
-	Kind          string             `json:"kind"`
-	HeadSha       string             `json:"head_sha"`
-	BaseSha       string             `json:"base_sha"`
-	ObservedAt    pgtype.Timestamptz `json:"observed_at"`
-	DedupeKey     string             `json:"dedupe_key"`
-	Status        string             `json:"status"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	PullRequestID   pgtype.UUID        `json:"pull_request_id"`
+	Kind            string             `json:"kind"`
+	HeadSha         string             `json:"head_sha"`
+	BaseSha         string             `json:"base_sha"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	DedupeKey       string             `json:"dedupe_key"`
+	Status          string             `json:"status"`
+	PreviousHeadSha string             `json:"previous_head_sha"`
 }
 
 func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREventParams) (int64, error) {
@@ -99,6 +100,7 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 		arg.ObservedAt,
 		arg.DedupeKey,
 		arg.Status,
+		arg.PreviousHeadSha,
 	)
 	if err != nil {
 		return 0, err
