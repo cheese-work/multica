@@ -191,6 +191,7 @@ type AgentTaskQueue struct {
 	StopUnconfirmedAt         pgtype.Timestamptz `json:"stop_unconfirmed_at"`
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
+	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 }
 
 type AgentToLabel struct {
@@ -2067,6 +2068,16 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RunBudgetNotice struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowID    string             `json:"window_id"`
+	Kind        string             `json:"kind"`
+	CommentID   pgtype.UUID        `json:"comment_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type RunGateEvent struct {

@@ -182,6 +182,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
+	"run_budget_notice":                  workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,

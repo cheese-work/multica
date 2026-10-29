@@ -30,6 +30,19 @@ func (q *Queries) CountIssueRunsSince(ctx context.Context, arg CountIssueRunsSin
 	return column_1, err
 }
 
+const currentXactID = `-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text::bigint
+`
+
+// The current transaction's id, so a run-budget notice can wait for that
+// transaction to finish. The cast keeps the xid8 out of the Go type map.
+func (q *Queries) CurrentXactID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, currentXactID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteWorkflowEdges = `-- name: DeleteWorkflowEdges :exec
 DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 `
@@ -174,4 +187,16 @@ type ScheduleWorkflowEdgesParams struct {
 func (q *Queries) ScheduleWorkflowEdges(ctx context.Context, arg ScheduleWorkflowEdgesParams) error {
 	_, err := q.db.Exec(ctx, scheduleWorkflowEdges, arg.NextFireAt, arg.ID)
 	return err
+}
+
+const xactStatus = `-- name: XactStatus :one
+SELECT COALESCE(pg_xact_status($1::bigint::text::xid8), 'unknown')::text
+`
+
+// 'in progress', 'committed', 'aborted', or 'unknown' once the id is too old.
+func (q *Queries) XactStatus(ctx context.Context, xid int64) (string, error) {
+	row := q.db.QueryRow(ctx, xactStatus, xid)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
