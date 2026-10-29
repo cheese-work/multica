@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -49,8 +48,6 @@ type ghReviewPayload struct {
 		} `json:"user"`
 	} `json:"review"`
 }
-
-var githubReviewTaskKeyPattern = regexp.MustCompile(`(?:^|-)([0-9a-f]{12})(?:-[0-9]+)?$`)
 
 func (h *Handler) handlePullRequestReviewEvent(ctx context.Context, body []byte) error {
 	var payload ghReviewPayload
@@ -115,7 +112,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 	if pull.InstallationID != payload.Installation.ID {
 		return nil
 	}
-	author, err := githubIntakeAuthor(ctx, h.Queries, pull)
+	author, err := service.GitHubPullRequestAuthor(ctx, h.Queries, pull)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

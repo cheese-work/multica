@@ -678,6 +678,21 @@ func (e *StepMovedError) Error() string {
 		e.IssueIdentifier, statusLabel(e.StepName, e.Step), mover, statusLabel(e.CurrentName, e.Current))
 }
 
+// StaleVerdictError refuses a status change from a review run that was
+// superseded by a newer head: its verdict is for a commit that is no longer the
+// head of the pull request.
+type StaleVerdictError struct {
+	IssueIdentifier string
+	// ReviewedSHA is the head the superseded run reviewed.
+	ReviewedSHA string
+}
+
+func (e *StaleVerdictError) Error() string {
+	return fmt.Sprintf("%s: verdict for %s is stale: a newer head superseded this review, so this status change was not applied. "+
+		"Do not change the status again in this run; the replacement review covers the new head.",
+		e.IssueIdentifier, e.ReviewedSHA)
+}
+
 // statusLabel names a status for an agent: its display name with the key the
 // CLI takes, or the bare key when the two are the same.
 func statusLabel(name, key string) string {

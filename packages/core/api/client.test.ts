@@ -37,6 +37,15 @@ describe("ApiClient decision cards", () => {
     expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
   });
 
+  it("answers a decision request with a POST of the option and text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").answerDecisionRequest("req-1", { option: "B", text: "now" });
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-requests/req-1/answer");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ option: "B", text: "now" });
+  });
+
   it("asks for an anchored window with ?around= and no cursor", async () => {
     const fetchMock = vi.fn().mockResolvedValue(json({ messages: [], limit: 50, has_more: false, has_newer: true }));
     vi.stubGlobal("fetch", fetchMock);
@@ -257,13 +266,13 @@ describe("ApiClient pull-request response schema", () => {
     );
   }
 
-  it("parses the auto-complete decision and link source", async () => {
+  it.each(["title", "reference"])("parses the auto-complete decision and %s link source", async (linkSource) => {
     stubPullRequests({
-      pull_requests: [{ ...validPR, link_source: "title" }],
+      pull_requests: [{ ...validPR, link_source: linkSource }],
       auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true, target_status: "in_review" },
     });
     const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
-    expect(result.pull_requests[0]?.link_source).toBe("title");
+    expect(result.pull_requests[0]?.link_source).toBe(linkSource);
     expect(result.auto_complete).toEqual({
       state: "waiting",
       pull_request_ids: ["pr-1"],

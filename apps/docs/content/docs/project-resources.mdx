@@ -1,6 +1,6 @@
 ---
 title: Project resources
-description: Link GitHub repositories or local directories to a project so later runs get a stable working context.
+description: Link repositories, local directories, and HTTPS references to a project.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,12 +11,13 @@ import { LocalDirModeDemo } from "@/components/demos/local-dir-mode-demo";
 
 [Project](/projects) resources tell agents which code this body of work uses and where to run. Resources stay linked to the project, so there is no need to re-paste repository URLs or local paths into every issue.
 
-Two resource types are supported today:
+Three resource types are supported today:
 
 | Resource | Best for | Where runs happen |
 |---|---|---|
 | **GitHub repository** | Code shared by the team, with checkouts managed by the runtime | A runtime-managed working directory |
 | **Local directory** | An existing checkout, a very large repository, or when you want to inspect local changes directly | The original directory on a specific computer |
+| **URL** | Design files, documents, or other HTTPS references with a note | Context only; never checked out |
 
 ## How resources enter a run
 
@@ -35,6 +36,20 @@ Repositories are not limited to GitHub: any Git URL the runtime can reach works 
 When creating a project, you can also pick repositories directly under **Repos**. One project can link multiple GitHub repositories.
 
 A resource's `ref` sets the branch, tag, or commit that later checkouts use by default. `default_branch_hint` only gives the agent a default-branch hint and does not force a branch switch.
+
+## Add an HTTPS reference
+
+Use the CLI to attach a link. The sidebar shows the URL and its optional `label` note separately.
+
+```bash
+multica project resource add <project-id> --type url \
+  --url https://example.com/design --label "Design file"
+multica project resource list <project-id>
+multica project resource update <project-id> <resource-id> \
+  --url https://example.com/design-v2 --label "Updated design file"
+```
+
+The API accepts `resource_type: "url"` and `resource_ref: {"url": "https://example.com/design"}`. Only HTTPS links with a hostname are accepted. Agents receive these links as project context, but URL resources never become repositories or checkout targets. GitHub repository resources keep their existing checkout behavior.
 
 ## Add a local directory
 
