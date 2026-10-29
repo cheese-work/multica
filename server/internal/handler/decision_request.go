@@ -41,7 +41,8 @@ type decisionRequestInput struct {
 	// Options are the card's answer buttons; the flat Ask carries their labels.
 	Options []decisiontx.AskOption
 	// AskJSON is the decoded structured Ask, stored whole for the card to render.
-	AskJSON []byte
+	// It stays out of the legacy fingerprint, which is pinned.
+	AskJSON []byte `json:"-"`
 }
 
 type decisionRequestResult struct {
