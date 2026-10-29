@@ -338,12 +338,17 @@ describe("MermaidViewer canvas interaction", () => {
     expect(currentTranslate()).toEqual(before);
   });
 
-  it("zooms on wheel, anchored so the point under the cursor stays put", () => {
+  it("zooms on ctrl/meta + wheel, anchored so the point under the cursor stays put", () => {
     render(<Harness />);
     const before = { scale: currentScale(), ...currentTranslate() };
     const anchor = { x: 200, y: 150 };
 
-    fireEvent.wheel(canvas(), { deltaY: -100, clientX: anchor.x, clientY: anchor.y });
+    fireEvent.wheel(canvas(), {
+      deltaY: -100,
+      ctrlKey: true,
+      clientX: anchor.x,
+      clientY: anchor.y,
+    });
 
     const after = { scale: currentScale(), ...currentTranslate() };
     expect(after.scale).toBeGreaterThan(before.scale);
@@ -354,13 +359,25 @@ describe("MermaidViewer canvas interaction", () => {
     );
   });
 
-  it("zooms out on the opposite wheel direction", () => {
+  it("zooms out on the opposite ctrl + wheel direction", () => {
     render(<Harness />);
     const before = currentScale();
 
-    fireEvent.wheel(canvas(), { deltaY: 100, clientX: 200, clientY: 150 });
+    fireEvent.wheel(canvas(), { deltaY: 100, ctrlKey: true, clientX: 200, clientY: 150 });
 
     expect(currentScale()).toBeLessThan(before);
+  });
+
+  it("pans on a plain wheel instead of zooming", () => {
+    render(<Harness />);
+    const before = { scale: currentScale(), ...currentTranslate() };
+
+    fireEvent.wheel(canvas(), { deltaX: 20, deltaY: 30, clientX: 200, clientY: 150 });
+
+    const after = { scale: currentScale(), ...currentTranslate() };
+    expect(after.scale).toBe(before.scale);
+    expect(after.x).toBeCloseTo(before.x - 20, 5);
+    expect(after.y).toBeCloseTo(before.y - 30, 5);
   });
 
   it("pinch-zooms with two touch pointers", () => {
