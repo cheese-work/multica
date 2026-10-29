@@ -99,18 +99,29 @@ func (h *Handler) prAwaitsReview(ctx context.Context, prID pgtype.UUID) bool {
 	return err == nil && (pr.State == "open" || pr.State == "draft")
 }
 
-// staleVerdictRun reports whether run is a review that was superseded by a
-// newer head, and the head it reviewed.
-func staleVerdictRun(run *db.AgentTaskQueue) (oldHead string, stale bool) {
-	// stop_unconfirmed_at outlives a rewrite of status/failure_reason (b1 trigger).
-	if run == nil || !run.PullRequestID.Valid ||
-		(run.FailureReason.String != service.FailureReasonSupersededHead && !run.StopUnconfirmedAt.Valid) {
+// staleVerdictRun reports whether run is a review of a head that is no longer
+// its PR's head, and the head it reviewed. Cancellation markers are not enough:
+// the webhook stores the new head before the snapshot callback cancels the old
+// review, so the stored head is compared too. Author runs carry another step.
+func staleVerdictRun(ctx context.Context, q *db.Queries, run *db.AgentTaskQueue) (oldHead string, stale bool) {
+	if run == nil || !run.PullRequestID.Valid {
 		return "", false
 	}
 	var ctxJSON struct {
 		HeadSHA string `json:"head_sha"`
 	}
 	_ = json.Unmarshal(run.Context, &ctxJSON)
+	// stop_unconfirmed_at outlives a rewrite of status/failure_reason (b1 trigger).
+	if run.FailureReason.String == service.FailureReasonSupersededHead || run.StopUnconfirmedAt.Valid {
+		return ctxJSON.HeadSHA, true
+	}
+	if step := run.WorkflowStep.String; step != "in_review" && step != "agent_review" || ctxJSON.HeadSHA == "" {
+		return "", false
+	}
+	pr, err := q.GetGitHubPullRequestByID(ctx, run.PullRequestID)
+	if err != nil || pr.HeadSha == "" || pr.HeadSha == ctxJSON.HeadSHA {
+		return "", false
+	}
 	return ctxJSON.HeadSHA, true
 }
 
