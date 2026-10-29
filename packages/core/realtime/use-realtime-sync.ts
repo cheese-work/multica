@@ -12,6 +12,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
+import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -1245,6 +1246,9 @@ export function useRealtimeSync(
       // updated_at, so the other comment events below deliberately do not.
       const wsId = getCurrentWsId();
       if (wsId) {
+        if (comment.decision_request_id || comment.decision_answer_id) {
+          qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
         // A comment carries only the aggregate owner revision, not a full
@@ -1260,6 +1264,8 @@ export function useRealtimeSync(
 
     const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
       applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
+      const wsId = getCurrentWsId();
+      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1592,6 +1598,10 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const invalidateOpenDecisions = () => {
+      const id = getCurrentWsId();
+      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+    };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as ChatMessageEventPayload;
@@ -1602,7 +1612,10 @@ export function useRealtimeSync(
       // Write the user turn before invalidating so the prompt does not depend
       // on the refetch surviving (MUL-5711) — same shape as chat:done.
       applyChatMessageToCache(qc, payload);
-      if (payload.role !== "user") invalidateSessionLists();
+      if (payload.role !== "user") {
+        invalidateOpenDecisions();
+        if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
+      }
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
@@ -1633,7 +1646,8 @@ export function useRealtimeSync(
       // chat:done no longer invalidates it, so a chatty session doesn't refetch
       // the aggregate on every turn (MUL-4159).
       // Assistant message just landed → has_unread may have flipped to true.
-      invalidateSessionLists();
+      invalidateOpenDecisions();
+      if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
     });
 
     // Late quick-actions supplement from the daemon's background suggestion

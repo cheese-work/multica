@@ -433,6 +433,7 @@ export interface ChatMessageEventPayload {
   content: string;
   task_id?: string;
   created_at: string;
+  message_kind?: import("./chat").ChatMessageKind;
 }
 
 export interface ChatDonePayload {
