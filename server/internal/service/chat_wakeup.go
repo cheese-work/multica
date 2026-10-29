@@ -138,7 +138,13 @@ func (s *ChatWakeupService) Cancel(ctx context.Context, taskID, wakeupID pgtype.
 	if err != nil {
 		return err
 	}
-	if _, err := s.Tasks.Queries.CancelChatWakeup(ctx, db.CancelChatWakeupParams{ID: wakeupID, ChatSessionID: session.ID}); errors.Is(err, pgx.ErrNoRows) {
+	return s.CancelInSession(ctx, session.ID, wakeupID)
+}
+
+// CancelInSession cancels a pending wakeup of a DM the caller already proved
+// access to (the member's own session, or the running task's session).
+func (s *ChatWakeupService) CancelInSession(ctx context.Context, sessionID, wakeupID pgtype.UUID) error {
+	if _, err := s.Tasks.Queries.CancelChatWakeup(ctx, db.CancelChatWakeupParams{ID: wakeupID, ChatSessionID: sessionID}); errors.Is(err, pgx.ErrNoRows) {
 		return ErrChatWakeupNotFound
 	} else if err != nil {
 		return fmt.Errorf("cancel wakeup: %w", err)

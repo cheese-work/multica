@@ -15,13 +15,14 @@ import (
 
 type ChatWakeupResponse struct {
 	ID          string `json:"id"`
+	AgentID     string `json:"agent_id"`
 	FireAt      string `json:"fire_at"`
 	Instruction string `json:"instruction"`
 	Status      string `json:"status"`
 }
 
 func chatWakeupToResponse(w db.ChatWakeup) ChatWakeupResponse {
-	return ChatWakeupResponse{ID: uuidToString(w.ID), FireAt: timestampToString(w.FireAt), Instruction: w.Instruction, Status: w.Status}
+	return ChatWakeupResponse{ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), FireAt: timestampToString(w.FireAt), Instruction: w.Instruction, Status: w.Status}
 }
 
 // chatWakeupTaskID returns the chat task the request runs as. Wakeups are an
@@ -126,6 +127,53 @@ func (h *Handler) CancelChatWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.chatWakeupService().Cancel(r.Context(), taskID, wakeupID); err != nil {
+		writeChatWakeupError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) memberWakeupSession(w http.ResponseWriter, r *http.Request) (db.ChatSession, bool) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return db.ChatSession{}, false
+	}
+	if r.Header.Get("X-Agent-ID") != "" {
+		writeError(w, http.StatusForbidden, "only the DM's human can manage its wakeups here")
+		return db.ChatSession{}, false
+	}
+	return h.gateChatSessionForUser(w, r, userID, h.resolveWorkspaceID(r), chi.URLParam(r, "sessionId"))
+}
+
+// Member-facing DM wakeups: the DM creator reads and cancels the schedule the
+// agent set. Creating one stays agent-only.
+func (h *Handler) ListChatSessionWakeups(w http.ResponseWriter, r *http.Request) {
+	session, ok := h.memberWakeupSession(w, r)
+	if !ok {
+		return
+	}
+	wakeups, err := h.Queries.ListPendingChatWakeups(r.Context(), session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list wakeups")
+		return
+	}
+	out := make([]ChatWakeupResponse, 0, len(wakeups))
+	for _, wakeup := range wakeups {
+		out = append(out, chatWakeupToResponse(wakeup))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) CancelChatSessionWakeup(w http.ResponseWriter, r *http.Request) {
+	session, ok := h.memberWakeupSession(w, r)
+	if !ok {
+		return
+	}
+	wakeupID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "wakeupId"), "wakeupId")
+	if !ok {
+		return
+	}
+	if err := h.chatWakeupService().CancelInSession(r.Context(), session.ID, wakeupID); err != nil {
 		writeChatWakeupError(w, err)
 		return
 	}
