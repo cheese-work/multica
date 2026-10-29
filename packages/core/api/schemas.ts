@@ -963,6 +963,17 @@ const ChatQuickActionSchema = z.object({
   primary: z.boolean().optional(),
 }).loose();
 
+// Every field is required: a half-formed wakeup degrades to a normal bubble
+// (via .catch on the message field) rather than a row with holes.
+const ChatScheduledWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string(),
+  title: z.string().default(""),
+  instruction: z.string(),
+  fire_at: z.string(),
+  created_at: z.string(),
+}).loose();
+
 const DecisionStateSchema = z.enum(["pending", "effective", "disclaimed"]);
 
 // Display-only fields of a decision-stamped comment. Each degrades on its own so
@@ -1062,6 +1073,7 @@ export const ChatMessageSchema = z.object({
   decision_ref: DecisionCardSchema.optional().catch(undefined),
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
+  scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
