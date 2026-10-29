@@ -60,8 +60,8 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	switch {
 	case answer.HumanRole != "owner":
 		return refuse(http.StatusForbidden, "the decision's human is not a workspace owner")
-	case !askDeclaresHashes(request.Ask, beforeSHA, afterSHA):
-		return refuse(http.StatusForbidden, "the ask does not name this before_sha256 and after_sha256")
+	case !askDeclaresChange(request.Ask, field, beforeSHA, afterSHA):
+		return refuse(http.StatusForbidden, "the ask does not name this field, before_sha256 and after_sha256")
 	case !answerIsApproval(request.Options, answer.ContentSnapshot):
 		return refuse(http.StatusForbidden, "the answer is not the approve option")
 	case answer.EffectiveAt.Time.After(answer.Now.Time):
@@ -83,10 +83,14 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	return nil
 }
 
-// askDeclaresHashes is true when the ask's declared before_sha256 and
-// after_sha256 lines (see decisiontx.BoundWriteDecision) are exactly the
-// write's hashes. A hash that appears elsewhere in the ask does not count.
-func askDeclaresHashes(ask, beforeSHA, afterSHA string) bool {
+// askDeclaresChange is true when the ask is exactly the decisiontx.BoundWriteDecision
+// text for this field and these hashes. The field line binds the approval to
+// one field: another field holding the same bytes is not approved. A hash that
+// appears elsewhere in the ask does not count.
+func askDeclaresChange(ask, field, beforeSHA, afterSHA string) bool {
+	if !strings.HasPrefix(ask, decisiontx.BoundWriteHeading(field)) {
+		return false
+	}
 	declared := map[string]string{}
 	for _, match := range declaredHashLine.FindAllStringSubmatch(ask, -1) {
 		if _, repeated := declared[match[1]]; repeated {

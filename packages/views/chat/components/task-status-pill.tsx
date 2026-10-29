@@ -166,12 +166,22 @@ function useResolveStage(): (
   };
 }
 
+// Read once: the spinner ticks frames in JS, so CSS alone cannot calm it.
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 export function TaskStatusPill({
   pendingTask,
   taskMessages,
   availability,
 }: Props) {
   const resolveStage = useResolveStage();
+  const [reducedMotion] = useState(prefersReducedMotion);
   // Anchor: locked on first render. Once set we never reassign — otherwise
   // the timer would visibly snap backwards when an optimistic-seeded
   // `Date.now()` anchor is later replaced by a server-side created_at that
@@ -210,10 +220,11 @@ export function TaskStatusPill({
   return (
     <div
       className="flex items-center gap-1.5 px-1 text-caption text-muted-foreground"
+      role="status"
       aria-live="polite"
     >
       {!stage.static && (
-        <UnicodeSpinner name="breathe" className="opacity-70" />
+        <UnicodeSpinner name="breathe" className="opacity-70" paused={reducedMotion} />
       )}
       <span className="truncate">
         <ShimmerText active={!stage.static}>

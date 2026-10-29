@@ -304,3 +304,62 @@ func TestChatWakeupCreateRefusedWhenArchiveCommitsWhileWaitingForLock(t *testing
 		t.Fatalf("pending wakeups on archived DM = %d, %v; want 0", pending, err)
 	}
 }
+
+func TestChatWakeupStoresTrimmedTitleAndListsIt(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	ctx := context.Background()
+	w, err := f.svc.Create(ctx, ChatWakeupInput{TaskID: f.taskID, At: time.Now().Add(time.Hour), Title: "  Check deploy  ", Instruction: "look"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if w.Title != "Check deploy" {
+		t.Fatalf("created title = %q, want trimmed %q", w.Title, "Check deploy")
+	}
+	listed, err := f.svc.List(ctx, f.taskID)
+	if err != nil || len(listed) != 1 || listed[0].Title != "Check deploy" {
+		t.Fatalf("List = %+v, %v; want one wakeup titled %q", listed, err, "Check deploy")
+	}
+	// Title is optional: omitting it stores the empty default.
+	if untitled := f.create(t, time.Hour, "no title"); untitled.Title != "" {
+		t.Fatalf("untitled title = %q, want empty", untitled.Title)
+	}
+}
+
+func TestChatWakeupTitleLimitIsCountedInRunes(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	ctx := context.Background()
+	at := time.Now().Add(time.Hour)
+	_, err := f.svc.Create(ctx, ChatWakeupInput{TaskID: f.taskID, At: at, Title: strings.Repeat("é", MaxChatWakeupTitle+1), Instruction: "x"})
+	if !errors.Is(err, ErrChatWakeupTitleTooLong) {
+		t.Fatalf("121-rune title error = %v, want ErrChatWakeupTitleTooLong", err)
+	}
+	w, err := f.svc.Create(ctx, ChatWakeupInput{TaskID: f.taskID, At: at, Title: strings.Repeat("é", MaxChatWakeupTitle), Instruction: "x"})
+	if err != nil || w.Title != strings.Repeat("é", MaxChatWakeupTitle) {
+		t.Fatalf("120-rune title = %v, %v; want accepted", w.Title, err)
+	}
+}
+
+// The model must receive exactly the labelled header plus the instruction,
+// whatever title the wakeup carries; the title is display-only.
+func TestChatWakeupFiredMessageContentIgnoresTitle(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	ctx := context.Background()
+	w, err := f.svc.Create(ctx, ChatWakeupInput{TaskID: f.taskID, At: time.Now().Add(time.Hour), Title: "Check deploy", Instruction: "refresh Luna readiness"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	f.makeDue(t, w)
+	if err := f.svc.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	var content, sentVia string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT m.content, m.sent_via FROM chat_message m JOIN agent_task_queue t ON t.id = m.task_id
+		WHERE m.chat_session_id = $1 AND t.status = 'queued'`, f.sessionID).Scan(&content, &sentVia); err != nil {
+		t.Fatalf("load scheduled message: %v", err)
+	}
+	const want = "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: refresh Luna readiness"
+	if content != want || sentVia != "system" {
+		t.Fatalf("content = %q, sent_via = %q; want %q, system", content, sentVia, want)
+	}
+}
