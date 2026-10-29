@@ -107,3 +107,19 @@ trigger.
 These mutate durable state or start work: `create`, `update`, `delete`, trigger
 add/update/delete/rotate, `trigger`, and webhook calls to
 `/api/webhooks/autopilots/{token}`.
+
+## Triggers and deletion
+
+```bash
+multica autopilot trigger-list <autopilot-id> --full-id   # ids for update/delete
+multica autopilot trigger-update <autopilot-id> <trigger-id> \
+  --cron "0 9 * * 1-5" --timezone Asia/Bangkok --label weekday --enabled=false
+multica autopilot trigger-delete <autopilot-id> <trigger-id>
+multica autopilot delete <id>
+```
+
+`trigger-update` takes `--cron`, `--timezone` (IANA), `--label` and
+`--enabled`; omit a flag to keep that field. `--enabled=false` pauses the
+trigger without losing it. Both deletes are permanent: `trigger-delete` removes
+one trigger, `delete` removes the autopilot. Prefer
+`trigger-update --enabled=false` when you may want it back.

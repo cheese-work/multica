@@ -38,6 +38,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -245,10 +246,16 @@ type Handler struct {
 	Entitlements entitlement.Provider
 	// SeatCapacity executes Cloud's pre-purchased human-seat protocol. Nil or
 	// disabled preserves self-hosted behavior.
-	SeatCapacity          seatcapacity.Executor
-	SeatCapacityLocker    seatcapacity.WorkspaceLocker
-	SeatCapacityWorker    *seatcapacity.Worker
-	DecisionWorker        *DecisionWorker
+	SeatCapacity       seatcapacity.Executor
+	SeatCapacityLocker seatcapacity.WorkspaceLocker
+	SeatCapacityWorker *seatcapacity.Worker
+	DecisionWorker     *DecisionWorker
+	// ApprovalVerifier proves a human approved a decision action. Nil until
+	// the passkey verifier is wired; approve then fails closed.
+	ApprovalVerifier ApprovalVerifier
+	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
+	// off (MULTICA_WEBAUTHN_* unset).
+	Passkeys              *passkey.Service
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
 	ModelListStore        ModelListStore
@@ -578,6 +585,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
 	h.DecisionWorker = NewDecisionWorker(h)
+	h.usePasskeysFromEnv(queries, txStarter)
 	// The default passthrough scheduler reports sweeper-race recoveries so the
 	// daemon:register refresh fires even without the production batched wiring.
 	if passthrough, ok := h.HeartbeatScheduler.(*PassthroughHeartbeatScheduler); ok {

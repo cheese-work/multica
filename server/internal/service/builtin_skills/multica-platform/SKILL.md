@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the runtime brief does not fully cover: issue and PR contracts, charts and files in comments, mentions, agents, squads, autopilots, projects, runtimes, wakeups, skill import. Not for the product code you are working on."
+description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -19,7 +19,8 @@ Read the invariants below, then open the reference(s) your task actually needs
 
 | Open | When the task is about |
 |---|---|
-| `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, status side effects, sub-issues and stages, who else is running, wakeups, comments, charts and attachments |
+| `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
+| `references/charts.md` | Rendering a chart or attaching a file in a comment: fenced `html`/`mermaid` blocks, `--attachment`, theme variables |
 | `references/pull-requests.md` | Linked PR state and current GitHub checks |
 | `references/wakeups.md` | Wakeups: event/time triggers, ownership and close behavior, retained inputs and status |
 | `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing |
@@ -27,6 +28,11 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
 | `references/autopilots.md` | Autopilots: schedule / webhook / manual triggers, `create_issue` vs `run_only`, why one did not fire |
 | `references/projects.md` | Projects and their durable resources (`github_repo`, `local_directory`, worktree mode); project workflows — status columns, handoffs, a `[Project workflow]` block in your prompt |
+| `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes), per-issue run budget (`issue budget get/raise`) |
+| `references/decisions.md` | Asking a named person to decide: `decision request/get/list/withdraw`, DM lane choice |
+| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork), `chat rename`, `chat wakeup` |
+| `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
+| `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
 

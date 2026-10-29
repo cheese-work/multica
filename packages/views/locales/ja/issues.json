@@ -595,6 +595,7 @@
     "wakeup_link_run": "実行を表示"
   },
   "comment": {
+    "show_full": "コメント全文を表示",
     "you": "あなた",
     "add_reaction": "リアクションを追加",
     "collapse_thread": "スレッドを折りたたむ",

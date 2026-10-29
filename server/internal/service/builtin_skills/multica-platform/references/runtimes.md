@@ -231,3 +231,49 @@ shared runtime's environment. An optional `runtime_config.repository`
 issue's project binds no repository; the workspace's only repository is the last
 fallback when the connection holds its credential. Qoder Cloud Agents model/tool/skill
 management remains in Qoder.
+
+## Naming runtimes and custom profiles
+
+```bash
+multica runtime rename <runtime-id> "Build box"   # "" clears the custom name
+multica runtime rename <runtime-id> "Build box" --machine   # every runtime on the machine
+```
+
+A runtime profile describes a custom agent command the daemon can run.
+
+```bash
+multica runtime profile list
+multica runtime profile create --display-name "My pi" --command-name pi \
+  --runtime-type pi --description "..."
+multica runtime profile update <profile-id> --display-name ... --command-name ... --enabled=false
+multica runtime profile delete <profile-id>
+multica runtime profile set-path <profile-id> --path /abs/path/to/pi   # this machine only
+multica runtime profile unset-path <profile-id>
+```
+
+`--command-name` is the executable the daemon resolves on `PATH`.
+`--runtime-type` (for example `pi` or `omp`) is the base runtime the profile
+behaves like; the protocol family is immutable after create. `set-path` and
+`unset-path` change only the machine you run them on. They are local overrides
+and leave the workspace profile unchanged. `--enabled=false` retires a profile
+without deleting it.
+
+## Host and operator commands: do not run from a task
+
+These commands configure or control the machine, the daemon or your own
+credentials. A task run never needs them, and running one can stop the daemon
+that is running you. If the work seems to need one, report it and stop.
+
+| Command | What it does |
+|---|---|
+| `multica login`, `multica auth status`, `multica auth logout` | Human sign-in and credential state |
+| `multica setup cloud`, `multica setup self-host` | First-time bootstrap of the CLI profile |
+| `multica config show`, `multica config set` | Local CLI profile values, not workspace state |
+| `multica daemon start`, `multica daemon stop`, `multica daemon restart` | Control the host daemon |
+| `multica daemon logs`, `multica daemon disk-usage` | Read daemon logs and disk use |
+| `multica daemon autostart status`, `multica daemon autostart enable`, `multica daemon autostart disable` | Whether the daemon starts at login |
+| `multica daemon maintenance status`, `multica daemon maintenance acquire`, `multica daemon maintenance release` | Host maintenance lock |
+| `multica update`, `multica version` | Update the binary; print the build |
+
+Never terminate a `multica` process by name: a matching process may be the
+daemon. Compare a PID with `multica daemon status --output json` first.
