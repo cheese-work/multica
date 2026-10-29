@@ -1,11 +1,16 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as floatingUi from "@floating-ui/dom";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations, type AnnotationLabels } from "./use-comment-annotations";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("@floating-ui/dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@floating-ui/dom")>();
+  return { ...actual, computePosition: vi.fn(actual.computePosition) };
+});
 
 const key = "chat:s1" as const;
 const labels: AnnotationLabels = {
@@ -55,7 +60,9 @@ async function addComment(container: HTMLElement, note: string) {
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof floatingUi>("@floating-ui/dom");
+  vi.mocked(floatingUi.computePosition).mockReset().mockImplementation(actual.computePosition);
   useCommentDraftStore.setState({ drafts: {} });
   Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
   Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
@@ -63,8 +70,96 @@ beforeEach(() => {
   Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 10, 120, 20));
   Range.prototype.getClientRects = vi.fn(() => [] as unknown as DOMRectList);
 });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("chat surface reading and focus order", () => {
+  it.each(["fine", "coarse"])("focuses once per open and ignores a previous comment's late marker positioning (%s pointer)", async (pointer) => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({ matches: query === `(pointer: ${pointer})` }) as MediaQueryList);
+    const focus = vi.spyOn(HTMLTextAreaElement.prototype, "focus");
+    const { computePosition } = await vi.importActual<typeof floatingUi>("@floating-ui/dom");
+    const markerPositions: (() => void)[] = [];
+    let delayMarkers = true;
+    vi.mocked(floatingUi.computePosition).mockImplementation(async (reference, floating, options) => {
+      const position = await computePosition(reference, floating, options);
+      if (delayMarkers && floating.querySelector("[data-annotation-marker]")) {
+        await new Promise<void>((resolve) => { markerPositions.push(resolve); });
+      }
+      return position;
+    });
+    const { container } = renderWithI18n(<ChatFixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    const first = await screen.findByRole("textbox", { name: "Comment 1" });
+    await waitFor(() => expect(first).toBeVisible());
+    if (pointer === "coarse") act(() => first.focus());
+    await waitFor(() => expect(first).toHaveFocus());
+    expect(focus).toHaveBeenCalledTimes(1);
+    fireEvent.change(first, { target: { value: "First note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(markerPositions.length).toBeGreaterThan(0));
+
+    const source = selectText(container);
+    const range = document.createRange();
+    range.setStart(source.firstChild!, 9);
+    range.setEnd(source.firstChild!, 13);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+    fireEvent.pointerUp(source);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    const second = await screen.findByRole("textbox", { name: "Comment 2" });
+    await waitFor(() => expect(second).toBeVisible());
+    if (pointer === "coarse") act(() => second.focus());
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(focus).toHaveBeenCalledTimes(2);
+    delayMarkers = false;
+    await act(async () => { markerPositions.splice(0).forEach((resolve) => resolve()); });
+    expect(second).toHaveFocus();
+    fireEvent(window, new Event("resize"));
+    await act(async () => {});
+    expect(focus).toHaveBeenCalledTimes(2);
+    expect(second).toHaveFocus();
+  });
+
+  it.each(["resize", "scroll"])("keeps the same focused editor inside the visual viewport on %s", async (event) => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({ matches: query === "(pointer: coarse)" }) as MediaQueryList);
+    const focus = vi.spyOn(HTMLTextAreaElement.prototype, "focus");
+    const viewport = Object.assign(new EventTarget(), {
+      width: 1024, height: 768, offsetTop: 0, offsetLeft: 0, scale: 1,
+    });
+    vi.stubGlobal("visualViewport", viewport);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(320);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(120);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-reply-annotation-overlay")
+        ? new DOMRect(0, 0, 320, 120) : new DOMRect(10, 10, 600, 700);
+    });
+    Range.prototype.getBoundingClientRect = vi.fn(() => new DOMRect(10, 300, 120, 20));
+    const { container, unmount } = renderWithI18n(<ChatFixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    const input = await screen.findByRole("textbox", { name: "Comment 1" });
+    await waitFor(() => expect(input).toBeVisible());
+    act(() => input.focus());
+    await waitFor(() => expect(input).toHaveFocus());
+    const overlay = input.closest<HTMLElement>("[data-reply-annotation-overlay]")!;
+    viewport.height = event === "resize" ? 200 : 280;
+    viewport.offsetTop = event === "scroll" ? 400 : 0;
+    act(() => { viewport.dispatchEvent(new Event(event)); });
+    await waitFor(() => {
+      expect(input).toBeVisible();
+      expect(parseFloat(overlay.style.top)).toBeGreaterThanOrEqual(viewport.offsetTop + 8);
+      expect(parseFloat(overlay.style.top) + 120).toBeLessThanOrEqual(viewport.offsetTop + viewport.height - 8);
+    });
+    expect(screen.getByRole("textbox")).toBe(input);
+    expect(input).toHaveFocus();
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(parseFloat(overlay.style.maxHeight)).toBe(viewport.height - 16);
+    unmount();
+    const update = vi.mocked(floatingUi.computePosition).mockClear();
+    viewport.dispatchEvent(new Event(event));
+    await act(async () => {});
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("names controls from the labels and puts the marker in the message's slot", async () => {
     const { container } = renderWithI18n(<ChatFixture />);
     await addComment(container, "Why 5 s?");

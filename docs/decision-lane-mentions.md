@@ -57,20 +57,48 @@ membership, authorization and one-ping-per-person checks still apply.
 
 ```json
 {
+  "context_eli10": "We can ship the release today or tomorrow. The code is tested. Shipping during peak hours could slow users down. You pick the day.",
   "agent_did": "Ran the scoped tests and published the candidate.",
   "decision": "Choose the deployment window.",
-  "options": ["Deploy now", "Deploy tomorrow"],
-  "recommendation": "Deploy tomorrow after the maintenance window opens.",
+  "stakes_if_wrong": "A bad window can slow the service for users.",
+  "options": [
+    {
+      "label": "DEPLOY NOW",
+      "what_happens": "Agents deploy the release this hour.",
+      "pros": ["Users get the fix today"],
+      "cons": ["Peak-hour traffic may slow the service"],
+      "cost_or_time": "No extra time"
+    },
+    {
+      "label": "DEPLOY TOMORROW",
+      "what_happens": "Agents deploy after the maintenance window opens.",
+      "pros": ["Quiet hours, lower risk"],
+      "cons": ["The fix waits one day"],
+      "cost_or_time": "One day of delay"
+    }
+  ],
+  "recommendation": "DEPLOY TOMORROW after the maintenance window opens.",
   "default_if_no_reply": "Do not deploy. Keep the current version running.",
   "source_issue_id": "11111111-1111-4111-8111-111111111111",
   "source_comment_id": "22222222-2222-4222-8222-222222222222"
 }
 ```
 
-All fields are required. Options contain at least two distinct, nonblank
-strings. The source issue must match `--issue`. The source comment must exist
+All fields are required. `context_eli10` is two to five plain sentences:
+what this is for the reader, and why it needs a decision now. Options are
+objects with a nonblank `label`, `what_happens` and `cost_or_time` (plain text
+such as "No extra time" is fine; do not invent a number) and at least one
+`pros` and one `cons` item. Use at least two options with distinct labels.
+Unknown keys and legacy string options are rejected with an error that names
+the field. The source issue must match `--issue`. The source comment must exist
 on that issue in the selected workspace and must not be deleted. The API
 accepts the same object as `ask` in `POST /api/decisions`.
+
+Advisory lint: the CLI prints a `hint:` line on stderr, and the API returns
+`hints[]`, when `context_eli10`, `stakes_if_wrong` or an option's
+`what_happens` holds a commit SHA or an internal code such as `L2` or `RGS-1`,
+or when `context_eli10` is not two to five sentences. Hints never block a
+request.
 
 The server renders the fields and source links into the stored ask, issue
 comment and DM message. The stored request also retains `source_comment_id`

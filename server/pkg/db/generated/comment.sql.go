@@ -1110,6 +1110,116 @@ func (q *Queries) ListCommentAncestorPath(ctx context.Context, arg ListCommentAn
 	return items, nil
 }
 
+const listCommentThreadContext = `-- name: ListCommentThreadContext :many
+WITH RECURSIVE thread_history AS (
+  SELECT root.id, root.created_at, root.deleted_at, root.parent_id
+  FROM comment root
+  WHERE root.id = $1
+    AND root.workspace_id = $3
+    AND root.issue_id = $4
+    AND root.parent_id IS NULL
+    AND (root.created_at, root.id) <= (
+      $5::timestamptz,
+      $2::uuid
+    )
+
+  UNION ALL
+
+  SELECT child.id, child.created_at, child.deleted_at, child.parent_id
+  FROM comment child
+  JOIN thread_history parent ON child.parent_id = parent.id
+  WHERE child.workspace_id = $3
+    AND child.issue_id = $4
+    AND (child.created_at, child.id) <= (
+      $5::timestamptz,
+      $2::uuid
+    )
+),
+recent_replies AS (
+  SELECT th.id
+  FROM thread_history th
+  WHERE th.parent_id IS NOT NULL
+    AND th.id <> $2::uuid
+    AND th.deleted_at IS NULL
+  ORDER BY th.created_at DESC, th.id DESC
+  LIMIT $6
+)
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, c.decision_request_id, c.decision_answer_id, c.decision_intent_id, c.decision_comment_kind
+FROM comment c
+WHERE c.id IN (SELECT id FROM recent_replies)
+   OR (c.id = $1
+       AND c.id <> $2::uuid
+       AND c.workspace_id = $3
+       AND c.issue_id = $4
+       AND c.parent_id IS NULL
+       AND c.deleted_at IS NULL)
+ORDER BY c.created_at, c.id
+`
+
+type ListCommentThreadContextParams struct {
+	RootID          pgtype.UUID        `json:"root_id"`
+	AnchorID        pgtype.UUID        `json:"anchor_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	AnchorCreatedAt pgtype.Timestamptz `json:"anchor_created_at"`
+	ReplyLimit      int32              `json:"reply_limit"`
+}
+
+// The thread root plus the newest reply_limit live replies before the anchor,
+// oldest first. Unlike ListCommentThreadHistory it ranks replies newest-first
+// before capping, so a long thread keeps its recent tail (CHE-2070).
+func (q *Queries) ListCommentThreadContext(ctx context.Context, arg ListCommentThreadContextParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listCommentThreadContext,
+		arg.RootID,
+		arg.AnchorID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AnchorCreatedAt,
+		arg.ReplyLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+			&i.ViaPluginID,
+			&i.Revision,
+			&i.RecoverySettledAt,
+			&i.DeletedAt,
+			&i.SuppressedAgentIds,
+			&i.DecisionRequestID,
+			&i.DecisionAnswerID,
+			&i.DecisionIntentID,
+			&i.DecisionCommentKind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCommentThreadHistory = `-- name: ListCommentThreadHistory :many
 WITH RECURSIVE thread_history AS (
   SELECT root.id, root.issue_id, root.author_type, root.author_id, root.content, root.type, root.created_at, root.updated_at, root.parent_id, root.workspace_id, root.resolved_at, root.resolved_by_type, root.resolved_by_id, root.source_task_id, root.quick_action_id, root.via_plugin_id, root.revision, root.recovery_settled_at, root.deleted_at, root.suppressed_agent_ids, root.decision_request_id, root.decision_answer_id, root.decision_intent_id, root.decision_comment_kind

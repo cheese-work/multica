@@ -447,6 +447,10 @@ func awaitDecisionDeliveryEvent(test *testing.T, events <-chan decisionDeliveryT
 	}
 }
 
+// waitForDecisionWaiterBlockedBy polls until waiterPID waits on a lock held by
+// blockerPID. waiterPID 0 matches any backend: use it when the handler under
+// test opens other transactions through the same TxStarter first (the started
+// event then names one of those, not the one that takes the lock).
 func waitForDecisionWaiterBlockedBy(test *testing.T, waiterPID, blockerPID int, timeout time.Duration) bool {
 	test.Helper()
 	deadline := time.Now().Add(timeout)
@@ -456,7 +460,7 @@ func waitForDecisionWaiterBlockedBy(test *testing.T, waiterPID, blockerPID int, 
 			SELECT EXISTS (
 				SELECT 1 FROM pg_stat_activity
 				WHERE datname = current_database()
-				  AND pid = $1
+				  AND ($1::int = 0 OR pid = $1)
 				  AND state = 'active'
 				  AND wait_event_type = 'Lock'
 				  AND wait_event IN ('transactionid', 'tuple', 'advisory')

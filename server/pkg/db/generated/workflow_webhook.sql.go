@@ -163,6 +163,35 @@ func (q *Queries) GetWorkflowWebhookEndpoint(ctx context.Context, id pgtype.UUID
 	return i, err
 }
 
+const getWorkflowWebhookEndpointByName = `-- name: GetWorkflowWebhookEndpointByName :one
+SELECT id, workspace_id, workflow_id, name, secret_sealed, previous_secret_sealed, previous_expires_at, rate_per_min, disabled_at, created_by, created_at FROM workflow_webhook_endpoint
+WHERE workflow_id = $1 AND name = $2
+`
+
+type GetWorkflowWebhookEndpointByNameParams struct {
+	WorkflowID pgtype.UUID `json:"workflow_id"`
+	Name       string      `json:"name"`
+}
+
+func (q *Queries) GetWorkflowWebhookEndpointByName(ctx context.Context, arg GetWorkflowWebhookEndpointByNameParams) (WorkflowWebhookEndpoint, error) {
+	row := q.db.QueryRow(ctx, getWorkflowWebhookEndpointByName, arg.WorkflowID, arg.Name)
+	var i WorkflowWebhookEndpoint
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.WorkflowID,
+		&i.Name,
+		&i.SecretSealed,
+		&i.PreviousSecretSealed,
+		&i.PreviousExpiresAt,
+		&i.RatePerMin,
+		&i.DisabledAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertWorkflowWebhookEvent = `-- name: InsertWorkflowWebhookEvent :execrows
 INSERT INTO workflow_webhook_event (
     endpoint_id, workspace_id, issue_id, name, result, ref, body_sha256, body_bytes
@@ -317,4 +346,16 @@ func (q *Queries) RotateWorkflowWebhookEndpointSecret(ctx context.Context, arg R
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const wakeWorkflowEdges = `-- name: WakeWorkflowEdges :exec
+UPDATE issue_wakeup SET next_fire_at = now(), updated_at = clock_timestamp()
+WHERE issue_id = $1 AND system_rule = 'workflow_edges'
+`
+
+// Prompts the engine to look now. Only a prompt: the engine reads committed
+// events whether or not this ran.
+func (q *Queries) WakeWorkflowEdges(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, wakeWorkflowEdges, issueID)
+	return err
 }

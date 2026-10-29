@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const copyText = vi.hoisted(() => vi.fn(async () => true));
@@ -96,6 +96,142 @@ describe("RichTable", () => {
       rect.mockRestore();
       clientWidth.mockRestore();
     }
+  });
+
+  describe("auto-fit cost", () => {
+    // Counts the max-content pass of measureColumns, which lifts the table's
+    // sizing and forces a layout: one header-cell read per column.
+    function probeMeasurePasses() {
+      const natural = { "max-content": [500, 260, 90], "min-content": [200, 330, 64] } as const;
+      let passes = 0;
+      const rect = vi
+        .spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLTableCellElement) {
+          const mode = this.closest("table")?.style.width as keyof typeof natural;
+          if (mode === "max-content" && this.cellIndex === 0) passes += 1;
+          return { width: natural[mode]?.[this.cellIndex] ?? 0, left: 0, right: 0, top: 0, height: 0 } as DOMRect;
+        });
+      const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
+      return {
+        passes: () => passes,
+        restore: () => {
+          rect.mockRestore();
+          clientWidth.mockRestore();
+        },
+      };
+    }
+
+    it("reuses a table's measured widths when it remounts", () => {
+      const probe = probeMeasurePasses();
+      try {
+        const content = TABLE.replace("harness switch", "remount cache");
+        const first = render(<RichContent content={content} />);
+        expect(probe.passes()).toBe(1);
+        const cols = () =>
+          Array.from(document.querySelectorAll<HTMLElement>("colgroup col"), (col) => col.style.width);
+        const fitted = cols();
+        expect(fitted).toEqual(["320px", "330px", "90px"]);
+
+        first.unmount();
+        render(<RichContent content={content} />);
+        expect(probe.passes()).toBe(1);
+        expect(cols()).toEqual(fitted);
+      } finally {
+        probe.restore();
+      }
+    });
+
+    function stubFonts(status: "loaded" | "loading") {
+      let settle = () => {};
+      const ready = status === "loaded" ? Promise.resolve() : new Promise<void>((resolve) => (settle = resolve));
+      Object.defineProperty(document, "fonts", { configurable: true, value: { status, ready } });
+      return {
+        loaded: async () => {
+          settle();
+          await act(async () => {});
+        },
+        restore: () => Reflect.deleteProperty(document, "fonts"),
+      };
+    }
+
+    it("keeps the cached widths on remount once fonts have loaded", async () => {
+      const probe = probeMeasurePasses();
+      const fonts = stubFonts("loaded");
+      try {
+        const content = TABLE.replace("harness switch", "loaded fonts remount");
+        const first = render(<RichContent content={content} />);
+        await act(async () => {});
+        expect(probe.passes()).toBe(1);
+
+        first.unmount();
+        render(<RichContent content={content} />);
+        await act(async () => {});
+        expect(probe.passes()).toBe(1);
+      } finally {
+        fonts.restore();
+        probe.restore();
+      }
+    });
+
+    it("measures again when a font finishes loading after the table mounted", async () => {
+      const probe = probeMeasurePasses();
+      const fonts = stubFonts("loading");
+      try {
+        render(<RichContent content={TABLE.replace("harness switch", "font swap")} />);
+        expect(probe.passes()).toBe(1);
+        await fonts.loaded();
+        expect(probe.passes()).toBe(2);
+      } finally {
+        fonts.restore();
+        probe.restore();
+      }
+    });
+
+    it("measures again when the available width changes", () => {
+      const probe = probeMeasurePasses();
+      try {
+        const content = TABLE.replace("harness switch", "width cache");
+        const first = render(<RichContent content={content} />);
+        first.unmount();
+        vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(900);
+        render(<RichContent content={content} />);
+        expect(probe.passes()).toBe(2);
+      } finally {
+        probe.restore();
+      }
+    });
+
+    it("skips auto-fit for a tall table", () => {
+      const probe = probeMeasurePasses();
+      try {
+        const rows = Array.from({ length: 120 }, (_, i) => `| row ${i} | value | ${i} |`);
+        const tall = ["| GitHub | Relation | Count |", "| --- | --- | --- |", ...rows].join("\n");
+        const { container } = render(<RichContent content={tall} />);
+        expect(probe.passes()).toBe(0);
+        expect(container.querySelector("table")).not.toHaveAttribute("data-column-widths");
+      } finally {
+        probe.restore();
+      }
+    });
+
+    it("observes size changes with a single ResizeObserver per table", () => {
+      const Original = globalThis.ResizeObserver;
+      let created = 0;
+      globalThis.ResizeObserver = class {
+        constructor() {
+          created += 1;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        renderTable();
+        expect(created).toBe(1);
+      } finally {
+        globalThis.ResizeObserver = Original;
+      }
+    });
   });
 
   it("resizes a column from the keyboard, persists it, and resets", async () => {

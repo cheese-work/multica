@@ -55,3 +55,13 @@ SELECT * FROM workflow_webhook_event
 WHERE endpoint_id = $1 AND issue_id = $2 AND result = 'success' AND received_at >= $3
 ORDER BY received_at DESC
 LIMIT 1;
+
+-- name: GetWorkflowWebhookEndpointByName :one
+SELECT * FROM workflow_webhook_endpoint
+WHERE workflow_id = $1 AND name = $2;
+
+-- name: WakeWorkflowEdges :exec
+-- Prompts the engine to look now. Only a prompt: the engine reads committed
+-- events whether or not this ran.
+UPDATE issue_wakeup SET next_fire_at = now(), updated_at = clock_timestamp()
+WHERE issue_id = $1 AND system_rule = 'workflow_edges';

@@ -41,7 +41,7 @@ func init() {
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: agent_did, decision, options, recommendation, default_if_no_reply, source_issue_id, source_comment_id")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -92,7 +92,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ask, err := decisiontx.ParseAsk(askText)
+	ask, err := decisiontx.DecodeAsk([]byte(askText))
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,29 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}
+	printAskHints(command, decisiontx.LintAsk(ask), result)
 	return printDecisions(command, []map[string]any{result}, false)
+}
+
+// printAskHints writes each distinct advisory hint once on stderr and drops the
+// server copy so JSON stdout keeps the stored request shape.
+func printAskHints(command *cobra.Command, local []string, result map[string]any) {
+	seen := make(map[string]bool)
+	hints := local
+	if server, ok := result["hints"].([]any); ok {
+		for _, hint := range server {
+			if text, ok := hint.(string); ok {
+				hints = append(hints, text)
+			}
+		}
+	}
+	delete(result, "hints")
+	for _, hint := range hints {
+		if !seen[hint] {
+			seen[hint] = true
+			fmt.Fprintln(command.ErrOrStderr(), "hint: "+hint)
+		}
+	}
 }
 
 func readDecisionText(path, label string) (string, error) {

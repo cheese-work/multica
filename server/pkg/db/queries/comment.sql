@@ -980,6 +980,54 @@ FROM thread_history
 ORDER BY created_at, id
 LIMIT sqlc.arg(row_limit);
 
+-- name: ListCommentThreadContext :many
+-- The thread root plus the newest reply_limit live replies before the anchor,
+-- oldest first. Unlike ListCommentThreadHistory it ranks replies newest-first
+-- before capping, so a long thread keeps its recent tail (CHE-2070).
+WITH RECURSIVE thread_history AS (
+  SELECT root.id, root.created_at, root.deleted_at, root.parent_id
+  FROM comment root
+  WHERE root.id = sqlc.arg(root_id)
+    AND root.workspace_id = sqlc.arg(workspace_id)
+    AND root.issue_id = sqlc.arg(issue_id)
+    AND root.parent_id IS NULL
+    AND (root.created_at, root.id) <= (
+      sqlc.arg(anchor_created_at)::timestamptz,
+      sqlc.arg(anchor_id)::uuid
+    )
+
+  UNION ALL
+
+  SELECT child.id, child.created_at, child.deleted_at, child.parent_id
+  FROM comment child
+  JOIN thread_history parent ON child.parent_id = parent.id
+  WHERE child.workspace_id = sqlc.arg(workspace_id)
+    AND child.issue_id = sqlc.arg(issue_id)
+    AND (child.created_at, child.id) <= (
+      sqlc.arg(anchor_created_at)::timestamptz,
+      sqlc.arg(anchor_id)::uuid
+    )
+),
+recent_replies AS (
+  SELECT th.id
+  FROM thread_history th
+  WHERE th.parent_id IS NOT NULL
+    AND th.id <> sqlc.arg(anchor_id)::uuid
+    AND th.deleted_at IS NULL
+  ORDER BY th.created_at DESC, th.id DESC
+  LIMIT sqlc.arg(reply_limit)
+)
+SELECT c.*
+FROM comment c
+WHERE c.id IN (SELECT id FROM recent_replies)
+   OR (c.id = sqlc.arg(root_id)
+       AND c.id <> sqlc.arg(anchor_id)::uuid
+       AND c.workspace_id = sqlc.arg(workspace_id)
+       AND c.issue_id = sqlc.arg(issue_id)
+       AND c.parent_id IS NULL
+       AND c.deleted_at IS NULL)
+ORDER BY c.created_at, c.id;
+
 -- name: LockCommentAncestorPath :many
 WITH RECURSIVE ancestor_ids AS (
   SELECT c.id, c.parent_id, 1::integer AS depth, ARRAY[c.id]::uuid[] AS visited_ids

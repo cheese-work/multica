@@ -6,7 +6,7 @@ import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floatin
 
 /**
  * Touch browsers (iOS) put their own selection menu above the selection, so the
- * popup goes below it. It flips above only when there is no room below, and only
+ * selection action goes below it. It flips above only when there is no room below, and only
  * shifts horizontally (shift's default), never vertically, so it cannot cover the selected text.
  */
 const TOUCH_GAP_BELOW = 28;
@@ -23,7 +23,7 @@ function placementFor(marker: boolean, touch: boolean) {
 const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
-export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget }: {
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget, keepInView = false }: {
   range: Range;
   source: HTMLElement;
   children: ReactNode;
@@ -33,6 +33,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
   onPositioned?: () => void;
   /** Where the overlay lives in the DOM. Defaults to the page body. */
   portalTarget?: HTMLElement;
+  keepInView?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const marker = !!markerRanges;
@@ -48,6 +49,8 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     const update = () => {
       const currentRevision = ++revision;
       const touch = isTouch();
+      const viewport = window.visualViewport;
+      element.style.maxHeight = keepInView && viewport ? `${Math.max(0, viewport.height - 16)}px` : "";
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
@@ -69,12 +72,12 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(touch ? ({ placement }) => touchGap(placement) : 8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true }), hide()],
+        ] : [offset(touch ? ({ placement }) => touchGap(placement) : 8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true, crossAxis: keepInView }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();
         element.style.visibility = !source.isConnected || !range.startContainer.isConnected ||
-          (rect.width === 0 && rect.height === 0) || middlewareData.hide?.referenceHidden ? "hidden" : "visible";
+          (rect.width === 0 && rect.height === 0) || (!keepInView && middlewareData.hide?.referenceHidden) ? "hidden" : "visible";
         element.style.left = `${x}px`;
         element.style.top = `${y}px`;
         if (element.style.visibility === "visible") onPositioned?.();
@@ -84,11 +87,11 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     // resizing its source element or triggering a window resize.
     const cleanup = autoUpdate(anchor, element, update, { animationFrame: true });
     return () => { active = false; cleanup(); };
-  }, [range, source, marker, markerRanges, onPositioned]);
+  }, [range, source, marker, markerRanges, onPositioned, keepInView]);
 
   return createPortal(
     <div ref={ref} data-reply-annotation-overlay={owner}
-      style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content" }}>
+      style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content", overflowY: keepInView ? "auto" : undefined }}>
       {children}
     </div>,
     portalTarget ?? document.body,

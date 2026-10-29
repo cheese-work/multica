@@ -31,7 +31,11 @@ func (fixture requestCoreFixture) apiRequest() *http.Request {
 }
 
 func structuredDecisionAsk(issueID, commentID, decision string) decisiontx.Ask {
-	return decisiontx.Ask{AgentDid: "Ran scoped checks.", Decision: decision, Options: []string{"Proceed", "Hold"}, Recommendation: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+}
+
+func testAskOption(label string) decisiontx.AskOption {
+	return decisiontx.AskOption{Label: label, WhatHappens: label + " happens.", Pros: []string{"A pro"}, Cons: []string{"A con"}, CostOrTime: "No extra time"}
 }
 
 func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {

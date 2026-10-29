@@ -1,0 +1,9 @@
+issue: CHE-2133
+design: design/own-comment-background/rev-1/C.html @ 0c28149a888c902d350cb27560743b89623b7ce6
+pages:
+  - id: comment-card
+    url: /:workspace/issues/:issue
+    keep: [comment-card]
+    change:
+      - comment-card: "Fill only the viewer's member comment and its sticky header. Add translated You text. Preserve reply isolation and distinct jump targets."
+    remove: []

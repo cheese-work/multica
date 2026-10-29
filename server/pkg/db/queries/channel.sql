@@ -1323,12 +1323,19 @@ RETURNING storage_key;
 -- FOR UPDATE SKIP LOCKED keeps replicas off each other's row; the
 -- object-storage DELETE happens outside any transaction, gated by the lease
 -- token. No row (ErrNoRows) means nothing is due — the sweep is done.
+--
+-- The candidate is a scalar subquery, not a FROM-joined one: a join lets the
+-- planner put obj on the outer side of a nested loop and re-run the LIMIT 1
+-- subquery per outer row, and since SKIP LOCKED passes over the row this very
+-- statement just claimed, every later row would be claimed too (and :one
+-- would drop them, stranding them in 'deleting' with a live lease). A scalar
+-- subquery is evaluated exactly once.
 UPDATE channel_media_pending_object AS obj
 SET state = CASE WHEN obj.state = 'tombstoned' THEN 'tombstoned' ELSE 'deleting' END,
     lease_token = @lease_token,
     lease_expires_at = now() + @lease::interval,
     attempt = obj.attempt + 1
-FROM (
+WHERE obj.storage_key = (
     SELECT cand.storage_key FROM channel_media_pending_object AS cand
     WHERE cand.next_attempt_at <= now()
       AND (
@@ -1339,8 +1346,7 @@ FROM (
     ORDER BY cand.next_attempt_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED
-) AS due
-WHERE obj.storage_key = due.storage_key
+)
 RETURNING obj.*;
 
 -- name: ReleaseChannelMediaPendingObject :exec

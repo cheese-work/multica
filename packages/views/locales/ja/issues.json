@@ -6,6 +6,7 @@
     "loading": "関連を読み込み中…",
     "load_failed": "関連を読み込めませんでした。",
     "render_failed": "グラフを表示できませんでした。",
+    "filter_label": "表示する関係の種類",
     "retry": "再試行",
     "empty": "関連するタスクはありません。",
     "omitted": "ほか {{count}} 件は非表示です（上限40ノード）。",
@@ -580,6 +581,7 @@
     "wakeup_link_run": "実行を表示"
   },
   "comment": {
+    "you": "あなた",
     "add_reaction": "リアクションを追加",
     "collapse_thread": "スレッドを折りたたむ",
     "expand_thread": "スレッドを展開",

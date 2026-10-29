@@ -68,6 +68,7 @@
     "continuation_summary": "对话摘要",
     "earlier_dm": "较早的私信",
     "quote_message": "引用",
+    "speaker_you": "你",
     "load_older_messages": "加载更早的消息",
     "show_details": "查看详情",
     "replied_in": "{{elapsed}} 内回复",

@@ -22,6 +22,7 @@ import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../
 import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
+import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
@@ -265,7 +266,8 @@ vi.mock("../../editor", async () => ({
   isPreviewable: () => false,
   ReadonlyContent: ({ content }: { content: string }) => {
     readonlyContentRenders.push(content);
-    return <div data-testid="readonly-content">{content}</div>;
+    const scrollRoot = useRichContentScrollRoot();
+    return <div data-testid="readonly-content" data-timeline-scroll-root={scrollRoot?.hasAttribute("data-issue-timeline-scroll") ? "" : undefined}>{content}</div>;
   },
   ContentEditor: forwardRef(function MockContentEditor(
     {
@@ -3629,7 +3631,7 @@ describe("IssueDetail (shared)", () => {
       expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
     });
 
-    it("mounts only nearby comment rows after a minimap jump into a long thread", async () => {
+    it("mounts only nearby comment rows with the rich-content scroll root after a minimap jump", async () => {
       virtualWindow.size = 2;
       const first = { ...mockTimeline[0]!, id: "minimap-first", content: "Minimap starting thread" };
       const root = { ...first, id: "minimap-root", content: "Minimap long thread" };
@@ -3649,6 +3651,7 @@ describe("IssueDetail (shared)", () => {
       expect(document.getElementById(`comment-${root.id}`)).toBeNull();
       expect(document.getElementById(`comment-${replies[0]!.id}`)).toBeNull();
       expect(document.getElementById(`comment-${replies[31]!.id}`)).toBeInTheDocument();
+      expect(within(document.getElementById(`comment-${replies[30]!.id}`)!).getByTestId("readonly-content")).toHaveAttribute("data-timeline-scroll-root");
     });
 
     it("virtualizes replies as individual rows when landing inside a long thread", async () => {

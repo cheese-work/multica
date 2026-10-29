@@ -1,18 +1,27 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func structuredAskFixture() map[string]any {
 	return map[string]any{
-		"agent_did": "Ran the scoped tests.", "decision": "Choose the deployment window.",
-		"options": []string{"Now", "Tomorrow"}, "recommendation": "Tomorrow",
+		"context_eli10": "A release is ready. You pick when it goes out.",
+		"agent_did":     "Ran the scoped tests.", "decision": "Choose the deployment window.",
+		"stakes_if_wrong": "A bad window could cut service.",
+		"options": []map[string]any{
+			{"label": "Now", "what_happens": "Deploy at once.", "pros": []string{"Fast"}, "cons": []string{"Risky"}, "cost_or_time": "No extra time"},
+			{"label": "Tomorrow", "what_happens": "Deploy after the window opens.", "pros": []string{"Safer"}, "cons": []string{"Slower"}, "cost_or_time": "One day"},
+		},
+		"recommendation":      "Tomorrow",
 		"default_if_no_reply": "Do not deploy.",
 		"source_issue_id":     "11111111-1111-4111-8111-111111111111",
 		"source_comment_id":   "44444444-4444-4444-8444-444444444444",
@@ -36,7 +45,7 @@ func TestDecisionRequestRejectsMissingStructuredFields(test *testing.T) {
 		original := command.Flags().Lookup(name).Value.String()
 		test.Cleanup(func() { _ = command.Flags().Set(name, original) })
 	}
-	for _, field := range []string{"agent_did", "decision", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"} {
+	for _, field := range []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"} {
 		test.Run(field, func(test *testing.T) {
 			requests := 0
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -97,5 +106,19 @@ func TestDecisionWithdrawCommand(test *testing.T) {
 	_ = command.Flags().Set("reason", "Superseded by the newer candidate.")
 	if _, err := captureStdout(test, func() error { return command.RunE(command, []string{requestID}) }); err != nil || requests != 1 {
 		test.Fatalf("withdrawal: error=%v requests=%d", err, requests)
+	}
+}
+
+func TestPrintAskHintsDedupesAndKeepsStdoutShape(test *testing.T) {
+	var stderr bytes.Buffer
+	command := &cobra.Command{}
+	command.SetErr(&stderr)
+	result := map[string]any{"id": "x", "hints": []any{"a", "b"}}
+	printAskHints(command, []string{"a"}, result)
+	if got := stderr.String(); got != "hint: a\nhint: b\n" {
+		test.Fatalf("stderr = %q", got)
+	}
+	if _, ok := result["hints"]; ok {
+		test.Fatal("hints leaked into the JSON result")
 	}
 }
