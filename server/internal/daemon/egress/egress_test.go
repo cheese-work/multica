@@ -167,3 +167,50 @@ func TestRefusedDestinationIsLogged(t *testing.T) {
 		t.Fatalf("destination log = %+v", d)
 	}
 }
+
+// Review round 1 (Sol): encoded spellings of a refused destination.
+func TestEncodedBypassesRefused(t *testing.T) {
+	port := origin(t)
+	cases := map[string]struct {
+		p        *Proxy
+		host, pt string
+		want     int
+	}{
+		"ssh port 022":   {&Proxy{AllowLoopback: true}, "127.0.0.1", "022", 403},
+		"ssh port 00022": {&Proxy{AllowLoopback: true}, "127.0.0.1", "00022", 403},
+		"scoped ipv6":    {&Proxy{}, "::1%25lo", port, 400},
+		"scoped ipv6 id": {&Proxy{}, "::1%251", port, 400},
+	}
+	for name, tc := range cases {
+		p := tc.p
+		code, _ := status(t, startProxy(t, p)(), connect(tc.host, tc.pt))
+		if code != tc.want {
+			t.Errorf("%s: status %d, want %d", name, code, tc.want)
+		}
+	}
+}
+
+// A live host service on ::1 must stay unreachable through a scoped spelling.
+func TestScopedIPv6CannotReachHostService(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skip("no IPv6 loopback")
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	for _, host := range []string{"::1%25lo", "::1%251"} {
+		code, _ := status(t, startProxy(t, &Proxy{})(), connect(host, port))
+		if code == 200 {
+			t.Errorf("%s: reached the host service (status 200)", host)
+		}
+	}
+}

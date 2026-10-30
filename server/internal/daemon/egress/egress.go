@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,11 +94,12 @@ func (p *Proxy) handle(c net.Conn) {
 		reply(c, http.StatusBadRequest)
 		return
 	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || strings.Contains(host, "%") { // no zones, no encoded hosts
 		reply(c, http.StatusBadRequest)
 		return
 	}
-	allowed := port != "22" && (p.Allow == nil || p.Allow(host, port)) // SSH has no path
+	allowed := n != 22 && (p.Allow == nil || p.Allow(host, port)) // SSH has no path, whatever the spelling
 	p.record(host, port, allowed)
 	if !allowed {
 		reply(c, http.StatusForbidden)
@@ -121,8 +123,11 @@ func (p *Proxy) control(_, address string, _ syscall.RawConn) error {
 		return nil
 	}
 	host, _, _ := net.SplitHostPort(address)
-	if ip := net.ParseIP(host); ip != nil &&
-		(ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+	ip, err := netip.ParseAddr(host) // accepts a zone, which net.ParseIP does not
+	if err != nil {
+		return fmt.Errorf("egress: unparsable dial address %q", host) // fail closed
+	}
+	if ip = ip.Unmap().WithZone(""); ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return fmt.Errorf("egress: %s is a host-local address", ip)
 	}
 	return nil
