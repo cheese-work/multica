@@ -615,6 +615,7 @@ func main() {
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
+	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()

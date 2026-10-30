@@ -1204,7 +1204,7 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 	for i, rt := range runtimes {
 		resp[i] = runtimeToResponse(rt)
 	}
-	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), resp); err != nil {
+	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), runtimes, resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load machine pause state")
 		return
 	}

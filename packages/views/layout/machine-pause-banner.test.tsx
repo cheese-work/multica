@@ -11,12 +11,17 @@ import enCommon from "../locales/en/common.json";
 const listRuntimes = vi.hoisted(() => vi.fn());
 const resumeMachine = vi.hoisted(() => vi.fn());
 const me = vi.hoisted(() => ({ id: "user-1" }));
+const wsHandlers = vi.hoisted(() => new Map<string, () => void>());
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: (sel: (s: { user: { id: string } }) => unknown) => sel({ user: me }),
 }));
-vi.mock("@multica/core/realtime", () => ({ useWSEvent: () => {} }));
+vi.mock("@multica/core/realtime", () => ({
+  useWSEvent: (event: string, handler: () => void) => {
+    wsHandlers.set(event, handler);
+  },
+}));
 vi.mock("@multica/core/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/api")>()),
   api: { listRuntimes, resumeRuntimeMachine: resumeMachine },
@@ -76,6 +81,29 @@ describe("MachinePauseBanner", () => {
     listRuntimes.mockReset();
     resumeMachine.mockReset();
     me.id = "user-1";
+    wsHandlers.clear();
+  });
+
+  // A task of another workspace ends on this machine: the server sends this
+  // workspace a daemon:register refresh, and the banner follows the new count.
+  it("follows a runtime refresh event from the server: tasks left becomes safe to shut down", async () => {
+    renderBanner([runtime()]);
+    expect(await screen.findByRole("status")).toHaveTextContent("3 tasks left.");
+
+    listRuntimes.mockResolvedValue([runtime({ daemon_running_tasks: 0 })]);
+    wsHandlers.get("daemon:register")!();
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Safe to shut down."));
+  });
+
+  it("follows a resume event from another workspace: the banner goes away", async () => {
+    renderBanner([runtime()]);
+    await screen.findByRole("status");
+
+    listRuntimes.mockResolvedValue([runtime({ pause: null })]);
+    wsHandlers.get("daemon:register")!();
+
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
   });
 
   it("pausing: tells the machine owner what is paused, the tasks left and the time left", async () => {

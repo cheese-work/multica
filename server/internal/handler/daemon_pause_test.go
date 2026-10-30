@@ -22,10 +22,10 @@ func seedPausableRuntime(t *testing.T, ctx context.Context, daemonID, name strin
 
 func pauseDaemonForTest(t *testing.T, daemonID string) {
 	t.Helper()
-	dbfx.Exec(t, `INSERT INTO daemon_pause (workspace_id, daemon_id, reason, paused_by) VALUES ($1, $2, 'maintenance', $3)`,
-		testWorkspaceID, daemonID, testUserID)
+	dbfx.Exec(t, `INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by) VALUES ($1, $2, $3, 'maintenance', $1)`,
+		testUserID, daemonID, testWorkspaceID)
 	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, daemonID)
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = $1`, daemonID)
 	})
 }
 
@@ -59,7 +59,7 @@ func TestDaemonPause_SingleClaimRefusedUntilResume(t *testing.T) {
 		t.Fatalf("unpaused daemon in the same workspace claimed %q, want %s", got, otherTask)
 	}
 
-	dbfx.Exec(t, `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, "pause-gate-single")
+	dbfx.Exec(t, `DELETE FROM daemon_pause WHERE daemon_id = $1`, "pause-gate-single")
 	if got := singleClaimTaskID(t, pausedRuntime); got != pausedTask {
 		t.Fatalf("resumed daemon claimed %q, want queued task %s", got, pausedTask)
 	}
@@ -83,7 +83,7 @@ func TestDaemonPause_BatchClaimRefusedUntilResume(t *testing.T) {
 	if got := claim(); len(got.Tasks) != 0 {
 		t.Fatalf("paused daemon batch-claimed %d tasks, want none", len(got.Tasks))
 	}
-	dbfx.Exec(t, `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, daemonID)
+	dbfx.Exec(t, `DELETE FROM daemon_pause WHERE daemon_id = $1`, daemonID)
 	if got := claim(); len(got.Tasks) != 1 || got.Tasks[0].ID != taskID {
 		t.Fatalf("resumed daemon batch claim = %+v, want task %s", got.Tasks, taskID)
 	}
@@ -130,7 +130,7 @@ func TestDaemonPause_PauseAndResumeAPI(t *testing.T) {
 	// A second provider on the same machine: pausing is per machine, not per runtime.
 	runtimeB := dbfx.Runtime(t, "Pause api B", testutil.Cols{"daemon_id": daemonID, "provider": "handler_test_runtime_b"})
 	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, daemonID)
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = $1`, daemonID)
 	})
 
 	if w := putPause(t, testUserID, runtimeA, map[string]any{"reason": "bogus"}); w.Code != http.StatusBadRequest {
@@ -193,7 +193,7 @@ func TestDaemonPause_WorkspaceDeleteRemovesRows(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ws := dbfx.Workspace(t, "Pause cleanup", "pause-cleanup")
-	dbfx.Exec(t, `INSERT INTO daemon_pause (workspace_id, daemon_id, reason) VALUES ($1, 'pause-cleanup-machine', 'maintenance')`, ws)
+	dbfx.Exec(t, `INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason) VALUES ($1, 'pause-cleanup-machine', $1, 'maintenance')`, ws)
 	if err := testHandler.Queries.DeleteWorkspace(context.Background(), parseUUID(ws)); err != nil {
 		t.Fatalf("delete workspace: %v", err)
 	}
@@ -227,10 +227,10 @@ func TestDaemonPause_ExpiredPauseDoesNotBlockClaim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			daemonID := "pause-expiry-" + string(rune('a'+i))
 			runtimeID, taskID := seedPausableRuntime(t, ctx, daemonID, "Pause expiry "+daemonID)
-			dbfx.Exec(t, `INSERT INTO daemon_pause (workspace_id, daemon_id, reason, paused_by, paused_at)
-				VALUES ($1, $2, $3, $4, now() - $5::interval)`, testWorkspaceID, daemonID, tc.reason, testUserID, tc.age)
+			dbfx.Exec(t, `INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at)
+				VALUES ($4, $2, $1, $3, $4, now() - $5::interval)`, testWorkspaceID, daemonID, tc.reason, testUserID, tc.age)
 			t.Cleanup(func() {
-				testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, daemonID)
+				testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = $1`, daemonID)
 			})
 			got := singleClaimTaskID(t, runtimeID)
 			if tc.wantBlocked && got != "" {
@@ -253,7 +253,7 @@ func TestDaemonPause_ResponseCarriesExpiry(t *testing.T) {
 	ctx := context.Background()
 	runtimeID, _ := seedPausableRuntime(t, ctx, "pause-expiry-body", "Pause expiry body")
 	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = 'pause-expiry-body'`, testWorkspaceID)
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = 'pause-expiry-body'`)
 	})
 	w := putPause(t, testUserID, runtimeID, map[string]any{"reason": "incident"})
 	var got pauseJSON
@@ -281,7 +281,7 @@ func TestDaemonPause_AdminWhoIsNotOwnerIsRefused(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE email = 'pause-admin@multica.test'`)
-		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = 'pause-authz-machine'`, testWorkspaceID)
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = 'pause-authz-machine'`)
 	})
 	dbfx.Exec(t, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'admin')`, testWorkspaceID, adminID)
 
