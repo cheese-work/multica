@@ -142,3 +142,36 @@ func TestDiffRefusesHugeRewrite(test *testing.T) {
 }
 
 func slicesClone(lines []string) []string { return append([]string(nil), lines...) }
+
+func askContent(test *testing.T, attachmentID, sha string) string {
+	test.Helper()
+	input := validAskMap()
+	artifact := artifactMap()
+	artifact["attachment_id"], artifact["sha256"] = attachmentID, sha
+	input["subject"], input["artifacts"] = SubjectArtifactApproval, []any{artifact}
+	raw, _ := json.Marshal(input)
+	ask, err := DecodeAsk(raw)
+	if err != nil {
+		test.Fatal(err)
+	}
+	return ask.Content("acme")
+}
+
+func TestContentNamesArtifactsSoReasksCompareByFile(test *testing.T) {
+	first := askContent(test, testAttachmentID, testSHA)
+	if first != askContent(test, testAttachmentID, testSHA) {
+		test.Fatal("the same artifact must render the same content")
+	}
+	other := askContent(test, "55555555-5555-4555-8555-555555555555", strings.Repeat("a", 64))
+	if first == other {
+		test.Fatal("asks with identical wording and different artifacts render the same content")
+	}
+	for _, want := range []string{testAttachmentID, testSHA, "Design rev 5"} {
+		if !strings.Contains(first, want) {
+			test.Fatalf("content lacks %q: %s", want, first)
+		}
+	}
+	if !strings.HasSuffix(first, "#comment-"+validAskMap()["source_comment_id"].(string)+")") {
+		test.Fatalf("source link must stay last: %s", first)
+	}
+}

@@ -247,6 +247,19 @@ func (ask Ask) Content(workspaceSlug string) string {
 		labels[index] = option.Label
 	}
 	commentPath := util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID)
-	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Stakes if wrong**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.AgentDid, ask.Decision, ask.StakesIfWrong, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.SourceIssueID, commentPath, ask.SourceCommentID)
+	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Stakes if wrong**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.AgentDid, ask.Decision, ask.StakesIfWrong, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.SourceIssueID, commentPath, ask.SourceCommentID)
+}
+
+// artifactsContent lists each artifact before the source link, so the re-ask
+// check, which compares the text without that link, tells two files apart.
+func (ask Ask) artifactsContent() string {
+	if len(ask.Artifacts) == 0 {
+		return ""
+	}
+	lines := make([]string, len(ask.Artifacts))
+	for index, artifact := range ask.Artifacts {
+		lines[index] = fmt.Sprintf("- %s · `%s` · sha256 `%s`", artifact.Label, artifact.AttachmentID, artifact.SHA256)
+	}
+	return "\n\n**Artifacts**\n" + strings.Join(lines, "\n")
 }
