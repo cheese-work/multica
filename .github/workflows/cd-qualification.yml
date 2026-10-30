@@ -146,6 +146,7 @@ jobs:
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
           python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           bash deploy/cd/test-workflow-path-filters.sh
