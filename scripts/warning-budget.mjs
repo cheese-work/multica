@@ -105,6 +105,35 @@ function pages(endpoint, key) {
   }
 }
 
+// gh reports a server error as "... (HTTP 502)"; 4xx and malformed JSON are real faults and keep failing.
+function isServerError(error) {
+  return /\(HTTP 5\d\d\)/.test(`${error?.stderr ?? ""}${error?.message ?? ""}`)
+}
+
+export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log }) {
+  let first
+  for (const run of runs) {
+    let runJobs
+    try {
+      runJobs = listJobs(run)
+    } catch (error) {
+      if (!isServerError(error)) throw error
+      log(`Skipping baseline run ${run.id}: jobs API failed with a server error`)
+      continue
+    }
+    first ??= run
+    for (const job of runJobs) {
+      const name = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
+      if (!pending.has(name) || job.status !== "completed" || job.conclusion !== "success") continue
+      baselineJobs.push({ ...collect(job), name })
+      jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
+      pending.delete(name)
+    }
+    if (!pending.size) break
+  }
+  return first
+}
+
 export function runBudget() {
   const repository = process.env.GITHUB_REPOSITORY
   const runId = process.env.GITHUB_RUN_ID
@@ -131,17 +160,8 @@ export function runBudget() {
     const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=success&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
     const trusted = runs.filter((run) => String(run.id) !== runId && run.created_at < current.created_at && run.head_branch === "main" && ["push", "schedule", "workflow_dispatch"].includes(run.event))
       .sort((first, second) => second.created_at.localeCompare(first.created_at))
-    for (const run of trusted) {
-      baseline ??= run
-      for (const job of jobs(run)) {
-        const name = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
-        if (!pending.has(name) || job.status !== "completed" || job.conclusion !== "success") continue
-        baselineJobs.push({ ...collect(job), name })
-        jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
-        pending.delete(name)
-      }
-      if (!pending.size) break
-    }
+    const first = scanBaselines(trusted, { pending, jobBaselines, baselineJobs, listJobs: jobs, collect, log: console.error })
+    baseline ??= first
     if (runs.length < 100) break
   }
   if (pending.size) throw new Error(`No successful main CI job baseline is available within the latest 1000 runs for: ${[...pending].join(", ")}`)

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
-import { warningCounts, warningRegressions } from "./warning-budget.mjs"
+import { scanBaselines, warningCounts, warningRegressions } from "./warning-budget.mjs"
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/warnings/new-warning.json", import.meta.url)))
 
@@ -207,4 +207,29 @@ process.stdout.write(JSON.stringify(result))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+function scan(listJobs, log = () => {}) {
+  const pending = new Set(["frontend-build"])
+  const jobBaselines = { "frontend-build": null }
+  const baselineJobs = []
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }, { id: 2, html_url: "run-2", head_sha: "b" }]
+  const baseline = scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect: (job) => ({ name: job.name }), log })
+  return { baseline, jobBaselines, pending }
+}
+const okJobs = [{ name: "frontend-build", status: "completed", conclusion: "success" }]
+const httpError = (status) => Object.assign(new Error("Command failed: gh api"), { stderr: `gh: Bad Gateway (HTTP ${status})\n` })
+
+test("a baseline run whose jobs API returns 5xx is skipped for the next older run", () => {
+  const logs = []
+  const { baseline, jobBaselines, pending } = scan((run) => { if (run.id === 3) throw httpError(502); return okJobs }, (line) => logs.push(line))
+  assert.equal(baseline.id, 2)
+  assert.equal(jobBaselines["frontend-build"].run, "run-2")
+  assert.equal(pending.size, 0)
+  assert.match(logs.join("\n"), /run 3/)
+})
+
+test("a non-5xx jobs API error still fails loudly", () => {
+  assert.throws(() => scan(() => { throw httpError(404) }), /Command failed/)
+  assert.throws(() => scan(() => { throw new SyntaxError("Unexpected token") }), /Unexpected token/)
 })
