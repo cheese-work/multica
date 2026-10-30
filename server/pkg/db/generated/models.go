@@ -1608,6 +1608,19 @@ type IssueReviewAdmission struct {
 	AdmittedAt  pgtype.Timestamptz `json:"admitted_at"`
 }
 
+type IssueRunBudgetEntry struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowID    string             `json:"window_id"`
+	Kind        string             `json:"kind"`
+	EventKey    string             `json:"event_key"`
+	RunsDelta   int32              `json:"runs_delta"`
+	CapDelta    int32              `json:"cap_delta"`
+	TokensDelta int64              `json:"tokens_delta"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueSourceContext struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
@@ -2130,6 +2143,14 @@ type ProjectResource struct {
 	Position     int32              `json:"position"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	CreatedBy    pgtype.UUID        `json:"created_by"`
+}
+
+type ProtectedPathPolicy struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Name              string             `json:"name"`
+	Patterns          []string           `json:"patterns"`
+	UpdatedByMemberID pgtype.UUID        `json:"updated_by_member_id"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ProtocolLintRun struct {

@@ -85,6 +85,17 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	// The window opens, and the cap is read, under the issue lock: a raise
+	// that waited behind another one starts from the cap that one left.
+	current, err = service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
+		return
+	}
+	if req.Runs <= current {
+		writeError(w, http.StatusConflict, fmt.Sprintf("the cap changed while raising it; it is now %d", current))
+		return
+	}
 	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(req.Runs), WorkflowMax: int32(workflowMax),
 	})
@@ -97,10 +108,15 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{"from": current, "to": raised.Int32})
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+	activity, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_raised", Details: body,
-	}); err != nil {
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
+		return
+	}
+	if err := service.RecordRunBudgetRaise(r.Context(), qtx, issue, activity.ID, int(raised.Int32)-current); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
 		return
 	}

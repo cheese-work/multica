@@ -78,8 +78,8 @@ var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which 
 //
 // target names the agent and trigger of the run, for the run budget.
 //
-// A named run skips the read entirely: Triage never refuses it, so there is
-// nothing to look up.
+// A named run is never refused: it skips the Triage read and the budget check,
+// and only takes the budget lock and window credit for its debit.
 //
 // A missing issue is not in Triage: the enqueue proceeds and fails (or not) on
 // its own terms. A read error refuses, because a run that cannot be shown to be
@@ -102,7 +102,15 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 			return ReviewGate{}, err
 		}
 	}
-	if origin == OriginNamed || !issueID.Valid {
+	if !issueID.Valid {
+		return ReviewGate{}, nil
+	}
+	if origin == OriginNamed {
+		// Never refused, but the lock and the window credit are taken here so
+		// the named run's debit lands in the same window the others read.
+		if _, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return ReviewGate{}, fmt.Errorf("run budget: %w", err)
+		}
 		return ReviewGate{}, nil
 	}
 	state, err := q.GetIssueTriageState(ctx, issueID)

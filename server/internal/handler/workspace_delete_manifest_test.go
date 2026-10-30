@@ -146,6 +146,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pull_request_exclusion":       workspaceDelete,
 	"issue_pr_event":                     workspaceDelete, // CHE-2298 a1 PR event store; no FKs, swept by DeleteWorkspace.
 	"issue_review_admission":             workspaceDelete,
+	"issue_run_budget_entry":             workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -192,6 +193,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
 	"run_capability_grant":               workspaceDelete,
+	"protected_path_policy":              workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
