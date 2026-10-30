@@ -8,19 +8,22 @@ import (
 func TestGitPushRefusals(t *testing.T) {
 	t.Setenv("MULTICA_BROKER_SOCKET", "")
 	for name, args := range map[string][]string{
-		"force":            {"git", "push", "--force"},
-		"force short":      {"git", "push", "-f"},
-		"force with lease": {"git", "push", "--force-with-lease"},
-		"other remote":     {"git", "push", "https://github.com/x/y.git"},
-		"delete refspec":   {"git", "push", "origin", ":main"},
-		"no broker":        {"git", "push", "origin", "HEAD"},
+		"force":            {"--force"},
+		"force short":      {"-f"},
+		"force with lease": {"--force-with-lease"},
+		"other remote":     {"https://github.com/x/y.git"},
+		"delete refspec":   {"origin", ":main"},
+		"no broker":        {"origin", "HEAD"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, f := range []string{"force", "force-with-lease", "f"} {
-				_ = gitPushCmd.Flags().Set(f, "false") // cobra keeps flag values between Execute calls
+				_ = gitPushCmd.Flags().Set(f, "false") // cobra keeps flag values between parses
 			}
-			rootCmd.SetArgs(args)
-			err := rootCmd.Execute()
+			// Not rootCmd.Execute: it registers a "help" command on the shared root.
+			if err := gitPushCmd.ParseFlags(args); err != nil {
+				t.Fatal(err)
+			}
+			err := runGitPush(gitPushCmd, gitPushCmd.Flags().Args())
 			if err == nil {
 				t.Fatal("push was accepted")
 			}
