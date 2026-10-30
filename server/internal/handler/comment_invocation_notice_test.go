@@ -162,10 +162,11 @@ func TestCommentInvocationDeniedNoticeSkipsOtherSubmissions(t *testing.T) {
 	}
 	privateID, _, _ := privateAgentTestFixture(t)
 	allowedID := createHandlerTestAgent(t, "Successful notice target", nil)
+	// The fork's mention parser resolves mentions inside code spans, so a
+	// denied one there is a real refusal and keeps its notice.
 	for _, tc := range []struct{ name, content string }{
 		{"successful", fmt.Sprintf("[@Allowed](mention://agent/%s) proceed", allowedID)},
 		{"note", fmt.Sprintf("/note [@Private](mention://agent/%s) reference only", privateID)},
-		{"code", fmt.Sprintf("`[@Private](mention://agent/%s)` is an example", privateID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issueID := dbfx.Issue(t, "No permission notice for "+tc.name)

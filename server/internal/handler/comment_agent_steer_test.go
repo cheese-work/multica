@@ -270,6 +270,9 @@ func TestTaskRunsCanSupplementAnswersForTheAgentCaller(t *testing.T) {
 // steered the leader's turn and was never read, completion still replays it.
 func TestAgentImplicitSteerReplaysWhenUnread(t *testing.T) {
 	f := newAgentSteerFixture(t)
+	// The fork's agent comment wake policy (CHE-2151) suppresses implicit
+	// routes by default; this route exists only under legacy routing.
+	setAgentCommentWakePolicyForTest(t, false)
 	squadID := dbfx.Squad(t, "Implicit steer squad", f.agentID)
 	dbfx.SquadMember(t, squadID, "agent", f.callerAgent)
 	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'squad', assignee_id = $2 WHERE id = $1`, f.issueID, squadID)
