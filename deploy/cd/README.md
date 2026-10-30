@@ -439,7 +439,11 @@ recreation independently of Jev. `cutover.sh` loads this overlay for cutover
 and rollback when the compose dir's `.env` sets `MULTICA_FEATURE_FLAGS_FILE`.
 The existing `MULTICA_JEV_FLAGS_FILE` setting remains a fallback so C00 does
 not need a configuration change. The generic setting takes precedence when
-both are non-empty. With neither set, no flags overlay loads.
+both are non-empty. With neither set, no flags overlay loads only if the
+previous active backend has no `/app/feature-flags.yaml` mount. Otherwise
+cutover and rollback refuse before any change with a `flags continuity`
+error naming both settings. An unreadable container/mount inventory also
+refuses before any change.
 
 The host path must name an absolute, readable, non-empty file admitted by
 `flagfile-check.mjs`. Validation runs before any drain, pull, migration or
@@ -447,6 +451,26 @@ start. Both backends mount the file read-only at `/app/feature-flags.yaml`,
 with their `MULTICA_FEATURE_FLAGS_FILE` environment pointing to that mount.
 The overlay does not set flag values, a Jev key, a gateway network or a
 database hostname. A flags-only installation needs no Jev configuration.
+
+After readiness and before switching the router, cutover and rollback read
+the candidate backend's `GET /api/config` directly on its rendered slot port.
+Every frontend-public flag present in the configured file must appear as
+the matching boolean in `feature_flags`: `project_workflows_v1`, `plugins_v1`,
+`composio_mcp_apps`, and `billing_workspace_subscriptions` (the allowlist in
+`server/internal/featureflags/keys.go`). Missing flags, mismatches, malformed
+responses and HTTP failures fail the operation without recording success.
+The comparison uses the anonymous request's decision: allow/deny targets
+do not match, and percent rules use the backend's deterministic FNV-1a
+bucket for an empty identifier instead of the default value. Flags not in
+the frontend-public allowlist are not compared. Environment overrides that
+disagree with the file also fail this guard.
+
+On a mismatch, the candidate is stopped before compatibility-gated recovery
+restarts the original containers and verifies their identity and public
+route. Rollback recovery requires the ledger to be unchanged since drain.
+If recovery cannot be proven, the operation raises the existing outage
+alert for manual intervention; it does not start a second backend or write
+a success state.
 
 ### Scoped Jev runtime inputs (CHE-1854)
 
