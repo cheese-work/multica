@@ -387,9 +387,17 @@ deleted_stage_generations AS (
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
+-- CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
+deleted_issue_run_budget_entries AS (
+    DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
+),
 -- CHE-2489 run capability grants: workspace-owned leaf, no FK.
 deleted_run_capability_grants AS (
     DELETE FROM run_capability_grant WHERE workspace_id = $1
+),
+-- CHE-2490 protected-path policies: workspace-owned leaf, no FK.
+deleted_protected_path_policies AS (
+    DELETE FROM protected_path_policy WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
