@@ -20,6 +20,8 @@ export interface MermaidThemeColors {
   mutedForeground: string;
   success: string;
   warning: string;
+  /** `--chart-1` to `--chart-5`: the series, timeline-section and pie-slice colors. */
+  chart: string[];
 }
 
 /**
@@ -32,8 +34,45 @@ export function shouldStackVertically(naturalWidth: number, availableWidth: numb
   return (MERMAID_FONT_PX * availableWidth) / naturalWidth < MERMAID_MIN_TEXT_PX;
 }
 
+/** `rgb(r, g, b)` as `#rrggbb`. */
+function toHex(rgb: string): string {
+  const channels = (rgb.match(/\d+/g) ?? []).slice(0, 3);
+  return `#${channels.map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Whether black text, not white, reads on a fill (relative luminance cut). */
+function isLightFill(rgb: string): boolean {
+  const [red = 0, green = 0, blue = 0] = (rgb.match(/\d+/g) ?? []).map(Number);
+  return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255 >= 0.5;
+}
+
 export function buildMermaidThemeVariables(c: MermaidThemeColors, dark: boolean) {
+  const series = Object.fromEntries(
+    c.chart.flatMap((fill, index) => [
+      [`cScale${index}`, fill],
+      [`pie${index + 1}`, fill],
+      [`cScaleLabel${index}`, isLightFill(fill) ? "rgb(17, 24, 39)" : "rgb(255, 255, 255)"],
+    ]),
+  );
   return {
+    ...series,
+    // xychart-beta merges these onto its own light default, not onto the
+    // values the base theme derives, so every color has to be given.
+    xyChart: {
+      backgroundColor: c.background,
+      titleColor: c.foreground,
+      dataLabelColor: c.foreground,
+      xAxisTitleColor: c.foreground,
+      xAxisLabelColor: c.foreground,
+      xAxisTickColor: c.foreground,
+      xAxisLineColor: c.foreground,
+      yAxisTitleColor: c.foreground,
+      yAxisLabelColor: c.foreground,
+      yAxisTickColor: c.foreground,
+      yAxisLineColor: c.foreground,
+      plotColorPalette: c.chart.map(toHex).join(","),
+    },
+    radar: { graticuleColor: c.mutedForeground },
     darkMode: dark,
     fontFamily: "inherit",
     fontSize: `${MERMAID_FONT_PX}px`,

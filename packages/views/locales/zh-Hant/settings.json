@@ -331,6 +331,10 @@
       "goSettings": {
         "label": "前往設定",
         "description": "開啟工作區設定。"
+      },
+      "searchChat": {
+        "label": "搜尋聊天",
+        "description": "聚焦聊天頁面的搜尋框。"
       }
     },
     "fixed": {

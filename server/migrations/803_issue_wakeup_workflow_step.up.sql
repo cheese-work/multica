@@ -1,0 +1,11 @@
+-- The workflow step a wakeup's run works on (CHE-2298): the issue's status when
+-- an agent run registered the wakeup. Stamping it at registration, not copying
+-- the registering run's step at fire time, keeps a run that was already stale
+-- when it registered (someone else moved the issue while it worked) from
+-- handing that stale step to the wakeup's run, and from there down every
+-- wakeup chain, where every status change would be refused.
+--
+-- NULL for member-registered wakeups, which start from the issue's status when
+-- they fire, and for rows written before this migration, which keep copying
+-- the registering run's step.
+ALTER TABLE issue_wakeup ADD COLUMN IF NOT EXISTS workflow_step TEXT;
