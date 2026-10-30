@@ -356,6 +356,44 @@ func TestDecisionDelegateLifecycle(test *testing.T) {
 	}
 }
 
+// moveDecisionIssueToDelegatingProject records project A on the request, then
+// moves the issue to project B, which also delegates to the human.
+func moveDecisionIssueToDelegatingProject(test *testing.T, issueID, humanID, projectID string) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE decision_request SET project_id = $1 WHERE issue_id = $2`, projectID, issueID)
+	other := dbfx.Project(test, "Other delegates")
+	dbfx.Exec(test, `UPDATE project SET decision_delegates = ARRAY[$1::uuid] WHERE id = $2`, humanID, other)
+	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, other, issueID)
+}
+
+func TestDecisionDelegateProjectMovedRecord(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	projectID := placeDecisionHuman(test, fixture.issueID, fixture.humanID, "member", true)
+	moveDecisionIssueToDelegatingProject(test, fixture.issueID, fixture.humanID, projectID)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	fixture.issue = issue
+	_, err = testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	requireAuthorityRefusal(test, err, http.StatusForbidden)
+	fixture.assertRecordCounts(test, 0)
+}
+
+func TestDecisionDelegateProjectMovedDelivery(test *testing.T) {
+	resetDecisionLease(test)
+	fixture, recorded := readyDecisionDelivery(test)
+	projectID := placeDecisionHuman(test, fixture.issueID, fixture.humanID, "member", true)
+	moveDecisionIssueToDelegatingProject(test, fixture.issueID, fixture.humanID, projectID)
+	handler, _ := newDecisionRunnerFixture(test)
+	if err := handler.deliverDecisionItem(context.Background(), fixture.issue.WorkspaceID, recorded.Request.ID, ""); err != nil {
+		test.Fatal(err)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, fixture.issueID); count != 0 {
+		test.Fatalf("queued wakes = %d, want 0 after the issue left the project the request was made in", count)
+	}
+}
+
 func TestDecisionDelegateDeliveryEligibility(test *testing.T) {
 	for _, delegate := range []bool{true, false} {
 		name := "delegate"

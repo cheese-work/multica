@@ -288,7 +288,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if input.EscalationClass != "" && input.EscalationClass != decision.EscalationClass {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a record cannot change the request's class"}
 		}
-		if err := requireDecisionAuthority(ctx, queries, issue, decision.HumanUserID, decision.EscalationClass, http.StatusForbidden); err != nil {
+		if err := requireRequestAuthority(ctx, queries, issue, decision, http.StatusForbidden); err != nil {
 			return empty, err
 		}
 		ping, err := queries.GetChatMessage(ctx, decision.PingMessageID)

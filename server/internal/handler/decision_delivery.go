@@ -284,7 +284,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 				continue
 			}
 			var refusal decisionIntentRefusal
-			if err := requireDecisionAuthority(ctx, queries, snapshot.issue, request.HumanUserID, request.EscalationClass, http.StatusConflict); errors.As(err, &refusal) {
+			if err := requireRequestAuthority(ctx, queries, snapshot.issue, request, http.StatusConflict); errors.As(err, &refusal) {
 				eligible = false
 			} else if err != nil {
 				return false, err
