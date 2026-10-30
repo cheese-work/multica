@@ -21,6 +21,7 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatSession,
+  ChatSessionUsage,
   Comment,
   CreateIssueRequest,
   CreateLabelRequest,
@@ -93,13 +94,16 @@ import {
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
+  ChatSessionUsageSchema,
   EMPTY_ACTIVE_TASKS_RESPONSE,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
   EMPTY_ATTACHMENT_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
+  EMPTY_CHAT_SESSION,
   EMPTY_CHAT_SESSION_LIST,
+  EMPTY_CHAT_SESSION_USAGE,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
@@ -1144,9 +1148,10 @@ class ApiClient {
   // list in /Users/qingnaiyuan/.claude/plans/plan-velvety-puddle.md.
 
   async listChatSessions(
-    opts?: { signal?: AbortSignal },
+    opts?: { status?: "active" | "archived" | "all"; signal?: AbortSignal },
   ): Promise<ChatSession[]> {
-    const raw = await this.fetch<unknown>("/api/chat/sessions", {
+    const query = opts?.status ? `?status=${opts.status}` : "";
+    const raw = await this.fetch<unknown>(`/api/chat/sessions${query}`, {
       signal: opts?.signal,
     });
     return parseWithFallback(
@@ -1155,6 +1160,47 @@ class ApiClient {
       EMPTY_CHAT_SESSION_LIST,
       { endpoint: "GET /api/chat/sessions" },
     );
+  }
+
+  async getChatSessionUsage(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChatSessionUsage> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/usage`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(
+      raw,
+      ChatSessionUsageSchema,
+      EMPTY_CHAT_SESSION_USAGE,
+      { endpoint: "GET /api/chat/sessions/:id/usage" },
+    );
+  }
+
+  async setChatSessionPinned(
+    id: string,
+    pinned: boolean,
+  ): Promise<ChatSession> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/pin",
+    });
+  }
+
+  async setChatSessionArchived(
+    id: string,
+    archived: boolean,
+  ): Promise<ChatSession> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/archive",
+    });
   }
 
   async createChatSession(

@@ -2179,6 +2179,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Post("/run-budget", h.RaiseIssueRunBudget)
+					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
+					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
@@ -2298,16 +2300,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// member; edits and deletes are gated inside the handlers to the
 			// workflow's owner and workspace owners/admins (MUL-8120), and
 			// switching a project's workflow to admins and the project's lead.
-			// Edits, deletes and handoff writes also refuse machine credentials
+			// Edits, deletes and handoff writes refuse machine credentials
 			// (task_token, cloud_pat): an agent must not rewrite its own workflow.
+			// The one exception is a task token on an edit or handoff write whose
+			// body carries a decision the workspace owner approved (CHE-2456);
+			// the handler checks it, and without a decision id the answer is 403.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
-					r.With(handler.RequireHumanActor).Patch("/", h.UpdateIssueWorkflow)
+					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
-					r.With(handler.RequireHumanActor).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
 				})
 			})
@@ -2626,6 +2631,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Get("/usage", h.GetChatSessionUsage)
+					r.Get("/wakeups", h.ListChatSessionWakeups)
+					r.Delete("/wakeups/{wakeupId}", h.CancelChatSessionWakeup)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Post("/continue", h.ContinueChatSession)

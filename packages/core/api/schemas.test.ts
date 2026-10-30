@@ -919,6 +919,10 @@ describe("SendChatMessageResponseSchema", () => {
     expect(SendChatMessageResponseSchema.parse({ ...base, queued: false }).queued).toBe(false);
   });
 
+  it("accepts a send that started no task", () => {
+    expect(SendChatMessageResponseSchema.parse({ ...base, task_id: "" }).task_id).toBe("");
+  });
+
   it("ignores a malformed additive queue position without losing the accepted send", () => {
     expect(SendChatMessageResponseSchema.parse({ ...base, queued: "no" }).queued).toBeUndefined();
   });

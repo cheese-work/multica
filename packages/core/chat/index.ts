@@ -2,6 +2,28 @@ export { createChatStore, CHAT_MIN_W, CHAT_MIN_H, CHAT_DEFAULT_W, CHAT_DEFAULT_H
 export type { ChatStoreOptions, ChatState, ChatTimelineItem, ChatNavIntent } from "./store";
 export { useRecentContextStore, selectRecentContexts } from "./recent-context-store";
 export type { RecentContextEntry, RecentContextType } from "./recent-context-store";
+export {
+  CHAT_COMMANDS,
+  CHAT_COMMANDS_BY_ID,
+  CHAT_SESSION_MENU_ITEMS,
+  getChatCommand,
+  getAvailableChatCommands,
+  matchesChatCommandQuery,
+  filterChatCommands,
+  parseChatCommandInput,
+  getChatSessionMenuItems,
+} from "./commands";
+export type {
+  ChatCommandId,
+  ChatCommandKind,
+  ChatCommandArgsPolicy,
+  ChatCommandHintKey,
+  ChatCommandContext,
+  ChatCommandDefinition,
+  ParsedChatCommandResult,
+  ChatSessionMenuItemId,
+  ChatSessionMenuItemDescriptor,
+} from "./commands";
 
 import type { createChatStore as CreateChatStoreFn } from "./store";
 

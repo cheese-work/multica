@@ -3494,7 +3494,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				// A leader whose session has outgrown the threshold starts a
 				// fresh one in the same workdir: the cold issue and comment
 				// reads rebuild its state, so nothing but the transcript is lost.
-				if prior.RuntimeID == task.RuntimeID && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
+				//
+				// A Claude session idle past the prompt-cache TTL is treated the
+				// same way: resuming it would re-write the whole transcript at
+				// the cache-write price (CHE-2567).
+				stale := staleClaudeSession(runtime.Provider, prior.CompletedAt, prior.StartedAt, time.Now())
+				if stale {
+					slog.Info("daemon claim: prior claude session idle past cache TTL; starting fresh",
+						"task_id", uuidToString(task.ID),
+						"agent_id", uuidToString(task.AgentID),
+						"issue_id", uuidToString(task.IssueID),
+					)
+				}
+				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
 					resp.PriorSessionID = prior.SessionID.String
 					resumedRunStartedAt = prior.StartedAt
 					// Same rule as the rerun path: date the deltas from the run

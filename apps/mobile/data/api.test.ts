@@ -84,3 +84,111 @@ describe("api.getCommentPreview", () => {
     await expect(api.getCommentPreview("c1")).resolves.toBeNull();
   });
 });
+
+describe("api chat DM stats, pin, and archive endpoints", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("requests /api/chat/sessions?status=all when status is provided", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.listChatSessions({ status: "all" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions?status=all",
+      expect.any(Object),
+    );
+  });
+
+  it("fetches GET /api/chat/sessions/:id/usage and falls back to EMPTY_CHAT_SESSION_USAGE on schema drift", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ unexpected: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const usage = await api.getChatSessionUsage("sess-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions/sess-1/usage",
+      expect.any(Object),
+    );
+    expect(usage.session_id).toBe("");
+  });
+
+  it("sends PATCH /api/chat/sessions/:id/archive with { archived }", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "sess-1",
+          workspace_id: "ws-1",
+          creator_id: "u-1",
+          agent_id: "a-1",
+          title: "DM",
+          status: "archived",
+          created_at: "2026-10-21T00:00:00Z",
+          updated_at: "2026-10-21T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const session = await api.setChatSessionArchived("sess-1", true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions/sess-1/archive",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ archived: true }),
+      }),
+    );
+    expect(session.status).toBe("archived");
+  });
+
+  it("sends PATCH /api/chat/sessions/:id/pin with { pinned }", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "sess-1",
+          workspace_id: "ws-1",
+          creator_id: "u-1",
+          agent_id: "a-1",
+          title: "DM",
+          status: "active",
+          pinned: true,
+          created_at: "2026-10-21T00:00:00Z",
+          updated_at: "2026-10-21T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const session = await api.setChatSessionPinned("sess-1", true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions/sess-1/pin",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ pinned: true }),
+      }),
+    );
+    expect(session.pinned).toBe(true);
+  });
+});

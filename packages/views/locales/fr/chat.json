@@ -47,7 +47,10 @@
     "change_project_context": "Changer le contexte de projet",
     "remove_project_context": "Retirer le contexte de projet",
     "no_projects": "Aucun projet pour l'instant",
-    "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour"
+    "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour",
+    "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
+    "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
+    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}."
   },
   "queue": {
     "title_one": "{{count}} message en file d'attente",
@@ -275,7 +278,12 @@
     "archive": "Archiver",
     "unarchive": "Désarchiver",
     "archived_title": "Archivées",
-    "row_actions_aria": "Actions de discussion"
+    "row_actions_aria": "Actions de discussion",
+    "archived_toast": "Discussion archivée",
+    "archive_failed": "Impossible d’archiver cette discussion",
+    "unarchive_failed": "Impossible de désarchiver cette discussion",
+    "pin_failed": "Impossible de mettre à jour l’épingle",
+    "undo": "Annuler"
   },
   "header": {
     "context_meter": "{{pct}} % de {{window}}",
@@ -286,7 +294,19 @@
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",
-    "delete": "Supprimer la discussion"
+    "delete": "Supprimer la discussion",
+    "statistics": "Statistiques",
+    "pin": "Épingler la discussion",
+    "unpin": "Détacher la discussion"
+  },
+  "scheduled": {
+    "chip": "Planifié {{count}}",
+    "title": "Planifié par {{name}}",
+    "title_unknown_agent": "Relances planifiées",
+    "cancel": "Annuler",
+    "cancel_label": "Annuler la relance prévue à {{time}}",
+    "cancel_failed": "Impossible d'annuler la relance",
+    "load_failed": "Impossible de charger les suivis planifiés. Réessayer"
   },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
@@ -309,10 +329,58 @@
     "source_changed": "La source a changé ou est indisponible. Votre citation enregistrée est conservée.",
     "removed": "Commentaire {{number}} supprimé"
   },
+  "stats": {
+    "title": "Statistiques",
+    "scope": "Cette conversation uniquement",
+    "estimated": "Estimé",
+    "partial": "Partiel",
+    "tokens": "{{tokens}} jetons",
+    "usage_missing_one": "Utilisation manquante pour {{count}} exécution terminée",
+    "usage_missing_other": "Utilisation manquante pour {{count}} exécutions terminées",
+    "in_progress_one": "{{count}} exécution en cours — les totaux se mettent à jour à sa fin",
+    "in_progress_other": "{{count}} exécutions en cours — les totaux se mettent à jour à leur fin",
+    "runs": "Exécutions",
+    "runs_value": "{{completed}} terminées · {{failed}} en échec",
+    "runs_cancelled": " · {{cancelled}} annulées",
+    "run_time": "Durée d’exécution de l’agent",
+    "messages": "Messages",
+    "messages_value": "Vous {{user}} · Agent {{agent}}",
+    "by_model": "Par modèle",
+    "col_model": "Modèle",
+    "col_input": "Entrée",
+    "col_output": "Sortie",
+    "col_cache_read": "Lecture de cache",
+    "col_cache_write": "Écriture de cache",
+    "col_cost": "Coût",
+    "no_value": "—",
+    "no_cost": "Aucun coût signalé",
+    "no_runs": "Aucune exécution pour l’instant.",
+    "related": "Conversations liées",
+    "continued_from": "Suite de",
+    "continued_into": "Poursuivi dans",
+    "forked_from": "Copie de",
+    "error": "Impossible de charger les statistiques. Rien n’a été enregistré comme zéro.",
+    "offline": "Vous êtes hors ligne. Ces chiffres datent de l’ouverture des statistiques à {{time}}. Reconnectez-vous pour actualiser.",
+    "retry": "Réessayer",
+    "close": "Fermer",
+    "less_than_a_minute": "<1 min"
+  },
+  "archived_send": {
+    "title": "Cette conversation est archivée",
+    "question": "La désarchiver et envoyer ?",
+    "kept": "Votre message est conservé. Il part une fois la conversation désarchivée.",
+    "newer": "Une conversation plus récente la prolonge : {{title}}.",
+    "confirm": "Désarchiver et envoyer",
+    "cancel": "Annuler",
+    "open_newer": "Ouvrir la conversation récente"
+  },
   "decision": {
     "request_title": "Demande de décision",
     "request_label": "Demande de décision : {{state}}",
-    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "disclaimed": "Désavouée" },
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "picked_up": "Prise en charge", "not_picked_up": "Non prise en charge", "disclaimed": "Désavouée" },
+    "picked_up_by": "Prise en charge par {{agent}}",
+    "not_picked_up": "Aucune exécution n'a démarré après l'enregistrement de la réponse.",
+    "open_issue": "Ouvrir {{issue}}",
     "answer_options": "Options",
     "answer_text": "Ou écrivez une réponse",
     "answer_send": "Envoyer",
@@ -332,5 +400,36 @@
     "from_original_dm": "du DM d'origine",
     "inherited": "Hérité",
     "message_unavailable": "Ce message n'est plus disponible"
+  },
+  "search": {
+    "label": "Rechercher dans les discussions",
+    "placeholder": "Rechercher dans les discussions",
+    "shortcut_hint": "/",
+    "clear": "Effacer la recherche",
+    "results_label": "Résultats de recherche",
+    "count_one": "{{count}} résultat",
+    "count_other": "{{count}} résultats",
+    "searching": "Recherche…",
+    "empty": "Aucune discussion ne correspond à « {{query}} »",
+    "failed": "La recherche a échoué. Réessayez.",
+    "timed_out": "La recherche a pris trop de temps. Essayez une requête plus courte ou plus précise.",
+    "disconnected": "Vous êtes hors ligne. La recherche nécessite une connexion.",
+    "retry": "Réessayer",
+    "too_long": "La recherche est limitée à {{max}} caractères.",
+    "show_more": "Afficher plus",
+    "loading_more": "Chargement…",
+    "archived_badge": "Archivée",
+    "title_match": "Titre correspondant",
+    "actions_aria": "Actions pour {{title}}"
+  },
+  "wakeup": {
+    "node_label": "Réveil programmé déclenché",
+    "scheduled_at": "Programmé {{time}}",
+    "set_by": "{{agent}} l'a défini à {{time}}",
+    "show_instruction": "Voir la consigne",
+    "hide_instruction": "Masquer la consigne",
+    "instruction_region": "Consigne pour l'agent",
+    "instruction_note": "Consigne pour l'agent, telle quelle. L'agent la reçoit en entier.",
+    "issue_fallback": "ticket"
   }
 }
