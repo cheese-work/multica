@@ -1100,6 +1100,19 @@ export const ChatMessagesPageSchema = z.object({
   has_newer: z.boolean().optional().catch(undefined),
 }).loose();
 
+export const ChatSearchPageSchema = z.object({
+  results: z.array(z.object({
+    session_id: z.string(),
+    title: z.string().default(""),
+    agent_id: z.string(),
+    message_id: z.string().nullable().optional().transform((v) => v ?? null),
+    snippet: z.string().default(""),
+    updated_at: z.string(),
+    archived: z.boolean().default(false),
+  }).loose()).default([]),
+  next_cursor: z.string().nullable().optional().transform((v) => v ?? null),
+}).loose();
+
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
 // truth for click-time download URLs. The two fields the download flow opens
 // in a new tab — `download_url` and `url` — must be strings, otherwise we'd

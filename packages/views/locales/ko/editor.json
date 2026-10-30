@@ -203,6 +203,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "에이전트 실행",
     "focus_hint": "[focus]",
     "title_hint": "[제목]",
     "message_hint": "[메시지]",
@@ -212,7 +213,11 @@
       "note": "메모 추가 — 에이전트를 트리거하지 않음",
       "compact": "이 DM을 요약하고 새 DM에서 계속하기",
       "rename": "에이전트를 실행하지 않고 이 DM 이름 바꾸기",
-      "fork": "이 DM을 새 DM으로 복사 (선택 메시지는 새 DM으로 전송)"
+      "fork": "이 DM을 새 DM으로 복사 (선택 메시지는 새 DM으로 전송)",
+      "statistic": "이 DM의 사용량과 비용 표시",
+      "archive": "에이전트를 실행하지 않고 이 DM 보관",
+      "pin": "이 DM 고정 또는 고정 해제",
+      "unarchive": "이 DM 보관 해제. 에이전트에는 아무것도 전송되지 않습니다."
     }
   },
   "table": {

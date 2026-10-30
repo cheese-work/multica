@@ -195,6 +195,8 @@ export type {
   ChatQuickActionsPendingState,
   ChatQuickActionsFailureState,
   ChatMessagesPage,
+  ChatSearchHit,
+  ChatSearchPage,
   ChatPendingTask,
   ChatQueuedTask,
   PrioritizeQueuedChatTaskResponse,
