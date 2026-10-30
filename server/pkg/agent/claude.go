@@ -1309,7 +1309,7 @@ func resolveSessionID(requestedResume, emitted string, failed bool, texts ...str
 }
 
 func buildEnv(extra map[string]string) []string {
-	return mergeEnv(os.Environ(), extra)
+	return mergeEnv(BaseEnviron(), extra)
 }
 
 func claudeRootSudoPreflight(args, env []string) error {

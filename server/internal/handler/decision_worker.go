@@ -255,7 +255,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
-	return failures
+	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
 func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {

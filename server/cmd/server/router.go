@@ -1875,6 +1875,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
+					// CHE-2490: admin-written protected-path policy for the push broker.
+					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.

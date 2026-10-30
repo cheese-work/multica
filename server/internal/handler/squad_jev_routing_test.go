@@ -829,7 +829,10 @@ func TestTryJevSquadRouting_EnqueueFailureAdvisory(t *testing.T) {
 	// Temporarily simulate task enqueue db failure
 	origQueries := testHandler.TaskService.Queries
 	testHandler.TaskService.Queries = db.New(&failingDBTX{})
-	defer func() { testHandler.TaskService.Queries = origQueries }()
+	// Enqueue runs in its own transaction; without a starter it uses these queries.
+	origTx := testHandler.TaskService.TxStarter
+	testHandler.TaskService.TxStarter = nil
+	defer func() { testHandler.TaskService.Queries, testHandler.TaskService.TxStarter = origQueries, origTx }()
 
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
