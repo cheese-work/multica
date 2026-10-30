@@ -93,3 +93,13 @@ WHERE decision_request_id = $1;
 DELETE FROM decision_agent_scope scope
 WHERE scope.instance_id = sqlc.arg('id') AND scope.workspace_id = sqlc.arg('workspace_id')
   AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentReliance :exec
+DELETE FROM decision_agent_reliance reliance
+WHERE reliance.instance_id = sqlc.arg('id') AND reliance.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = reliance.issue_id AND issue.workspace_id = reliance.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentSettlement :exec
+DELETE FROM decision_agent_settlement settlement
+WHERE settlement.instance_id = sqlc.arg('id') AND settlement.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id);

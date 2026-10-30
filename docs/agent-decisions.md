@@ -111,3 +111,41 @@ The one adjudicator must differ from both disputants and their labs. Its frozen
 opinion uses the same commit/reveal protocol, plus `disputed_point: <point>` and
 `upholds: author|reviewer`. Upholding the author requires PASS; upholding the
 reviewer requires BLOCK. C1 records the verdict only.
+
+## Settlement and reliance (C2)
+
+Settlement creation is hard-disabled in C2. There is no environment, API or CLI
+switch to enable it. The quorum engine is exercised directly by database tests;
+no live comment can create an effective record. Adjudication settlement, veto,
+notifications and pilot activation belong to later slices.
+
+The dormant co-sign engine runs after the vote snapshot in the comment-insert
+transaction, under the instance advisory lock. Two valid named PASS reveals with
+no void or retraction permit one insert. The instance primary key and
+`ON CONFLICT DO NOTHING` prevent duplicates. Any insert failure rolls back the
+whole transaction, including the vote comment. Settlement and reliance history
+are immutable; the decision worker removes orphan history after issue deletion.
+
+`GET /api/issues/{id}/agent-decisions?gate=<gate>&candidate_sha256=<sha256>`
+shows the bound instance state. It always returns `authorization: false` and
+`decided: false`, including when the display state is `effective`. It never
+registers reliance.
+
+`POST /api/issues/{id}/agent-decisions/rely` accepts
+`{ "gate": "screenshot_evidence", "candidate_sha256": "<sha256>", "purpose": "<work>" }`.
+It requires a running task token for the same issue. The server derives task and
+agent IDs from the authenticated token. Under the same instance lock used by
+comments and the future veto path, it checks agents authority, issue, gate,
+digest, allowlist version, delegation, effective time and revocation, then inserts
+one reliance row. Only a successful commit returns `decided: true` with instance
+and reliance IDs. Validation, insert, lock or commit failures never authorize.
+
+CLI equivalent:
+
+```sh
+multica decision rely --issue CHE-2643 --gate screenshot_evidence \
+  --candidate-sha256 <sha256> --purpose "Review screenshot gate"
+```
+
+Read the JSON `decided` field. Exit status 0 alone does not mean a gate is waived.
+Human merge, deployment and excluded gates still require their own authority.

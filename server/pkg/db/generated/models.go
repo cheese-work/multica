@@ -785,6 +785,17 @@ type DecisionAction struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DecisionAgentReliance struct {
+	ID          pgtype.UUID        `json:"id"`
+	InstanceID  pgtype.UUID        `json:"instance_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Purpose     string             `json:"purpose"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type DecisionAgentScope struct {
 	InstanceID       pgtype.UUID        `json:"instance_id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
@@ -805,6 +816,16 @@ type DecisionAgentScope struct {
 	ProposalBody     string             `json:"proposal_body"`
 	ProposalSha256   string             `json:"proposal_sha256"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionAgentSettlement struct {
+	InstanceID   pgtype.UUID        `json:"instance_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	EffectiveAt  pgtype.Timestamptz `json:"effective_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	RevokedBy    pgtype.UUID        `json:"revoked_by"`
+	RevokeReason pgtype.Text        `json:"revoke_reason"`
 }
 
 type DecisionAnswer struct {
