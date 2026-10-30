@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -250,4 +251,56 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		requests = []db.ListOpenDecisionRequestsForHumanRow{}
 	}
 	writeJSON(writer, http.StatusOK, requests)
+}
+
+// openAskResponse is the open-asks projection. It deliberately has no field
+// for options, answers, or the full ask, so a task token cannot read them here.
+type openAskResponse struct {
+	ID               string `json:"id"`
+	IssueID          string `json:"issue_id"`
+	IssueIdentifier  string `json:"issue_identifier"`
+	Ask              string `json:"ask"`
+	Class            string `json:"escalation_class"`
+	CreatedAt        string `json:"created_at"`
+	CardLink         string `json:"card_link"`
+	AskingAgentID    string `json:"asking_agent_id"`
+	DefaultIfNoReply string `json:"default_if_no_reply"`
+}
+
+// ListOpenDecisionAsks returns one member's open requests, oldest first. A
+// member reads only their own; a task token reads any member's, because the
+// evening brief runs as an agent.
+func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request *http.Request) {
+	member, ok := handler.requireWorkspaceMember(writer, request, ctxWorkspaceID(request.Context()), "workspace not found")
+	if !ok {
+		return
+	}
+	humanID, ok := parseUUIDOrBadRequest(writer, request.URL.Query().Get("for"), "for")
+	if !ok {
+		return
+	}
+	if humanID != member.UserID && !isMachineCredentialActor(request) {
+		writeError(writer, http.StatusForbidden, "members read only their own open asks")
+		return
+	}
+	rows, err := handler.Queries.ListOpenDecisionAsksForHuman(request.Context(), db.ListOpenDecisionAsksForHumanParams{
+		WorkspaceID: member.WorkspaceID, HumanUserID: humanID,
+	})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list open asks")
+		return
+	}
+	asks := make([]openAskResponse, 0, len(rows))
+	for _, row := range rows {
+		link := weblink.Chat(row.WorkspaceSlug, uuidToString(row.ChatSessionID))
+		if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
+			link = absolute
+		}
+		asks = append(asks, openAskResponse{
+			ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), IssueIdentifier: row.IssueIdentifier,
+			Ask: row.AskHeadline, Class: row.EscalationClass, CreatedAt: timestampToString(row.CreatedAt),
+			CardLink: link, AskingAgentID: uuidToString(row.AskingAgentID), DefaultIfNoReply: row.DefaultIfNoReply,
+		})
+	}
+	writeJSON(writer, http.StatusOK, asks)
 }

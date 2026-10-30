@@ -55,6 +55,23 @@ WHERE request.workspace_id = sqlc.arg('workspace_id')
     AND request.status = 'open'
 ORDER BY request.created_at, request.id;
 
+-- name: ListOpenDecisionAsksForHuman :many
+-- Read-only projection for the open-asks read: first line of the ask and the
+-- default text only, never options, answers, or the full ask.
+SELECT request.id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.issue_id, workspace.slug AS workspace_slug,
+    split_part(request.ask, E'\n', 1)::text AS ask_headline,
+    request.escalation_class, request.created_at, request.chat_session_id,
+    request.asking_agent_id, COALESCE(request.ask_json->>'default_if_no_reply', '')::text AS default_if_no_reply
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id')
+    AND request.human_user_id = sqlc.arg('human_user_id')
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id;
+
 -- name: StampDecisionCancelMessageRequests :exec
 UPDATE chat_message SET decision_request_ids = sqlc.arg('request_ids')::uuid[]
 WHERE id = sqlc.arg('id') AND chat_session_id = sqlc.arg('chat_session_id');
