@@ -108,8 +108,8 @@ func (handler *Handler) renameChatSession(writer http.ResponseWriter, request *h
 		return
 	}
 	sessionID := uuidToString(session.ID)
-	handler.publishChat(protocol.EventChatSessionUpdated, workspaceID, actorType, actorID, sessionID, protocol.ChatSessionUpdatedPayload{ChatSessionID: sessionID, Title: updated.Title, UpdatedAt: timestampToString(updated.UpdatedAt)})
-	handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, sessionID, protocol.ChatMessagePayload{ChatSessionID: sessionID, MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
+	handler.publishChatFor(protocol.EventChatSessionUpdated, workspaceID, actorType, actorID, uuidToString(session.CreatorID), sessionID, protocol.ChatSessionUpdatedPayload{ChatSessionID: sessionID, Title: updated.Title, UpdatedAt: timestampToString(updated.UpdatedAt)})
+	handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(session.CreatorID), sessionID, protocol.ChatMessagePayload{ChatSessionID: sessionID, MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
 	if isAgent {
 		writeJSON(writer, http.StatusOK, protocol.ChatRenameResponse{ID: sessionID, Title: updated.Title, PreviousTitle: session.Title, MessageID: uuidToString(message.ID)})
 		return

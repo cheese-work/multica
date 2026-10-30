@@ -120,7 +120,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
-		handler.publishChat(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
+		handler.publishChatFor(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
 		})
 	}
@@ -154,7 +154,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),

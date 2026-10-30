@@ -144,7 +144,7 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	}
 	workspaceID, agentID := uuidToString(request.WorkspaceID), uuidToString(answer.DisclaimedByAgentID)
 	if message.ID.Valid {
-		handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 	}
 	if inserted {
 		handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})

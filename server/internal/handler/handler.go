@@ -882,18 +882,24 @@ func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID
 	})
 }
 
-// publishChat is publish() plus the chat session routing hints. actorID must
-// be the session's creator: every chat endpoint gates on creator ownership
-// before publishing, and the realtime layer delivers the event to that user
-// only.
+// publishChat is publishChatFor for callers whose actor is the session's
+// creator: every member chat endpoint gates on creator ownership before
+// publishing.
 func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
+	h.publishChatFor(eventType, workspaceID, actorType, actorID, actorID, chatSessionID, payload)
+}
+
+// publishChatFor is publish() plus the chat session routing hints. The realtime
+// layer delivers the event to ownerID only, so ownerID must be the session's
+// creator even when the actor is an agent or the system.
+func (h *Handler) publishChatFor(eventType, workspaceID, actorType, actorID, ownerID, chatSessionID string, payload any) {
 	h.Bus.Publish(events.Event{
 		Type:               eventType,
 		WorkspaceID:        workspaceID,
 		ActorType:          actorType,
 		ActorID:            actorID,
 		ChatSessionID:      chatSessionID,
-		ChatSessionOwnerID: actorID,
+		ChatSessionOwnerID: ownerID,
 		Payload:            payload,
 	})
 }
