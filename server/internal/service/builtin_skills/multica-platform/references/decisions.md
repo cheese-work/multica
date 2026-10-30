@@ -78,6 +78,18 @@ reopens a live asked request, and cancels the request of an unprompted record
 or an archived DM. Times shown to people
 are ICT. User-facing description: `docs/decision-records.md` in the repo.
 
+## Agent decision reliance
+
+```bash
+multica decision rely --issue <issue> --gate <gate> --candidate-sha256 <sha256> --purpose "Work relying on this decision"
+```
+
+This command requires a running task token for the same issue. It registers
+reliance on an effective agent settlement under the decision lock. A successful
+`decided: true` response requires the reliance transaction to commit. Lookup
+alone is display only and never grants authorization. Settlement creation stays
+disabled in C2, so live workspaces cannot create effective agent settlements.
+
 ## Decision-bound writes (agent changes a governed field)
 
 An agent may change a workflow's steps or a governed instruction field only
