@@ -205,3 +205,66 @@ func TestRepoIdentity(t *testing.T) {
 		}
 	}
 }
+
+// Two repositories that share a basename and a branch name. A workdir holding
+// one repository's pinned checkout must not be reused, repointed or reported
+// as the other's.
+func TestPinnedCheckoutRefusesAnotherRepositoryInTheSameWorkdir(t *testing.T) {
+	for _, mode := range checkoutModes {
+		t.Run(mode.name, func(t *testing.T) {
+			root := t.TempDir()
+			repos := map[string]string{}
+			for _, org := range []string{"org-a", "org-b"} {
+				dir := filepath.Join(root, org, "repo")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				createTestRepoAt(t, dir)
+				runGitAuthored(t, dir, "checkout", "-b", pinnedBranch)
+				if err := os.WriteFile(filepath.Join(dir, "who.txt"), []byte(org+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runGitAuthored(t, dir, "add", "who.txt")
+				runGitAuthored(t, dir, "commit", "-m", org)
+				runGitAuthored(t, dir, "checkout", "-")
+				repos[org] = dir
+			}
+			cache := New(t.TempDir(), testLogger())
+			if err := cache.Sync("ws-1", []RepoInfo{{URL: repos["org-a"]}, {URL: repos["org-b"]}}); err != nil {
+				t.Fatal(err)
+			}
+			workDir := t.TempDir()
+			pin := func(repo string) (*WorktreeResult, error) {
+				return cache.CreateWorktree(WorktreeParams{
+					WorkspaceID: "ws-1", RepoURL: repo, WorkDir: workDir, Ref: pinnedBranch, Branch: pinnedBranch,
+					AgentName: "Agent", TaskID: firstTaskID, IsolatedGitMetadata: mode.isolated,
+				})
+			}
+
+			b, err := pin(repos["org-b"])
+			if err != nil {
+				t.Fatalf("checkout of B: %v", err)
+			}
+			if mode.isolated {
+				// B's unpushed commit must not let the branch match carry the checkout over to A.
+				addEmptyCommit(t, b.Path, "B local work")
+			}
+			headBefore := gitHead(t, b.Path)
+			originBefore, _ := runGitOutput("-C", b.Path, "config", "--get", "remote.origin.url")
+
+			if _, err := pin(repos["org-a"]); err == nil {
+				t.Fatal("pinned checkout for A reused B's checkout")
+			}
+			if got := gitHead(t, b.Path); got != headBefore {
+				t.Fatalf("B's HEAD moved: %s -> %s", headBefore, got)
+			}
+			if got := readFile(t, filepath.Join(b.Path, "who.txt")); got != "org-b\n" {
+				t.Fatalf("B's files changed: %q", got)
+			}
+			originAfter, _ := runGitOutput("-C", b.Path, "config", "--get", "remote.origin.url")
+			if string(originAfter) != string(originBefore) {
+				t.Fatalf("B's origin rewritten: %q -> %q", originBefore, originAfter)
+			}
+		})
+	}
+}

@@ -949,6 +949,11 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// If worktree already exists (reused environment from a prior task),
 	// reuse it instead of creating a new one.
 	if isGitWorktree(worktreePath) {
+		if exact {
+			if err := requirePinnedLinkedRepoContext(ctx, worktreePath, barePath); err != nil {
+				return nil, err
+			}
+		}
 		result, err := updateExistingCheckoutContext(ctx, worktreePath, branchName, baseRef, params.Fresh, exact)
 		if err != nil {
 			return nil, fmt.Errorf("update existing worktree: %w", err)
@@ -1068,6 +1073,11 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 	}
 
 	if isIsolatedCheckoutContext(ctx, checkoutPath) {
+		if exact {
+			if err := requirePinnedIsolatedRepoContext(ctx, checkoutPath, repoURL); err != nil {
+				return nil, err
+			}
+		}
 		// A checkout that already borrows the cache keeps borrowing, whatever
 		// the caller hints; one that holds its own copy of the objects stays so.
 		if hasAlternates(checkoutPath) {
@@ -1119,6 +1129,11 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 	// out of the agent's reach and dropped by the next GC.
 	var carryBranch string
 	if isGitWorktree(checkoutPath) {
+		if exact {
+			if err := requirePinnedLinkedRepoContext(ctx, checkoutPath, barePath); err != nil {
+				return nil, err
+			}
+		}
 		state, err := inspectCheckoutContext(ctx, checkoutPath)
 		if err != nil {
 			return nil, err

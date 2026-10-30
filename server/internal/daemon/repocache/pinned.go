@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -122,4 +123,38 @@ func updatePinnedCheckoutContext(ctx context.Context, path, branch, base string)
 		return nil, err
 	}
 	return &WorktreeResult{Path: path, BranchName: branch}, nil
+}
+
+// requirePinnedIsolatedRepoContext refuses an existing isolated checkout whose
+// origin is not repoURL's repository. It runs before anything changes the
+// checkout, so a workdir holding another repository's checkout of the same
+// basename and branch name is never repointed or reported as the pinned one.
+func requirePinnedIsolatedRepoContext(ctx context.Context, path, repoURL string) error {
+	out, err := runGitOutputContext(ctx, "-C", path, "config", "--get", "remote.origin.url")
+	origin := strings.TrimSpace(string(out))
+	if err != nil || origin == "" || RepoIdentity(origin) != RepoIdentity(repoURL) {
+		return fmt.Errorf("checkout at %s belongs to another repository than %s; refusing to reuse it", path, RepoIdentity(repoURL))
+	}
+	return nil
+}
+
+// requirePinnedLinkedRepoContext refuses an existing linked worktree that is
+// not a worktree of this repository's cache.
+func requirePinnedLinkedRepoContext(ctx context.Context, path, barePath string) error {
+	out, err := runGitOutputContext(ctx, "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	common := strings.TrimSpace(string(out))
+	if err != nil || common == "" || !samePath(common, barePath) {
+		return fmt.Errorf("checkout at %s belongs to another repository than the cache at %s; refusing to reuse it", path, barePath)
+	}
+	return nil
+}
+
+func samePath(a, b string) bool {
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		return filepath.Clean(p)
+	}
+	return resolve(a) == resolve(b)
 }
