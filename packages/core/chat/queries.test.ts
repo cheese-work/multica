@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { TaskMessagePayload } from "../types/events";
 import type { ChatSession } from "../types/chat";
 import {
+  chatSessionUsageOptions,
   countUnreadChatSessions,
   isTaskMessageTaskId,
   mergeTaskMessagesBySeq,
@@ -161,6 +162,15 @@ describe("sortChatSessions", () => {
     sortChatSessions(input);
     expect(input.map((s) => s.id)).toEqual(snapshot);
   });
+
+  it("does not bump a lifecycle-only DM whose metadata was touched", () => {
+    const notesOnly = session({ id: "notes", updated_at: "2026-06-03T00:00:00Z" });
+    const conversation = session({
+      id: "conversation",
+      last_message: { content: "Reply", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
+    });
+    expect(sortChatSessions([notesOnly, conversation]).map((row) => row.id)).toEqual(["conversation", "notes"]);
+  });
 });
 
 describe("countUnreadChatSessions", () => {
@@ -205,5 +215,13 @@ describe("countUnreadChatSessions", () => {
     ];
 
     expect(countUnreadChatSessions(sessions)).toBe(0);
+  });
+});
+
+describe("chatSessionUsageOptions", () => {
+  it("is keyed per workspace and session and stays idle without a session", () => {
+    expect(chatSessionUsageOptions("ws-1", "s-1").queryKey).toEqual(["chat", "ws-1", "usage", "s-1"]);
+    expect(chatSessionUsageOptions("ws-1", "s-1").enabled).toBe(true);
+    expect(chatSessionUsageOptions("ws-1", null).enabled).toBe(false);
   });
 });

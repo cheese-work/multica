@@ -1,8 +1,10 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareQuote } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
+import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -142,10 +144,50 @@ function KeptDraft({ draft, onDiscard }: { draft: AnswerDraft; onDiscard: () => 
   );
 }
 
+// An answer with no run this long after the record shows Not picked up.
+const PICKUP_GRACE_MS = 2 * 60 * 1000;
+
+// Open → Recorded → Delivered → Picked up (or Not picked up after the grace),
+// or Withdrawn / Disclaimed. A disclaimed answer can leave the request open
+// again, so the receipt wins over the request state.
+function displayState(card: RequestCard, now: number) {
+  if (card.state === "withdrawn") return "withdrawn";
+  if (card.answer?.state === "disclaimed") return "disclaimed";
+  if (card.state !== "answered") return "open";
+  const answer = card.answer;
+  if (!answer) return "recorded";
+  if (answer.state !== "picked_up" && now >= new Date(answer.answered_at).getTime() + PICKUP_GRACE_MS) return "not_picked_up";
+  return answer.state;
+}
+
+// Re-renders once when the pickup grace runs out, and asks for fresh data then:
+// a run that started in the meantime has no push of its own.
+function useNow(card: RequestCard) {
+  const qc = useQueryClient();
+  const [now, setNow] = useState(() => Date.now());
+  const waiting = card.state === "answered" && !!card.answer && card.answer.state !== "picked_up" && card.answer.state !== "disclaimed";
+  const deadline = waiting ? new Date(card.answer!.answered_at).getTime() + PICKUP_GRACE_MS : NaN;
+  useEffect(() => {
+    if (!(deadline > Date.now())) {
+      // A receipt that arrives after its grace: the clock kept from mount is stale.
+      if (deadline <= Date.now()) setNow(Date.now());
+      return;
+    }
+    const timer = setTimeout(() => {
+      qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+      qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+      setNow(Date.now());
+    }, deadline - Date.now());
+    return () => clearTimeout(timer);
+  }, [deadline, qc]);
+  return now;
+}
+
 export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
-  const state = t(($) => $.decision.request_state[card.state]);
+  const shown = displayState(card, useNow(card));
+  const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
@@ -170,7 +212,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
       data-testid="decision-request-card"
-      data-state={card.state}
+      data-state={shown}
       className="min-w-0 rounded-xl border border-surface-border bg-surface text-body"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
@@ -178,12 +220,18 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
         <span className="font-medium">{t(($) => $.decision.request_title)}</span>
         <span className={cn(
           "rounded-full px-2 py-0.5 text-micro font-medium",
-          card.state === "open" && "bg-warning/10 text-warning",
-          card.state === "answered" && "bg-success/10 text-success",
-          card.state === "withdrawn" && "bg-muted text-muted-foreground",
+          shown === "open" && "bg-warning/10 text-warning",
+          (shown === "recorded" || shown === "delivered" || shown === "picked_up") && "bg-success/10 text-success",
+          shown === "not_picked_up" && "bg-warning/10 text-warning",
+          (shown === "withdrawn" || shown === "disclaimed") && "bg-muted text-muted-foreground",
         )}>
           {state}
         </span>
+        {card.answer?.chosen_option_index !== undefined && shown !== "disclaimed" && (
+          <span className="rounded-xs border px-1.5 text-micro" title={card.answer.option_label}>
+            {t(($) => $.decision.receipt_option, { number: card.answer.chosen_option_index + 1 })}
+          </span>
+        )}
         <AppLink
           href={issueHref}
           className="inline-flex min-h-9 max-w-full items-center break-all rounded-full border border-surface-border px-2 font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
@@ -225,6 +273,19 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
           card.state === "open" && (
             <DecisionAnswerForm card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} />
           )
+        )}
+        {shown === "picked_up" && card.answer?.run && (
+          <AppLink href={`${issueHref}?run=${encodeURIComponent(card.answer.run.id)}`} data-testid="decision-request-run" className="inline-flex min-h-9 items-center text-label hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+            {t(($) => $.decision.picked_up_by, { agent: card.answer.run.agent_name })}
+          </AppLink>
+        )}
+        {shown === "not_picked_up" && (
+          <p role="status" className="text-label text-warning">
+            {t(($) => $.decision.not_picked_up)}{" "}
+            <AppLink href={issueHref} data-testid="decision-request-not-picked-up" className="font-medium underline focus-visible:outline-2 focus-visible:outline-ring">
+              {t(($) => $.decision.open_issue, { issue: card.issue_identifier || card.issue_id })}
+            </AppLink>
+          </p>
         )}
         {validDate && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">

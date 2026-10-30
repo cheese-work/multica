@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
@@ -3028,18 +3029,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
-	// CHE-1862: record the model this claim hands the daemon. The vote gate
-	// reads it from the task, so a later edit of the agent row cannot relabel
-	// a run that is already under way. A failure leaves the task unrecorded,
-	// and an unrecorded task never counts as a different lab.
-	if err := h.Queries.SetTaskClaimedModel(r.Context(), db.SetTaskClaimedModelParams{
-		ID: task.ID, ClaimedModel: pgtype.Text{String: agent.Model.String, Valid: true},
-	}); err != nil {
-		slog.Warn("daemon claim: could not record the claimed model",
-			"task_id", uuidToString(task.ID), "error", err)
-	} else {
+	// CHE-1862: the preset resolved here (or the agent row) decides the model,
+	// thinking level, service tier and context args this claim hands the
+	// daemon, and is recorded on the task. The vote gate reads claimed_model, so
+	// a later edit of the agent row cannot relabel a run under way. A failed
+	// write leaves the record NULL and the claim succeeds.
+	preset := h.resolveClaimPreset(r.Context(), task, agent, runtime.Provider)
+	customArgs = agentpreset.MergeContextArgs(runtime.Provider, customArgs, preset.Settings.ContextArgs)
+	if h.recordClaimSnapshot(r.Context(), task, preset, agentpreset.ContextArgsOf(runtime.Provider, customArgs)) {
 		// resp was snapshotted before this write; report what is now stored.
-		resp.ClaimedModel = &agent.Model.String
+		resp.ClaimedModel = &preset.Settings.Model
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
@@ -3048,9 +3047,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		CustomEnv:             customEnv,
 		CustomArgs:            customArgs,
 		McpConfig:             mcpConfig,
-		Model:                 agent.Model.String,
-		ThinkingLevel:         agent.ThinkingLevel.String,
-		ServiceTier:           agent.ServiceTier.String,
+		Model:                 preset.Settings.Model,
+		ThinkingLevel:         preset.Settings.ThinkingLevel,
+		ServiceTier:           preset.Settings.ServiceTier,
 		RuntimeConfig:         runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
@@ -3517,7 +3516,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				// A leader whose session has outgrown the threshold starts a
 				// fresh one in the same workdir: the cold issue and comment
 				// reads rebuild its state, so nothing but the transcript is lost.
-				if prior.RuntimeID == task.RuntimeID && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
+				//
+				// A Claude session idle past the prompt-cache TTL is treated the
+				// same way: resuming it would re-write the whole transcript at
+				// the cache-write price (CHE-2567).
+				stale := staleClaudeSession(runtime.Provider, prior.CompletedAt, prior.StartedAt, time.Now())
+				if stale {
+					slog.Info("daemon claim: prior claude session idle past cache TTL; starting fresh",
+						"task_id", uuidToString(task.ID),
+						"agent_id", uuidToString(task.AgentID),
+						"issue_id", uuidToString(task.IssueID),
+					)
+				}
+				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
 					resp.PriorSessionID = prior.SessionID.String
 					resumedRunStartedAt = prior.StartedAt
 					// Same rule as the rerun path: date the deltas from the run

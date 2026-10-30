@@ -85,29 +85,29 @@ func TestParseSquadTierList(t *testing.T) {
 func TestInstructionTokenLimits(t *testing.T) {
 	// 3000 tokens limit for squad = ~9000 chars at 3.0 chars/token
 	squadOverLimit := strings.Repeat("squad ", 2000) // ~12000 chars, ~4000 tokens
-	if jev.EstimateInstructionTokens(squadOverLimit) <= 3000 {
-		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", jev.EstimateInstructionTokens(squadOverLimit))
+	if util.EstimateInstructionTokens(squadOverLimit) <= 3000 {
+		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", util.EstimateInstructionTokens(squadOverLimit))
 	}
 
 	squadUnderLimit := "Short squad instructions"
-	if jev.EstimateInstructionTokens(squadUnderLimit) > 3000 {
-		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", jev.EstimateInstructionTokens(squadUnderLimit))
+	if util.EstimateInstructionTokens(squadUnderLimit) > 3000 {
+		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", util.EstimateInstructionTokens(squadUnderLimit))
 	}
 
 	// 4000 tokens limit for agent = ~12000 chars at 3.0 chars/token
 	agentOverLimit := strings.Repeat("agent ", 3000) // ~18000 chars, ~6000 tokens
-	if jev.EstimateInstructionTokens(agentOverLimit) <= 4000 {
-		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", jev.EstimateInstructionTokens(agentOverLimit))
+	if util.EstimateInstructionTokens(agentOverLimit) <= 4000 {
+		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", util.EstimateInstructionTokens(agentOverLimit))
 	}
 
 	agentUnderLimit := "Short agent instructions"
-	if jev.EstimateInstructionTokens(agentUnderLimit) > 4000 {
-		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", jev.EstimateInstructionTokens(agentUnderLimit))
+	if util.EstimateInstructionTokens(agentUnderLimit) > 4000 {
+		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", util.EstimateInstructionTokens(agentUnderLimit))
 	}
 
 	// Verify EstimateTokens uses byte length for state builder budgeting
 	multiByteText := "xin chào việt nam 🎉"
-	if jev.EstimateTokens(multiByteText) < jev.EstimateInstructionTokens(multiByteText) {
+	if jev.EstimateTokens(multiByteText) < util.EstimateInstructionTokens(multiByteText) {
 		t.Fatalf("expected byte-based EstimateTokens >= rune-based EstimateInstructionTokens for multibyte text")
 	}
 }

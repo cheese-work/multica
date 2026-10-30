@@ -365,6 +365,9 @@ deleted_agent_builder_drafts AS (
 deleted_chat_wakeups AS (
     DELETE FROM chat_wakeup WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halts AS (
+    DELETE FROM github_dispatch_halt WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -379,6 +382,14 @@ deleted_stage_completion_wakes AS (
 ),
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
+),
+-- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
+deleted_run_budget_notices AS (
+    DELETE FROM run_budget_notice WHERE workspace_id = $1
+),
+-- CHE-2489 run capability grants: workspace-owned leaf, no FK.
+deleted_run_capability_grants AS (
+    DELETE FROM run_capability_grant WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -512,6 +523,9 @@ deleted_issue_review_admissions AS (
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
+),
+deleted_agent_presets AS (
+    DELETE FROM agent_preset WHERE workspace_id = $1
 ),
 deleted_agent_skills AS (
     DELETE FROM agent_skill

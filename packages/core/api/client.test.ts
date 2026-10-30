@@ -29,6 +29,35 @@ describe("ApiClient decision cards", () => {
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
+  it("lists open decisions without a caller-supplied human ID or message-page cursor", async () => {
+    const row = {
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
+      asking_agent_name: "Alpha", ask: "Approve?", escalation_class: "future-class",
+      created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", message_id: "ping",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json([row]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([row]);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decisions/open");
+  });
+
+  it("safely degrades malformed open-decision responses", async () => {
+    for (const body of [null, {}, [{ id: 7 }]]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body)));
+      expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([]);
+    }
+  });
+
+  it("keeps asks with missing optional jump metadata", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
+      ask: "Approve?", escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm",
+    }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
+      { id: "ask", asking_agent_name: "", message_id: null },
+    ]);
+  });
+
   it("disclaims a decision answer with a POST to its disclaim route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(json({}));
     vi.stubGlobal("fetch", fetchMock);
@@ -54,6 +83,33 @@ describe("ApiClient decision cards", () => {
       "https://api.example.test/api/chat/sessions/session-1/messages/page?limit=50&around=msg-9",
     );
     expect(page.has_newer).toBe(true);
+  });
+});
+
+describe("ApiClient chat search", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("sends q, limit and cursor and parses hits with the next cursor", async () => {
+    const hit = {
+      session_id: "s1", title: "Plan", agent_id: "a1", message_id: "m1",
+      snippet: "the launch plan", updated_at: "2026-10-28T10:00:00Z", archived: false,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json({ results: [hit], next_cursor: "c2" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const page = await new ApiClient("https://api.example.test").searchChats({ q: "launch plan", limit: 20, cursor: "c1" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "https://api.example.test/api/chat/search?q=launch+plan&limit=20&cursor=c1",
+    );
+    expect(page.results).toEqual([hit]);
+    expect(page.next_cursor).toBe("c2");
+  });
+
+  it("tolerates a malformed response as an empty page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ results: "nope" })));
+    const page = await new ApiClient("https://api.example.test").searchChats({ q: "x" });
+    expect(page.results).toEqual([]);
+    expect(page.next_cursor).toBeNull();
   });
 });
 

@@ -24,6 +24,12 @@ const (
 	PREventReady        PREventKind = "ready"
 )
 
+// actionRequired reports whether the kind asks an agent to act on the PR, as
+// opposed to merged, closed, draft and ready, which only report its state.
+func (k PREventKind) actionRequired() bool {
+	return k == PREventConflict || k == PREventHeadChanged || k == PREventChecksFailed
+}
+
 // PREventOutcome reports what CapturePREvent did with one event.
 type PREventOutcome string
 
@@ -37,10 +43,12 @@ const (
 
 // PREventInput is one observed PR event, before it fans out to linked issues.
 type PREventInput struct {
-	PRID       pgtype.UUID
-	Kind       PREventKind
-	HeadSHA    string
-	BaseSHA    string
+	PRID    pgtype.UUID
+	Kind    PREventKind
+	HeadSHA string
+	BaseSHA string
+	// OldHeadSHA is the head a PREventHeadChanged event replaced.
+	OldHeadSHA string
 	ObservedAt time.Time
 }
 
@@ -86,6 +94,11 @@ func capturePREventForIssue(ctx context.Context, q *db.Queries, pr db.LockGitHub
 	if staleHead && in.Kind == PREventChecksFailed {
 		return PREventDropped, nil
 	}
+	// A delayed snapshot can land after the terminal lifecycle stop ran; an
+	// action-required notice would then start work for a finished PR.
+	if in.Kind.actionRequired() && (pr.State == "merged" || pr.State == "closed") {
+		return PREventDropped, nil
+	}
 	if _, err := q.LockIssueForPREvent(ctx, issueID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PREventNotCaptured, nil
@@ -105,15 +118,16 @@ func capturePREventForIssue(ctx context.Context, q *db.Queries, pr db.LockGitHub
 		status, outcome = "superseded", PREventSuperseded
 	}
 	n, err := q.InsertIssuePREvent(ctx, db.InsertIssuePREventParams{
-		WorkspaceID:   pr.WorkspaceID,
-		IssueID:       issueID,
-		PullRequestID: in.PRID,
-		Kind:          string(in.Kind),
-		HeadSha:       in.HeadSHA,
-		BaseSha:       in.BaseSHA,
-		ObservedAt:    tsFromTime(in.ObservedAt),
-		DedupeKey:     in.dedupeKey(),
-		Status:        status,
+		WorkspaceID:     pr.WorkspaceID,
+		IssueID:         issueID,
+		PullRequestID:   in.PRID,
+		Kind:            string(in.Kind),
+		HeadSha:         in.HeadSHA,
+		BaseSha:         in.BaseSHA,
+		ObservedAt:      tsFromTime(in.ObservedAt),
+		DedupeKey:       in.dedupeKey(),
+		Status:          status,
+		PreviousHeadSha: in.OldHeadSHA,
 	})
 	if err != nil {
 		return "", err
@@ -132,7 +146,7 @@ func (in PREventInput) dedupeKey() string {
 	switch in.Kind {
 	case PREventConflict:
 		return string(in.Kind) + "|" + in.HeadSHA + "|" + in.BaseSHA
-	case PREventDraft, PREventReady:
+	case PREventDraft, PREventReady, PREventClosed:
 		return string(in.Kind) + "|" + in.HeadSHA + "|" + strconv.FormatInt(in.ObservedAt.UnixNano(), 10)
 	default:
 		return string(in.Kind) + "|" + in.HeadSHA
@@ -144,6 +158,10 @@ func (in PREventInput) dedupeKey() string {
 func snapshotPREvents(prev db.GetGitHubPRSnapshotStateRow, snap *PRSnapshot, observed time.Time) []PREventInput {
 	sameHead := prev.SnapshotHeadSha == snap.HeadSHA
 	var events []PREventInput
+	// An empty previous head is a first snapshot: nothing was replaced.
+	if prev.SnapshotHeadSha != "" && !sameHead {
+		events = append(events, PREventInput{Kind: PREventHeadChanged, HeadSHA: snap.HeadSHA, BaseSHA: snap.BaseSHA, OldHeadSHA: prev.SnapshotHeadSha, ObservedAt: observed})
+	}
 	if snap.Mergeable == "CONFLICTING" && !(sameHead && prev.ApiMergeable.String == "CONFLICTING") {
 		events = append(events, PREventInput{Kind: PREventConflict, HeadSHA: snap.HeadSHA, BaseSHA: snap.BaseSHA, ObservedAt: observed})
 	}

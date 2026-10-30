@@ -137,6 +137,7 @@ UPDATE agent SET
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
     custom_env = COALESCE(sqlc.narg('custom_env'), custom_env),
+    custom_env_version = custom_env_version + CASE WHEN sqlc.narg('custom_env')::jsonb IS NULL THEN 0 ELSE 1 END,
     custom_args = COALESCE(sqlc.narg('custom_args'), custom_args),
     mcp_config = COALESCE(sqlc.narg('mcp_config'), mcp_config),
     model = COALESCE(sqlc.narg('model'), model),
@@ -186,7 +187,7 @@ RETURNING *;
 -- of custom_env handling so all env mutations flow through here and the
 -- handler's audit-log + **** sentinel guard.
 UPDATE agent
-SET custom_env = $2, updated_at = now()
+SET custom_env = $2, custom_env_version = custom_env_version + 1, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -806,7 +807,14 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
+    chat_compaction_epoch = COALESCE(
+        chat_compaction_epoch,
+        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
+    )
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
@@ -905,6 +913,9 @@ WHERE id = @task_id
 UPDATE agent_task_queue
 SET status = 'queued',
     dispatched_at = NULL,
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
 WHERE id = @task_id
@@ -922,6 +933,9 @@ RETURNING *;
 -- recovered delivery attempt.
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -1007,6 +1021,9 @@ WITH candidates AS MATERIALIZED (
 )
 UPDATE agent_task_queue
 SET dispatched_at = now(),
+    preset_name = NULL, preset_source = NULL, preset_skips = NULL,
+    claimed_model = NULL, claimed_thinking_level = NULL,
+    claimed_service_tier = NULL, claimed_context_args = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
 RETURNING *;
@@ -1130,7 +1147,7 @@ WITH retired_sessions AS (
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
-        t.started_at, t.issue_snapshot, t.context_tokens,
+        t.started_at, t.completed_at, t.issue_snapshot, t.context_tokens,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1152,7 +1169,9 @@ WITH retired_sessions AS (
 -- resumed memory predates an edit that the issue is unchanged.
 -- context_tokens is that run's last prompt size, which tells a claim whether the
 -- session is too large to keep resuming (leader session compaction, CHE-1983).
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, context_tokens FROM latest_per_session
+-- completed_at (with started_at as the fallback) dates when the session last
+-- went idle, which tells a claim whether its prompt cache has expired (CHE-2567).
+SELECT session_id, work_dir, runtime_id, status, started_at, completed_at, issue_snapshot, context_tokens FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -1687,17 +1706,23 @@ WHERE issue_id = sqlc.arg('issue_id')
   AND replacement_released_at IS NULL;
 
 -- name: GetUnackedSupersededRun :one
--- The newest run of the issue cancelled as superseded whose runner is not yet
--- proven stopped, at the step the issue is in now. A run that never reached a
--- daemon (dispatched_at NULL) has no runner to wait for.
+-- The newest run of the issue cancelled by the stop gate whose runner is not yet
+-- proven stopped. A superseded head holds the gate at the step the issue is in
+-- now; a merged or closed PR (CHE-2298 c1) holds it whatever the step, because
+-- the merge itself moves the issue on. A rewrite of such a run (for example to
+-- failed/cleanup_unconfirmed) keeps the issue-wide hold via stop_hold_issue_wide;
+-- any other rewritten run keeps only the step-bound hold. A run that never
+-- reached a daemon (dispatched_at NULL) has no runner to wait for.
 SELECT t.id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE t.issue_id = sqlc.arg('issue_id')
-  AND ((t.status = 'cancelled' AND t.failure_reason = 'superseded_head')
-       OR t.stop_unconfirmed_at IS NOT NULL)
   AND t.dispatched_at IS NOT NULL
   AND t.cancel_acked_at IS NULL
-  AND t.workflow_step = i.status
+  AND ((t.status = 'cancelled' AND t.failure_reason IN ('pr_merged', 'pr_closed'))
+       OR (t.stop_hold_issue_wide AND t.stop_unconfirmed_at IS NOT NULL)
+       OR (((t.status = 'cancelled' AND t.failure_reason = 'superseded_head')
+            OR t.stop_unconfirmed_at IS NOT NULL)
+           AND t.workflow_step = i.status))
 ORDER BY t.created_at DESC
 LIMIT 1;
 
@@ -3128,9 +3153,19 @@ RETURNING *;
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
 
--- name: SetTaskClaimedModel :exec
--- CHE-1862: the model the daemon is told to run for this claim. The vote gate
--- reads it as the task's lab identity, so an edit of the agent row after the
--- claim cannot change what a running task is counted as.
-UPDATE agent_task_queue SET claimed_model = @claimed_model
-WHERE id = @id AND status = 'dispatched';
+-- name: SetTaskClaimSnapshot :execrows
+-- Requested and claimed run settings for one claim generation (CHE-1862
+-- claimed_model, plus the agent-preset columns). The vote gate reads
+-- claimed_model as the task's lab identity, so an edit of the agent row after
+-- the claim cannot change what a running task is counted as. Every statement
+-- that writes dispatched_at resets these columns, and this write matches
+-- (id, runtime_id, dispatched_at), so a slow handler of an old claim cannot
+-- write into a newer one.
+UPDATE agent_task_queue
+SET preset_name = @preset_name, preset_source = @preset_source, preset_skips = @preset_skips,
+    claimed_model = @claimed_model, claimed_thinking_level = @claimed_thinking_level,
+    claimed_service_tier = @claimed_service_tier, claimed_context_args = @claimed_context_args
+WHERE id = @id
+  AND runtime_id = @runtime_id
+  AND dispatched_at = @dispatched_at
+  AND status = 'dispatched';

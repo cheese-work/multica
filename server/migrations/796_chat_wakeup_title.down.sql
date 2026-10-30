@@ -1,0 +1,1 @@
+ALTER TABLE chat_wakeup DROP COLUMN IF EXISTS title;

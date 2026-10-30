@@ -407,7 +407,6 @@
     "metadata_restore": "Restore dialog size",
     "metadata_copy_failed": "Failed to copy metadata",
     "metadata_description": "Key-value data recorded by agents and integrations for workflow coordination.",
-
     "section_load_failed_retry": "Could not load. Retry",
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "breadcrumb_project_unknown": "Unknown project",
@@ -609,6 +608,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "show_full": "Show full comment",
     "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
@@ -1420,6 +1420,10 @@
       "other_done": "When {{issue}} is done",
       "other_ended": "When {{issue}} is done or cancelled",
       "other_in_review": "When {{issue}} moves to In Review",
+      "gh_run_id": "run {{id}} of {{repo}}",
+      "gh_run_sha": "{{workflow}} at {{sha}} of {{repo}}",
+      "gh_run_completed": "When {{run}} finishes",
+      "gh_run_waiting": "When {{run}} waits at an approval gate",
       "other_blocked": "When {{issue}} moves to Blocked",
       "another_issue": "another issue",
       "unknown_label": "a deleted label",
@@ -1444,6 +1448,8 @@
       "other_done": "Waiting for {{issue}}",
       "other_ended": "Waiting for {{issue}} to end",
       "other_in_review": "Waiting for {{issue}} to reach review",
+      "gh_run_completed": "Waiting for {{run}} to finish",
+      "gh_run_waiting": "Waiting for {{run}} to reach an approval gate",
       "other_blocked": "Waiting for {{issue}} to be blocked",
       "time": "{{time}} · wakes {{agent}}",
       "header": "{{agent}}: {{what}}",
@@ -1886,11 +1892,15 @@
     "state": {
       "pending": "Pending",
       "effective": "In effect",
-      "disclaimed": "Disclaimed"
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered",
+      "recorded": "Recorded"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
-    "asked_in_dm": "Asked in DM",
+    "recorded_for": "Recorded for {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",
@@ -1905,6 +1915,12 @@
     "withdrawn_body": "Nothing was changed by this click.",
     "review_action": "Review",
     "failed_notice": "Could not disclaim. The decision is unchanged.",
-    "try_again_action": "Try again"
+    "try_again_action": "Try again",
+    "full_message": "Full message",
+    "agent_note": "Agent's note",
+    "timing_disclaimed": "Disclaimed at {{time}}",
+    "timing_effective": "In effect since {{time}}",
+    "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
+    "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
   }
 }

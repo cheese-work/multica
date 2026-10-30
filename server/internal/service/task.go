@@ -515,6 +515,16 @@ func (s *TaskService) attributionFromComment(ctx context.Context, comment db.Com
 		AuthorID:   comment.AuthorID,
 		CreatedAt:  comment.CreatedAt,
 	}
+	if comment.AuthorType == "agent" && !comment.SourceTaskID.Valid && comment.DecisionCommentKind.String == "quote" && comment.DecisionAnswerID.Valid {
+		answer, err := s.Queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: comment.WorkspaceID, ID: comment.DecisionAnswerID})
+		if err == nil && answer.IssueCommentID == comment.ID && !answer.AnsweredByTaskID.Valid {
+			request, err := s.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: comment.WorkspaceID, ID: answer.DecisionRequestID})
+			if err == nil && request.Origin == "asked" && request.IssueID == comment.IssueID && request.AskingAgentID == comment.AuthorID {
+				facts.AuthorType = "member"
+				facts.AuthorID = request.HumanUserID
+			}
+		}
+	}
 	// For an agent-authored comment, walk comment.source_task_id → parent task →
 	// parent.originator_user_id (set by every agent comment-write path since
 	// migration 120). A NULL/missing source task leaves ParentOriginator
@@ -1591,8 +1601,14 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
 			FireAt:               fireAt,
 		})
+		if err == nil {
+			noteRunInserted(ctx, queries, createParams.IssueID)
+		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
+	}
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1728,6 +1744,9 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
+	if err == nil {
+		notifyTaskEnqueued(ctx, task)
+	}
 	if err != nil {
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -5139,6 +5158,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
@@ -5736,6 +5756,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
@@ -5793,6 +5814,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			})
 			switch {
 			case cerr == nil:
+				noteRunInserted(ctx, qtx, t.IssueID)
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -6401,6 +6423,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		)
 		return nil, err
 	}
+	noteRunInserted(ctx, qtx, parent.IssueID)
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than

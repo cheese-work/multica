@@ -1,6 +1,6 @@
 -- name: CreateChatSession :one
-INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id, is_agent_intro, project_id, id)
-VALUES ($1, $2, $3, $4, (SELECT runtime_id FROM agent WHERE id = $2), $5, sqlc.narg('project_id'), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()))
+INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id, is_agent_intro, project_id, id, decision_topic_id)
+VALUES ($1, $2, $3, $4, (SELECT runtime_id FROM agent WHERE id = $2), $5, sqlc.narg('project_id'), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()), sqlc.narg('decision_topic_id'))
 RETURNING *;
 
 -- name: ClearChatSessionProjectByProject :exec
@@ -273,6 +273,7 @@ SELECT cs.*,
        (SELECT count(*) FROM chat_message m
           WHERE m.chat_session_id = cs.id
             AND m.role = 'assistant'
+            AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
             AND m.created_at > cs.last_read_at)::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
        COALESCE(lm.role, '') AS last_message_role,
@@ -284,7 +285,7 @@ LEFT JOIN LATERAL (
   SELECT content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
-     AND m.message_kind != 'channel_command'
+     AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -296,7 +297,7 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
   )
 -- GREATEST with created_at: a new fork of an old DM carries old copied times
 -- and must still list as new.
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.created_at), cs.created_at) DESC;
 
 -- name: ListAllChatSessionsByCreator :many
 -- Unlike ListChatSessionsByCreator this returns archived sessions too (for the
@@ -311,6 +312,7 @@ SELECT cs.*,
             ELSE (SELECT count(*) FROM chat_message m
                     WHERE m.chat_session_id = cs.id
                       AND m.role = 'assistant'
+                      AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
                       AND m.created_at > cs.last_read_at)
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
@@ -323,7 +325,7 @@ LEFT JOIN LATERAL (
   SELECT content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
-     AND m.message_kind != 'channel_command'
+     AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -335,7 +337,7 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2
   )
 -- GREATEST with created_at: a new fork of an old DM carries old copied times
 -- and must still list as new.
-ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.updated_at), cs.created_at) DESC;
+ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, GREATEST(COALESCE(lm.created_at, cs.created_at), cs.created_at) DESC;
 
 -- name: ListAgentBuilderSessionsByCreator :many
 -- The caller's unfinished agent-creation conversations.
@@ -516,12 +518,18 @@ RETURNING *;
 -- the agent crashed before establishing one) cannot wipe out a previously
 -- recorded resume pointer. This makes the chat memory robust against
 -- intermittent agent failures.
+--
+-- task_epoch is the compaction epoch the reporting task was dispatched under
+-- (NULL reads as 0). A task that started before an in-place /compact still
+-- holds a pre-boundary session; the write is skipped so it cannot put that
+-- session back on the chat.
 UPDATE chat_session
 SET session_id = COALESCE(sqlc.narg('session_id'), session_id),
     work_dir = COALESCE(sqlc.narg('work_dir'), work_dir),
     runtime_id = COALESCE(sqlc.narg('runtime_id'), runtime_id),
     updated_at = now()
-WHERE id = sqlc.arg('id');
+WHERE id = sqlc.arg('id')
+  AND compaction_epoch = COALESCE(sqlc.narg('task_epoch')::bigint, 0);
 
 -- name: ClearChatSessionSessionIfMatches :exec
 -- Drops the chat session's resume pointer, but only while it still points at
@@ -571,6 +579,9 @@ WHERE id = sqlc.arg('id')
 -- session owns the pointer, and a straggler must not drag the conversation
 -- backwards onto the turn the user interrupted.
 --
+-- A task dispatched before an in-place /compact (older compaction epoch) never
+-- moves the pointer: its session predates the boundary.
+--
 -- The newer-task lookup depends on
 -- idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
 -- nor chat_terminal_resume can replace it: this guard spans both in-flight and
@@ -587,6 +598,7 @@ WHERE t.id = sqlc.arg('task_id')
   AND t.status = 'cancelled'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
   AND NOT EXISTS (
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
