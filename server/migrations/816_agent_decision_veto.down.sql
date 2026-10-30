@@ -6,6 +6,8 @@ DO $$ BEGIN
     END IF;
 END; $$;
 DROP TABLE decision_agent_undo;
+ALTER TABLE decision_agent_settlement DROP CONSTRAINT decision_agent_settlement_undo_owner_check,
+    DROP COLUMN undo_owner_type, DROP COLUMN undo_owner_id;
 DROP TRIGGER agent_decision_settlement_immutable ON decision_agent_settlement;
 DROP FUNCTION preserve_agent_decision_settlement();
 CREATE TRIGGER agent_decision_settlement_immutable BEFORE UPDATE OR DELETE ON decision_agent_settlement

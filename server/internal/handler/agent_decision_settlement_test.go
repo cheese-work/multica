@@ -209,8 +209,9 @@ func TestAgentDecisionRelianceRefusals(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := prepareSettlement(t)
 			if kind != "missing" {
-				dbfx.Exec(t, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id,effective_at,revoked_at)
-    VALUES($1,$2,$3,CASE WHEN $4='future' THEN now()+interval '1 hour' ELSE now() END,CASE WHEN $4='revoked' THEN now() ELSE NULL END)`, f.instance, testWorkspaceID, f.issueID, kind)
+				dbfx.Exec(t, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id,effective_at,revoked_at,undo_owner_type,undo_owner_id)
+    VALUES($1,$2,$3,CASE WHEN $4='future' THEN now()+interval '1 hour' ELSE now() END,CASE WHEN $4='revoked' THEN now() ELSE NULL END,
+        CASE WHEN $4='revoked' THEN 'agent' END,CASE WHEN $4='revoked' THEN $1::uuid END)`, f.instance, testWorkspaceID, f.issueID, kind)
 			}
 			req := agentDecisionRequest(f, http.MethodPost)
 			switch kind {

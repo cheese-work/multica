@@ -13,8 +13,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// vetoBody names the leader as the undo owner; vetoBodyFor names another.
 func (f agentDecisionFixture) vetoBody(reason string) string {
-	return "Veto: decision:" + f.instance + " " + boundAfter + "\n\n" + reason + "\n"
+	return f.vetoBodyFor("agent:"+f.leaderID, reason)
+}
+
+func (f agentDecisionFixture) vetoBodyFor(owner, reason string) string {
+	return "Veto: decision:" + f.instance + " " + boundAfter + " " + owner + "\n\n" + reason + "\n"
 }
 
 // vetoStatus is safe off the test goroutine: it never calls t.Fatal.
@@ -170,7 +175,7 @@ func vetoRelianceRace(t *testing.T, i int) {
 	}
 }
 
-func TestAgentDecisionUndoAssignmentNotifiesRelyingAgent(t *testing.T) {
+func TestAgentDecisionUndoAssignmentGoesToTheNamedOwner(t *testing.T) {
 	f := prepareVeto(t)
 	effective(t, f)
 	if rely := callAgentDecision(t, f, http.MethodPost); !strings.Contains(rely.Body.String(), `"decided":true`) {
@@ -180,8 +185,9 @@ func TestAgentDecisionUndoAssignmentNotifiesRelyingAgent(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_undo WHERE instance_id=$1 AND agent_id=$2 AND task_id=$3`, f.instance, f.writerID, f.tasks[f.writerID]); n != 1 {
 		t.Fatalf("undo assignments=%d", n)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE recipient_type='agent' AND recipient_id=$1 AND issue_id=$2 AND type='agent_decision_undo'`, f.writerID, f.issueID); n != 1 {
-		t.Fatalf("undo notifications=%d", n)
+	// The relying agent does not get its own item; the named owner gets one list.
+	if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE recipient_type='agent' AND recipient_id=$1 AND issue_id=$2 AND type='agent_decision_undo'`, f.leaderID, f.issueID); n != 1 {
+		t.Fatalf("undo assignments for the owner=%d", n)
 	}
 }
 
@@ -243,7 +249,7 @@ func TestAgentDecisionVetoRefusals(t *testing.T) {
 			case "digest":
 				body = strings.Replace(body, boundAfter, boundBefore, 1)
 			case "no_reason":
-				body = "Veto: decision:" + f.instance + " " + boundAfter + "\n"
+				body = "Veto: decision:" + f.instance + " " + boundAfter + " agent:" + f.leaderID + "\n"
 			case "unknown_instance":
 				body = strings.Replace(body, f.instance, uuid.NewString(), 1)
 			case "reason_too_long":
@@ -376,5 +382,114 @@ func TestAgentDecisionAdjudicationSettlement(t *testing.T) {
 				t.Fatalf("adjudicator %s upholding %s: settlements=%d, want %d", verdict, upholds, n, want)
 			}
 		})
+	}
+}
+
+func relyAs(t *testing.T, f agentDecisionFixture, agent string) {
+	t.Helper()
+	req := agentDecisionRequest(f, http.MethodPost)
+	req = asAgentActor(req, agent, f.tasks[agent])
+	req.Header.Set("X-Actor-Source", "task_token")
+	w := httptest.NewRecorder()
+	testHandler.RelyAgentDecision(w, req)
+	if !strings.Contains(w.Body.String(), `"decided":true`) {
+		t.Fatalf("rely as %s: %s", agent, w.Body)
+	}
+}
+
+type undoAssignment struct {
+	RelianceIDs []string          `json:"reliance_ids"`
+	Reliances   []json.RawMessage `json:"reliances"`
+	Evidence    []json.RawMessage `json:"evidence"`
+	Instance    string            `json:"decision_instance"`
+}
+
+func undoAssignments(t *testing.T, f agentDecisionFixture, recipientType, recipient string) []undoAssignment {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(), `SELECT details FROM inbox_item WHERE issue_id=$1 AND recipient_type=$2 AND recipient_id=$3 AND type='agent_decision_undo'`, f.issueID, recipientType, recipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []undoAssignment
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var a undoAssignment
+		if err := json.Unmarshal(raw, &a); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func TestAgentDecisionVetoAssignsOneListToAMemberOwner(t *testing.T) {
+	f := prepareVeto(t)
+	effective(t, f)
+	relyAs(t, f, f.writerID)
+	relyAs(t, f, f.peerID)
+	f.post(t, f.leaderID, f.vetoBodyFor("member:"+testUserID, "undo both"), http.StatusCreated)
+	got := undoAssignments(t, f, "member", testUserID)
+	if len(got) != 1 {
+		t.Fatalf("assignments to the member owner=%d, want 1", len(got))
+	}
+	if got[0].Instance != f.instance || len(got[0].Reliances) != 2 || len(got[0].RelianceIDs) != 2 || len(got[0].Evidence) == 0 {
+		t.Fatalf("assignment does not list every reliance and the evidence: %+v", got[0])
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE issue_id=$1 AND type='agent_decision_undo'`, f.issueID); n != 1 {
+		t.Fatalf("undo items=%d, want exactly the owner's", n)
+	}
+}
+
+func TestAgentDecisionVetoWithoutRelianceStillAssignsTheOwner(t *testing.T) {
+	f := prepareVeto(t)
+	effective(t, f)
+	f.post(t, f.leaderID, f.vetoBodyFor("agent:"+f.peerID, "nothing relied yet"), http.StatusCreated)
+	got := undoAssignments(t, f, "agent", f.peerID)
+	if len(got) != 1 || len(got[0].Reliances) != 0 || len(got[0].Evidence) == 0 {
+		t.Fatalf("zero-reliance assignment: %+v", got)
+	}
+}
+
+func TestAgentDecisionVetoNeedsAValidUndoOwner(t *testing.T) {
+	stranger := dbfx.User(t, "outsider", "outsider-"+uuid.NewString()+"@example.com")
+	for name, owner := range map[string]string{
+		"missing":        "",
+		"unknown_agent":  "agent:" + uuid.NewString(),
+		"outside_member": "member:" + stranger,
+		"bad_kind":       "team:" + uuid.NewString(),
+		"not_a_uuid":     "agent:leader",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := prepareVeto(t)
+			effective(t, f)
+			body := "Veto: decision:" + f.instance + " " + boundAfter + " " + owner + "\n\nreason\n"
+			f.post(t, f.leaderID, body, http.StatusBadRequest)
+			if liveSettlements(t, f) != 1 {
+				t.Fatal("refused veto changed the record")
+			}
+		})
+	}
+}
+
+// Policy moves on; the record it made effective must stay vetoable.
+func TestAgentDecisionVetoAfterPolicyChange(t *testing.T) {
+	f := prepareVeto(t)
+	effective(t, f)
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `ALTER TABLE decision_agent_scope DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `ALTER TABLE decision_agent_scope ENABLE TRIGGER USER`) })
+	dbfx.Exec(t, `UPDATE decision_agent_scope SET allowlist_version=allowlist_version+1, delegation_id=gen_random_uuid() WHERE instance_id=$1`, f.instance)
+	f.post(t, f.leaderID, f.vetoBody("policy changed, stop relying"), http.StatusCreated)
+	if n := liveSettlements(t, f); n != 0 {
+		t.Fatalf("%d live settlements after a veto under changed policy", n)
+	}
+	if got := undoAssignments(t, f, "agent", f.leaderID); len(got) != 1 {
+		t.Fatalf("assignments=%d", len(got))
 	}
 }
