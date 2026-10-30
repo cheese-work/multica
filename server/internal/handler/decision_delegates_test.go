@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // placeDecisionHuman sets the human's workspace role and, when delegate is true,
@@ -247,6 +249,52 @@ func TestDecisionDelegateRaiseClass(test *testing.T) {
 	}
 }
 
+func TestDecisionDelegateRaiseClassNonDelegate(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newAskedRecordFixture(test)
+	fixture.requestCoreFixture = fixture.requestCoreFixture.placeHuman(test, "member", false)
+	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err == nil {
+		test.Fatalf("non-delegate record was accepted: %+v", record)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'reversible' WHERE id = $1`, fixture.decision.ID)
+	if response := raiseDecisionClassAs(test, fixture, fixture.decision.ID, "spend"); response.Code != http.StatusOK {
+		test.Fatalf("raise status=%d body=%s", response.Code, response.Body.String())
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'cancelled' AND cancel_reason = 'class_needs_owner' AND escalation_class = 'spend'`, fixture.decision.ID) != 1 {
+		test.Fatal("raise on a non-delegate's request did not cancel it with class_needs_owner")
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_class_change WHERE decision_request_id = $1`, fixture.decision.ID) != 1 {
+		test.Fatal("raise left no class change record")
+	}
+}
+
+func TestDecisionDelegateSingleCallPing(test *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		delegate bool
+		want     int
+	}{
+		{"delegate", true, http.StatusCreated},
+		{"non-delegate", false, http.StatusConflict},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newSingleCallFixture(test)
+			projectID := placeDecisionHuman(test, fixture.issueID, fixture.humanID, "member", tc.delegate)
+			response := testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(tc.want)
+			if tc.want == http.StatusConflict {
+				if !strings.Contains(response.Body.String(), "class_needs_owner") {
+					test.Fatalf("refusal does not name class_needs_owner: %s", response.Body.String())
+				}
+				return
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1 AND project_id = $2`, fixture.issueID, projectID) != 1 {
+				test.Fatal("request did not record the issue's project")
+			}
+		})
+	}
+}
+
 func TestDecisionDelegateRaiseClassOwnerUnchanged(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
 	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
@@ -274,6 +322,12 @@ func TestDecisionDelegateLifecycle(test *testing.T) {
 		}, "delegate_removed"},
 		{"issue left the project", func(test *testing.T, issueID, _, _ string) {
 			dbfx.Exec(test, `UPDATE issue SET project_id = NULL WHERE id = $1`, issueID)
+		}, "delegate_removed"},
+		{"issue moved to another project that also delegates", func(test *testing.T, issueID, projectID, humanID string) {
+			dbfx.Exec(test, `UPDATE decision_request SET project_id = $1 WHERE issue_id = $2`, projectID, issueID)
+			other := dbfx.Project(test, "Other delegates")
+			dbfx.Exec(test, `UPDATE project SET decision_delegates = ARRAY[$1::uuid] WHERE id = $2`, humanID, other)
+			dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, other, issueID)
 		}, "delegate_removed"},
 		{"held class", func(test *testing.T, issueID, _, _ string) {
 			dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE issue_id = $1`, issueID)

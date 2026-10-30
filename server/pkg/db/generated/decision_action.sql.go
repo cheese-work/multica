@@ -573,7 +573,7 @@ func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDeci
 }
 
 const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json, project_id FROM decision_request
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -615,6 +615,7 @@ func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisio
 		&i.WithdrawnByUserID,
 		&i.Options,
 		&i.AskJson,
+		&i.ProjectID,
 	)
 	return i, err
 }

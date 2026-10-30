@@ -403,7 +403,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, ProjectID: issue.ProjectID})
 	if err != nil {
 		return empty, err
 	}

@@ -101,7 +101,7 @@ func (handler *Handler) checkDecisionTarget(request *http.Request, queries *db.Q
 	if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
 		return decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + uuidToString(humanID)}
 	}
-	return requireDecisionAuthority(ctx, queries, issue, humanID, "reversible", http.StatusBadRequest)
+	return nil
 }
 
 // supersedeDecisionIntent closes the task's still-pending intent, if any.
@@ -135,6 +135,9 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 			continue
 		}
 		if err := handler.checkDecisionTarget(request, queries, issue, agent, humanID); err != nil {
+			return issue, nil, err
+		}
+		if err := requireDecisionAuthority(request.Context(), queries, issue, humanID, "reversible", http.StatusBadRequest); err != nil {
 			return issue, nil, err
 		}
 		seen[humanID] = true

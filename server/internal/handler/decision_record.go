@@ -308,7 +308,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusForbidden); err != nil {
 			return empty, err
 		}
-		decision, err = queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, IssueCommentID: commentID, EscalationClass: input.EscalationClass, Origin: "unprompted"})
+		decision, err = queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, IssueCommentID: commentID, EscalationClass: input.EscalationClass, Origin: "unprompted", ProjectID: issue.ProjectID})
 		if err != nil {
 			return empty, err
 		}
