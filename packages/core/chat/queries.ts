@@ -57,6 +57,9 @@ export const chatKeys = {
   draftRestoresAll: () => ["chat", "draft-restores"] as const,
   /** Durable deferred-cancellation draft restores for a session (#5219). */
   draftRestores: (sessionId: string) => [...chatKeys.draftRestoresAll(), sessionId] as const,
+  wakeupsAll: () => ["chat", "wakeups"] as const,
+  /** Pending agent-scheduled wakeups for a DM (the "Scheduled" chip). */
+  wakeups: (sessionId: string) => [...chatKeys.wakeupsAll(), sessionId] as const,
   /** Aggregate of in-flight chat tasks for the current user — FAB reads this. */
   pendingTasks: (wsId: string) => [...chatKeys.all(wsId), "pending-tasks"] as const,
   /** Per-user pinned agents for the quick-agent bar. */
@@ -230,6 +233,19 @@ export function chatDraftRestoresOptions(sessionId: string) {
     queryFn: () => api.listChatDraftRestores(sessionId),
     enabled: !!sessionId,
     staleTime: 0,
+  });
+}
+
+/**
+ * Pending agent-scheduled wakeups for a DM. A turn that schedules or cancels
+ * one ends in chat:done and a fire arrives as chat:message; both invalidate
+ * this key, as does a reconnect. A cancel here updates it directly.
+ */
+export function chatWakeupsOptions(sessionId: string) {
+  return queryOptions({
+    queryKey: chatKeys.wakeups(sessionId),
+    queryFn: () => api.listChatSessionWakeups(sessionId),
+    enabled: !!sessionId,
   });
 }
 

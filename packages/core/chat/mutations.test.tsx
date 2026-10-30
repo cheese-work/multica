@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import {
+  useCancelChatWakeup,
   useConsumeChatDraftRestore,
   useSetChatSessionArchived,
   useSetChatSessionProject,
@@ -255,5 +256,43 @@ describe("useConsumeChatDraftRestore", () => {
       restores: { id: string }[];
     };
     expect(cached.restores.map((r) => r.id)).toEqual(["r2"]);
+  });
+});
+
+describe("useCancelChatWakeup", () => {
+  afterEach(() => setApiInstance(undefined as unknown as ApiClient));
+
+  function setup(cancel: ReturnType<typeof vi.fn>) {
+    setApiInstance({ cancelChatSessionWakeup: cancel } as unknown as ApiClient);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    return { qc, wrapper };
+  }
+
+  const wakeup = (id: string) => ({ id, agent_id: "a", fire_at: "2026-10-29T07:00:00Z", instruction: "x", status: "pending" });
+
+  it("removes only the cancelled row once the server confirms", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const { qc, wrapper } = setup(cancel);
+    qc.setQueryData(chatKeys.wakeups("s1"), [wakeup("w1"), wakeup("w2")]);
+    const { result } = renderHook(() => useCancelChatWakeup(), { wrapper });
+
+    await act(() => result.current.mutateAsync({ sessionId: "s1", wakeupId: "w1" }));
+
+    expect(cancel).toHaveBeenCalledWith("s1", "w1");
+    expect(qc.getQueryData<{ id: string }[]>(chatKeys.wakeups("s1"))?.map((w) => w.id)).toEqual(["w2"]);
+  });
+
+  it("keeps the row when the cancel fails", async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error("boom"));
+    const { qc, wrapper } = setup(cancel);
+    qc.setQueryData(chatKeys.wakeups("s1"), [wakeup("w1")]);
+    const { result } = renderHook(() => useCancelChatWakeup(), { wrapper });
+
+    await act(() => result.current.mutateAsync({ sessionId: "s1", wakeupId: "w1" }).catch(() => undefined));
+
+    expect(qc.getQueryData<{ id: string }[]>(chatKeys.wakeups("s1"))?.map((w) => w.id)).toEqual(["w1"]);
   });
 });

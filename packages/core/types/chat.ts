@@ -429,3 +429,13 @@ export interface ChatPendingTask {
    */
   queued_tasks?: ChatQueuedTask[];
 }
+
+/** `GET /api/chat/sessions/{id}/wakeups`: a pending one-shot turn an agent scheduled in this DM. */
+export interface ChatWakeup {
+  id: string;
+  agent_id: string;
+  /** RFC 3339 instant the turn fires. */
+  fire_at: string;
+  instruction: string;
+  status: string;
+}

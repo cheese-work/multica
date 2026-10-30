@@ -1,9 +1,6 @@
 package channel
 
-import (
-	"net/url"
-	"strings"
-)
+import "github.com/multica-ai/multica/server/internal/weblink"
 
 // IssueWebLink builds the Multica web deep link for a channel issue result.
 // Web routes are workspace-scoped — /{workspaceSlug}/issues/{identifier} — so a
@@ -13,9 +10,5 @@ import (
 // that forgets to plumb the slug through loses its link loudly, instead of
 // silently shipping the unroutable legacy /issues/{identifier} form again.
 func IssueWebLink(appURL, workspaceSlug, identifier string) string {
-	if appURL == "" || workspaceSlug == "" || identifier == "" {
-		return ""
-	}
-	return strings.TrimRight(appURL, "/") + "/" + url.PathEscape(workspaceSlug) +
-		"/issues/" + url.PathEscape(identifier)
+	return weblink.Build(appURL, weblink.Issue(workspaceSlug, identifier))
 }
