@@ -119,6 +119,13 @@ type TaskService struct {
 	// finishing before the other's read even runs (see
 	// TestDelegatedFailureRecoveryEventAndTimerRaceDispatchExactlyOnce).
 	testHookAfterDelegatedFailureDedupCheckUncovered func()
+
+	// testHookBeforeRerunEnqueue, when non-nil, runs at the start of every
+	// enqueueRerunTask insert attempt in RerunIssue. Test-only: nil in
+	// production. It lets a test commit a competing row before an attempt so
+	// each unique index the rerun insert can hit is exercised
+	// deterministically (TestRerunIssueRetryLoop*).
+	testHookBeforeRerunEnqueue func()
 }
 
 type SourceContextObjectStore interface {
@@ -7086,6 +7093,9 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 // the conversation, resume its session (MUL-4869). An explicit fresh rerun stamps
 // context.fresh_rerun in the same insert so claim cannot race ahead of that choice.
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, fresh bool) (db.AgentTaskQueue, error) {
+	if s.testHookBeforeRerunEnqueue != nil {
+		s.testHookBeforeRerunEnqueue()
+	}
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
 		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, origin, fresh)
