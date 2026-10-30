@@ -83,16 +83,38 @@ type Proxy struct {
 	LookupTimeout   time.Duration // server lookup bound; default 5s
 }
 
+// object keeps editor and lastEditedAt raw: a missing key (nil) differs from
+// an explicit null, and only the explicit form is edit provenance.
 type object struct {
-	Typename     string  `json:"__typename"`
-	ID           string  `json:"id"`
-	URL          string  `json:"url"`
-	Body         *string `json:"body"`
-	State        string  `json:"state"`
-	LastEditedAt *string `json:"lastEditedAt"`
-	Editor       *struct {
+	Typename     string          `json:"__typename"`
+	ID           string          `json:"id"`
+	URL          string          `json:"url"`
+	Body         *string         `json:"body"`
+	State        string          `json:"state"`
+	LastEditedAt json.RawMessage `json:"lastEditedAt"`
+	Editor       json.RawMessage `json:"editor"`
+}
+
+// provenance reads the edit fields into c. It fails when either key is
+// missing or malformed, so an incomplete reply is never taken as "unedited".
+func (n *object) provenance(c *Check) error {
+	if n.LastEditedAt == nil || n.Editor == nil {
+		return errors.New("edit provenance missing")
+	}
+	var at *string
+	var editor *struct {
 		DatabaseID *int64 `json:"databaseId"`
-	} `json:"editor"`
+	}
+	if json.Unmarshal(n.LastEditedAt, &at) != nil || json.Unmarshal(n.Editor, &editor) != nil {
+		return errors.New("edit provenance malformed")
+	}
+	if at != nil {
+		c.LastEditedAt = *at
+	}
+	if editor != nil {
+		c.EditorPresent, c.EditorDatabaseID = true, editor.DatabaseID
+	}
+	return nil
 }
 
 func (p *Proxy) fetch(ctx context.Context, id string) (*object, error) {
@@ -129,7 +151,8 @@ func (p *Proxy) fetch(ctx context.Context, id string) (*object, error) {
 		} `json:"data"`
 		Errors []json.RawMessage `json:"errors"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(&out); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil || len(raw) > maxResponse || json.Unmarshal(raw, &out) != nil {
 		return nil, errors.New("github response unreadable")
 	}
 	n := out.Data.Node
@@ -147,12 +170,9 @@ func (p *Proxy) read(ctx context.Context, id string) (Result, error) {
 	sum := sha256.Sum256([]byte(*n.Body))
 	res := Result{Kind: n.Typename, ID: n.ID, URL: n.URL, SHA256: hex.EncodeToString(sum[:])}
 	c := Check{IssueID: p.IssueID, TaskID: p.TaskID, Kind: n.Typename, ObjectID: n.ID, State: n.State,
-		BodySHA256: res.SHA256, EditorPresent: n.Editor != nil}
-	if n.LastEditedAt != nil {
-		c.LastEditedAt = *n.LastEditedAt
-	}
-	if n.Editor != nil {
-		c.EditorDatabaseID = n.Editor.DatabaseID
+		BodySHA256: res.SHA256}
+	if err := n.provenance(&c); err != nil {
+		return Result{}, err
 	}
 	lookup := p.LookupTimeout
 	if lookup <= 0 {
@@ -160,8 +180,9 @@ func (p *Proxy) read(ctx context.Context, id string) (Result, error) {
 	}
 	lctx, cancel := context.WithTimeout(ctx, lookup)
 	defer cancel()
-	// Lookup error or timeout is a stub, never full text.
-	if ok, err := p.Admit.Admitted(lctx, c); err == nil && ok {
+	// Lookup error or timeout is a stub, never full text, even when the
+	// admitter reports success after the deadline.
+	if ok, err := p.Admit.Admitted(lctx, c); err == nil && ok && lctx.Err() == nil {
 		res.Full, res.Body = true, *n.Body
 	}
 	return res, nil
@@ -213,5 +234,6 @@ func Read(ctx context.Context, sock, id string) (Result, error) {
 		return Result{}, fmt.Errorf("read proxy: %s", bytes.TrimSpace(b))
 	}
 	var res Result
-	return res, json.Unmarshal(b, &res)
+	err = json.Unmarshal(b, &res)
+	return res, err
 }

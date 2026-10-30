@@ -28,7 +28,10 @@ func ShimMain(args []string, getenv func(string) string, stdout, stderr io.Write
 		return 1
 	}
 	if res.Full {
-		io.WriteString(stdout, res.Body)
+		if _, err := io.WriteString(stdout, res.Body); err != nil {
+			fmt.Fprintln(stderr, "gh:", err)
+			return 1
+		}
 		return 0
 	}
 	fmt.Fprintf(stdout, "[withheld] %s %s\nurl: %s\nsha256: %s\n", res.Kind, res.ID, res.URL, res.SHA256)

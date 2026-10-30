@@ -48,7 +48,7 @@ func newFakeGitHub(t *testing.T, reply string) *fakeGitHub {
 		status, reply := f.status, f.reply
 		f.mu.Unlock()
 		w.WriteHeader(status)
-		io.WriteString(w, reply)
+		_, _ = io.WriteString(w, reply)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -228,6 +228,11 @@ func TestUpstreamProblemsReturnNoBytes(t *testing.T) {
 		"null node":        `{"data":{"node":null}}`,
 		"unsupported type": node("Issue", "hostile body", "null", "null"),
 		"not json":         `hostile <html>`,
+		"editor omitted":   `{"data":{"node":{"__typename":"IssueComment","id":"IC_node1","url":"u","body":"hostile body","lastEditedAt":null}}}`,
+		"edited omitted":   `{"data":{"node":{"__typename":"IssueComment","id":"IC_node1","url":"u","body":"hostile body","editor":null}}}`,
+		"trailing garbage": node("IssueComment", "hostile body", "null", "null") + ` hostile`,
+		"second value":     node("IssueComment", "hostile body", "null", "null") + node("IssueComment", "hostile body", "null", "null"),
+		"oversize":         node("IssueComment", "hostile body", "null", "null") + strings.Repeat(" ", maxResponse),
 	}
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -250,6 +255,22 @@ func TestUpstreamProblemsReturnNoBytes(t *testing.T) {
 		t.Fatal("want error on HTTP 500")
 	}
 }
+
+// An admitter that returns success only after the lookup deadline must not
+// release full text.
+func TestLateAdmissionSuccessReturnsStub(t *testing.T) {
+	body := "late hostile text"
+	gh := newFakeGitHub(t, node("IssueComment", body, "null", "null"))
+	late := admitFunc(func(ctx context.Context, _ Check) (bool, error) {
+		<-ctx.Done()
+		return true, nil
+	})
+	assertStub(t, serve(t, gh, late), body)
+}
+
+type admitFunc func(context.Context, Check) (bool, error)
+
+func (f admitFunc) Admitted(ctx context.Context, c Check) (bool, error) { return f(ctx, c) }
 
 func TestBadObjectIDIsRefusedBeforeGitHub(t *testing.T) {
 	gh := newFakeGitHub(t, node("IssueComment", "x", "null", "null"))
