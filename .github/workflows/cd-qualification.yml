@@ -106,6 +106,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - name: Download optional fork entries
         id: fork-entries
         uses: actions/download-artifact@v8
@@ -141,9 +158,8 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@v4
         with:
-          name: multica-cd-${{ matrix.image }}-v1
           driver: docker-container
-          cleanup: false
+          cleanup: true
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 2
@@ -159,6 +175,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Expose GitHub cache runtime to Buildx
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
+            for (const name of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL']) {
+              if (!process.env[name]) throw new Error(`Missing ${name}`);
+              core.exportVariable(name, process.env[name]);
+            }
+
       - name: Build and publish immutable amd64 backend
         if: matrix.image == 'backend'
         shell: bash
@@ -173,6 +199,8 @@ jobs:
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
+            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
+            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -200,6 +228,8 @@ jobs:
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
+            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
+            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -242,13 +272,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Stop the persistent builder with a bounded shutdown budget
-        if: ${{ always() && steps.buildx.outputs.name != '' }}
-        timeout-minutes: 4
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
-
   cd-qualification:
     needs: build-images
     runs-on: [self-hosted, linux, x64, cheese-x99]
@@ -268,6 +291,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
 
       - name: Download both immutable image results
         uses: actions/download-artifact@v8

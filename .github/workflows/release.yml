@@ -42,6 +42,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - name: Validate tag name
         id: release_meta
         shell: bash
@@ -194,6 +211,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - name: Compute backend image labels
         id: meta
         uses: docker/metadata-action@v6
@@ -340,6 +374,23 @@ jobs:
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
 
       - name: Compute web image labels
         id: meta
