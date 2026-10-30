@@ -56,7 +56,7 @@ import { useStandaloneMedia } from "../media/media-context";
 import { orientChart, pickOrientation, type Orientation } from "./utils/mermaid-orientation";
 import {
   MERMAID_SEQUENCE_CONFIG,
-  MERMAID_THEME_CSS,
+  buildMermaidThemeCss,
   buildMermaidThemeVariables,
   shouldStackVertically,
   type MermaidThemeColors,
@@ -89,15 +89,16 @@ function themedChart(chart: string, host: HTMLElement | null): string {
   const parsed = frontmatter ? parse(frontmatter[1] ?? "") : null;
   const metadata = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   const config: MermaidConfig = metadata.config ?? {};
+  const colors = getMermaidThemeColors(host);
   return `---\n${stringify({
     ...metadata,
     config: {
       theme: "base",
       look: "neo",
-      themeCSS: MERMAID_THEME_CSS,
+      themeCSS: buildMermaidThemeCss(colors),
       ...config,
       sequence: { ...MERMAID_SEQUENCE_CONFIG, ...config.sequence },
-      themeVariables: { ...getMermaidThemeVariables(host), ...config.themeVariables },
+      themeVariables: { ...buildMermaidThemeVariables(colors, isDarkHost(host)), ...config.themeVariables },
     },
   })}---\n${frontmatter ? source.slice(frontmatter[0].length) : source}`;
 }
@@ -157,29 +158,38 @@ const FALLBACK_THEME_COLORS: MermaidThemeColors = {
   primary: "rgb(59, 130, 246)",
   foreground: "rgb(17, 24, 39)",
   mutedForeground: "rgb(107, 114, 128)",
+  success: "rgb(22, 163, 74)",
+  warning: "rgb(217, 119, 6)",
 };
 
 function isDarkScheme(declared: string): boolean {
   return /\bdark\b/.test(declared) && !/\blight\b/.test(declared);
 }
 
-export function getMermaidThemeVariables(host: HTMLElement | null) {
-  if (!host) return buildMermaidThemeVariables(FALLBACK_THEME_COLORS, false);
+function getMermaidThemeColors(host: HTMLElement | null): MermaidThemeColors {
+  if (!host) return FALLBACK_THEME_COLORS;
 
   const fallback = FALLBACK_THEME_COLORS;
   const muted = resolveCssColor(host, "--muted", fallback.muted);
-  return buildMermaidThemeVariables(
-    {
-      background: resolveCssColor(host, "--background", fallback.background),
-      card: resolveCssColor(host, "--card", fallback.card),
-      muted,
-      border: resolveCssColor(host, "--border", fallback.border, muted),
-      primary: resolveCssColor(host, "--primary", fallback.primary),
-      foreground: resolveCssColor(host, "--foreground", fallback.foreground),
-      mutedForeground: resolveCssColor(host, "--muted-foreground", fallback.mutedForeground),
-    },
-    isDarkScheme(getComputedStyle(host).colorScheme),
-  );
+  return {
+    background: resolveCssColor(host, "--background", fallback.background),
+    card: resolveCssColor(host, "--card", fallback.card),
+    muted,
+    border: resolveCssColor(host, "--border", fallback.border, muted),
+    primary: resolveCssColor(host, "--primary", fallback.primary),
+    foreground: resolveCssColor(host, "--foreground", fallback.foreground),
+    mutedForeground: resolveCssColor(host, "--muted-foreground", fallback.mutedForeground),
+    success: resolveCssColor(host, "--success", fallback.success),
+    warning: resolveCssColor(host, "--warning", fallback.warning),
+  };
+}
+
+function isDarkHost(host: HTMLElement | null): boolean {
+  return host ? isDarkScheme(getComputedStyle(host).colorScheme) : false;
+}
+
+export function getMermaidThemeVariables(host: HTMLElement | null) {
+  return buildMermaidThemeVariables(getMermaidThemeColors(host), isDarkHost(host));
 }
 
 function getSandboxCssVariables(host: HTMLElement | null): string {
@@ -189,8 +199,6 @@ function getSandboxCssVariables(host: HTMLElement | null): string {
     "--primary",
     "--foreground",
     "--muted-foreground",
-    "--success",
-    "--warning",
   ]
     .map((name) => `${name}: ${styles?.getPropertyValue(name).trim() || "initial"};`)
     .join(" ");
@@ -486,7 +494,7 @@ export function MermaidDiagram({
   // minimum in this column. Keyed by chart so a different diagram starts clean.
   // ponytail: stays stacked if the column later widens; reset by remount.
   const [stackedFor, setStackedFor] = useState<string | null>(null);
-  const drawn = stackedFor === chart ? "vertical" : orientation;
+  const drawn = auto && stackedFor === chart ? "vertical" : orientation;
   // The viewer's own direction, from its canvas width, and the diagram drawn in it.
   const [viewerOrientation, setViewerOrientation] = useState<Orientation | null>(null);
   const [viewerVariant, setViewerVariant] = useState<RenderedDiagram | null>(null);

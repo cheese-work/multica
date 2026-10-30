@@ -198,6 +198,8 @@ describe("MermaidDiagram lifecycle", () => {
     const config = lastConfig();
     expect(config.look).toBe("neo");
     expect(config.themeCSS).toContain("drop-shadow");
+    // Exports carry no host page, so the CSS must hold resolved colors.
+    expect(config.themeCSS).not.toContain("var(");
     // Wide default spacing shrinks sequence labels once fitted to a column.
     expect(config.sequence).toMatchObject({ width: 110, actorMargin: 24, wrap: true });
     expect(config.themeVariables).toMatchObject({
@@ -821,6 +823,18 @@ describe("MermaidDiagram auto top-down", () => {
     render(<MermaidDiagram chart={CHART} />);
     await findFrame();
     expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the author's direction when the setting changes to author after a stack", async () => {
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    const { rerender } = render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph TD");
+    orientationSetting.value = "author";
+    rerender(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(3));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph LR");
   });
 
   it("keeps the author's direction when orientation is set to author", async () => {

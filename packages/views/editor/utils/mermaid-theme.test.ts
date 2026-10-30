@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MERMAID_FONT_PX,
   MERMAID_MIN_TEXT_PX,
-  MERMAID_THEME_CSS,
+  buildMermaidThemeCss,
   buildMermaidThemeVariables,
   shouldStackVertically,
 } from "./mermaid-theme";
@@ -67,19 +67,29 @@ describe("buildMermaidThemeVariables", () => {
   });
 });
 
-describe("MERMAID_THEME_CSS", () => {
+describe("buildMermaidThemeCss", () => {
+  const css = buildMermaidThemeCss(COLORS);
+
   it("rounds nodes, softens them with a shadow and thickens edges", () => {
-    expect(MERMAID_THEME_CSS).toMatch(/\.node rect[^}]*rx:\s*10px/);
-    expect(MERMAID_THEME_CSS).toContain("drop-shadow");
-    expect(MERMAID_THEME_CSS).toContain("stroke-width: 1.6px");
+    expect(css).toMatch(/\.node rect[^}]*rx:\s*10px/);
+    expect(css).toContain("drop-shadow");
+    expect(css).toContain("stroke-width: 1.6px");
   });
 
   it("outranks the inline weight Mermaid writes on sequence text", () => {
-    expect(MERMAID_THEME_CSS).toMatch(/\.messageText[^}]*font-weight:\s*500\s*!important/);
+    expect(css).toMatch(/\.messageText[^}]*font-weight:\s*500\s*!important/);
   });
 
   it("styles the done and warn classes authors can assign", () => {
-    expect(MERMAID_THEME_CSS).toContain(".done");
-    expect(MERMAID_THEME_CSS).toContain(".warn");
+    expect(css).toContain(".done");
+    expect(css).toContain(".warn");
+  });
+
+  // An exported SVG/PNG has no host page, so a var() would resolve to nothing.
+  it("paints done and warn with concrete colors, never var()", () => {
+    expect(css).not.toContain("var(");
+    expect(css).toMatch(/\.node\.done[^}]*stroke:\s*rgb\(8, 8, 8\)/);
+    expect(css).toMatch(/\.node\.warn[^}]*stroke:\s*rgb\(9, 9, 9\)/);
+    expect(css).toMatch(/\.node\.done[^}]*fill:\s*rgba\(8, 8, 8, 0\.18\)/);
   });
 });

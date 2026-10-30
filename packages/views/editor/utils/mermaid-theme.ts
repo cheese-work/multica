@@ -18,6 +18,8 @@ export interface MermaidThemeColors {
   primary: string;
   foreground: string;
   mutedForeground: string;
+  success: string;
+  warning: string;
 }
 
 /**
@@ -78,22 +80,27 @@ export function buildMermaidThemeVariables(c: MermaidThemeColors, dark: boolean)
 }
 
 /**
- * Drawn inside the diagram's sandboxed document, where the host's tokens are
- * re-declared (getSandboxCssVariables), so `var(--success)` resolves. An
- * author's own `classDef` outranks these; their `themeCSS` replaces them.
- */
-/**
  * Tighter than Mermaid's defaults: a 4-actor sequence is 916px wide by default
  * and shrinks to ~9px text in a column; this keeps it near 614px.
  */
 export const MERMAID_SEQUENCE_CONFIG = { width: 110, actorMargin: 24, boxMargin: 8, messageMargin: 28, wrap: true };
 
-export const MERMAID_THEME_CSS = `
+/** `rgb(r, g, b)` with an alpha, for a translucent fill. */
+function withAlpha(rgb: string, alpha: number): string {
+  return rgb.replace(/^rgb\(([^)]*)\)$/, `rgba($1, ${alpha})`);
+}
+
+/**
+ * Concrete colors, never `var()`: an exported SVG or PNG has no host page, so a
+ * variable would resolve to nothing and the status colors would vanish. An
+ * author's own `classDef` outranks these; their `themeCSS` replaces them.
+ */
+export const buildMermaidThemeCss = (c: Pick<MermaidThemeColors, "success" | "warning">) => `
 .node rect, .cluster rect, .actor, .labelBox, .note { rx: 10px; ry: 10px; }
 .node rect, .node polygon, .node circle, .node path, .actor, .note { filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.18)); }
 .flowchart-link, .edgePath .path, .messageLine0, .messageLine1, .transition, .relation { stroke-width: 1.6px; }
 .nodeLabel, .edgeLabel, .label, .actor text, .noteText { font-weight: 500; }
 .messageText { font-size: 15px !important; font-weight: 500 !important; }
-.node.done rect, .node.done polygon, .node.done circle, .node.done path { fill: color-mix(in srgb, var(--success) 18%, transparent); stroke: var(--success); }
-.node.warn rect, .node.warn polygon, .node.warn circle, .node.warn path { fill: color-mix(in srgb, var(--warning) 18%, transparent); stroke: var(--warning); }
+.node.done rect, .node.done polygon, .node.done circle, .node.done path { fill: ${withAlpha(c.success, 0.18)}; stroke: ${c.success}; }
+.node.warn rect, .node.warn polygon, .node.warn circle, .node.warn path { fill: ${withAlpha(c.warning, 0.18)}; stroke: ${c.warning}; }
 `.trim();
