@@ -1207,7 +1207,7 @@ func localCloneArgs(goos, barePath, checkoutPath string) []string {
 }
 
 // sharedCloneArgs seeds a checkout that borrows the cache's objects through
-// objects/info/alternates instead of copying or hardlinking them.
+// objects/info/alternates instead of copying or hard-linking them.
 func sharedCloneArgs(barePath, checkoutPath string) []string {
 	return []string{"clone", "--shared", "--no-checkout", "--no-tags", "--origin", isolatedCacheRemoteName, barePath, checkoutPath}
 }
