@@ -2,9 +2,15 @@
 -- Include existing episodes so a resolved wait is cleared even after assignment
 -- or status changes. Property identifiers are resolved from each workspace.
 SELECT i.* FROM issue i
-JOIN workspace w ON w.id = i.workspace_id
-WHERE i.status = 'need_decision' OR i.metadata ? 'decision_wait_started_at'
-   OR EXISTS (
+WHERE i.metadata ?| ARRAY['decision_wait_started_at', 'decision_wait_alert_id',
+                          'decision_wait_missing_request', 'decision_wait_route_error']
+   OR (i.status NOT IN ('in_review', 'done', 'cancelled')
+       AND NOT EXISTS (
+         SELECT 1 FROM issue_status s
+         WHERE s.workspace_id = i.workspace_id AND s.key = i.status
+           AND s.category IN ('done', 'closed')
+       )
+       AND (i.status = 'need_decision' OR EXISTS (
     SELECT 1 FROM issue_property p
     WHERE p.workspace_id = i.workspace_id AND lower(p.name) = 'readiness'
       AND p.archived_at IS NULL
@@ -12,7 +18,7 @@ WHERE i.status = 'need_decision' OR i.metadata ? 'decision_wait_started_at'
         SELECT 1 FROM jsonb_array_elements(p.config->'options') option
         WHERE option->>'name' = 'gated-human' AND i.properties ->> p.id::text = option->>'id'
       ))
-);
+)));
 
 -- name: GetDecisionWaitGuardSquad :one
 -- A current squad assignment wins. Member assignment preserves the latest

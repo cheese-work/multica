@@ -7,6 +7,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func decisionWaitFixture(test *testing.T) (intentFixture, string, string) {
@@ -27,8 +28,105 @@ func setWaitAge(test *testing.T, issue string, seconds int) {
 		to_char(clock_timestamp() AT TIME ZONE 'UTC' - make_interval(secs => $1), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) WHERE id = $2`, seconds, issue)
 }
 
+func TestDecisionWaitGuardAdmitsLeaderTask(test *testing.T) {
+	fixture, squad, leader := decisionWaitFixture(test)
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+		WHERE i.id = $1 AND t.agent_id = $2 AND t.squad_id = $3 AND t.is_leader_task
+		AND t.status = 'queued' AND t.runtime_id IS NOT NULL AND t.accountable_user_id IS NOT NULL
+		AND t.handoff_note LIKE 'Decision wait guard:%' AND i.metadata->>'decision_wait_alert_id' = t.id::text`, fixture.issueID, leader, squad); got != 1 {
+		test.Fatalf("admitted leader tasks with atomic receipt = %d, want 1", got)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, fixture.issueID); got != 0 {
+		test.Fatal("unread agent inbox alert remains")
+	}
+}
+
+func TestDecisionWaitGuardAdmissionFailureRetries(test *testing.T) {
+	fixture, _, leader := decisionWaitFixture(test)
+	dbfx.Exec(test, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, leader)
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1
+		AND metadata ? 'decision_wait_route_error' AND metadata->>'decision_wait_missing_request' = 'true'
+		AND NOT metadata ? 'decision_wait_alert_id'`, fixture.issueID) != 1 {
+		test.Fatal("refused admission must retain a retryable route error without delivery receipt")
+	}
+	dbfx.Exec(test, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, handlerTestRuntimeID(test), leader)
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, fixture.issueID, leader) != 1 {
+		test.Fatal("repaired runtime did not admit the leader task")
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error'`, fixture.issueID) != 0 {
+		test.Fatal("successful retry retained route error")
+	}
+}
+
+func TestDecisionWaitGuardScanSkipsInactiveWaits(test *testing.T) {
+	for _, status := range []string{"in_review", "done", "cancelled", "custom_done"} {
+		test.Run(status, func(test *testing.T) {
+			fixture, _, _ := decisionWaitFixture(test)
+			if status == "custom_done" {
+				dbfx.Insert(test, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": status, "name": "Custom Done", "category": "done", "color": "#112233"})
+			}
+			property := dbfx.Insert(test, "issue_property", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Readiness", "type": "select", "config": `{"options":[{"id":"gate","name":"gated-human"}]}`})
+			dbfx.Exec(test, `UPDATE issue SET status = $1, properties = jsonb_build_object($2::text, 'gate') WHERE id = $3`, status, property, fixture.issueID)
+			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			issues, err := testHandler.Queries.ListDecisionWaitGuardIssues(context.Background())
+			if err != nil {
+				test.Fatal(err)
+			}
+			for _, issue := range issues {
+				if uuidToString(issue.ID) == fixture.issueID {
+					test.Fatal("inactive wait still scanned after episode cleanup")
+				}
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_started_at'`, fixture.issueID) != 0 {
+				test.Fatal("inactive episode not cleared")
+			}
+		})
+	}
+}
+
+func TestDecisionWaitGuardHonorsAdmissionGates(test *testing.T) {
+	for _, gate := range []string{"project_paused", "run_budget", "triage", "pending_task"} {
+		test.Run(gate, func(test *testing.T) {
+			fixture, squad, leader := decisionWaitFixture(test)
+			switch gate {
+			case "project_paused":
+				project := dbfx.Project(test, "guard paused project", testutil.Cols{"status": "paused"})
+				dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, project, fixture.issueID)
+			case "run_budget":
+				workflow := dbfx.Insert(test, "issue_workflow", testutil.Cols{"workspace_id": testWorkspaceID, "name": "guard budget", "initial_status_key": "need_decision", "steps": `[{"status_key":"need_decision"}]`, "max_runs_per_issue": 1, "run_budget_since": testutil.Raw("clock_timestamp() - interval '1 hour'")})
+				dbfx.Exec(test, `UPDATE issue SET workflow_id = $1 WHERE id = $2`, workflow, fixture.issueID)
+			case "triage":
+				dbfx.Exec(test, `UPDATE issue SET triage_state = 'pending' WHERE id = $1`, fixture.issueID)
+			case "pending_task":
+				dbfx.Task(test, leader, testutil.Cols{"issue_id": fixture.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(test), "squad_id": squad, "is_leader_task": true})
+			}
+			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error'
+				AND NOT metadata ? 'decision_wait_alert_id'`, fixture.issueID) != 1 {
+				test.Fatal("admission gate bypassed or failure lost")
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID) != 0 {
+				test.Fatal("refused alert admitted a task")
+			}
+		})
+	}
+}
+
 func TestDecisionWaitGuardBoundaries(test *testing.T) {
-	for _, scenario := range []string{"fresh", "before_threshold", "after_threshold", "resolved", "terminal", "disabled", "custom_threshold", "readiness_option", "archived_property"} {
+	for _, scenario := range []string{"fresh", "before_threshold", "after_threshold", "resolved", "terminal", "disabled", "custom_threshold", "readiness_option", "archived_property", "merge_wait"} {
 		test.Run(scenario, func(test *testing.T) {
 			fixture, _, _ := decisionWaitFixture(test)
 			want := 0
@@ -55,10 +153,14 @@ func TestDecisionWaitGuardBoundaries(test *testing.T) {
 				test.Cleanup(func() {
 					dbfx.Exec(test, `UPDATE workspace SET settings = settings - 'decision_wait_guard' WHERE id = $1`, testWorkspaceID)
 				})
-			case "readiness_option", "archived_property":
+			case "readiness_option", "archived_property", "merge_wait":
 				property := dbfx.Insert(test, "issue_property", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Readiness", "type": "select", "config": `{"options":[{"id":"gate","name":"gated-human"}]}`})
 				dbfx.Exec(test, `UPDATE issue SET status = 'in_progress', properties = jsonb_build_object($1::text, 'gate') WHERE id = $2`, property, fixture.issueID)
 				want = 1
+				if scenario == "merge_wait" {
+					dbfx.Exec(test, `UPDATE issue SET status = 'in_review' WHERE id = $1`, fixture.issueID)
+					want = 0
+				}
 				if scenario == "archived_property" {
 					dbfx.Exec(test, `UPDATE issue_property SET archived_at = clock_timestamp() WHERE id = $1`, property)
 					want = 0
@@ -67,7 +169,7 @@ func TestDecisionWaitGuardBoundaries(test *testing.T) {
 			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
 				test.Fatal(err)
 			}
-			if got := dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, fixture.issueID); got != want {
+			if got := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID); got != want {
 				test.Fatalf("alerts = %d, want %d", got, want)
 			}
 			if scenario == "resolved" || scenario == "terminal" || scenario == "disabled" || scenario == "archived_property" {
@@ -114,7 +216,7 @@ func TestDecisionWaitGuardOwnership(test *testing.T) {
 			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
 				test.Fatal(err)
 			}
-			if got := dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, fixture.issueID, leader); got != want {
+			if got := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID, leader); got != want {
 				test.Fatalf("alerts = %d, want %d", got, want)
 			}
 			if want == 0 && dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error' AND metadata->>'decision_wait_missing_request' = 'true'`, fixture.issueID) != 1 {
@@ -147,18 +249,22 @@ func TestDecisionWaitGuardRollback(test *testing.T) {
 	handler, _ := newDecisionRunnerFixture(test)
 	handler.TxStarter = decisionFailCommit{testPool}
 	var published atomic.Int32
-	handler.Bus.SubscribeAll(func(events.Event) { published.Add(1) })
+	handler.Bus.SubscribeAll(func(event events.Event) {
+		if event.Type == protocol.EventTaskQueued {
+			published.Add(1)
+		}
+	})
 	if err := handler.checkDecisionWaits(context.Background()); err == nil {
 		test.Fatal("expected commit failure")
 	}
-	if published.Load() != 0 || dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, fixture.issueID) != 0 || dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_alert_id'`, fixture.issueID) != 0 {
+	if published.Load() != 0 || dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID) != 0 || dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_alert_id'`, fixture.issueID) != 0 {
 		test.Fatal("rollback leaked alert, receipt or event")
 	}
 	handler.TxStarter = testPool
 	if err := handler.checkDecisionWaits(context.Background()); err != nil {
 		test.Fatal(err)
 	}
-	if published.Load() != 1 || dbfx.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1`, fixture.issueID) != 1 {
+	if published.Load() != 1 || dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID) != 1 {
 		test.Fatal("retry did not commit one alert")
 	}
 }
@@ -174,7 +280,7 @@ func TestDecisionWorkerAlertsMissingRequestOnce(test *testing.T) {
 	test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM inbox_item WHERE issue_id = $1`, fixture.issueID) })
 	_, runner := newDecisionRunnerFixture(test)
 	decisionPass(test, runner)
-	count := `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_type = 'agent' AND recipient_id = $2 AND details->>'kind' = 'missing_decision_request'`
+	count := `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND is_leader_task AND handoff_note LIKE 'Decision wait guard:%'`
 	if got := dbfx.Count(test, count, fixture.issueID, leaderID); got != 1 {
 		test.Fatalf("missing-request alerts = %d, want 1", got)
 	}
@@ -186,6 +292,7 @@ func TestDecisionWorkerAlertsMissingRequestOnce(test *testing.T) {
 	if got := dbfx.Count(test, count, fixture.issueID, leaderID); got != 1 {
 		test.Fatalf("duplicate alerts after restart = %d, want 1", got)
 	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, leaderID)
 	dbfx.Exec(test, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, fixture.issueID)
 	decisionPass(test, restarted)
 	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', metadata = jsonb_build_object('decision_wait_started_at', to_char(clock_timestamp() AT TIME ZONE 'UTC' - interval '11 minutes', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) WHERE id = $1`, fixture.issueID)

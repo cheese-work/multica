@@ -5,16 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 var decisionWaitKeys = []string{"decision_wait_started_at", "decision_wait_alert_id", "decision_wait_missing_request", "decision_wait_route_error"}
@@ -155,22 +152,30 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err != nil {
 		return err
 	}
-	details, err := json.Marshal(map[string]any{"kind": "missing_decision_request", "started_at": started, "squad_id": uuidToString(squad.ID)})
+	// A savepoint preserves the overdue marker even when queue admission fails
+	// (including a concurrent pending-task constraint). No receipt is consumed
+	// until an actual leader task has been admitted.
+	admission, err := transaction.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	item, inserted, err := inbox.CreateIfEligible(ctx, queries, db.CreateInboxItemParams{
-		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-		RecipientType: "agent", RecipientID: leader.ID, Type: "mentioned", Severity: "info",
-		Title: "Decision wait has no request", Body: pgtype.Text{String: fmt.Sprintf("%s has waited more than %g minutes without an open decision request. Relay the source ask and verify its delivery.", issue.Title, threshold.Minutes()), Valid: true}, Details: details,
-	})
+	defer admission.Rollback(ctx)
+	note := fmt.Sprintf("Decision wait guard: issue %s has waited more than %g minutes without an open decision request (observed since %s). Find the source ask, open its decision request and verify delivery. This alert grants no new decision, merge or deploy authority.", uuidToString(issue.ID), threshold.Minutes(), started)
+	task, err := handler.TaskService.EnqueueDecisionWaitLeaderTaskInTx(ctx, queries.WithTx(admission), issue, leader.ID, squad.ID, note)
 	if err != nil {
+		if rollbackErr := admission.Rollback(ctx); rollbackErr != nil {
+			return errors.Join(err, rollbackErr)
+		}
+		slog.Warn("decision wait leader task admission failed", "issue_id", uuidToString(issue.ID), "error", err)
+		if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad leader task could not be admitted"); err != nil {
+			return err
+		}
+		return transaction.Commit(ctx)
+	}
+	if err := admission.Commit(ctx); err != nil {
 		return err
 	}
-	if !inserted {
-		return errors.New("decision wait leader alert was not inserted")
-	}
-	if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_alert_id", uuidToString(item.ID)); err != nil {
+	if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_alert_id", uuidToString(task.ID)); err != nil {
 		return err
 	}
 	if _, err := queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "decision_wait_route_error"}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -179,7 +184,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err := transaction.Commit(ctx); err != nil {
 		return err
 	}
-	handler.publish(protocol.EventInboxNew, uuidToString(issue.WorkspaceID), "system", "", map[string]any{"item": inboxToResponse(item)})
+	handler.TaskService.PublishTaskEnqueued(ctx, task)
 	return nil
 }
 
@@ -196,6 +201,9 @@ func setDecisionWaitMetadata(ctx context.Context, queries *db.Queries, issue db.
 }
 
 func decisionWaitEligible(ctx context.Context, queries *db.Queries, issue db.Issue) (bool, error) {
+	if issue.Status == issuestatus.InReview {
+		return false, nil
+	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil || category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return false, err
