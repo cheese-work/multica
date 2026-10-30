@@ -173,7 +173,8 @@ ORDER BY 5 DESC;
 -- The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
 -- means the task is not an intake run; a receipt whose PR is gone still is one,
 -- with an empty pin.
-SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
+       COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
 FROM github_webhook_dispatch receipt
 LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
 LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id

@@ -130,7 +130,8 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 }
 
 const getGitHubIntakePinForTask = `-- name: GetGitHubIntakePinForTask :one
-SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
+       COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
 FROM github_webhook_dispatch receipt
 LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
 LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
@@ -146,6 +147,9 @@ type GetGitHubIntakePinForTaskParams struct {
 type GetGitHubIntakePinForTaskRow struct {
 	Branch       string `json:"branch"`
 	HeadRepoSame bool   `json:"head_repo_same"`
+	RepoOwner    string `json:"repo_owner"`
+	RepoName     string `json:"repo_name"`
+	HtmlUrl      string `json:"html_url"`
 }
 
 // The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
@@ -154,7 +158,13 @@ type GetGitHubIntakePinForTaskRow struct {
 func (q *Queries) GetGitHubIntakePinForTask(ctx context.Context, arg GetGitHubIntakePinForTaskParams) (GetGitHubIntakePinForTaskRow, error) {
 	row := q.db.QueryRow(ctx, getGitHubIntakePinForTask, arg.WorkspaceID, arg.TaskID)
 	var i GetGitHubIntakePinForTaskRow
-	err := row.Scan(&i.Branch, &i.HeadRepoSame)
+	err := row.Scan(
+		&i.Branch,
+		&i.HeadRepoSame,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.HtmlUrl,
+	)
 	return i, err
 }
 

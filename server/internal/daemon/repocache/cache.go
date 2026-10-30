@@ -741,7 +741,7 @@ type WorktreeParams struct {
 	RepoURL             string // remote URL to look up in the cache
 	WorkDir             string // parent directory for the worktree (e.g. task workdir)
 	Ref                 string // optional branch, tag, or commit to base the worktree on
-	Branch              string // when set, the task branch name instead of the generated one
+	Branch              string // pinned checkout: exactly this branch, based on its own origin head (see pinned.go)
 	AgentName           string // for branch naming
 	TaskID              string // for branch naming uniqueness
 	IssueIdentifier     string // issue key (e.g. CHE-1988) carried in the branch name so the PR links; empty for non-issue tasks
@@ -816,6 +816,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		return nil, fmt.Errorf("repo not found in cache: %s (workspace: %s)", params.RepoURL, params.WorkspaceID)
 	}
 
+	// A pinned checkout never discards local work, whatever the caller asks.
+	exact := params.Branch != ""
+	if exact {
+		params.Fresh = false
+	}
+
 	// Serialize concurrent CreateWorktree calls on the same bare repo. Git's
 	// own lockfiles (packed-refs.lock, config.lock, worktree admin dirs)
 	// can't tolerate parallel fetch + worktree mutations on the same repo.
@@ -872,7 +878,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// Callers may request a specific branch, tag, or commit so review/QA agents
 	// can inspect the exact revision without trying to mutate the daemon-owned
 	// worktree metadata themselves.
-	baseRef, err := resolveBaseRefContext(ctx, barePath, params.Ref)
+	var baseRef string
+	if params.Branch != "" {
+		baseRef, err = resolvePinnedBaseRefContext(ctx, barePath, params.Branch)
+	} else {
+		baseRef, err = resolveBaseRefContext(ctx, barePath, params.Ref)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -914,6 +925,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			params.Fresh,
 			params.SharedObjects,
 			params.TaskID,
+			exact,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("create isolated checkout: %w", err)
@@ -937,7 +949,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// If worktree already exists (reused environment from a prior task),
 	// reuse it instead of creating a new one.
 	if isGitWorktree(worktreePath) {
-		result, err := updateExistingCheckoutContext(ctx, worktreePath, branchName, baseRef, params.Fresh)
+		result, err := updateExistingCheckoutContext(ctx, worktreePath, branchName, baseRef, params.Fresh, exact)
 		if err != nil {
 			return nil, fmt.Errorf("update existing worktree: %w", err)
 		}
@@ -966,7 +978,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 
 	// Create a new worktree. createWorktree may rename the branch to avoid
 	// collisions with stale per-task refs left over from previous runs.
-	actualBranch, err := createWorktreeContext(ctx, barePath, worktreePath, branchName, baseRef)
+	var actualBranch string
+	if exact {
+		actualBranch, err = createPinnedWorktreeContext(ctx, barePath, worktreePath, branchName, baseRef)
+	} else {
+		actualBranch, err = createWorktreeContext(ctx, barePath, worktreePath, branchName, baseRef)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
@@ -1038,12 +1055,13 @@ const (
 // an agent's normal fetch / push commands still target GitHub rather than the
 // daemon-owned bare cache.
 func (c *Cache) createOrUpdateIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef string, fresh bool) (*WorktreeResult, error) {
-	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, fresh, false, "")
+	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, fresh, false, "", false)
 }
 
 // createOrUpdateIsolatedCheckoutContext: sharedRequested asks for a
-// shared-objects checkout; taskID names the keep-refs it pins.
-func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string, fresh, sharedRequested bool, taskID string) (*WorktreeResult, error) {
+// shared-objects checkout; taskID names the keep-refs it pins; exact asks for
+// branchName itself, never a renamed or reused-by-prefix branch.
+func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string, fresh, sharedRequested bool, taskID string, exact bool) (*WorktreeResult, error) {
 	baseCommit, err := resolveCommitContext(ctx, barePath, baseRef)
 	if err != nil {
 		return nil, err
@@ -1079,7 +1097,7 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		if err := syncIsolatedCheckoutRefsContext(ctx, barePath, checkoutPath, baseRef); err != nil {
 			return nil, err
 		}
-		result, err := updateExistingCheckoutContext(ctx, checkoutPath, branchName, baseCommit, fresh)
+		result, err := updateExistingCheckoutContext(ctx, checkoutPath, branchName, baseCommit, fresh, exact)
 		if err != nil || result.Kept != "" {
 			return result, err
 		}
@@ -1105,7 +1123,15 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		if err != nil {
 			return nil, err
 		}
-		if !fresh {
+		if exact {
+			reuse, err := pinnedCheckoutState(state, branchName)
+			if err != nil {
+				return nil, err
+			}
+			if reuse {
+				return state, nil
+			}
+		} else if !fresh {
 			if state.Kept = keepReason(state, branchName); state.Kept != "" {
 				return state, nil
 			}
@@ -1139,7 +1165,7 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 			return nil, err
 		}
 	}
-	actualBranch, err := createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, sharedRequested)
+	actualBranch, err := createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, sharedRequested, exact)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,10 +1246,10 @@ func sharedCloneArgs(barePath, checkoutPath string) []string {
 // non-empty carryBranch names a cache branch to import as a local branch of
 // the same name — the branch of the linked worktree this checkout replaces.
 func createIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string) (_ string, retErr error) {
-	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, false)
+	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, false, false)
 }
 
-func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string, shared bool) (_ string, retErr error) {
+func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string, shared, exact bool) (_ string, retErr error) {
 	cloneArgs := localCloneArgs(runtime.GOOS, barePath, checkoutPath)
 	if shared {
 		cloneArgs = sharedCloneArgs(barePath, checkoutPath)
@@ -1291,7 +1317,13 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 		return "", fmt.Errorf("mark isolated checkout: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	actualBranch, err := checkoutNewBranchContext(ctx, checkoutPath, branchName, baseCommit)
+	var actualBranch string
+	var err error
+	if exact {
+		actualBranch, err = checkoutExactBranchContext(ctx, checkoutPath, branchName, baseCommit)
+	} else {
+		actualBranch, err = checkoutNewBranchContext(ctx, checkoutPath, branchName, baseCommit)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1590,7 +1622,10 @@ func isGitWorktree(path string) bool {
 // is. Only one with nothing to lose — or any, when fresh is set — is moved to a
 // new branch from baseRef. The caller fetches beforehand, so a kept checkout
 // still has current remote refs.
-func updateExistingCheckoutContext(ctx context.Context, path, branchName, baseRef string, fresh bool) (*WorktreeResult, error) {
+func updateExistingCheckoutContext(ctx context.Context, path, branchName, baseRef string, fresh, exact bool) (*WorktreeResult, error) {
+	if exact {
+		return updatePinnedCheckoutContext(ctx, path, branchName, baseRef)
+	}
 	if !fresh {
 		state, err := inspectCheckoutContext(ctx, path)
 		if err != nil {

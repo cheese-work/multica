@@ -3,6 +3,8 @@ package daemon
 import (
 	"strings"
 	"unicode"
+
+	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
 // Intake-run pinning (CHE-2216 plan 3.6). A run an intake item dispatched works
@@ -28,4 +30,10 @@ func validPinnedBranch(name string) bool {
 // fetch and push.
 func pinAllowsRef(pinnedBranch, ref string) bool {
 	return validPinnedBranch(pinnedBranch) && ref == "refs/heads/"+pinnedBranch
+}
+
+// pinAllowsRepo reports whether repoURL is the pinned PR repository. The empty
+// pin allows nothing.
+func pinAllowsRepo(pinnedRepo, repoURL string) bool {
+	return pinnedRepo != "" && repocache.RepoIdentity(repoURL) == pinnedRepo
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -137,21 +138,26 @@ func (h *Handler) SetProtectedPathPolicy(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"name": row.Name, "patterns": row.Patterns})
 }
 
-// intakePinForTask reports whether an intake item dispatched this task and the
-// PR head ref it is pinned to (plan 3.6). The ref is empty for a fork PR or a
-// PR with no head ref, and when the read fails: an intake run with no pin may
-// touch no ref at all, so every failure path is the closed one.
-func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgtype.UUID) (bool, string) {
+// intakePinForTask reports whether an intake item dispatched this task, the PR
+// head ref it is pinned to and the PR's repository as host/owner/name (plan
+// 3.6). Branch and repository are empty for a fork PR or a PR with no head ref
+// or repository, and when the read fails: an intake run with no pin may touch
+// no ref and no repository at all, so every failure path is the closed one.
+func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgtype.UUID) (intake bool, branch, repo string) {
 	pin, err := h.Queries.GetGitHubIntakePinForTask(ctx, db.GetGitHubIntakePinForTaskParams{WorkspaceID: workspaceID, TaskID: taskID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ""
+		return false, "", ""
 	}
 	if err != nil {
 		slog.Warn("intake pin read failed; pinning nothing", "task_id", uuidToString(taskID), "error", err)
-		return true, ""
+		return true, "", ""
 	}
-	if !pin.HeadRepoSame {
-		return true, ""
+	host := ""
+	if u, err := url.Parse(pin.HtmlUrl); err == nil {
+		host = u.Host
 	}
-	return true, pin.Branch
+	if !pin.HeadRepoSame || pin.Branch == "" || host == "" || pin.RepoOwner == "" || pin.RepoName == "" {
+		return true, "", ""
+	}
+	return true, pin.Branch, strings.ToLower(host + "/" + pin.RepoOwner + "/" + pin.RepoName)
 }
