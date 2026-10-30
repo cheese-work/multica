@@ -418,7 +418,7 @@ func (h *Handler) heartbeatPause(ctx context.Context, runtimeID string, inFlight
 	return &protocol.DaemonHeartbeatPaused{Reason: pr.Reason, PausedAt: pr.PausedAt, ExpiresAt: pr.ExpiresAt}
 }
 
-const drainNoticeTimeout = 10 * time.Second
+var drainNoticeTimeout = 10 * time.Second
 
 // noticeMachineDrained writes one inbox item for the machine owner. The daemon
 // reports idle, so the server count must agree before anyone is told it is safe.
@@ -475,7 +475,10 @@ func (h *Handler) deliverDrainNotice(reqCtx context.Context, claimed db.DaemonPa
 	})
 	if err != nil {
 		slog.Warn("machine drain notice failed", "error", err, "daemon_id", claimed.DaemonID)
-		if relErr := h.Queries.ReleaseDaemonPauseDrainNotice(ctx, db.ReleaseDaemonPauseDrainNoticeParams{
+		// The write may have failed because ctx hit its deadline; release needs its own.
+		relCtx, relCancel := context.WithTimeout(context.WithoutCancel(reqCtx), drainNoticeTimeout)
+		defer relCancel()
+		if relErr := h.Queries.ReleaseDaemonPauseDrainNotice(relCtx, db.ReleaseDaemonPauseDrainNoticeParams{
 			MachineOwnerID: claimed.MachineOwnerID, DaemonID: claimed.DaemonID, PausedAt: claimed.PausedAt,
 		}); relErr != nil {
 			slog.Warn("machine drain claim release failed", "error", relErr, "daemon_id", claimed.DaemonID)
