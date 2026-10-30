@@ -1,6 +1,6 @@
 // Package pushnotify delivers inbox records as Web Push notifications
 // (CHE-1795). Rows reach the outbox through the inbox_item trigger (migration
-// 819); the Worker here sends them once they are due and still owed.
+// 846); the Worker here sends them once they are due and still owed.
 package pushnotify
 
 import "os"
