@@ -39,6 +39,22 @@ func (q *Queries) AcquireDecisionWorkerLease(ctx context.Context, arg AcquireDec
 	return i, err
 }
 
+const deleteDecisionOrphanAgentReliance = `-- name: DeleteDecisionOrphanAgentReliance :exec
+DELETE FROM decision_agent_reliance reliance
+WHERE reliance.instance_id = $1 AND reliance.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = reliance.issue_id AND issue.workspace_id = reliance.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentRelianceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentReliance(ctx context.Context, arg DeleteDecisionOrphanAgentRelianceParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentReliance, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const deleteDecisionOrphanAgentScope = `-- name: DeleteDecisionOrphanAgentScope :exec
 DELETE FROM decision_agent_scope scope
 WHERE scope.instance_id = $1 AND scope.workspace_id = $2
@@ -53,6 +69,22 @@ type DeleteDecisionOrphanAgentScopeParams struct {
 // Authority-neutral orphan cleanup, before deleting the parent request.
 func (q *Queries) DeleteDecisionOrphanAgentScope(ctx context.Context, arg DeleteDecisionOrphanAgentScopeParams) error {
 	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentScope, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentSettlement = `-- name: DeleteDecisionOrphanAgentSettlement :exec
+DELETE FROM decision_agent_settlement settlement
+WHERE settlement.instance_id = $1 AND settlement.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentSettlementParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentSettlement(ctx context.Context, arg DeleteDecisionOrphanAgentSettlementParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentSettlement, arg.ID, arg.WorkspaceID)
 	return err
 }
 

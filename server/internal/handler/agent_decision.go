@@ -631,5 +631,12 @@ func annotateAgentDecision(ctx context.Context, tx pgx.Tx, commentID pgtype.UUID
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("agent decision snapshot missing")
 	}
+	if agentDecisionSettlementCreationEnabled && annotation.event == "vote" {
+		var workspaceID pgtype.UUID
+		if err := tx.QueryRow(ctx, `SELECT workspace_id FROM comment WHERE id=$1`, commentID).Scan(&workspaceID); err != nil {
+			return err
+		}
+		return settleAgentDecision(ctx, tx, workspaceID, annotation.line.instance)
+	}
 	return nil
 }

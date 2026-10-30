@@ -299,6 +299,12 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}
+		if err := queries.DeleteDecisionOrphanAgentReliance(ctx, db.DeleteDecisionOrphanAgentRelianceParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanAgentSettlement(ctx, db.DeleteDecisionOrphanAgentSettlementParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
 		if err := queries.DeleteDecisionOrphanAgentScope(ctx, db.DeleteDecisionOrphanAgentScopeParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}

@@ -36,6 +36,8 @@ func TestAgentDecisionWorkspaceDeletion(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		dbfx.Exec(t, `DELETE FROM issue WHERE id=$1`, f.issueID)
+		dbfx.Exec(t, `DELETE FROM decision_agent_reliance WHERE instance_id=$1`, f.instance)
+		dbfx.Exec(t, `DELETE FROM decision_agent_settlement WHERE instance_id=$1`, f.instance)
 		dbfx.Exec(t, `DELETE FROM governed_vote_record WHERE issue_id=$1`, f.issueID)
 		dbfx.Exec(t, `DELETE FROM decision_agent_scope WHERE instance_id=$1`, f.instance)
 		dbfx.Exec(t, `DELETE FROM decision_request WHERE id=$1`, f.instance)
@@ -45,6 +47,9 @@ func TestAgentDecisionWorkspaceDeletion(t *testing.T) {
 	if got := dbfx.Count(t, `SELECT count(*) FROM governed_vote_record WHERE decision_instance_id=$1`, f.instance); got != 2 {
 		t.Fatalf("proposal and commitment snapshots = %d, want 2", got)
 	}
+	// Fixture-only effective history: the production comment path stays disabled.
+	dbfx.Exec(t, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id) VALUES($1,$2,$3)`, f.instance, workspaceID, f.issueID)
+	dbfx.Exec(t, `INSERT INTO decision_agent_reliance(instance_id,workspace_id,issue_id,task_id,agent_id,purpose) VALUES($1,$2,$3,$4,$5,'teardown fixture')`, f.instance, workspaceID, f.issueID, f.taskID, f.writerID)
 
 	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+workspaceID, nil), "id", workspaceID)
@@ -55,7 +60,7 @@ func TestAgentDecisionWorkspaceDeletion(t *testing.T) {
 	resetDecisionLease(t)
 	_, runner := newDecisionRunnerFixture(t)
 	decisionPass(t, runner)
-	for _, table := range []string{"governed_vote_record", "decision_agent_scope", "decision_request"} {
+	for _, table := range []string{"governed_vote_record", "decision_agent_scope", "decision_agent_reliance", "decision_agent_settlement", "decision_request"} {
 		if got := dbfx.Count(t, "SELECT count(*) FROM "+table+" WHERE workspace_id=$1", workspaceID); got != 0 {
 			t.Errorf("%s has %d rows after workspace deletion and worker cleanup", table, got)
 		}
