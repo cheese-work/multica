@@ -43,3 +43,45 @@ window names more than one person. See [chat.md](chat.md).
 
 The request is the ask, not the wait. Record who owns the next step in the
 issue (status or a wakeup on the answer) and end the run; do not poll.
+
+## Decision-bound writes (agent changes a governed field)
+
+An agent may change a workflow's steps or a governed instruction field only
+when a workspace owner approved that exact change. The workspace must allow
+the agent and the field (the delegated governed writes setting); without it the write is
+refused.
+
+1. Author the change. Run the write command with `--print-hash`: it prints
+   `before_sha256` and `after_sha256` and writes nothing.
+2. Get a PASS from a reviewer of another lab on `after_sha256`.
+3. Post the decision request. `decision` is
+   `Apply this change to <field>?` then the two lines `before_sha256: <hex>` and
+   `after_sha256: <hex>`; `<field>` is `workflow.steps`, `workflow.instructions`,
+   `workspace.context`, `squad.instructions` or `agent.instructions`. `options`
+   must include a card labelled exactly `Approve write`; the owner answers with
+   that label alone (a note makes it conditional and the server refuses it).
+4. After the owner approves, repeat the step 1 command with `--decision-id
+   <decision-id>` instead of `--print-hash`. The decision is single use and
+   expires after 7 days.
+5. Read the value back and compare its hash with `after_sha256`.
+
+```bash
+multica workflow set-instructions <id> --status in_progress --file ./step.md --print-hash
+multica workflow update <id> --steps-file ./steps.json --decision-id <decision-id>
+multica agent update <id> --instructions-file ./i.md --expected-before-digest <hex> --decision-id <decision-id>
+multica squad update <id> --instructions-file ./i.md --expected-before-digest <hex> --decision-id <decision-id>
+multica workspace update <id> --context-file ./c.md --expected-before-digest <hex> --decision-id <decision-id>
+```
+
+- Instruction fields hash the raw UTF-8 bytes; pass the live value's hash as
+  `--expected-before-digest`. The CLI computes `after_sha256` from the file.
+- Workflow commands hash the live workflow read just before the write (steps as
+  canonical JSON wrapped with the workflow id), so no `--expected-before-digest`.
+  `after_sha256` is the hash of the steps as the server stores them: the CLI
+  applies the server's own trim, handler-default and board-order rules (and adds
+  missing `todo`, `done` and `cancelled` steps), so a newline-terminated
+  instruction file or a partial `--steps-file` hashes like the stored result.
+- A bound write carries one field: no other update flag, and for workflows no
+  run-rule flag. `--decision-id` and `--vote-issue` are alternatives.
+- 409 means the live value moved or the decision was used: read it again and
+  ask for a new decision. The CLI never retries.

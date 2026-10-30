@@ -313,7 +313,7 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 }
 
 const listProjectWakeups = `-- name: ListProjectWakeups :many
-SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
+SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.workflow_step FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
 WHERE i.project_id=$1 AND i.workspace_id=$2
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 ORDER BY w.id FOR UPDATE OF w
@@ -381,6 +381,7 @@ func (q *Queries) ListProjectWakeups(ctx context.Context, arg ListProjectWakeups
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}

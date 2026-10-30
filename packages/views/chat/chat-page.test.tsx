@@ -63,15 +63,25 @@ vi.mock("./components/chat-input", () => ({
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
     onSelectSession,
+    onOpenSearchHit,
   }: {
     onSelectSession: (s: { id: string; agent_id: string }) => void;
+    onOpenSearchHit?: (hit: { session_id: string; message_id: string | null }) => void;
   }) => (
-    <button
-      type="button"
-      onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
-    >
-      select-thread
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
+      >
+        select-thread
+      </button>
+      <button
+        type="button"
+        onClick={() => onOpenSearchHit?.({ session_id: "session-9", message_id: "msg-4" })}
+      >
+        open-message-hit
+      </button>
+    </>
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
@@ -139,6 +149,7 @@ vi.mock("@multica/core/platform", async (importOriginal) => ({
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
+const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -186,7 +197,9 @@ vi.mock("./components/use-chat-controller", async () => {
         ? { id: "session-9", continued_into_session_id: "session-10" }
         : activeSession === "session-compacting"
           ? { id: "session-compacting", compacting: true }
-          : null,
+          : activeSession === "session-empty"
+            ? { id: "session-empty" }
+            : null,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -197,6 +210,7 @@ vi.mock("./components/use-chat-controller", async () => {
       pendingTask: null,
       pendingTaskId: null,
       showSkeleton: false,
+      messagesLoaded: messagesLoadedRef.current,
       hasMessages: false,
       firstItemIndex: 0,
       hasOlderMessages: false,
@@ -213,7 +227,6 @@ vi.mock("./components/use-chat-controller", async () => {
       // Like the real controller: selecting publishes the session to the store.
       handleSelectSession: (session: { id: string }) => mockSetActiveSession(session.id),
       advanceSelectionAfterArchive: vi.fn(),
-      archiveSession: vi.fn(),
       setActiveSession: mockSetActiveSession,
       setSelectedAgentId: vi.fn(),
       };
@@ -302,6 +315,7 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
+  messagesLoadedRef.current = true;
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -329,6 +343,46 @@ describe("ChatPage URL synchronization", () => {
     fireEvent.click(screen.getByText("settle-missing"));
     expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
     expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("toasts and drops ?message= when the chat has no messages left to show", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty&message=gone");
+    expect(screen.getByText("chat-empty-state")).toBeInTheDocument();
+    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-empty");
+  });
+
+  it("settles an empty chat's missing message once under StrictMode", () => {
+    seedSession("session-empty");
+    renderPage("session=session-empty&message=gone", { strict: true });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles the same hit again after the first notice cleared the param", () => {
+    seedSession("session-empty");
+    const { rerender } = renderPage("session=session-empty&message=gone");
+    rerender({ search: "session=session-empty" });
+    rerender({ search: "session=session-empty&message=gone" });
+    expect(mockToastError).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the transcript to load before calling the message gone", () => {
+    seedSession("session-empty");
+    messagesLoadedRef.current = false;
+    const { replace, rerender } = renderPage("session=session-empty&message=m-1");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    messagesLoadedRef.current = true;
+    rerender();
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a session with no ?message= alone when it is empty", () => {
+    seedSession("session-empty");
+    const { replace } = renderPage("session=session-empty");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("passes no jump target without ?message=", () => {
@@ -728,6 +782,31 @@ describe("ChatPage back stack", () => {
     expect(activeSession()).toBeNull();
     back();
     expect(history.url).toBe("/acme/inbox");
+  });
+
+  it("opens a message hit with one pushed entry that targets the message, and Back returns to the list", () => {
+    history = createHistory("/acme/inbox", "/acme/chat");
+    renderWithHistory(history);
+
+    fireEvent.click(screen.getByRole("button", { name: "open-message-hit" }));
+
+    expect(history.writes).toEqual([
+      { kind: "push", url: "/acme/chat?session=session-9&message=msg-4" },
+    ]);
+    expect(activeSession()).toBe("session-9");
+    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-4");
+
+    // Landing drops ?message= by replace, so the entry count stays at one push.
+    fireEvent.click(screen.getByRole("button", { name: "settle-landed" }));
+    expect(history.entries).toEqual([
+      "/acme/inbox",
+      "/acme/chat",
+      "/acme/chat?session=session-9",
+    ]);
+
+    back();
+    expect(history.url).toBe("/acme/chat");
+    expect(activeSession()).toBeNull();
   });
 
   it("pushes a thread selection instead of replacing the list entry", () => {

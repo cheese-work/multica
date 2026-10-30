@@ -1100,6 +1100,19 @@ export const ChatMessagesPageSchema = z.object({
   has_newer: z.boolean().optional().catch(undefined),
 }).loose();
 
+export const ChatSearchPageSchema = z.object({
+  results: z.array(z.object({
+    session_id: z.string(),
+    title: z.string().default(""),
+    agent_id: z.string(),
+    message_id: z.string().nullable().optional().transform((v) => v ?? null),
+    snippet: z.string().default(""),
+    updated_at: z.string(),
+    archived: z.boolean().default(false),
+  }).loose()).default([]),
+  next_cursor: z.string().nullable().optional().transform((v) => v ?? null),
+}).loose();
+
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
 // truth for click-time download URLs. The two fields the download flow opens
 // in a new tab — `download_url` and `url` — must be strings, otherwise we'd
@@ -2500,7 +2513,8 @@ export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),
-  task_id: z.string().min(1),
+  // Empty when the send started no task (a decision reply for another agent's ask).
+  task_id: z.string(),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),

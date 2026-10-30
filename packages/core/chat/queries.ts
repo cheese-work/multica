@@ -34,8 +34,12 @@ export const chatKeys = {
   all: (wsId: string) => ["chat", wsId] as const,
   /** Full sessions list (active + archived); the dropdown splits locally. */
   sessions: (wsId: string) => [...chatKeys.all(wsId), "sessions"] as const,
+  /** Mutation key shared by the pin and archive mutations; search refreshes when they settle. */
+  sessionAction: (wsId: string) => [...chatKeys.all(wsId), "session-action"] as const,
   openDecisions: (wsId: string) => [...chatKeys.all(wsId), "open-decisions"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
+  /** Statistics for one session (`GET /api/chat/sessions/{id}/usage`). */
+  usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
@@ -78,6 +82,20 @@ export function isTaskMessageTaskId(taskId: string | null | undefined): taskId i
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
 }
 
+/**
+ * Statistics for one session. Always refetched on open: totals move while runs
+ * finish, and the dialog is the only reader.
+ */
+export function chatSessionUsageOptions(wsId: string, sessionId: string | null) {
+  return queryOptions({
+    queryKey: chatKeys.usage(wsId, sessionId ?? ""),
+    queryFn: () => api.getChatSessionUsage(sessionId as string),
+    enabled: !!sessionId,
+    staleTime: 0,
+    gcTime: 60_000,
+  });
+}
+
 export function chatSessionsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.sessions(wsId),
@@ -114,6 +132,14 @@ function sessionActivityTime(s: ChatSession): number {
  * keys (Array.prototype.sort is stable), so pinned rows keep their server
  * order when pin timestamps aren't carried in the list payload.
  */
+/**
+ * Archived chats order by last activity alone. An archived DM is never pinned,
+ * so a stale pin left in a cached row must not lift it above newer ones.
+ */
+export function sortArchivedChatSessions(sessions: ChatSession[]): ChatSession[] {
+  return [...sessions].sort((a, b) => sessionActivityTime(b) - sessionActivityTime(a));
+}
+
 export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
   return [...sessions].sort((a, b) => {
     const ap = a.pinned ? 1 : 0;

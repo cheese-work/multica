@@ -111,6 +111,7 @@ import type {
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
+  ChatSearchPage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
@@ -282,6 +283,7 @@ import {
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
   ChatMessagesPageSchema,
+  ChatSearchPageSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
@@ -4113,6 +4115,20 @@ export class ApiClient {
       }
       throw err;
     }
+  }
+
+  /** Search the caller's DMs by title and message text (`q` is 1-200 characters). */
+  async searchChats(params: { q: string; limit?: number; cursor?: string | null }): Promise<ChatSearchPage> {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.cursor) query.set("cursor", params.cursor);
+    const raw: unknown = await this.fetch(`/api/chat/search?${query.toString()}`);
+    return parseWithFallback(
+      raw,
+      ChatSearchPageSchema,
+      { results: [], next_cursor: null },
+      { endpoint: "GET /api/chat/search" },
+    );
   }
 
   async sendChatMessage(

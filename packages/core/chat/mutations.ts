@@ -294,6 +294,7 @@ export function useSetChatSessionPinned() {
   const wsId = useWorkspaceId();
 
   return useMutation({
+    mutationKey: chatKeys.sessionAction(wsId),
     mutationFn: (data: { sessionId: string; pinned: boolean }) => {
       logger.info("setChatSessionPinned.start", data);
       return api.setChatSessionPinned(data.sessionId, data.pinned);
@@ -341,6 +342,7 @@ export function useSetChatSessionArchived() {
   const wsId = useWorkspaceId();
 
   return useMutation({
+    mutationKey: chatKeys.sessionAction(wsId),
     mutationFn: (data: { sessionId: string; archived: boolean }) => {
       logger.info("setChatSessionArchived.start", data);
       return api.setChatSessionArchived(data.sessionId, data.archived);
