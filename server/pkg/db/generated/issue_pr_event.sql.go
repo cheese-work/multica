@@ -134,7 +134,27 @@ func (q *Queries) ListIssueIDsForPR(ctx context.Context, pullRequestID pgtype.UU
 
 const listNextTurnPREvents = `-- name: ListNextTurnPREvents :many
 SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
-       pr.pr_number, pr.repo_owner, pr.repo_name
+       pr.pr_number, pr.repo_owner, pr.repo_name,
+       COALESCE(NULLIF(e.previous_head_sha, ''), (
+           SELECT prev.head_sha FROM issue_pr_event prev
+           WHERE e.kind = 'head_changed'
+             AND prev.issue_id = e.issue_id
+             AND prev.pull_request_id = e.pull_request_id
+             AND prev.head_sha <> e.head_sha
+             AND prev.status <> 'superseded'
+             AND prev.observed_at < e.observed_at
+           ORDER BY prev.observed_at DESC
+           LIMIT 1
+       ), '')::text AS old_head_sha,
+       COALESCE((
+           SELECT cr.name FROM github_pull_request_check_run cr
+           WHERE e.kind = 'checks_failed'
+             AND cr.pr_id = e.pull_request_id
+             AND cr.head_sha = e.head_sha
+             AND cr.conclusion IN ('failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure')
+           ORDER BY cr.ordinal
+           LIMIT 1
+       ), '')::text AS check_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready')
@@ -180,6 +200,8 @@ type ListNextTurnPREventsRow struct {
 	PrNumber    int32              `json:"pr_number"`
 	RepoOwner   string             `json:"repo_owner"`
 	RepoName    string             `json:"repo_name"`
+	OldHeadSha  string             `json:"old_head_sha"`
+	CheckName   string             `json:"check_name"`
 }
 
 // Events no mid-run delivery will take (CHE-2298 a3): next_turn ones, and
@@ -217,6 +239,8 @@ func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREv
 			&i.PrNumber,
 			&i.RepoOwner,
 			&i.RepoName,
+			&i.OldHeadSha,
+			&i.CheckName,
 		); err != nil {
 			return nil, err
 		}

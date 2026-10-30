@@ -865,13 +865,7 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		}
 		return text + "Read the current issue and repository state, then decide what follow-up is needed."
 	case SystemRulePRAttention:
-		headSHA, _ := facts["head_sha"].(string)
-		base, _ := facts["base_branch"].(string)
-		if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
-			return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
-		}
-		state, _ := facts["merge_state"].(string)
-		return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
+		return prAttentionInstruction(receipts, pr, facts)
 	case SystemRulePRChecksFailed:
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
@@ -882,6 +876,18 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 	default:
 		return w.Instruction
 	}
+}
+
+// prAttentionLegacyText words one mergeability or returned-to-draft receipt.
+func prAttentionLegacyText(pr string, facts map[string]any) string {
+	issueStatus, _ := facts["issue_status"].(string)
+	headSHA, _ := facts["head_sha"].(string)
+	base, _ := facts["base_branch"].(string)
+	if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
+		return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
+	}
+	state, _ := facts["merge_state"].(string)
+	return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
 }
 
 func systemWakeupTriggerSummary(rule string) string {
