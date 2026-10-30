@@ -43,7 +43,7 @@ func (handler *Handler) createDecisionRecordComment(writer http.ResponseWriter, 
 	if handler.rejectMissingRequiredSourceLink(writer, request, "agent", true, issue, input.Content, "content") {
 		return
 	}
-	result, err := handler.createAskedDecisionRecord(request, issue, decisionRecordInput{ParentID: parentID, MessageIDs: messageIDs, ContextMessageID: contextMessageID, SourceCommentID: sourceCommentID, Content: input.Content, EscalationClass: input.EscalationClass})
+	result, err := handler.createAskedDecisionRecord(request, issue, decisionRecordInput{ParentID: parentID, MessageIDs: messageIDs, ContextMessageID: contextMessageID, Excerpts: input.Excerpts, SourceCommentID: sourceCommentID, Content: input.Content, EscalationClass: input.EscalationClass})
 	if err != nil {
 		writeDecisionError(writer, err, "decision record")
 		return

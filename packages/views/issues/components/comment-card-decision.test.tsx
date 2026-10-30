@@ -16,7 +16,8 @@ vi.mock("@multica/core/api", () => ({
   errorCode: () => undefined,
 }));
 
-vi.mock("../../navigation", () => ({
+vi.mock("../../navigation", async (importActual) => ({
+  ...(await importActual<typeof import("../../navigation")>()),
   useNavigation: () => ({
     push: vi.fn(),
     pathname: "/acme/issues",
