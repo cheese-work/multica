@@ -40,6 +40,10 @@ func TestSendChatDecisionReplyBindsOnlySelectedRequest(test *testing.T) {
 	if count := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND decision_comment_kind = 'quote'`, firstIssue); count != 0 {
 		test.Fatal("answer leaked onto card 1's issue")
 	}
+	var replyText string
+	if err := testPool.QueryRow(context.Background(), `SELECT coalesce(reply_text, '') FROM decision_answer WHERE decision_request_id = $1`, secondID).Scan(&replyText); err != nil || replyText != content {
+		test.Fatalf("annotated reply must store its text as reply_text: %q / %v", replyText, err)
+	}
 	message, err := testHandler.Queries.GetChatMessage(context.Background(), parseUUID(sent.MessageID))
 	if err != nil {
 		test.Fatal(err)

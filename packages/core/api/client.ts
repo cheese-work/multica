@@ -106,6 +106,7 @@ import type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
@@ -289,6 +290,8 @@ import {
   ChatContinueResponseSchema,
   ChatSessionUsageSchema,
   EMPTY_CHAT_SESSION_USAGE,
+  ChatWakeupsSchema,
+  EMPTY_CHAT_WAKEUPS,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -3935,6 +3938,18 @@ export class ApiClient {
     return parseWithFallback(raw, ChatSessionUsageSchema, EMPTY_CHAT_SESSION_USAGE, {
       endpoint: "GET /api/chat/sessions/:id/usage",
     });
+  }
+
+  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
   }
 
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
