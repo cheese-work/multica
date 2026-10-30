@@ -87,6 +87,10 @@ const (
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
 	repoCheckoutModeIsolated = "isolated"
+	// repoCheckoutModeShared is the isolated layout with objects borrowed from
+	// the repo cache through read-only alternates, for sandboxed tasks that
+	// cannot read the cache's refs or config (CHE-2216 slice A2c).
+	repoCheckoutModeShared = "shared"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
 	// execution-environment setup, and the StartTask request itself. It is
