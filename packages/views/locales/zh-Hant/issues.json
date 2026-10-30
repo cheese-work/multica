@@ -123,7 +123,7 @@
     "backlog": "待規劃",
     "todo": "待辦",
     "in_progress": "進行中",
-    "in_review": "稽覈中",
+    "in_review": "審查中",
     "done": "已完成",
     "blocked": "已阻塞",
     "cancelled": "已取消"
@@ -503,7 +503,8 @@
     "prop_requested_by": "請求人"
   },
   "timeline": {
-    "loading": "載入中…"
+    "loading": "載入中…",
+    "jump_to_latest": "跳到最新"
   },
   "activity": {
     "created": "建立了這個任務",
@@ -1298,7 +1299,7 @@
       "pick_issue_description": "該任務達到所選狀態時喚醒智慧體。",
       "other_done": "完成",
       "other_ended": "完成或取消",
-      "other_in_review": "進入稽覈中",
+      "other_in_review": "進入審查中",
       "other_blocked": "進入 blocked",
       "max_fires": "最多觸發",
       "max_fires_times_other": "{{count}} 次",
@@ -1352,7 +1353,7 @@
       "pr_conflicts": "當關聯 PR 出現合併衝突時",
       "other_done": "當 {{issue}} 完成時",
       "other_ended": "當 {{issue}} 完成或取消時",
-      "other_in_review": "當 {{issue}} 進入稽覈中時",
+      "other_in_review": "當 {{issue}} 進入審查中時",
       "gh_run_id": "{{repo}} 的執行 {{id}}",
       "gh_run_sha": "{{repo}} 的 {{workflow}}（{{sha}}）",
       "gh_run_completed": "當 {{run}} 結束時",
@@ -1380,7 +1381,7 @@
       "pr_conflicts": "監視合併衝突",
       "other_done": "等 {{issue}} 完成",
       "other_ended": "等 {{issue}} 結束",
-      "other_in_review": "等 {{issue}} 進入稽覈",
+      "other_in_review": "等 {{issue}} 進入審查",
       "gh_run_completed": "等待 {{run}} 結束",
       "gh_run_waiting": "等待 {{run}} 到達審批關卡",
       "other_blocked": "等 {{issue}} 進入 blocked",

@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { redactSecrets } from "./redact";
+import { redactSecrets } from "./redact-secrets";
 
 const genericCredentialCases: { name: string; input: string; want: string }[] = JSON.parse(
-  readFileSync(new URL("../../../../server/pkg/redact/testdata/generic-credentials.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../server/pkg/redact/testdata/generic-credentials.json", import.meta.url), "utf8"),
 );
 
 describe("redactSecrets", () => {
