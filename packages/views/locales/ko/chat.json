@@ -46,7 +46,10 @@
     "change_project_context": "프로젝트 컨텍스트 변경",
     "remove_project_context": "프로젝트 컨텍스트 제거",
     "no_projects": "아직 프로젝트가 없습니다",
-    "project_context_unsupported": "프로젝트 설명이 적용되지 않습니다 — 이 에이전트의 데몬 업그레이드가 필요합니다"
+    "project_context_unsupported": "프로젝트 설명이 적용되지 않습니다 — 이 에이전트의 데몬 업그레이드가 필요합니다",
+    "placeholder_archived_send": "이 DM은 보관되어 있습니다. 전송하면 먼저 보관을 해제합니다…",
+    "command_no_arguments": "/{{command}} 명령어는 인수를 받지 않습니다. 단독으로 보내거나 앞의 /를 제거하세요.",
+    "command_no_attachments": "/{{command}} 명령어는 첨부 파일과 함께 보낼 수 없습니다. /{{command}} 실행 전에 첨부 파일을 제거하세요."
   },
   "queue": {
     "title_other": "대기 중인 메시지 {{count}}개",
@@ -270,7 +273,12 @@
     "archive": "보관",
     "unarchive": "보관 해제",
     "archived_title": "보관됨",
-    "row_actions_aria": "채팅 작업"
+    "row_actions_aria": "채팅 작업",
+    "archived_toast": "채팅을 보관했습니다",
+    "archive_failed": "이 채팅을 보관하지 못했습니다",
+    "unarchive_failed": "이 채팅의 보관을 해제하지 못했습니다",
+    "pin_failed": "고정 상태를 업데이트하지 못했습니다",
+    "undo": "실행 취소"
   },
   "header": {
     "context_meter": "{{window}} 중 {{pct}}%",
@@ -281,7 +289,10 @@
     "rename": "이름 변경",
     "delete": "채팅 삭제",
     "archive": "채팅 보관",
-    "unarchive": "채팅 보관 해제"
+    "unarchive": "채팅 보관 해제",
+    "statistics": "통계",
+    "pin": "채팅 고정",
+    "unpin": "채팅 고정 해제"
   },
   "annotations": {
     "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
@@ -302,6 +313,49 @@
     "selection_failed": "선택한 텍스트를 가져오지 못했습니다. 같은 답변 안에서 텍스트를 다시 선택하세요.",
     "source_changed": "원문이 변경되었거나 사용할 수 없습니다. 저장한 인용문은 유지됩니다.",
     "removed": "댓글 {{number}}을(를) 삭제했습니다"
+  },
+  "stats": {
+    "title": "통계",
+    "scope": "이 DM만",
+    "estimated": "추정",
+    "partial": "일부",
+    "tokens": "토큰 {{tokens}}개",
+    "usage_missing_other": "완료된 실행 {{count}}건의 사용량 누락",
+    "in_progress_other": "실행 중 {{count}}건 — 끝나면 합계가 업데이트됩니다",
+    "runs": "실행",
+    "runs_value": "완료 {{completed}}건 · 실패 {{failed}}건",
+    "runs_cancelled": " · 취소 {{cancelled}}건",
+    "run_time": "Agent 실행 시간",
+    "messages": "메시지",
+    "messages_value": "나 {{user}} · Agent {{agent}}",
+    "by_model": "모델별",
+    "col_model": "모델",
+    "col_input": "입력",
+    "col_output": "출력",
+    "col_cache_read": "캐시 읽기",
+    "col_cache_write": "캐시 쓰기",
+    "col_cost": "비용",
+    "no_value": "—",
+    "no_cost": "보고된 비용 없음",
+    "no_runs": "아직 실행이 없습니다.",
+    "related": "관련 DM",
+    "continued_from": "이어진 DM",
+    "continued_into": "이어진 후속 DM",
+    "forked_from": "복사한 DM",
+    "error": "통계를 불러오지 못했습니다. 0으로 기록된 값은 없습니다.",
+    "offline": "오프라인입니다. 이 수치는 {{time}}에 통계를 열었을 때의 값입니다. 다시 연결하면 새로 고쳐집니다.",
+    "retry": "다시 시도",
+    "close": "닫기",
+    "less_than_a_minute": "1분 미만"
+  },
+  "archived_send": {
+    "title": "이 DM은 보관되어 있습니다",
+    "question": "보관을 해제하고 전송할까요?",
+    "kept": "메시지는 그대로 유지됩니다. 보관 해제 후 전송됩니다.",
+    "newer": "더 새로운 DM이 이 대화를 이어갑니다: {{title}}.",
+    "confirm": "해제하고 전송",
+    "cancel": "취소",
+    "open_newer": "새 DM 열기"
   },
   "decision": {
     "request_title": "결정 요청",
@@ -326,6 +380,26 @@
     "from_original_dm": "원본 DM에서",
     "inherited": "상속됨",
     "message_unavailable": "더 이상 사용할 수 없는 메시지입니다"
+  },
+  "search": {
+    "label": "채팅 검색",
+    "placeholder": "채팅 검색",
+    "shortcut_hint": "/",
+    "clear": "검색 지우기",
+    "results_label": "검색 결과",
+    "count_other": "결과 {{count}}개",
+    "searching": "검색 중…",
+    "empty": "“{{query}}”와(과) 일치하는 채팅이 없습니다",
+    "failed": "검색에 실패했습니다. 다시 시도해 주세요.",
+    "timed_out": "검색 시간이 너무 오래 걸렸습니다. 더 짧거나 구체적인 검색어를 사용해 보세요.",
+    "disconnected": "오프라인입니다. 검색하려면 연결이 필요합니다.",
+    "retry": "다시 시도",
+    "too_long": "검색은 {{max}}자까지 가능합니다.",
+    "show_more": "더 보기",
+    "loading_more": "불러오는 중…",
+    "archived_badge": "보관됨",
+    "title_match": "제목 일치",
+    "actions_aria": "{{title}} 작업"
   },
   "wakeup": {
     "node_label": "예약된 깨우기가 실행되었습니다",

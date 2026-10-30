@@ -221,6 +221,8 @@ func init() {
 	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
+	workspaceUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	workspaceUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
@@ -722,7 +724,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	// issues a real GET /api/workspaces lookup when args[0] is a slug/prefix
 	// rather than a raw UUID, and CHE-789 requires malformed digest-mode
 	// requests to be rejected before any request goes out.
-	if err := checkVoteIssueFlag(cmd); err != nil {
+	if err := checkBindingFlags(cmd); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {
@@ -730,7 +732,10 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		body = withVoteReceipt(cmd, body, "context")
+		body = withBinding(cmd, body, "context")
+		if done, err := printHashOnly(cmd, body, "context"); done {
+			return err
+		}
 
 		wsID, err := resolveWorkspaceArg(cmd, args)
 		if err != nil {
