@@ -815,6 +815,8 @@ type DecisionAnswer struct {
 	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
 	Excerpted               bool               `json:"excerpted"`
 	AnsweredLabel           pgtype.Text        `json:"answered_label"`
+	StateVersion            int64              `json:"state_version"`
+	HindsightAckedVersion   int64              `json:"hindsight_acked_version"`
 }
 
 type DecisionBoundWrite struct {
@@ -2026,6 +2028,7 @@ type PersonalAccessToken struct {
 	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
 	Revoked     bool               `json:"revoked"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Scopes      []string           `json:"scopes"`
 }
 
 type PinnedItem struct {
