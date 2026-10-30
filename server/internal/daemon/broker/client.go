@@ -24,6 +24,10 @@ func Push(ctx context.Context, socket, repoDir string, out io.Writer) error {
 	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}}
+	repoDir, err := repoRoot(repoDir)
+	if err != nil {
+		return err
+	}
 	ref, err := headRef(repoDir)
 	if err != nil {
 		return err
@@ -76,6 +80,22 @@ func getJSON(ctx context.Context, hc *http.Client, u string, v any) error {
 		return fmt.Errorf("broker: %s", resp.Status)
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// repoRoot walks up from dir to the checkout that holds its own .git.
+func repoRoot(dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	for d := dir; ; d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, ".git")); err == nil && fi.IsDir() {
+			return d, nil
+		}
+		if d == filepath.Dir(d) {
+			return "", errors.New("push needs a checkout with its own .git")
+		}
+	}
 }
 
 // headRef reads the checked-out branch from the standalone .git/HEAD.

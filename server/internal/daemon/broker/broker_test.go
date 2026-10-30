@@ -144,6 +144,23 @@ func TestPushTaskBranch(t *testing.T) {
 	}
 }
 
+func TestPushFromSubdirectory(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.commits(t, 1)
+	r.start(t)
+	sub := filepath.Join(r.work, "deep", "dir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Push(context.Background(), r.socket, sub, io.Discard); err != nil {
+		t.Fatalf("Push from subdirectory: %v", err)
+	}
+	if got, want := r.remoteRef(t, r.pin.Ref), git(t, r.work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("remote %s = %q, want %q", r.pin.Ref, got, want)
+	}
+}
+
 func TestPushRefusals(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
