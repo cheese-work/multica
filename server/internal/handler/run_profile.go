@@ -54,16 +54,45 @@ func resolveRunProfile(grants []db.RunCapabilityGrant, taintIDs []string, issueT
 	return p
 }
 
-// runProfileForTask resolves the profile of a task on one issue. Taint marks
-// and the fence state have no storage yet (B5a, B4a), so they enter as empty;
-// a read error resolves restricted.
-func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID pgtype.UUID) runProfile {
+// runProfileForTask resolves the profile of a task on one issue and records the
+// task's first elevated claim (task_elevation), whose scopes and epoch then stay
+// frozen for the task. A task whose row left `elevated` is fenced for good.
+// Taint marks have no storage yet (B5a); any read or write error resolves
+// restricted.
+func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, taskID pgtype.UUID) runProfile {
+	restricted := resolveRunProfile(nil, nil, false, false)
 	grants, err := h.Queries.ListActiveRunCapabilityGrants(ctx, db.ListActiveRunCapabilityGrantsParams{WorkspaceID: workspaceID, IssueID: issueID})
 	if err != nil {
 		slog.Warn("run profile grant read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
-		grants = nil
+		return restricted
 	}
-	return resolveRunProfile(grants, nil, false, false)
+	te, err := h.Queries.GetTaskElevation(ctx, taskID)
+	known := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("task elevation read failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
+		return restricted
+	}
+	rp := resolveRunProfile(grants, nil, false, known && te.State != elevationElevated)
+	if rp.Profile != runProfileElevated {
+		return rp
+	}
+	if !known {
+		ids := make([]pgtype.UUID, len(grants))
+		for i, g := range grants {
+			ids[i] = g.ID
+		}
+		if err := h.Queries.InsertTaskElevation(ctx, db.InsertTaskElevationParams{
+			TaskID: taskID, WorkspaceID: workspaceID, IssueID: issueID, GrantIds: ids, Scopes: rp.Scopes,
+		}); err != nil {
+			slog.Warn("task elevation write failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
+			return restricted
+		}
+		if te, err = h.Queries.GetTaskElevation(ctx, taskID); err != nil {
+			return restricted
+		}
+	}
+	rp.Scopes, rp.Epoch = te.Scopes, te.Epoch
+	return rp
 }
 
 // initialProtectedPaths is the policy a workspace has until an admin writes one
