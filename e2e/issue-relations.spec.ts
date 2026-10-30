@@ -25,7 +25,7 @@ test.describe("Issue relations graph", () => {
     return workspace!.slug;
   }
 
-  test("loads only on click, escapes titles, changes depth and navigates nodes", async ({ page }, info) => {
+  test("prefetches on intent, escapes titles, changes depth and navigates native links", async ({ page }, info) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const root = await api.createIssue("Relations root", { status: "todo" });
     const child = await api.createIssue('Relations "quoted" <img src=x onerror=window.relationsAttack=1>', { status: "todo", parent_issue_id: root.id });
@@ -35,7 +35,7 @@ test.describe("Issue relations graph", () => {
     const graphChunks: string[] = [];
     page.on("request", (request) => {
       if (request.url().includes(`/issues/${root.id}/relations`)) relationsRequests.push(request.url());
-      if (request.resourceType() === "script" && request.url().includes("issue-relations-dialog")) graphChunks.push(request.url());
+      if (request.resourceType() === "script" && /mermaid/i.test(request.url())) graphChunks.push(request.url());
     });
     await page.goto(`/${slug}/issues/${root.identifier}`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, root.title);
@@ -48,9 +48,12 @@ test.describe("Issue relations graph", () => {
     const dialog = page.getByRole("dialog", { name: "Relations graph", exact: true });
     const childNode = dialog.getByRole("link", { name: `${child.identifier}: ${child.title} (todo)`, exact: true });
     await expect(childNode).toBeVisible({ timeout: 45_000 });
-    expect((await childNode.textContent())?.replace(/\s/g, "")).toBe(`${child.identifier}: ${child.title} (todo)`.replace(/\s/g, ""));
+    await expect(childNode).toHaveAttribute("href", new RegExp(`/issues/${child.id}$`));
+    await expect(childNode).toHaveAttribute("title", `${child.identifier}: ${child.title} (todo)`);
     expect(relationsRequests).toHaveLength(1);
     expect(new URL(relationsRequests[0]!).searchParams.get("depth")).toBe("1");
+    expect(new URL(relationsRequests[0]!).searchParams.has("include")).toBe(false);
+    expect(graphChunks).toEqual([]);
     await expect(dialog.locator('[aria-current="page"]')).toHaveCount(1);
     await expect(dialog.locator("img,script,foreignObject")).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { relationsAttack?: number }).relationsAttack)).toBeUndefined();
@@ -59,8 +62,45 @@ test.describe("Issue relations graph", () => {
     await expect(dialog.getByRole("link", { name: `${grandchild.identifier}: ${grandchild.title} (todo)`, exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath("after-1440.png"), fullPage: true });
     await dialog.getByRole("link", { name: `${child.identifier}: ${child.title} (todo)`, exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`/issues/(${child.id}|${child.identifier})$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/(${child.id}|${child.identifier})$`), { timeout: 45_000 });
     await expect(dialog).toHaveCount(0);
+  });
+
+  test("shows a first-frame skeleton, loads mentions only on demand and reuses fresh data", async ({ page }) => {
+    const root = await api.createIssue("Relations loading", { status: "todo" });
+    const mentioned = await api.createIssue("Lazy mentioned issue", { status: "todo" });
+    await api.createComment(root.id, `[Mention](mention://issue/${mentioned.id})`);
+    const slug = await signIn(page);
+    await page.addInitScript(() => localStorage.setItem("multica_relations_filter", JSON.stringify({ state: { hidden: ["mention"] }, version: 0 })));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requests: string[] = [];
+    await page.route(`**/api/issues/${root.id}/relations?*`, async (route) => {
+      requests.push(route.request().url());
+      await gate;
+      await route.continue();
+    });
+    await page.goto(`/${slug}/issues/${root.identifier}`, { waitUntil: "domcontentloaded" });
+    const button = page.getByRole("button", { name: "Relations graph", exact: true });
+    await button.hover();
+    await expect.poll(() => requests.length).toBe(1);
+    await button.evaluate((element: HTMLButtonElement) => element.click());
+    const dialog = page.getByRole("dialog", { name: "Relations graph", exact: true });
+    expect(await page.evaluate(() => new Promise<boolean>((resolve) => requestAnimationFrame(() => resolve(!!document.querySelector('[role="status"][aria-label="Loading relations…"]')))))).toBe(true);
+    await expect(dialog.getByRole("status", { name: "Loading relations…" })).toBeVisible();
+    release();
+    await expect(dialog.getByRole("link", { name: `${root.identifier}: ${root.title} (todo)` })).toBeVisible();
+    expect(requests.every((url) => !new URL(url).searchParams.has("include"))).toBe(true);
+    await dialog.getByRole("button", { name: /mentions/i }).click();
+    await expect(dialog.getByRole("link", { name: `${mentioned.identifier}: ${mentioned.title} (todo)` })).toBeVisible();
+    expect(requests.filter((url) => new URL(url).searchParams.get("include") === "mentions")).toHaveLength(1);
+    await dialog.getByRole("button", { name: /mentions/i }).click();
+    await expect(dialog.getByRole("link", { name: `${mentioned.identifier}: ${mentioned.title} (todo)` })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    const count = requests.length;
+    await button.click();
+    await expect(dialog.getByRole("link", { name: `${root.identifier}: ${root.title} (todo)` })).toBeVisible();
+    expect(requests).toHaveLength(count);
   });
 
   test("supports a narrow sidebar, load error recovery, an empty graph and focus restoration", async ({ page }, info) => {

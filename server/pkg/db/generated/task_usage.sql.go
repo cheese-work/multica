@@ -769,6 +769,40 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const lockTaskUsageReport = `-- name: LockTaskUsageReport :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text, 0))
+`
+
+// Serializes usage reports for one task that has no issue to lock: held to the
+// end of the caller's transaction, taken before any usage row is written, so
+// two reports that order their models differently cannot wait on each other.
+func (q *Queries) LockTaskUsageReport(ctx context.Context, taskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTaskUsageReport, taskID)
+	return err
+}
+
+const sumTaskWeightedTokens = `-- name: SumTaskWeightedTokens :one
+SELECT (COALESCE(SUM(input_tokens + output_tokens + cache_write_tokens), 0)
+      + COALESCE(SUM(cache_read_tokens), 0) / 10)::bigint AS weighted,
+      COUNT(*)::bigint AS model_rows
+FROM task_usage WHERE task_id = $1
+`
+
+type SumTaskWeightedTokensRow struct {
+	Weighted  int64 `json:"weighted"`
+	ModelRows int64 `json:"model_rows"`
+}
+
+// A run's tokens as the run budget counts them: input + output + cache write
+// + 0.1 x cache read, over every provider and model row, and how many rows
+// there are: a run with none reported no usage.
+func (q *Queries) SumTaskWeightedTokens(ctx context.Context, taskID pgtype.UUID) (SumTaskWeightedTokensRow, error) {
+	row := q.db.QueryRow(ctx, sumTaskWeightedTokens, taskID)
+	var i SumTaskWeightedTokensRow
+	err := row.Scan(&i.Weighted, &i.ModelRows)
+	return i, err
+}
+
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
 INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())

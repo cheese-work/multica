@@ -615,6 +615,7 @@ func main() {
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
+	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
@@ -765,6 +766,7 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	go h.RunElevationFenceSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
