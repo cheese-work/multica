@@ -273,6 +273,13 @@ func (q *Queries) ConsumeHandoffWakeupReceipts(ctx context.Context, arg ConsumeH
 }
 
 const consumeWakeupReceipts = `-- name: ConsumeWakeupReceipts :exec
+WITH receipt_taint AS (
+ SELECT COALESCE(array_agg(DISTINCT x ORDER BY x),'{}')::text[] AS ids
+ FROM issue_wakeup_receipt r,unnest(r.taint_ids) AS x WHERE r.id=ANY($2::uuid[])
+), tainted AS (
+ UPDATE agent_task_queue SET taint_ids=(SELECT ids FROM receipt_taint)
+ WHERE id=$1::uuid AND cardinality((SELECT ids FROM receipt_taint))>0
+)
 UPDATE issue_wakeup_receipt SET task_id=$1,processed_at=now() WHERE id=ANY($2::uuid[])
 `
 
@@ -281,6 +288,9 @@ type ConsumeWakeupReceiptsParams struct {
 	Ids    []pgtype.UUID `json:"ids"`
 }
 
+// Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
+// receipt keeps every comment it has held, migration 812). A new wakeup task and
+// a merge into a queued one both end here; the task trigger keeps what it had.
 func (q *Queries) ConsumeWakeupReceipts(ctx context.Context, arg ConsumeWakeupReceiptsParams) error {
 	_, err := q.db.Exec(ctx, consumeWakeupReceipts, arg.TaskID, arg.Ids)
 	return err
@@ -1517,7 +1527,7 @@ func (q *Queries) ListPendingWakeupInputGroups(ctx context.Context, arg ListPend
 }
 
 const listPendingWakeupReceipts = `-- name: ListPendingWakeupReceipts :many
-SELECT id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at FROM issue_wakeup_receipt WHERE wakeup_id= $1 AND revision= $2 AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE
+SELECT id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at, taint_ids FROM issue_wakeup_receipt WHERE wakeup_id= $1 AND revision= $2 AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE
 `
 
 type ListPendingWakeupReceiptsParams struct {
@@ -1546,6 +1556,7 @@ func (q *Queries) ListPendingWakeupReceipts(ctx context.Context, arg ListPending
 			&i.CreatedAt,
 			&i.CoalesceKey,
 			&i.DeferredAt,
+			&i.TaintIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2148,7 +2159,7 @@ func (q *Queries) LocklessWakeup(ctx context.Context, id pgtype.UUID) (IssueWake
 }
 
 const markWakeupReceiptsDeferred = `-- name: MarkWakeupReceiptsDeferred :many
-UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY($1::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at
+UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY($1::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at, taint_ids
 `
 
 // Active-run defer: stamps the facts a running target held back and returns
@@ -2174,6 +2185,7 @@ func (q *Queries) MarkWakeupReceiptsDeferred(ctx context.Context, ids []pgtype.U
 			&i.CreatedAt,
 			&i.CoalesceKey,
 			&i.DeferredAt,
+			&i.TaintIds,
 		); err != nil {
 			return nil, err
 		}
@@ -2234,7 +2246,7 @@ func (q *Queries) PauseIssueWakeup(ctx context.Context, arg PauseIssueWakeupPara
 const recordWakeupReceipt = `-- name: RecordWakeupReceipt :one
 INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payload)
 VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at
+ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING id, wakeup_id, revision, event_key, event_type, payload, task_id, processed_at, created_at, coalesce_key, deferred_at, taint_ids
 `
 
 type RecordWakeupReceiptParams struct {
@@ -2268,6 +2280,7 @@ func (q *Queries) RecordWakeupReceipt(ctx context.Context, arg RecordWakeupRecei
 		&i.CreatedAt,
 		&i.CoalesceKey,
 		&i.DeferredAt,
+		&i.TaintIds,
 	)
 	return i, err
 }

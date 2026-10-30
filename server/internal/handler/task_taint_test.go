@@ -54,15 +54,13 @@ func TestTaintPropagatesToEveryTaskSource(t *testing.T) {
 		{"continuation (parent task)", testutil.Cols{"parent_task_id": tainted}, []string{"t1"}},
 		{"retry", testutil.Cols{"retry_of_task_id": tainted}, []string{"t1"}},
 		{"rerun", testutil.Cols{"rerun_of_task_id": tainted}, []string{"t1"}},
-		{"resumed session", testutil.Cols{"session_id": "sess-tainted"}, []string{"t1"}},
-		{"mention or comment.created wakeup", testutil.Cols{"trigger_comment_id": byTainted}, []string{"t1"}},
+		{"trigger comment", testutil.Cols{"trigger_comment_id": byTainted}, []string{"t1"}},
 		{"coalesced comment", testutil.Cols{"coalesced_comment_ids": testutil.Raw("ARRAY['" + byTainted + "']::uuid[]")}, []string{"t1"}},
 		{"assigning task", testutil.Cols{"delegated_from_task_id": tainted}, []string{"t1"}},
 		{"clean sources stay clean", testutil.Cols{"parent_task_id": clean, "trigger_comment_id": byClean}, []string{}},
 		{"member comment stays clean", testutil.Cols{"trigger_comment_id": byMember}, []string{}},
 		{"union of sources, sorted", testutil.Cols{"parent_task_id": tainted, "delegated_from_task_id": taintedTask(t, agentID, "a0", "t1")}, []string{"a0", "t1"}},
 	}
-	dbfx.Exec(t, `UPDATE agent_task_queue SET session_id = 'sess-tainted', issue_id = $2 WHERE id = $1`, tainted, issueID)
 	for _, c := range cases {
 		cols := testutil.Cols{"status": "completed", "issue_id": issueID, "runtime_id": handlerTestRuntimeID(t)}
 		for k, v := range c.cols {

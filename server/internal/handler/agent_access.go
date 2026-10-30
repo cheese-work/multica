@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -279,6 +280,15 @@ func (h *Handler) commentSourceTaskID(r *http.Request) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return task.ID
+}
+
+// actingTaskContext marks ctx with the agent task making this request, so tasks
+// the request enqueues inherit its taint. A member's request marks nothing.
+func (h *Handler) actingTaskContext(r *http.Request) context.Context {
+	if id := h.commentSourceTaskID(r); id.Valid {
+		return service.WithActingTask(r.Context(), id)
+	}
+	return r.Context()
 }
 
 // taskFromRequestHeader resolves the agent's currently-executing task from the

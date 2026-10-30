@@ -1800,6 +1800,7 @@ type IssueWakeupReceipt struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	CoalesceKey pgtype.Text        `json:"coalesce_key"`
 	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
+	TaintIds    []string           `json:"taint_ids"`
 }
 
 type IssueWorkflow struct {

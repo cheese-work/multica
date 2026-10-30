@@ -4375,7 +4375,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote) {
+		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
 	}
@@ -5187,7 +5187,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote) {
+			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
 				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 			}
 		}

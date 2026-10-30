@@ -2870,10 +2870,10 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 const createAgentTask = `-- name: CreateAgentTask :one
 WITH review_claim AS (
     INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-    SELECT i.workspace_id, i.id, $26::text, $1
+    SELECT i.workspace_id, i.id, $27::text, $1
     FROM issue i
     WHERE i.id = $3
-      AND COALESCE($26::text, '') <> ''
+      AND COALESCE($27::text, '') <> ''
       AND lock_task_owner_rows($1, $3, $2)
     ON CONFLICT (issue_id, head_sha) DO NOTHING
     RETURNING issue_id
@@ -2883,7 +2883,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, pull_request_id, id
+    workflow_step, pull_request_id, taint_ids, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, $5,
@@ -2923,9 +2923,12 @@ SELECT
         AND COALESCE($12::text, '') <> ''
         AND pr.head_sha = $12::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
-    COALESCE($24::uuid, gen_random_uuid())
+    -- The assigning task's taint (migration 812): the trigger unions in every
+    -- other source, but only the request knows which task is acting.
+    COALESCE($24::text[], '{}'),
+    COALESCE($25::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
-  AND (NOT COALESCE($25::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
+  AND (NOT COALESCE($26::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids
 `
 
@@ -2953,6 +2956,7 @@ type CreateAgentTaskParams struct {
 	TriggerEvidenceKind  pgtype.Text   `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID pgtype.UUID   `json:"trigger_evidence_ref_id"`
 	PullRequestID        pgtype.UUID   `json:"pull_request_id"`
+	TaintIds             []string      `json:"taint_ids"`
 	ID                   pgtype.UUID   `json:"id"`
 	GateRequired         pgtype.Bool   `json:"gate_required"`
 	GateHead             pgtype.Text   `json:"gate_head"`
@@ -3007,6 +3011,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.PullRequestID,
+		arg.TaintIds,
 		arg.ID,
 		arg.GateRequired,
 		arg.GateHead,
@@ -6192,6 +6197,32 @@ func (q *Queries) HasTaskForIssue(ctx context.Context, issueID pgtype.UUID) (boo
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const inheritSessionTaint = `-- name: InheritSessionTaint :one
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.issue_id = t.issue_id AND s.session_id = $2::text
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids
+`
+
+type InheritSessionTaintParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SessionID string      `json:"session_id"`
+}
+
+// Resuming a session continues its transcript, so the claimed task takes the
+// taint of every task that ran in it (CHE-2216 plan 3.7). The trigger on
+// agent_task_queue keeps what the task already had.
+func (q *Queries) InheritSessionTaint(ctx context.Context, arg InheritSessionTaintParams) ([]string, error) {
+	row := q.db.QueryRow(ctx, inheritSessionTaint, arg.ID, arg.SessionID)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
 }
 
 const isTaskSessionRetired = `-- name: IsTaskSessionRetired :one
