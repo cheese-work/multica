@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "图表",
+    "list": "列表",
+    "sub_issues": "子任务",
+    "parent_summary": "父任务",
+    "parent_filter": "父任务 / 子任务",
+    "done_count": "已完成",
+    "in_progress_count": "进行中",
+    "todo_count": "待办",
+    "closed_count": "已关闭",
+    "no_parent": "无父任务",
+    "mentions_hint": "启用时加载",
+    "navigation_hint": "点击卡片打开 · 悬停查看完整标题 · ← → ↑ ↓ 移动焦点 · Esc 关闭",
     "title": "任务关系图",
     "direction": "箭头从父任务指向子任务，从被监测的任务指向待唤醒的任务，从提及来源指向目标。当前任务以粗边框标出。",
     "depth": "深度",

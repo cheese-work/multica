@@ -10,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
@@ -114,6 +115,9 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == sandbox.BridgeHelperArg {
+		os.Exit(sandbox.BridgeMain(os.Args[2:]))
 	}
 	if len(os.Args) == 2 && os.Args[1] == execenv.PreparationHelperArg {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
