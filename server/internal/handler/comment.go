@@ -2897,6 +2897,18 @@ func (h *Handler) resolveCommentTriggerOriginator(ctx context.Context, issue db.
 	return authorType, authorID, leaderOriginator
 }
 
+// commentRunOrigin: only a comment a person wrote names its agents. An agent's
+// mention or reply is derived, so it stops at a spent run budget (CHE-2297 L2a);
+// a comment that cannot be read counts as derived.
+func (h *Handler) commentRunOrigin(ctx context.Context, commentID pgtype.UUID) service.RunOrigin {
+	if commentID.Valid {
+		if c, err := h.Queries.GetComment(ctx, commentID); err == nil && c.AuthorType == "member" {
+			return service.OriginNamed
+		}
+	}
+	return service.OriginDerived
+}
+
 // enqueueSingleCommentTrigger creates a fresh task for one computed trigger.
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
 // (MUL-4195) can fall back to it when a pending task vanished mid-flight.
@@ -2957,7 +2969,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			if handoffNote != "" {
 				actorUserID = memberActorUserID(authorType, authorID)
 			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), handoffNote, actorUserID)
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -2966,14 +2978,14 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			}
 			return task, nil
 		}
-		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{}); err != nil {
+		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{}); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
 			return task, err
 		}
 	case commentTriggerSourceMentionAgent:
-		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{}); err != nil {
+		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{}); err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
@@ -2985,7 +2997,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		// the conversation path, the replied-to comment's own authoring task
 		// for the thread-parent path. Gating on the source as well would keep
 		// the thread-parent path demoted for no reason (MUL-7006).
-		task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{})
+		task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{})
 		if err != nil {
 			logCommentEnqueueFailure("enqueue routed comment agent task failed", err,
 				"issue_id", uuidToString(issue.ID),

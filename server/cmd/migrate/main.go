@@ -154,6 +154,8 @@ var concurrentIndexCleanups = map[string]string{
 	"734_agent_preset_agent_name_uq":                            "agent_preset_agent_name_uq",
 	"762_run_budget_notice_unique":                              "idx_one_run_budget_notice_per_window",
 	"763_run_budget_notice_workspace_index":                     "idx_run_budget_notice_workspace_id",
+	"799_issue_run_budget_entry_unique":                         "idx_one_issue_run_budget_entry",
+	"800_issue_run_budget_entry_workspace_index":                "idx_issue_run_budget_entry_workspace_id",
 	"759_issue_pr_event_dedupe_index":                           "idx_issue_pr_event_dedupe",
 	"760_issue_pr_event_latest_index":                           "idx_issue_pr_event_latest",
 	"770_task_pr_event_capability_index":                        "task_pr_event_capability_task_uidx",

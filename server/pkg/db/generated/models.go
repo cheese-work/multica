@@ -1605,6 +1605,18 @@ type IssueReviewAdmission struct {
 	AdmittedAt  pgtype.Timestamptz `json:"admitted_at"`
 }
 
+type IssueRunBudgetEntry struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WindowID    string             `json:"window_id"`
+	Kind        string             `json:"kind"`
+	EventKey    string             `json:"event_key"`
+	RunsDelta   int32              `json:"runs_delta"`
+	TokensDelta int64              `json:"tokens_delta"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueSourceContext struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

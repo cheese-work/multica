@@ -1477,8 +1477,17 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	task, attr, err := s.enqueueIssueTaskWithQueries(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
+	// One transaction from the budget lock to the debit: concurrent admissions
+	// at a balance of 1 must admit exactly one.
+	var task db.AgentTaskQueue
+	var attr attribution.Result
+	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
+	err := s.runInTx(ctx, func(qtx *db.Queries) (err error) {
+		task, attr, err = s.enqueueIssueTaskWithQueries(txCtx, qtx, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
+		return err
+	})
 	if err == nil {
+		notifyAfterCommit()
 		s.RecordHumanDelegation(ctx, attr)
 		if !fireAt.Valid {
 			s.PublishTaskEnqueued(ctx, task)
@@ -1592,7 +1601,7 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 			FireAt:               fireAt,
 		})
 		if err == nil {
-			noteRunInserted(ctx, queries, createParams.IssueID)
+			err = noteRunInserted(ctx, queries, createParams.IssueID, task.ID)
 		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
@@ -1645,13 +1654,17 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, origin)
 }
 
-func (s *TaskService) PrepareTaskForMention(ctx context.Context, issue db.Issue, agentID, triggerCommentID, actorUserID pgtype.UUID, origin RunOrigin) (db.CreateAgentTaskParams, error) {
-	params, _, err := s.prepareMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, origin)
+func (s *TaskService) PrepareTaskForMention(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, triggerCommentID, actorUserID pgtype.UUID, origin RunOrigin) (db.CreateAgentTaskParams, error) {
+	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, origin)
 	return params, err
 }
 
 func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: "mention", ReviewRun: true})
+	return s.enqueuePreparedInTx(ctx, queries, issue, params, origin, "mention")
+}
+
+func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin, trigger string) (db.AgentTaskQueue, error) {
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true})
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1715,12 +1728,40 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	task, attr, err := s.enqueueMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
-	if err == nil {
-		s.RecordHumanDelegation(ctx, attr)
-		s.PublishTaskEnqueued(ctx, task)
+	// The helpers prepare calls read through the pool, so they run before the
+	// transaction: it holds one connection, from the budget lock to the debit.
+	params, attr, err := s.prepareMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
 	}
-	return task, err
+	trigger := "mention"
+	if isLeader {
+		trigger = "squad leader callback"
+	}
+	var task db.AgentTaskQueue
+	err = s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		task, err = s.enqueuePreparedInTx(ctx, qtx, issue, params, origin, trigger)
+		return err
+	})
+	if err == nil {
+		// After commit: the hook reads the row through the pool.
+		notifyTaskEnqueued(ctx, task)
+	}
+	if err != nil {
+		if isDuplicatePendingTaskErr(err) {
+			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+		}
+		if !errors.Is(err, ErrRunBudgetExhausted) {
+			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
+		}
+		return db.AgentTaskQueue{}, err
+	}
+	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
+	s.RecordHumanDelegation(ctx, attr)
+	s.PublishTaskEnqueued(ctx, task)
+	return task, nil
 }
 
 func (s *TaskService) enqueueMentionTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
@@ -5802,7 +5843,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			})
 			switch {
 			case cerr == nil:
-				noteRunInserted(ctx, qtx, t.IssueID)
+				if nerr := noteRunInserted(ctx, qtx, t.IssueID, child.ID); nerr != nil {
+					return nerr
+				}
 				// CHE-607: same gap and same fix as MaybeRetryFailedTask — this
 				// child was minted by CreateRetryTask directly, with no
 				// AgentReadiness consult, so catch a held provider here and
@@ -6411,7 +6454,9 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		)
 		return nil, err
 	}
-	noteRunInserted(ctx, qtx, parent.IssueID)
+	if err := noteRunInserted(ctx, qtx, parent.IssueID, child.ID); err != nil {
+		return nil, err
+	}
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than

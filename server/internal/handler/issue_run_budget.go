@@ -85,6 +85,12 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	// The ledger window opens before the cap changes, or its lazy credit would
+	// already include the raise.
+	if err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
+		return
+	}
 	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(req.Runs), WorkflowMax: int32(workflowMax),
 	})
@@ -97,10 +103,15 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{"from": current, "to": raised.Int32})
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+	activity, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_raised", Details: body,
-	}); err != nil {
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
+		return
+	}
+	if err := service.RecordRunBudgetRaise(r.Context(), qtx, issue, activity.ID, int(raised.Int32)-current); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
 		return
 	}

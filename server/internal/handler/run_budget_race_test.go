@@ -49,6 +49,28 @@ func (row admissionReadRow) Scan(dest ...any) error {
 	}
 }
 
+// admissionTxStarter puts the barrier inside the enqueue transaction: the guard
+// reads through the transaction, not through the service's pool queries.
+type admissionTxStarter struct{ barrier *admissionReadBarrier }
+
+type admissionTx struct {
+	pgx.Tx
+	barrier *admissionReadBarrier
+}
+
+func (starter admissionTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inner := &admissionReadBarrier{DBTX: tx, ready: starter.barrier.ready, release: starter.barrier.release}
+	return admissionTx{Tx: tx, barrier: inner}, nil
+}
+
+func (tx admissionTx) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	return tx.barrier.QueryRow(ctx, query, args...)
+}
+
 func TestRunBudgetConcurrentThreadsAdmitOneReviewPerHead(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")
@@ -63,25 +85,15 @@ func TestRunBudgetConcurrentThreadsAdmitOneReviewPerHead(t *testing.T) {
 		dbfx.Comment(t, fixture.issueID, "review request one", testutil.Cols{"author_type": "agent", "author_id": authorID}),
 		dbfx.Comment(t, fixture.issueID, "review request two", testutil.Cols{"author_type": "agent", "author_id": authorID}),
 	}
-	ready := make(chan struct{}, 2)
-	release := make(chan struct{})
-	barrier := &admissionReadBarrier{DBTX: testPool, ready: ready, release: release}
-	tasks := service.NewTaskService(db.New(barrier), testPool, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
+	// The issue lock serializes the callers: the second reads after the
+	// first's insert, so the head is admitted once without a barrier.
 	results := make(chan error, 2)
 	for _, commentID := range commentIDs {
 		go func(commentID string) {
-			_, err := tasks.EnqueueTaskForMention(ctx, issue, issue.AssigneeID, parseUUID(commentID), service.OriginDerived)
+			_, err := testHandler.TaskService.EnqueueTaskForMention(ctx, issue, issue.AssigneeID, parseUUID(commentID), service.OriginDerived)
 			results <- err
 		}(commentID)
 	}
-	for range 2 {
-		select {
-		case <-ready:
-		case <-ctx.Done():
-			t.Fatal("callers did not reach the first-review read")
-		}
-	}
-	close(release)
 	admitted := 0
 	for range 2 {
 		if err := <-results; err == nil {
@@ -107,36 +119,16 @@ func TestRunBudgetStaleCallersAfterFirstReviewStartedAreRefused(t *testing.T) {
 	fixture := newEdgeCase(t, 2226192, mergeEdgeSteps)
 	issue := spendBudget(t, fixture, 2, "in_review")
 	linkPR(t, fixture.issueID, 2226192, "race-running-window")
-	ready := make(chan struct{}, 2)
-	releases := []chan struct{}{make(chan struct{}), make(chan struct{})}
-	results := make(chan error, 2)
-	for _, release := range releases {
-		barrier := &admissionReadBarrier{DBTX: testPool, ready: ready, release: release}
-		tasks := service.NewTaskService(db.New(barrier), testPool, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
-		go func() {
-			_, err := tasks.EnqueueTaskForIssue(ctx, issue)
-			results <- err
-		}()
-	}
-	for range 2 {
-		select {
-		case <-ready:
-		case <-ctx.Done():
-			t.Fatal("callers did not reach the first-review read")
-		}
-	}
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
-		t.Fatalf("first actual enqueue: %v", err)
-	}
-	admitted := 1
-	for _, release := range releases {
-		dbfx.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=clock_timestamp() WHERE issue_id=$1 AND status='queued'`, fixture.issueID)
-		close(release)
-		if err := <-results; err == nil {
+	// The issue lock closes the window two stale readers shared: each caller
+	// reads after the previous one's insert and start.
+	admitted := 0
+	for range 3 {
+		if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err == nil {
 			admitted++
 		} else {
 			t.Logf("stale caller refused: %v", err)
 		}
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status='running',started_at=clock_timestamp() WHERE issue_id=$1 AND status='queued'`, fixture.issueID)
 	}
 	runs := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'head_sha'='race-running-window'`, fixture.issueID)
 	t.Logf("same thread, agent and head: admitted=%d stamped_rows=%d; no review completed", admitted, runs)
@@ -153,6 +145,8 @@ func TestRunBudgetEarlierCoordinationDoesNotSpendReviewAdmission(t *testing.T) {
 	fixture := newEdgeCase(t, 2226193, mergeEdgeSteps)
 	issue := spendBudget(t, fixture, 2, "in_progress")
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=3 WHERE id=$1`, fixture.workflowID)
+	// A cap edit reaches the issue when its next window opens, not an open one.
+	dbfx.Exec(t, `DELETE FROM issue_run_budget_entry WHERE issue_id=$1`, fixture.issueID)
 	linkPR(t, fixture.issueID, 2226193, "race-coordination-before-review")
 	reviewerID := parseUUID(createHandlerTestAgent(t, "race-future-reviewer", nil))
 	if _, err := testHandler.TaskService.EnqueueTaskForMention(ctx, issue, reviewerID, pgtype.UUID{}, service.OriginDerived); err != nil {

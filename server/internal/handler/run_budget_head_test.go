@@ -18,7 +18,7 @@ func TestRunBudgetPreparedMentionAdmitsTheHeadItIsStampedWith(t *testing.T) {
 	fixture := newEdgeCase(t, 2226401, mergeEdgeSteps)
 	issue := spendBudget(t, fixture, 2, "in_review")
 	linkPR(t, fixture.issueID, 2226401, "head-prepared-old")
-	params, err := testHandler.TaskService.PrepareTaskForMention(ctx, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
+	params, err := testHandler.TaskService.PrepareTaskForMention(ctx, testHandler.Queries, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestRunBudgetHeadAdvanceBetweenGuardAndInsertKeepsOneHead(t *testing.T) {
 	ready := make(chan struct{}, 1)
 	release := make(chan struct{})
 	barrier := &admissionReadBarrier{DBTX: testPool, ready: ready, release: release}
-	tasks := service.NewTaskService(db.New(barrier), testPool, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
+	tasks := service.NewTaskService(db.New(barrier), admissionTxStarter{barrier}, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
 	result := make(chan error, 1)
 	go func() {
 		_, err := tasks.EnqueueTaskForIssue(ctx, issue)
