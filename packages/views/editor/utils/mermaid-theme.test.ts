@@ -19,6 +19,7 @@ const COLORS = {
   success: "rgb(8, 8, 8)",
   warning: "rgb(9, 9, 9)",
   destructive: "rgb(10, 10, 10)",
+  chart: ["rgb(20, 0, 0)", "rgb(0, 40, 0)", "rgb(0, 0, 60)", "rgb(80, 80, 0)", "rgb(255, 255, 255)"],
 };
 
 describe("shouldStackVertically", () => {
@@ -64,6 +65,43 @@ describe("buildMermaidThemeVariables", () => {
   it("tells Mermaid which scheme it draws for", () => {
     expect(light.darkMode).toBe(false);
     expect(dark.darkMode).toBe(true);
+  });
+
+  it("gives xychart-beta every color it would otherwise take from its light default", () => {
+    // xychart-beta merges onto the light default theme, not the base theme's
+    // derived values: any color left out stays near-white on a light grey plot.
+    expect(dark.xyChart).toMatchObject({
+      backgroundColor: COLORS.background,
+      titleColor: COLORS.foreground,
+      dataLabelColor: COLORS.foreground,
+      xAxisTitleColor: COLORS.foreground,
+      xAxisLabelColor: COLORS.foreground,
+      xAxisTickColor: COLORS.foreground,
+      xAxisLineColor: COLORS.foreground,
+      yAxisTitleColor: COLORS.foreground,
+      yAxisLabelColor: COLORS.foreground,
+      yAxisTickColor: COLORS.foreground,
+      yAxisLineColor: COLORS.foreground,
+    });
+  });
+
+  it("writes the xychart palette as hex, because Mermaid splits it on commas", () => {
+    expect(light.xyChart.plotColorPalette).toBe("#140000,#002800,#00003c,#505000,#ffffff");
+  });
+
+  it("colors timeline sections and pie slices from the chart tokens, with readable labels", () => {
+    expect(light).toMatchObject({
+      cScale0: COLORS.chart[0],
+      cScale4: COLORS.chart[4],
+      pie1: COLORS.chart[0],
+      pie5: COLORS.chart[4],
+      cScaleLabel0: "rgb(255, 255, 255)",
+      cScaleLabel4: "rgb(17, 24, 39)",
+    });
+  });
+
+  it("draws the radar grid in the muted foreground", () => {
+    expect(light.radar.graticuleColor).toBe(COLORS.mutedForeground);
   });
 });
 
