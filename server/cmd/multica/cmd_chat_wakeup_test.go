@@ -16,8 +16,47 @@ func chatWakeupTestCommand(after, at, instruction string) *cobra.Command {
 	command.Flags().String("after", after, "")
 	command.Flags().String("at", at, "")
 	command.Flags().String("instruction", instruction, "")
+	command.Flags().String("title", "", "")
 	command.Flags().String("output", "json", "")
 	return command
+}
+
+func TestChatWakeupCreateSendsOptionalTitle(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_, _ = response.Write([]byte(`{"id":"w1","title":"Check deploy"}`))
+	}))
+	t.Cleanup(server.Close)
+	setCLITestServerEnv(t, server.URL)
+
+	if chatWakeupCreateCmd.Flags().Lookup("title") == nil || !strings.Contains(chatWakeupCmd.Long, "--title") {
+		t.Error("create command must register --title and the wakeup help must mention it")
+	}
+	titled := chatWakeupTestCommand("25m", "", "refresh")
+	_ = titled.Flags().Set("title", "Check deploy")
+	titled.SetOut(&bytes.Buffer{})
+	if err := runChatWakeupCreate(titled, nil); err != nil {
+		t.Fatal(err)
+	}
+	if body["title"] != "Check deploy" {
+		t.Fatalf("titled body = %v, want title", body)
+	}
+
+	body = nil
+	untitled := chatWakeupTestCommand("25m", "", "refresh")
+	untitled.SetOut(&bytes.Buffer{})
+	if err := runChatWakeupCreate(untitled, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := body["title"]; has {
+		t.Fatalf("untitled body = %v, want no title key", body)
+	}
 }
 
 func TestChatWakeupCreatePostsDelayAndInstruction(t *testing.T) {

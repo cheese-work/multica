@@ -87,8 +87,8 @@ func mustGetString(cmd *cobra.Command, name string) string {
 // may carry; connection flags are not body fields.
 var agentDigestAllowedFlags = map[string]bool{
 	"instructions-stdin": true, "instructions-file": true, "expected-before-digest": true,
-	"vote-issue": true,
-	"output":     true, "server-url": true, "workspace-id": true, "profile": true, "debug": true,
+	"vote-issue": true, "decision-id": true, "print-hash": true,
+	"output": true, "server-url": true, "workspace-id": true, "profile": true, "debug": true,
 }
 
 // buildAgentUpdateDigestBody assembles exactly
@@ -144,30 +144,50 @@ func digestWriteError(op string, err error, candidate, expectedBefore string) er
 // vote issue, checked server-side.
 var voteIssueUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// checkVoteIssueFlag rejects a malformed vote request before any HTTP call.
-func checkVoteIssueFlag(cmd *cobra.Command) error {
-	if !cmd.Flags().Changed("vote-issue") {
-		return nil
+// checkBindingFlags rejects a malformed --vote-issue, --decision-id or
+// --print-hash request before any HTTP call. The two bindings are alternatives.
+func checkBindingFlags(cmd *cobra.Command) error {
+	voteSet, decisionSet := cmd.Flags().Changed("vote-issue"), cmd.Flags().Changed("decision-id")
+	digestSet := cmd.Flags().Changed("expected-before-digest")
+	if voteSet && decisionSet {
+		return fmt.Errorf("--decision-id and --vote-issue are alternatives; pass one")
 	}
-	if !cmd.Flags().Changed("expected-before-digest") {
-		return fmt.Errorf("--vote-issue requires --expected-before-digest (the before_sha256 of the vote receipt)")
+	if voteSet {
+		if !digestSet {
+			return fmt.Errorf("--vote-issue requires --expected-before-digest (the before_sha256 of the vote receipt)")
+		}
+		if !voteIssueUUID.MatchString(mustGetString(cmd, "vote-issue")) {
+			return fmt.Errorf("--vote-issue must be an issue UUID (the server reads votes by issue id)")
+		}
 	}
-	if !voteIssueUUID.MatchString(mustGetString(cmd, "vote-issue")) {
-		return fmt.Errorf("--vote-issue must be an issue UUID (the server reads votes by issue id)")
+	if decisionSet {
+		if !digestSet {
+			return fmt.Errorf("--decision-id requires --expected-before-digest (the before_sha256 of the decision-bound write)")
+		}
+		if err := checkDecisionID(cmd); err != nil {
+			return err
+		}
+	}
+	if printHashRequested(cmd) && !digestSet {
+		return fmt.Errorf("--print-hash requires --expected-before-digest")
 	}
 	return nil
 }
 
-// withVoteReceipt returns body unchanged without --vote-issue, else the
-// vote-receipt body for field.
-func withVoteReceipt(cmd *cobra.Command, body map[string]any, field string) map[string]any {
-	if !cmd.Flags().Changed("vote-issue") {
+// withBinding returns body unchanged without --vote-issue or --decision-id,
+// else the vote-receipt or decision-bound body for field.
+func withBinding(cmd *cobra.Command, body map[string]any, field string) map[string]any {
+	key := "vote_issue"
+	flag := "vote-issue"
+	if cmd.Flags().Changed("decision-id") {
+		key, flag = "decision_id", "decision-id"
+	} else if !cmd.Flags().Changed("vote-issue") {
 		return body
 	}
 	content := bodyText(body, field)
 	return map[string]any{
 		field:           content,
-		"vote_issue":    mustGetString(cmd, "vote-issue"),
+		key:             mustGetString(cmd, flag),
 		"before_sha256": bodyText(body, "expected_before_digest"),
 		"after_sha256":  fmt.Sprintf("%x", sha256.Sum256([]byte(content))),
 	}

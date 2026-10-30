@@ -446,6 +446,15 @@ describe("PullRequestList auto-complete", () => {
     );
   });
 
+  it("explains that the workflow, not auto-complete, moves the issue", async () => {
+    mockPRs = [makePR({ id: "a", number: 12, state: "merged" })];
+    mockAutoComplete = decision("workflow_owned", ["a"]);
+    renderList();
+    expect(await screen.findByTestId("pr-auto-complete-line")).toHaveTextContent(
+      "The workflow moves this issue when its PR merges",
+    );
+  });
+
   // The workspace chose to leave status alone: a team choice, not repeated on
   // every issue. An older backend's no_close_intent says nothing either.
   it.each(["workspace_disabled", "no_close_intent", "at_target", "terminal"])("says nothing for %s", async (state) => {

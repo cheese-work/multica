@@ -85,29 +85,29 @@ func TestParseSquadTierList(t *testing.T) {
 func TestInstructionTokenLimits(t *testing.T) {
 	// 3000 tokens limit for squad = ~9000 chars at 3.0 chars/token
 	squadOverLimit := strings.Repeat("squad ", 2000) // ~12000 chars, ~4000 tokens
-	if jev.EstimateInstructionTokens(squadOverLimit) <= 3000 {
-		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", jev.EstimateInstructionTokens(squadOverLimit))
+	if util.EstimateInstructionTokens(squadOverLimit) <= 3000 {
+		t.Fatalf("expected squadOverLimit to exceed 3000 tokens, got %d", util.EstimateInstructionTokens(squadOverLimit))
 	}
 
 	squadUnderLimit := "Short squad instructions"
-	if jev.EstimateInstructionTokens(squadUnderLimit) > 3000 {
-		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", jev.EstimateInstructionTokens(squadUnderLimit))
+	if util.EstimateInstructionTokens(squadUnderLimit) > 3000 {
+		t.Fatalf("expected squadUnderLimit under 3000 tokens, got %d", util.EstimateInstructionTokens(squadUnderLimit))
 	}
 
 	// 4000 tokens limit for agent = ~12000 chars at 3.0 chars/token
 	agentOverLimit := strings.Repeat("agent ", 3000) // ~18000 chars, ~6000 tokens
-	if jev.EstimateInstructionTokens(agentOverLimit) <= 4000 {
-		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", jev.EstimateInstructionTokens(agentOverLimit))
+	if util.EstimateInstructionTokens(agentOverLimit) <= 4000 {
+		t.Fatalf("expected agentOverLimit to exceed 4000 tokens, got %d", util.EstimateInstructionTokens(agentOverLimit))
 	}
 
 	agentUnderLimit := "Short agent instructions"
-	if jev.EstimateInstructionTokens(agentUnderLimit) > 4000 {
-		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", jev.EstimateInstructionTokens(agentUnderLimit))
+	if util.EstimateInstructionTokens(agentUnderLimit) > 4000 {
+		t.Fatalf("expected agentUnderLimit under 4000 tokens, got %d", util.EstimateInstructionTokens(agentUnderLimit))
 	}
 
 	// Verify EstimateTokens uses byte length for state builder budgeting
 	multiByteText := "xin chào việt nam 🎉"
-	if jev.EstimateTokens(multiByteText) < jev.EstimateInstructionTokens(multiByteText) {
+	if jev.EstimateTokens(multiByteText) < util.EstimateInstructionTokens(multiByteText) {
 		t.Fatalf("expected byte-based EstimateTokens >= rune-based EstimateInstructionTokens for multibyte text")
 	}
 }
@@ -701,17 +701,28 @@ func TestTryJevSquadRouting_TodoStatusAndInProgress(t *testing.T) {
 	squad, _ := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: squadID, WorkspaceID: wsUUID})
 
 	// 1. Test todo -> in_progress transition
+	occupiedIssueID := dbid.NewV7()
+	dbfx.Exec(t, `
+		INSERT INTO issue (id, workspace_id, title, description, status, priority, creator_type, creator_id, revision, number)
+		VALUES ($1, $2, 'Existing issue number', '', 'todo', 'none', 'member', $3, 1, 2001)
+		ON CONFLICT (workspace_id, number) DO NOTHING
+	`, occupiedIssueID, wsUUID, testUserID)
+	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, occupiedIssueID)
+
 	todoIssueID := dbid.NewV7()
-	_, _ = testPool.Exec(ctx, `
-		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Todo task', 'Promoted from backlog to todo', 'todo', 'high', 'squad', $3, 'member', $4, 1, 2001)
-	`, todoIssueID, wsUUID, squadID, testUserID)
+	dbfx.Issue(t, "Todo task", testutil.Cols{
+		"id": todoIssueID, "description": "Promoted from backlog to todo", "status": "todo",
+		"priority": "high", "assignee_type": "squad", "assignee_id": squadID,
+	})
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, todoIssueID)
 
-	todoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
-	routed, _ := testHandler.tryJevSquadRouting(ctx, todoIssue, squad, "member", testUserID, testUserID)
+	todoIssue, err := testHandler.Queries.GetIssue(ctx, todoIssueID)
+	if err != nil {
+		t.Fatalf("get todo issue: %v", err)
+	}
+	routed, advisory := testHandler.tryJevSquadRouting(ctx, todoIssue, squad, "member", testUserID, testUserID)
 	if !routed {
-		t.Fatalf("expected routing from todo to succeed")
+		t.Fatalf("expected routing from todo to succeed: %s", advisory)
 	}
 	afterTodoIssue, _ := testHandler.Queries.GetIssue(ctx, todoIssueID)
 	if afterTodoIssue.Status != "in_progress" {
@@ -720,16 +731,19 @@ func TestTryJevSquadRouting_TodoStatusAndInProgress(t *testing.T) {
 
 	// 2. Test in_progress status remains in_progress (does NOT jump to in_review)
 	inProgIssueID := dbid.NewV7()
-	_, _ = testPool.Exec(ctx, `
-		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'In progress task', 'Already in progress', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, 2002)
-	`, inProgIssueID, wsUUID, squadID, testUserID)
+	dbfx.Issue(t, "In progress task", testutil.Cols{
+		"id": inProgIssueID, "description": "Already in progress", "status": "in_progress",
+		"priority": "high", "assignee_type": "squad", "assignee_id": squadID,
+	})
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, inProgIssueID)
 
-	inProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
-	routed2, _ := testHandler.tryJevSquadRouting(ctx, inProgIssue, squad, "member", testUserID, testUserID)
+	inProgIssue, err := testHandler.Queries.GetIssue(ctx, inProgIssueID)
+	if err != nil {
+		t.Fatalf("get in-progress issue: %v", err)
+	}
+	routed2, advisory := testHandler.tryJevSquadRouting(ctx, inProgIssue, squad, "member", testUserID, testUserID)
 	if !routed2 {
-		t.Fatalf("expected routing from in_progress to succeed")
+		t.Fatalf("expected routing from in_progress to succeed: %s", advisory)
 	}
 	afterInProgIssue, _ := testHandler.Queries.GetIssue(ctx, inProgIssueID)
 	if afterInProgIssue.Status != "in_progress" {

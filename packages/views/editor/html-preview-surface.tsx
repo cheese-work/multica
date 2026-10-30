@@ -11,6 +11,7 @@ import {
 import { RotateCw, X } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 /**
  * A native top-layer dialog keeps the preview in its original DOM parent.
@@ -24,6 +25,7 @@ export function HtmlPreviewSurface({
   onOpenChange,
   onReload,
   title,
+  mediaContent,
   children,
 }: {
   open: boolean;
@@ -32,6 +34,7 @@ export function HtmlPreviewSurface({
   onOpenChange: (open: boolean) => void;
   onReload?: () => void;
   title: string;
+  mediaContent?: string;
   children: ReactNode;
 }) {
   const { t } = useT("editor");
@@ -105,6 +108,7 @@ export function HtmlPreviewSurface({
               {title}
             </span>
             <div className="absolute top-2 right-2 flex gap-1">
+              <ViewerActions>
               {onReload && (
                 <Button
                   type="button"
@@ -117,6 +121,8 @@ export function HtmlPreviewSurface({
                   <RotateCw />
                 </Button>
               )}
+              {mediaContent != null && <MediaLinkAction kind="html" content={mediaContent} />}
+              </ViewerActions>
               <Button
                 ref={closeRef}
                 type="button"

@@ -174,7 +174,7 @@ func init() {
 	agentCreateCmd.Flags().String("model", "", "Model identifier (e.g. claude-sonnet-4-6, openai/gpt-4o). Prefer this over passing --model in --custom-args.")
 	agentCreateCmd.Flags().String("thinking-level", "", "Reasoning/effort level for the agent's runtime (e.g. Claude: low|medium|high|xhigh|max; Codex values come from the runtime model catalog). The set is runtime/model-specific; malformed values are rejected server-side and the daemon validates the exact model/level pair. Some runtimes (e.g. hermes) expose no reasoning control and reject every value. Empty = runtime default.")
 	agentCreateCmd.Flags().String("service-tier", "", "Codex execution speed: empty = inherit local Codex configuration; default = explicit Standard when supported by the daemon's installed Codex CLI; a catalog tier such as priority = explicit Fast.")
-	agentCreateCmd.Flags().String("custom-args", "", "Custom CLI arguments as JSON array. For model selection prefer --model; some providers (codex app-server, openclaw) reject --model in custom_args.")
+	agentCreateCmd.Flags().String("custom-args", "", "Custom CLI arguments as JSON array. For model selection prefer --model; provider adapters may reserve and filter their own model flags. OpenClaw agent model overrides use runtime_config.model_override and apply to all newly claimed runs until changed or cleared.")
 	agentCreateCmd.Flags().String("custom-env", "", "Custom environment variables as JSON object, e.g. '{\"KEY\":\"value\"}'. Treated as secret material — never logged by the CLI, but values passed on the command line are visible to shell history and 'ps'; prefer --custom-env-stdin or --custom-env-file for real secrets. Pass '{}' to set an empty map.")
 	agentCreateCmd.Flags().Bool("custom-env-stdin", false, "Read the --custom-env JSON object from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --custom-env and --custom-env-file.")
 	agentCreateCmd.Flags().String("custom-env-file", "", "Read the --custom-env JSON object from a file path (suggested mode: 0600). Mutually exclusive with --custom-env and --custom-env-stdin.")
@@ -196,13 +196,15 @@ func init() {
 	agentUpdateCmd.Flags().String("instructions-file", "", "Read the new instructions byte-for-byte from a file")
 	agentUpdateCmd.Flags().String("expected-before-digest", "", "Owner-only guarded write: sha256 hex of the RAW UTF-8 bytes of the instructions you believe are live (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). The server swaps atomically and answers 409 with no write when it is stale. Requires --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments) and forbids every other update flag. A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	agentUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
+	agentUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
+	agentUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
 	agentUpdateCmd.Flags().String("conversation-starters", "", "New conversation starters as a JSON array of {\"label\",\"prompt\"} objects (at most 3; label ≤80, prompt ≤4000). Pass '[]' to clear. Omit to leave the stored value unchanged.")
 	agentUpdateCmd.Flags().String("runtime-id", "", "New runtime ID")
 	agentUpdateCmd.Flags().String("runtime-config", "", "New runtime config as JSON string")
 	agentUpdateCmd.Flags().String("model", "", "New model identifier. Pass an empty string to clear and fall back to the runtime default.")
 	agentUpdateCmd.Flags().String("thinking-level", "", "New reasoning/effort level for the agent's runtime (e.g. Claude: low|medium|high|xhigh|max; Codex values come from the runtime model catalog). The set is runtime/model-specific; malformed values are rejected server-side and the daemon validates the exact model/level pair. Some runtimes (e.g. hermes) expose no reasoning control and reject every value. Pass an empty string to clear and fall back to the runtime default.")
 	agentUpdateCmd.Flags().String("service-tier", "", "New Codex execution speed: default = explicit Standard when supported by the daemon's installed Codex CLI; a catalog tier such as priority = explicit Fast. Pass an empty string to clear and inherit local Codex configuration.")
-	agentUpdateCmd.Flags().String("custom-args", "", "New custom CLI arguments as JSON array. For model selection prefer --model; some providers (codex app-server, openclaw) reject --model in custom_args.")
+	agentUpdateCmd.Flags().String("custom-args", "", "New custom CLI arguments as JSON array. For model selection prefer --model; provider adapters may reserve and filter their own model flags. OpenClaw agent model overrides use runtime_config.model_override and apply to all newly claimed runs until changed or cleared.")
 	// custom_env is intentionally NOT part of `agent update`. Use
 	// `multica agent env set <id>` — that path admits the agent owner or a
 	// workspace owner/admin, denies agent actors, and writes a persisted
@@ -760,7 +762,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 
 	// --expected-before-digest -> owner-only guarded CAS on exactly
 	// `instructions`; see governed_cas.go.
-	if err := checkVoteIssueFlag(cmd); err != nil {
+	if err := checkBindingFlags(cmd); err != nil {
 		return err
 	}
 	if cmd.Flags().Changed("expected-before-digest") {
@@ -768,7 +770,10 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		body = withVoteReceipt(cmd, body, "instructions")
+		body = withBinding(cmd, body, "instructions")
+		if done, err := printHashOnly(cmd, body, "instructions"); done {
+			return err
+		}
 		ctx, cancel := cli.APIContext(context.Background())
 		defer cancel()
 		var result map[string]any

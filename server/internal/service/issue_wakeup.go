@@ -104,7 +104,11 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 	return pgtype.Timestamptz{Time: at, Valid: true}, pgtype.Int8{}, nil
 }
 
-type IssueWakeupService struct{ Tasks *TaskService }
+type IssueWakeupService struct {
+	Tasks *TaskService
+	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
+	prEvents prEventCursor
+}
 
 func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Timestamptz, error) {
 	bad := func(msg string) (pgtype.Timestamptz, error) {
@@ -564,7 +568,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	}
 	params := db.CreateIssueWakeupParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next, ExpiresAt: expiresAt, ExpirySeconds: expirySeconds, OnTimeout: onTimeout, Condition: condition, MaxFires: maxFires}
 	if existingID.Valid {
-		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires)
+		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,workflow_step=CASE WHEN $4::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=issue_wakeup.issue_id) END,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires)
 		if err == nil {
 			out, err = q.LockIssueWakeup(ctx, existingID)
 		}
@@ -720,6 +724,9 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
 	var errs []error
+	if err := s.queueNextTurnPREvents(ctx, workspaceIDs); err != nil {
+		errs = append(errs, fmt.Errorf("queue next-turn PR events: %w", err))
+	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
 	}
@@ -1362,7 +1369,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed, RunTarget{}); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1433,7 +1440,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			}
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
-		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupStep: w.WorkflowStep, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		if err == nil {
+			noteRunInserted(ctx, q, w.IssueID)
+		}
 	}
 	if err != nil {
 		return err
@@ -1628,7 +1638,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		}
 		if config != nil && config.Eff.Config.Target.Set {
 			// A named target is asked again whether its writer may use it.
-			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 			if err != nil {
 				return err
 			}
@@ -1733,7 +1743,7 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
-		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 		if err != nil {
 			return err
 		}

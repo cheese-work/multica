@@ -131,6 +131,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "qwenpaw",
   "mcode",
   "muse",
+  "devin",
   "zeroclaw",
 ] as const;
 
@@ -460,7 +461,7 @@ export interface AgentTask {
  *
  * Field names deliberately match {@link RuntimeUsage} so the same
  * `estimateCost` / `estimateCostBreakdown` / `estimateCacheSavings` helpers in
- * `packages/views/runtimes/utils.ts` price a run and a runtime-day identically
+ * `packages/core/runtimes/pricing.ts` price a run and a runtime-day identically
  * — there is exactly one cost formula in the product.
  *
  * `cost_usd_ticks` is the provider's own price for this slice (1e-10 USD),
@@ -956,7 +957,7 @@ export interface IssueUsageSummary {
 // optional because a backend older than the split omits them — `undefined`
 // there means "estimate from the full token counts", which is not the same as
 // a real 0 ("nothing left to estimate"). See estimateCost in
-// packages/views/runtimes/utils.ts.
+// packages/core/runtimes/pricing.ts.
 export interface RuntimeUsage {
   runtime_id: string;
   date: string;

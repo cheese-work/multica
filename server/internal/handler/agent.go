@@ -30,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -302,6 +301,23 @@ func preserveMaskedGatewayToken(incoming any, persistedRuntimeConfig []byte) {
 	gw["token"] = prev.Gateway.Token
 }
 
+// openclawModelOverride reads the agent's persistent underlying-model override
+// from runtime_config. Every claim snapshots the current setting until it is
+// changed or cleared. Absent, malformed, or whitespace-only values return "".
+func openclawModelOverride(raw []byte) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var rc struct {
+		ModelOverride string `json:"model_override"`
+	}
+	if err := json.Unmarshal(trimmed, &rc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(rc.ModelOverride)
+}
+
 // RepoData holds repository information included in claim responses so the
 // daemon can set up worktrees for each workspace repo.
 type RepoData struct {
@@ -400,6 +416,10 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// CancelAckProof is minted at claim time and echoed in the daemon's
+	// cancel-ack. It is what lets the stop gate trust an ack: the runtime
+	// owner's credential alone cannot (CHE-2309).
+	CancelAckProof string `json:"cancel_ack_proof,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —
@@ -453,6 +473,11 @@ type AgentTaskResponse struct {
 	CreatedAt          string                   `json:"created_at"`
 	PriorSessionID     string                   `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
 	PriorWorkDir       string                   `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// ModelOverride snapshots the agent's persistent OpenClaw model override at
+	// claim time. Later config edits affect subsequent claims, not this payload.
+	// Mirrors internal/daemon/types.go with the same JSON name; empty for other
+	// providers.
+	ModelOverride string `json:"model_override,omitempty"`
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback, and the daemon surfaces the continuity gap
@@ -491,6 +516,7 @@ type AgentTaskResponse struct {
 	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
 	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
 	SupplementCapability  string                 `json:"supplement_capability,omitempty"`
+	PREventCapability     string                 `json:"pr_event_capability,omitempty"`
 	SupplementCommentIDs  []string               `json:"supplement_comment_ids,omitempty"`
 	CanSupplement         bool                   `json:"can_supplement,omitempty"`
 	TriggerThreadID       string                 `json:"trigger_thread_id,omitempty"`       // root comment ID for the triggering thread
@@ -501,6 +527,16 @@ type AgentTaskResponse struct {
 	TriggerAuthorName     string                 `json:"trigger_author_name,omitempty"`     // display name of the triggering comment author
 	NewCommentCount       int                    `json:"new_comment_count,omitempty"`       // ISSUE-WIDE comments since this agent's last run — every thread, not just the triggering one (CountNewCommentsSince); excludes the injected trigger and the agent's own comments; omitempty so old daemons ignore it
 	NewCommentsSince      string                 `json:"new_comments_since,omitempty"`      // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it. Suppressed with the count when the delta is zero — NewCommentsDeltaKnown, not this field, is what says the server looked
+
+	ProcessCleanupCapability string `json:"process_cleanup_capability,omitempty"`
+
+	// MUL-8218: set only when the trigger comment was edited AFTER the run
+	// whose session this claim resumes had started, so that session's history
+	// may still hold an earlier version of the text. EditedAt is RFC3339;
+	// Revision is the comment's current revision. omitempty so old daemons
+	// ignore both.
+	TriggerCommentEditedAt string `json:"trigger_comment_edited_at,omitempty"`
+	TriggerCommentRevision int64  `json:"trigger_comment_revision,omitempty"`
 	// NewCommentsDeltaKnown reports that the issue-wide delta above was
 	// actually COMPUTED this claim — both the anchor lookup and the count
 	// query succeeded. Without it, NewCommentCount == 0 is ambiguous: a true
@@ -764,6 +800,15 @@ type CoalescedCommentData struct {
 	AuthorName string `json:"author_name,omitempty"`
 	Content    string `json:"content"`
 	CreatedAt  string `json:"created_at,omitempty"`
+	// MUL-8218: set when this comment was edited after the run whose session
+	// this claim resumes had started (see triggerCommentEditedSince). omitempty
+	// so old daemons ignore both.
+	EditedAt string `json:"edited_at,omitempty"`
+	Revision int64  `json:"revision,omitempty"`
+
+	// source is the row this entry was read from, kept so the claim can run
+	// the edit check once the resumed session is known. Never serialized.
+	source db.Comment
 }
 
 // TaskUsageData is one (provider, model) slice of a single run's token usage.
@@ -1449,7 +1494,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != "" {
-		if tokens := jev.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
+		if tokens := util.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -1518,6 +1563,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := agent.ValidateCustomArgs(runtime.Provider, req.CustomArgs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if runtime.Provider == "qoder_cloud" {
 		raw, _ := json.Marshal(req.RuntimeConfig)
 		if err := validateQoderAgentConfig(raw); err != nil {
@@ -2007,8 +2056,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := jev.EstimateInstructionTokens(existing.Instructions)
+		newTokens := util.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := util.EstimateInstructionTokens(existing.Instructions)
 		if newTokens > 4000 {
 			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))
@@ -2154,6 +2203,21 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			provider, ok = h.resolveAgentProvider(r, existing.WorkspaceID, targetRuntimeID)
 			if !ok {
 				writeError(w, 400, "cannot resolve agent runtime")
+				return
+			}
+		}
+		if req.CustomArgs != nil || req.RuntimeID != nil {
+			var customArgs []string
+			if req.CustomArgs != nil {
+				customArgs = *req.CustomArgs
+			} else if len(existing.CustomArgs) > 0 {
+				if err := json.Unmarshal(existing.CustomArgs, &customArgs); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to read existing custom_args")
+					return
+				}
+			}
+			if err := agent.ValidateCustomArgs(provider, customArgs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}

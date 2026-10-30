@@ -1,0 +1,33 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media/media-context.test.tsx -t 'closed More'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ❯ media/media-context.test.tsx (7 tests | 1 failed | 6 skipped) 162ms
+     × lets Escape on the closed More summary reach the document without preventing default 154ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > lets Escape on the closed More summary reach the document without preventing default
+AssertionError: expected "vi.fn()" to be called once, but got 0 times
+ ❯ media/media-context.test.tsx:79:24
+     77|       const event = new KeyboardEvent("keydown", { key: "Escape", bubb…
+     78|       fireEvent(summary, event);
+     79|       expect(listener).toHaveBeenCalledOnce();
+       |                        ^
+     80|       expect(event.defaultPrevented).toBe(false);
+     81|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 skipped (7)
+   Start at  20:24:49
+   Duration  9.09s (transform 4.54s, setup 166ms, import 6.94s, tests 162ms, environment 1.48s)
+
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @multica/views@0.0.0 test: `vitest run media/media-context.test.tsx -t 'closed More'`
+Exit status 1

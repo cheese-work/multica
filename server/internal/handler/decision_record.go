@@ -26,16 +26,21 @@ type decisionRecordInput struct {
 	// ContextMessageID is an earlier assistant message of the same DM, quoted
 	// as the options the human's reply chose between.
 	ContextMessageID pgtype.UUID
-	Content          string
-	EscalationClass  string
-	SourceCommentID  pgtype.UUID
+	// Excerpts are verbatim parts of the source message. When set, the record
+	// quotes only them; the whole message stays behind a disclosure.
+	Excerpts        []string
+	Content         string
+	EscalationClass string
+	SourceCommentID pgtype.UUID
 }
 
 type decisionRecordResult struct {
-	Request         db.DecisionRequest
-	Answer          db.DecisionAnswer
-	Comment         db.Comment
-	Message         db.ChatMessage
+	Request db.DecisionRequest
+	Answer  db.DecisionAnswer
+	Comment db.Comment
+	Message db.ChatMessage
+	// AnswerMessage is the task-less user row a card answer writes.
+	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
 	Replayed        bool
 }
@@ -254,7 +259,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, deny
 		}
 		lane, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: decision.ChatSessionID})
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && (lane.CreatorID != decision.HumanUserID || lane.AgentID != decision.AskingAgentID || lane.Status != "active" || lane.ChannelOriginAt.Valid || lane.IsAgentIntro) {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (lane.CreatorID != decision.HumanUserID || lane.Status != "active" || lane.ChannelOriginAt.Valid || lane.IsAgentIntro) {
 			return empty, deny
 		}
 		if err != nil {
@@ -263,7 +268,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if decision.Origin != "asked" || decision.Status != "open" {
 			if decision.Origin == "asked" && decision.Status == "answered" {
 				answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
-				if err == nil && input.ParentID == decision.IssueCommentID && answer.AnsweredByTaskID == taskID && answer.SourceCommentID == input.SourceCommentID && slices.Equal(answer.ChatMessageIds, input.MessageIDs) {
+				if err == nil && input.ParentID == decision.IssueCommentID && answer.AnsweredByTaskID == taskID && answer.SourceCommentID == input.SourceCommentID && slices.Equal(answer.ChatMessageIds, input.MessageIDs) && sameExcerpts(answer.Excerpted, answer.ReplyText.String, input.Excerpts) {
 					comment, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: answer.IssueCommentID})
 					if err != nil {
 						return empty, err
@@ -346,6 +351,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must exist and be distinct"}
 		}
 	}
+	var boundMessages []db.ChatMessage
 	for _, messageID := range input.MessageIDs {
 		if !messageID.Valid || seen[messageID] {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages must be distinct"}
@@ -358,13 +364,36 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || message.ChatSessionID != sourceSessionID || message.Role != "user" || message.MessageKind != "message" || message.SentVia.String != "interactive_jwt" || message.ChannelIngested || pingAt.Valid && !message.CreatedAt.Time.After(pingAt.Time) || !message.CreatedAt.Time.Before(task.StartedAt.Time) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "source messages are not eligible for this answering turn"}
 		}
+		bound, err := loadDecisionAnswerBinding(ctx, queries, issue.WorkspaceID, message.DecisionAnswerID)
+		if err != nil {
+			return empty, err
+		}
+		if bound.ID.Valid {
+			if bound.DecisionRequestID != decision.ID {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message explicitly selects another decision request"}
+			}
+			if !bound.DisclaimedAt.Valid {
+				return empty, decisionIntentRefusal{http.StatusBadRequest, "source message already answers its explicitly selected request"}
+			}
+			boundMessages = append(boundMessages, message)
+		}
 		contents = append(contents, message.Content)
 		if message.CreatedAt.Time.Before(earliestSource) {
 			earliestSource = message.CreatedAt.Time
 		}
 	}
 	snapshot := strings.Join(contents, "\n\n")
-	quote := blockQuote(snapshot)
+	quote, replyText := blockQuote(snapshot), snapshot
+	var spans []string
+	var first excerptMatch
+	if len(input.Excerpts) > 0 {
+		spans, first, err = verbatimExcerpts(contents, input.Excerpts)
+		if err != nil {
+			return empty, err
+		}
+		quote, replyText = quoteExcerpts(spans), excerptReplyText(spans)
+	}
+	answeredLabel := ""
 	if input.ContextMessageID.Valid {
 		offered, err := queries.GetChatMessage(ctx, input.ContextMessageID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -373,7 +402,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if err != nil || offered.ChatSessionID != sourceSessionID || offered.Role != "assistant" || offered.MessageKind != "message" || !offered.CreatedAt.Time.Before(earliestSource) {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "context message is not an earlier assistant message of this DM"}
 		}
-		quote = "Options offered:\n" + blockQuote(offered.Content) + "\n\nReply:\n" + quote
+		if first.unique {
+			answeredLabel = offeredLabel(offered.Content, first.source, first.start)
+		}
 	}
 	if input.Content != "" {
 		quote = input.Content + "\n\n" + quote
@@ -381,6 +412,36 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if len(quote) > maxCommentContentBytes {
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "decision quote is too long"}
 	}
+	result, err := handler.persistDecisionRecord(ctx, queries, issue, decision, input, decisionRecordSource{
+		TaskID: taskID, AgentID: agentID, SessionID: session.ID, SourceSessionID: sourceSessionID,
+		CommentID: commentID, Snapshot: snapshot, Quote: quote, ReplyText: replyText, Excerpted: len(spans) > 0, AnsweredLabel: answeredLabel,
+	}, root)
+	if err != nil {
+		return empty, err
+	}
+	for _, message := range boundMessages {
+		if _, err := queries.BindChatMessageDecisionAnswer(ctx, db.BindChatMessageDecisionAnswerParams{
+			WorkspaceID: issue.WorkspaceID, SessionID: sourceSessionID, MessageID: message.ID, AnswerID: result.Answer.ID, PreviousAnswerID: message.DecisionAnswerID,
+		}); err != nil {
+			return empty, err
+		}
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return empty, err
+	}
+	handler.DecisionWorker.Notify()
+	return result, nil
+}
+
+type decisionRecordSource struct {
+	TaskID, AgentID, SessionID, SourceSessionID, CommentID pgtype.UUID
+	Snapshot, Quote, ReplyText                             string
+	Excerpted                                              bool
+	AnsweredLabel                                          string
+}
+
+func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Queries, issue db.Issue, decision db.DecisionRequest, input decisionRecordInput, source decisionRecordSource, root *db.Comment) (decisionRecordResult, error) {
+	empty := decisionRecordResult{}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
@@ -389,7 +450,12 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if messageIDs == nil {
 		messageIDs = []pgtype.UUID{}
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: taskID, SourceChatSessionID: sourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: snapshot, EffectiveAt: effectiveAt, IssueCommentID: commentID})
+	// No task means no turn to wait for: the asking agent wakes at once.
+	var wakeAt pgtype.Timestamptz
+	if !source.TaskID.Valid {
+		wakeAt = effectiveAt
+	}
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, WakeAt: wakeAt, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID, ReplyText: pgtype.Text{String: source.ReplyText, Valid: true}, ContextMessageID: input.ContextMessageID, Excerpted: source.Excerpted, AnsweredLabel: pgtype.Text{String: source.AnsweredLabel, Valid: source.AnsweredLabel != ""}})
 	if err != nil {
 		return empty, err
 	}
@@ -400,7 +466,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, err
 		}
 	}
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: agentID, SourceTaskID: taskID, ParentID: input.ParentID, Content: quote, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: source.CommentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: source.AgentID, SourceTaskID: source.TaskID, ParentID: input.ParentID, Content: source.Quote, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -408,12 +474,16 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: /issue/%s\nDisclaim: /api/decision-answers/%s/disclaim", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID), uuidToString(answer.ID))
-	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
+	pending := "\nPending until this answering turn finishes."
+	if !source.TaskID.Valid {
+		pending = ""
+	}
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.%s\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, pending, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
+	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: source.SessionID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err
 	}
-	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+	if err := queries.TouchChatSession(ctx, source.SessionID); err != nil {
 		return empty, err
 	}
 	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
@@ -424,10 +494,6 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: issue.WorkspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, err
-	}
-	handler.DecisionWorker.Notify()
 	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, ClearedComments: cleared}, nil
 }
 

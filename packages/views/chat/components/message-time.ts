@@ -45,3 +45,31 @@ export function formatDayLabel(
   }
   return format(iso, { dateStyle: "medium" }, locale, timeZone);
 }
+
+/**
+ * `HH:MM ZONE` (24h) in the reader's zone, e.g. "17:00 ICT". Intl names UTC+7
+ * "GMT+7"; the workspace writes it as ICT.
+ */
+export function formatTimeWithZone(iso: string, locale?: string, timeZone?: string): string {
+  const time = format(iso, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, locale, timeZone);
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  let zone = "";
+  try {
+    zone = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  } catch {
+    zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+      .formatToParts(at)
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  }
+  return `${time} ${zone === "GMT+7" ? "ICT" : zone}`.trim();
+}
+
+/** `formatTimeWithZone` with the reader-local date in front, e.g. "Oct 20, 2026, 17:00 ICT". */
+export function formatDateTimeWithZone(iso: string, locale?: string, timeZone?: string): string {
+  if (Number.isNaN(new Date(iso).getTime())) return iso;
+  const date = format(iso, { dateStyle: "medium" }, locale, timeZone);
+  return `${date}, ${formatTimeWithZone(iso, locale, timeZone)}`;
+}

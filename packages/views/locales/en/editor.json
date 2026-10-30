@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "Added: ",
+    "removed": "Removed: ",
+    "revision": "Revision {{number}}",
+    "readonly": "Readonly",
+    "issue": "Source issue",
+    "diff": "Diff",
+    "split": "Split",
+    "unify": "Unify",
+    "compare": "Compare with",
+    "choose_base": "Choose a base revision",
+    "change": "Change {{current}} / {{total}}",
+    "previous": "Previous change",
+    "next": "Next change",
+    "download": "Download",
+    "close": "Close",
+    "more": "More options",
+    "base": "Base",
+    "current": "Current",
+    "loading_revisions": "Loading revisions…",
+    "revisions_error": "Could not load revisions",
+    "no_earlier": "No earlier revisions",
+    "loading": "Loading document…",
+    "current_error": "Could not load document",
+    "loading_diff": "Loading comparison…",
+    "comparison_error": "Could not load comparison",
+    "too_large": "This comparison is too large. Download the files to compare locally.",
+    "identical": "No changes between these revisions",
+    "empty": "This document is empty",
+    "unchanged": "{{count}} unchanged lines",
+    "retry": "Retry"
+  },
+  "media": {
+    "title": "Media",
+    "more": "More",
+    "open_in_new_window": "Open in new window",
+    "open_failed": "Couldn't open the media page",
+    "loading": "Loading media…",
+    "load_failed": "Couldn't load media",
+    "offline": "Offline — showing the last loaded copy.",
+    "retry": "Retry"
+  },
   "bubble_menu": {
     "bold": "Bold",
     "italic": "Italic",
@@ -114,6 +156,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "runs the agent",
     "focus_hint": "[focus]",
     "title_hint": "[title]",
     "message_hint": "[message]",
@@ -123,7 +166,11 @@
       "note": "Add a note — won't trigger any agents",
       "compact": "Summarize this DM and continue in a new one",
       "rename": "Rename this DM without starting an agent turn",
-      "fork": "Copy this DM into a new one; optional message is sent there"
+      "fork": "Copy this DM into a new one; optional message is sent there",
+      "statistic": "Show usage and cost for this DM",
+      "archive": "Archive this DM without starting an agent turn",
+      "pin": "Pin or unpin this DM",
+      "unarchive": "Unarchive this DM. Nothing is sent to the agent."
     }
   },
   "code_block": {
@@ -189,5 +236,8 @@
     "clear_filter": "Clear filter",
     "no_matches": "No matching rows",
     "close": "Close"
+  },
+  "next_self_mention": {
+    "label": "Next mention of me"
   }
 }

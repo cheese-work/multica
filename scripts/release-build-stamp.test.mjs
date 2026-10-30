@@ -18,7 +18,7 @@ const goreleaser = readFileSync(new URL(".goreleaser.yml", root), "utf8");
 test("UPSTREAM_VERSION tracks the single plain upstream semver at the repo root", () => {
   const upstreamVersion = readFileSync(new URL("UPSTREAM_VERSION", root), "utf8").trim();
   assert.match(upstreamVersion, /^\d+\.\d+\.\d+$/);
-  assert.equal(upstreamVersion, "0.7.0");
+  assert.equal(upstreamVersion, "0.7.1");
 });
 
 // The workflow tests below pick tags relative to the file, so a sync that

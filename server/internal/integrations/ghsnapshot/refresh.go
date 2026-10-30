@@ -129,7 +129,7 @@ func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner,
 }
 
 func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
-	m := &Manager{
+	manager := &Manager{
 		client:        client,
 		queries:       queries,
 		readSelector:  dbreader.NewPrimaryOnly(queries),
@@ -155,41 +155,41 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 		attempts:      map[address]int{},
 		rateUntil:     map[int64]time.Time{},
 	}
-	m.listRows = m.listGitHubPRRowsByAddress
-	return m
+	manager.listRows = manager.listGitHubPRRowsByAddress
+	return manager
 }
 
 // SetReadSelector opts the refresh worker into the API server's configured
 // replica routing. It must be called before Start; managers used by tests and
 // primary-only deployments retain the safe primary default from NewManager.
-func (m *Manager) SetReadSelector(selector *dbreader.Selector) {
+func (manager *Manager) SetReadSelector(selector *dbreader.Selector) {
 	if selector != nil {
-		m.readSelector = selector
+		manager.readSelector = selector
 	}
 }
 
 // Enabled reports whether the pipeline will actually do anything.
-func (m *Manager) Enabled() bool { return m != nil && m.client.Enabled() }
+func (manager *Manager) Enabled() bool { return manager != nil && manager.client.Enabled() }
 
 // Start launches the worker pool and the TTL sweeper under ctx. No-op (and
 // safe) when the manager is disabled.
-func (m *Manager) Start(ctx context.Context) {
-	if !m.Enabled() {
+func (manager *Manager) Start(ctx context.Context) {
+	if !manager.Enabled() {
 		return
 	}
-	m.mu.Lock()
-	if m.started {
-		m.mu.Unlock()
+	manager.mu.Lock()
+	if manager.started {
+		manager.mu.Unlock()
 		return
 	}
-	m.started = true
-	m.ctx = ctx
-	m.mu.Unlock()
+	manager.started = true
+	manager.ctx = ctx
+	manager.mu.Unlock()
 
-	for i := 0; i < m.concurrency; i++ {
-		go m.worker(ctx)
+	for i := 0; i < manager.concurrency; i++ {
+		go manager.worker(ctx)
 	}
-	go m.sweepLoop(ctx)
+	go manager.sweepLoop(ctx)
 }
 
 // Enqueue schedules a refresh for a PR address. Repeated events coalesce, but
@@ -199,32 +199,32 @@ func (m *Manager) Start(ctx context.Context) {
 // old response is discarded, then the new head is fetched immediately. At most
 // one request per address is in flight, and at most one trailing request is
 // retained. Never blocks the caller.
-func (m *Manager) Enqueue(installationID int64, owner, repo string, number int32) {
-	if !m.Enabled() {
+func (manager *Manager) Enqueue(installationID int64, owner, repo string, number int32) {
+	if !manager.Enabled() {
 		return
 	}
 	addr := address{InstallationID: installationID, Owner: owner, Repo: repo, Number: number}
-	m.mu.Lock()
-	if m.active[addr] {
-		if m.inFlight[addr] {
-			m.trailing[addr] = true
+	manager.mu.Lock()
+	if manager.active[addr] {
+		if manager.inFlight[addr] {
+			manager.trailing[addr] = true
 		}
-		m.mu.Unlock()
+		manager.mu.Unlock()
 		return
 	}
-	m.active[addr] = true
-	m.mu.Unlock()
+	manager.active[addr] = true
+	manager.mu.Unlock()
 
 	select {
-	case m.queue <- addr:
+	case manager.queue <- addr:
 	default:
 		// Queue is saturated; drop and let the TTL sweep / next event recover
 		// rather than block a webhook handler. Unmark so it can be re-enqueued.
-		m.mu.Lock()
-		delete(m.active, addr)
-		delete(m.inFlight, addr)
-		delete(m.trailing, addr)
-		m.mu.Unlock()
+		manager.mu.Lock()
+		delete(manager.active, addr)
+		delete(manager.inFlight, addr)
+		delete(manager.trailing, addr)
+		manager.mu.Unlock()
 		slog.Warn("ghsnapshot: refresh queue full, dropping enqueue")
 	}
 }
@@ -232,42 +232,42 @@ func (m *Manager) Enqueue(installationID int64, owner, repo string, number int32
 // MaybeEnqueueOnView is the page-visit trigger: refresh only when the snapshot
 // is missing or older than the view TTL, so opening a card that already has
 // fresh data costs nothing.
-func (m *Manager) MaybeEnqueueOnView(installationID int64, owner, repo string, number int32, fetchedAt time.Time, hasFetched bool) {
-	if !m.Enabled() {
+func (manager *Manager) MaybeEnqueueOnView(installationID int64, owner, repo string, number int32, fetchedAt time.Time, hasFetched bool) {
+	if !manager.Enabled() {
 		return
 	}
-	if hasFetched && m.now().Sub(fetchedAt) < m.viewTTL {
+	if hasFetched && manager.now().Sub(fetchedAt) < manager.viewTTL {
 		return
 	}
-	m.Enqueue(installationID, owner, repo, number)
+	manager.Enqueue(installationID, owner, repo, number)
 }
 
-func (m *Manager) worker(ctx context.Context) {
+func (manager *Manager) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case addr := <-m.queue:
+		case addr := <-manager.queue:
 			// A rate-limited installation waits outside the worker pool. Keep
 			// the address active while a timer owns it, so events continue to
 			// coalesce without letting one tenant occupy every global worker.
-			if pause := m.rateLimitPause(addr.InstallationID); pause > 0 {
-				m.deferActive(ctx, addr, pause)
+			if pause := manager.rateLimitPause(addr.InstallationID); pause > 0 {
+				manager.deferActive(ctx, addr, pause)
 				continue
 			}
-			m.mu.Lock()
-			m.inFlight[addr] = true
-			m.mu.Unlock()
-			m.process(ctx, addr)
-			m.finish(addr)
+			manager.mu.Lock()
+			manager.inFlight[addr] = true
+			manager.mu.Unlock()
+			manager.process(ctx, addr)
+			manager.finish(addr)
 		}
 	}
 }
 
-func (m *Manager) process(ctx context.Context, addr address) {
+func (manager *Manager) process(ctx context.Context, addr address) {
 	// Per-request jitter smooths bursts. Installation-scoped rate-limit waits
 	// are handled before this point so they never consume a worker slot.
-	if j := m.jitter(); j > 0 {
+	if j := manager.jitter(); j > 0 {
 		if !sleepCtx(ctx, j) {
 			return
 		}
@@ -283,7 +283,7 @@ func (m *Manager) process(ctx context.Context, addr address) {
 	// workspace that re-enables GitHub between this check and the fetch simply
 	// waits for the next trigger or the TTL sweep, same as any other missed
 	// refresh window.
-	preRows, err := m.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
+	preRows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
 		InstallationID: addr.InstallationID,
 		RepoOwner:      addr.Owner,
 		RepoName:       addr.Repo,
@@ -301,11 +301,11 @@ func (m *Manager) process(ctx context.Context, addr address) {
 		return
 	}
 
-	snap, err := m.fetch(ctx, m.client, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
+	snap, err := manager.fetch(ctx, manager.client, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
 	if err != nil {
 		var rl *RateLimitError
 		if asRateLimit(err, &rl) {
-			m.extendRateLimit(addr.InstallationID, rl.RetryAfter)
+			manager.extendRateLimit(addr.InstallationID, rl.RetryAfter)
 			// Do not create an unbounded retry loop for a persistently limited
 			// installation. The bounded TTL sweep (open/draft PRs only) or the
 			// next webhook/view event hands the address back after Retry-After.
@@ -324,7 +324,7 @@ func (m *Manager) process(ctx context.Context, addr address) {
 	// false while the fetch was in flight is excluded here even though it
 	// justified (or shared the address with a row that justified) the fetch
 	// above.
-	rows, err := m.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
+	rows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
 		InstallationID: addr.InstallationID,
 		RepoOwner:      addr.Owner,
 		RepoName:       addr.Repo,
@@ -338,7 +338,7 @@ func (m *Manager) process(ctx context.Context, addr address) {
 	anyApplied := false
 	anyOpenApplied := false
 	for _, row := range rows {
-		applied, err := m.applySnapshot(ctx, row.ID, snap)
+		applied, err := manager.applySnapshot(ctx, row.ID, snap)
 		if err != nil {
 			slog.Warn("ghsnapshot: apply snapshot failed", "err", err.Error())
 			continue
@@ -350,8 +350,8 @@ func (m *Manager) process(ctx context.Context, addr address) {
 		if row.State == "open" || row.State == "draft" {
 			anyOpenApplied = true
 		}
-		if m.onApplied != nil {
-			m.onApplied(ctx, row.ID)
+		if manager.onApplied != nil {
+			manager.onApplied(ctx, row.ID)
 		}
 	}
 
@@ -363,11 +363,11 @@ func (m *Manager) process(ctx context.Context, addr address) {
 	// it must not start a chase without having observed current row state. A
 	// logged write failure is likewise left to those later triggers.
 	if anyApplied && anyOpenApplied && !snap.Decided() {
-		m.scheduleChase(addr)
+		manager.scheduleChase(addr)
 	} else {
-		m.mu.Lock()
-		delete(m.attempts, addr)
-		m.mu.Unlock()
+		manager.mu.Lock()
+		delete(manager.attempts, addr)
+		manager.mu.Unlock()
 	}
 }
 
@@ -376,10 +376,10 @@ func (m *Manager) process(ctx context.Context, addr address) {
 // head SHA on the primary, so replica lag can omit an update but cannot apply a
 // snapshot for an old head. The TTL sweep and page-view trigger recover omitted
 // rows.
-func (m *Manager) listGitHubPRRowsByAddress(ctx context.Context, params db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+func (manager *Manager) listGitHubPRRowsByAddress(ctx context.Context, params db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
 	return dbreader.Read(
 		ctx,
-		m.readSelector,
+		manager.readSelector,
 		dbreader.BusinessGitHubPRRefresh,
 		dbreader.EventualConsistency,
 		func(ctx context.Context, queries *db.Queries) ([]db.ListGitHubPRRowsByAddressRow, error) {
@@ -388,81 +388,81 @@ func (m *Manager) listGitHubPRRowsByAddress(ctx context.Context, params db.ListG
 	)
 }
 
-func (m *Manager) rateLimitPause(installationID int64) time.Duration {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	until, ok := m.rateUntil[installationID]
+func (manager *Manager) rateLimitPause(installationID int64) time.Duration {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	until, ok := manager.rateUntil[installationID]
 	if !ok {
 		return 0
 	}
-	pause := until.Sub(m.now())
+	pause := until.Sub(manager.now())
 	if pause <= 0 {
-		delete(m.rateUntil, installationID)
+		delete(manager.rateUntil, installationID)
 		return 0
 	}
 	return pause
 }
 
-func (m *Manager) extendRateLimit(installationID int64, retryAfter time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	until := m.now().Add(retryAfter)
-	if until.After(m.rateUntil[installationID]) {
-		m.rateUntil[installationID] = until
+func (manager *Manager) extendRateLimit(installationID int64, retryAfter time.Duration) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	until := manager.now().Add(retryAfter)
+	if until.After(manager.rateUntil[installationID]) {
+		manager.rateUntil[installationID] = until
 	}
 }
 
 // deferActive returns a rate-limited address to the queue after delay without
 // holding a worker. The active marker remains set while the timer owns the
 // address, so duplicate triggers still coalesce into the scheduled fetch.
-func (m *Manager) deferActive(ctx context.Context, addr address, delay time.Duration) {
+func (manager *Manager) deferActive(ctx context.Context, addr address, delay time.Duration) {
 	time.AfterFunc(delay, func() {
 		if ctx.Err() != nil {
-			m.release(addr)
+			manager.release(addr)
 			return
 		}
 		select {
-		case m.queue <- addr:
+		case manager.queue <- addr:
 		default:
-			m.release(addr)
+			manager.release(addr)
 			slog.Warn("ghsnapshot: refresh queue full, dropping rate-limited enqueue")
 		}
 	})
 }
 
-func (m *Manager) release(addr address) {
-	m.mu.Lock()
-	delete(m.active, addr)
-	delete(m.inFlight, addr)
-	delete(m.trailing, addr)
-	m.mu.Unlock()
+func (manager *Manager) release(addr address) {
+	manager.mu.Lock()
+	delete(manager.active, addr)
+	delete(manager.inFlight, addr)
+	delete(manager.trailing, addr)
+	manager.mu.Unlock()
 }
 
 // finish releases an address after a worker completes it, or turns the single
 // coalesced trailing edge into the next queued refresh without ever allowing
 // two workers to own the same address concurrently.
-func (m *Manager) finish(addr address) {
-	m.mu.Lock()
-	if !m.trailing[addr] {
-		delete(m.active, addr)
-		delete(m.inFlight, addr)
-		m.mu.Unlock()
+func (manager *Manager) finish(addr address) {
+	manager.mu.Lock()
+	if !manager.trailing[addr] {
+		delete(manager.active, addr)
+		delete(manager.inFlight, addr)
+		manager.mu.Unlock()
 		return
 	}
-	delete(m.trailing, addr)
-	delete(m.inFlight, addr)
-	m.mu.Unlock()
+	delete(manager.trailing, addr)
+	delete(manager.inFlight, addr)
+	manager.mu.Unlock()
 
 	select {
-	case m.queue <- addr:
+	case manager.queue <- addr:
 	default:
 		// The worker just consumed one slot, so saturation is unlikely, but keep
 		// the webhook path non-blocking and let the TTL sweep recover.
-		m.mu.Lock()
-		delete(m.active, addr)
-		delete(m.inFlight, addr)
-		delete(m.trailing, addr)
-		m.mu.Unlock()
+		manager.mu.Lock()
+		delete(manager.active, addr)
+		delete(manager.inFlight, addr)
+		delete(manager.trailing, addr)
+		manager.mu.Unlock()
 		slog.Warn("ghsnapshot: refresh queue full, dropping trailing enqueue")
 	}
 }
@@ -472,14 +472,18 @@ func (m *Manager) finish(addr address) {
 // the per-check rows — all in one transaction. Returns applied=false (and
 // writes nothing) when the row's head has advanced past the snapshot's head
 // (acceptance criterion 1).
-func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRSnapshot) (bool, error) {
-	tx, err := m.pool.Begin(ctx)
+func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRSnapshot) (bool, error) {
+	tx, err := manager.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	q := m.queries.WithTx(tx)
+	q := manager.queries.WithTx(tx)
 
+	prev, err := q.GetGitHubPRSnapshotState(ctx, prID)
+	if err != nil {
+		return false, err
+	}
 	rollup := pgtype.Text{}
 	if snap.HasChecks {
 		rollup = textOrNull(snap.RollupState)
@@ -490,7 +494,7 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 		ChecksRollupState:   rollup,
 		HeadSha:             snap.HeadSHA,
 		BaseRef:             textOrNull(snap.BaseRef),
-		FetchedAt:           tsFromTime(m.now()),
+		FetchedAt:           tsFromTime(manager.now()),
 		PrID:                prID,
 	})
 	if err != nil {
@@ -518,6 +522,12 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 			return false, err
 		}
 	}
+	for _, event := range snapshotPREvents(prev, snap, manager.now()) {
+		event.PRID = prID
+		if _, err := CapturePREvent(ctx, q, event); err != nil {
+			return false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
@@ -527,49 +537,49 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 // scheduleChase re-enqueues the address after the current backoff step. Bounded
 // by maxChaseAttempts so an endlessly-pending CI or a wedged mergeability
 // verdict can never spin forever (acceptance criterion 7).
-func (m *Manager) scheduleChase(addr address) {
-	m.mu.Lock()
-	attempt := m.attempts[addr]
+func (manager *Manager) scheduleChase(addr address) {
+	manager.mu.Lock()
+	attempt := manager.attempts[addr]
 	if attempt >= maxChaseAttempts {
-		delete(m.attempts, addr)
-		m.mu.Unlock()
+		delete(manager.attempts, addr)
+		manager.mu.Unlock()
 		return
 	}
-	m.attempts[addr] = attempt + 1
+	manager.attempts[addr] = attempt + 1
 	idx := attempt
-	if idx >= len(m.chaseBackoff) {
-		idx = len(m.chaseBackoff) - 1
+	if idx >= len(manager.chaseBackoff) {
+		idx = len(manager.chaseBackoff) - 1
 	}
-	delay := m.chaseBackoff[idx]
-	m.mu.Unlock()
-	m.scheduleRetry(addr, delay)
+	delay := manager.chaseBackoff[idx]
+	manager.mu.Unlock()
+	manager.scheduleRetry(addr, delay)
 }
 
 // scheduleRetry re-enqueues the address after delay, unless the manager is
 // shutting down.
-func (m *Manager) scheduleRetry(addr address, delay time.Duration) {
-	ctx := m.ctx
+func (manager *Manager) scheduleRetry(addr address, delay time.Duration) {
+	ctx := manager.ctx
 	time.AfterFunc(delay, func() {
 		if ctx != nil && ctx.Err() != nil {
 			return
 		}
-		m.Enqueue(addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
+		manager.Enqueue(addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
 	})
 }
 
-func (m *Manager) sweepLoop(ctx context.Context) {
-	if !sleepCtx(ctx, m.catchUp) {
+func (manager *Manager) sweepLoop(ctx context.Context) {
+	if !sleepCtx(ctx, manager.catchUp) {
 		return
 	}
-	m.sweepOnce(ctx)
-	ticker := time.NewTicker(m.sweepInterval)
+	manager.sweepOnce(ctx)
+	ticker := time.NewTicker(manager.sweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.sweepOnce(ctx)
+			manager.sweepOnce(ctx)
 		}
 	}
 }
@@ -579,24 +589,24 @@ func (m *Manager) sweepLoop(ctx context.Context) {
 // is bounded by sweepMaxRows. This is the safety net for a PR whose base
 // branch changes without a pull_request webhook, and for any webhook that was
 // dropped during a deploy.
-func (m *Manager) sweepOnce(ctx context.Context) {
-	m.sweepUndecided(ctx)
-	m.sweepRecheck(ctx)
-	m.sweepConflictWatched(ctx)
+func (manager *Manager) sweepOnce(ctx context.Context) {
+	manager.sweepUndecided(ctx)
+	manager.sweepRecheck(ctx)
+	manager.sweepConflictWatched(ctx)
 }
 
-func (m *Manager) sweepUndecided(ctx context.Context) {
-	m.mu.Lock()
-	after := m.sweepAfter
-	m.mu.Unlock()
+func (manager *Manager) sweepUndecided(ctx context.Context) {
+	manager.mu.Lock()
+	after := manager.sweepAfter
+	manager.mu.Unlock()
 
-	rows, err := m.queries.ListStaleUndecidedGitHubPRs(ctx, db.ListStaleUndecidedGitHubPRsParams{
-		OlderThan:           tsFromTime(m.now().Add(-m.sweepTTL)),
+	rows, err := manager.queries.ListStaleUndecidedGitHubPRs(ctx, db.ListStaleUndecidedGitHubPRsParams{
+		OlderThan:           tsFromTime(manager.now().Add(-manager.sweepTTL)),
 		AfterInstallationID: after.InstallationID,
 		AfterRepoOwner:      after.Owner,
 		AfterRepoName:       after.Repo,
 		AfterPrNumber:       after.Number,
-		MaxRows:             m.sweepMaxRows,
+		MaxRows:             manager.sweepMaxRows,
 	})
 	if err != nil {
 		slog.Warn("ghsnapshot: sweep query failed", "err", err.Error())
@@ -604,17 +614,17 @@ func (m *Manager) sweepUndecided(ctx context.Context) {
 	}
 	if len(rows) > 0 {
 		last := rows[len(rows)-1]
-		m.mu.Lock()
-		m.sweepAfter = address{
+		manager.mu.Lock()
+		manager.sweepAfter = address{
 			InstallationID: last.InstallationID,
 			Owner:          last.RepoOwner,
 			Repo:           last.RepoName,
 			Number:         last.PrNumber,
 		}
-		m.mu.Unlock()
+		manager.mu.Unlock()
 	}
 	for _, r := range rows {
-		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		manager.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 }
 
@@ -625,12 +635,12 @@ func (m *Manager) sweepUndecided(ctx context.Context) {
 // ponytail: an installation re-checks at most sweepMaxRows/4 PRs per sweep
 // interval (300 an hour at the defaults); with more open PRs than that it
 // falls behind the TTL. Raise sweepMaxRows when the logged age keeps climbing.
-func (m *Manager) sweepRecheck(ctx context.Context) {
-	now := m.now()
-	rows, err := m.queries.ClaimGitHubPRsDueForRecheck(ctx, db.ClaimGitHubPRsDueForRecheckParams{
-		OlderThan:       tsFromTime(now.Add(-m.recheckTTL)),
-		PerInstallation: int64(max(1, m.sweepMaxRows/4)),
-		MaxRows:         m.sweepMaxRows,
+func (manager *Manager) sweepRecheck(ctx context.Context) {
+	now := manager.now()
+	rows, err := manager.queries.ClaimGitHubPRsDueForRecheck(ctx, db.ClaimGitHubPRsDueForRecheckParams{
+		OlderThan:       tsFromTime(now.Add(-manager.recheckTTL)),
+		PerInstallation: int64(max(1, manager.sweepMaxRows/4)),
+		MaxRows:         manager.sweepMaxRows,
 		PickedAt:        tsFromTime(now),
 	})
 	if err != nil {
@@ -645,7 +655,7 @@ func (m *Manager) sweepRecheck(ctx context.Context) {
 		if r.OldestFetchedAt.Time.Before(oldest) {
 			oldest = r.OldestFetchedAt.Time
 		}
-		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		manager.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 	slog.Info("ghsnapshot: re-checking decided snapshots", "count", len(rows), "oldest_snapshot_age", now.Sub(oldest).Round(time.Second).String())
 }
@@ -653,18 +663,18 @@ func (m *Manager) sweepRecheck(ctx context.Context) {
 // sweepConflictWatched keeps the PRs a "wake on merge conflict" rule watches
 // fresh. A decided snapshot leaves the undecided sweep, yet a direct push to
 // the base branch can make it conflicting with no event for the PR itself.
-func (m *Manager) sweepConflictWatched(ctx context.Context) {
-	m.mu.Lock()
-	after := m.watchAfter
-	m.mu.Unlock()
+func (manager *Manager) sweepConflictWatched(ctx context.Context) {
+	manager.mu.Lock()
+	after := manager.watchAfter
+	manager.mu.Unlock()
 
-	rows, err := m.queries.ListStaleConflictWatchedGitHubPRs(ctx, db.ListStaleConflictWatchedGitHubPRsParams{
-		OlderThan:           tsFromTime(m.now().Add(-m.watchTTL)),
+	rows, err := manager.queries.ListStaleConflictWatchedGitHubPRs(ctx, db.ListStaleConflictWatchedGitHubPRsParams{
+		OlderThan:           tsFromTime(manager.now().Add(-manager.watchTTL)),
 		AfterInstallationID: after.InstallationID,
 		AfterRepoOwner:      after.Owner,
 		AfterRepoName:       after.Repo,
 		AfterPrNumber:       after.Number,
-		MaxRows:             m.sweepMaxRows,
+		MaxRows:             manager.sweepMaxRows,
 	})
 	if err != nil {
 		slog.Warn("ghsnapshot: conflict-watch sweep query failed", "err", err.Error())
@@ -672,23 +682,23 @@ func (m *Manager) sweepConflictWatched(ctx context.Context) {
 	}
 	if len(rows) > 0 {
 		last := rows[len(rows)-1]
-		m.mu.Lock()
-		m.watchAfter = address{InstallationID: last.InstallationID, Owner: last.RepoOwner, Repo: last.RepoName, Number: last.PrNumber}
-		m.mu.Unlock()
+		manager.mu.Lock()
+		manager.watchAfter = address{InstallationID: last.InstallationID, Owner: last.RepoOwner, Repo: last.RepoName, Number: last.PrNumber}
+		manager.mu.Unlock()
 	}
 	for _, r := range rows {
-		m.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		manager.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 }
 
 // RefreshConflictWatchers schedules refreshes for the open PRs in a repository
 // that a "wake on merge conflict" rule watches, after the PR numbered merged
 // merged there. That can move their base, which sends no event for them.
-func (m *Manager) RefreshConflictWatchers(ctx context.Context, installationID int64, owner, repo string, merged int32) {
-	if !m.Enabled() {
+func (manager *Manager) RefreshConflictWatchers(ctx context.Context, installationID int64, owner, repo string, merged int32) {
+	if !manager.Enabled() {
 		return
 	}
-	numbers, err := m.queries.ListConflictWatchedGitHubPRNumbersInRepo(ctx, db.ListConflictWatchedGitHubPRNumbersInRepoParams{
+	numbers, err := manager.queries.ListConflictWatchedGitHubPRNumbersInRepo(ctx, db.ListConflictWatchedGitHubPRNumbersInRepoParams{
 		InstallationID: installationID,
 		RepoOwner:      owner,
 		RepoName:       repo,
@@ -700,8 +710,8 @@ func (m *Manager) RefreshConflictWatchers(ctx context.Context, installationID in
 	}
 	for _, number := range numbers {
 		addr := address{InstallationID: installationID, Owner: owner, Repo: repo, Number: number}
-		for _, delay := range m.mergeDelays {
-			m.scheduleRetry(addr, delay)
+		for _, delay := range manager.mergeDelays {
+			manager.scheduleRetry(addr, delay)
 		}
 	}
 }

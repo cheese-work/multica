@@ -1,0 +1,14 @@
+Source: 195a1e1eddffe1e87f9027da48e7d40301790cb0
+Host: X99; Codex 0.155.1; Node 22.23.1; pnpm 10.28.2
+Date: 27 October 2026, ICT
+
+Observed exit 0:
+corepack pnpm@10.28.2 --filter @multica/views exec tsc --noEmit
+corepack pnpm@10.28.2 --filter @multica/views exec eslint editor/plan-revision-viewer.tsx editor/plan-revision-viewer.test.tsx
+node scripts/check-ui-radius-tokens.mjs
+
+TypeScript and ESLint emitted no diagnostics. radius.log contains the radius result.
+The two focused regression tests ran red at 15:34 ICT, then green at 15:35 ICT.
+The broader viewer/preview/locale command passed 301 tests.
+The warmed web rerun passed 2 tests; the locally configured Electron rerun passed 1 test.
+Cold Next.js compilation and the initial desktop API configuration caused the two first-attempt failures, not behavioral red.

@@ -13,6 +13,31 @@ credentials, receive recovery private keys, or use restored production data.
 D4 (full C00 rehearsal, not yet implemented) is what actually activates
 against C00, gated on its own separate approval.
 
+## Persistent D1 build cache
+
+`cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
+Each image gets its own runner/DinD budget, rather than sharing one DinD's
+4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
+name and assembles the same `cd-build-evidence-<sha>` artifact after both
+images succeed. The web job supplies the exact optional fork entries used
+in its image, so manifest assembly cannot hash a different download.
+
+Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
+`multica-cd-web-v1` builders. They use `docker-container` for provenance and
+SBOM generation. A bounded stop releases builder memory after the job;
+the builder and its cache volume remain for later trusted main pushes.
+BuildKit GC targets at most 4 GB per builder, reserves 1 GB, and targets
+10 GB free. Each builder admits at most two build vertices at once.
+No registry cache or untrusted PR cache is imported.
+
+Go compilation uses `/root/.cache/go-build` cache mounts, including the
+four daemon targets. Unversioned utilities compile before the release
+arguments; server and daemon linking still consume the exact release
+version and commit. Web builds retain `/app/apps/web/.next/cache`.
+`NEXT_PUBLIC_*` stays after dependency installation but before compilation:
+Next.js embeds those values in client bundles, so moving them after the
+build would ship stale release metadata.
+
 ## D2: quiescence and supervised migration
 
 `quiescence.mjs` implements the two admission gates from the approved D2
@@ -290,6 +315,8 @@ bash deploy/cd/test-deploy.sh
 bash deploy/cd/test-router.sh
 bash deploy/cd/test-release-packet.sh
 bash deploy/cd/test-cutover.sh
+bash deploy/cd/test-artifact-controller.sh
+node --test deploy/cd/drift-receipt.test.mjs
 (cd server && go test ./internal/dbstartup/...)
 ```
 
@@ -405,14 +432,55 @@ writes `<state-dir>/outage-alert.json` and exits 1.
 upstream `/readyz` and the public listeners must answer 2xx for the whole
 `--window`. CD runs it for 120s after every cutover (0s after a failed one).
 
+### Feature-flag runtime inputs (CHE-2348)
+
+`docker-compose.flags.yml` preserves the feature-flag file across blue/green
+recreation independently of Jev. `cutover.sh` loads this overlay for cutover
+and rollback when the compose dir's `.env` sets `MULTICA_FEATURE_FLAGS_FILE`.
+The existing `MULTICA_JEV_FLAGS_FILE` setting remains a fallback so C00 does
+not need a configuration change. The generic setting takes precedence when
+both are non-empty. With neither set, no flags overlay loads only if the
+previous active backend has no `/app/feature-flags.yaml` mount. Otherwise
+cutover and rollback refuse before any change with a `flags continuity`
+error naming both settings. An unreadable container/mount inventory also
+refuses before any change.
+
+The host path must name an absolute, readable, non-empty file admitted by
+`flagfile-check.mjs`. Validation runs before any drain, pull, migration or
+start. Both backends mount the file read-only at `/app/feature-flags.yaml`,
+with their `MULTICA_FEATURE_FLAGS_FILE` environment pointing to that mount.
+The overlay does not set flag values, a Jev key, a gateway network or a
+database hostname. A flags-only installation needs no Jev configuration.
+
+After readiness and before switching the router, cutover and rollback read
+the candidate backend's `GET /api/config` directly on its rendered slot port.
+Every frontend-public flag present in the configured file must appear as
+the matching boolean in `feature_flags`: `project_workflows_v1`, `plugins_v1`,
+`composio_mcp_apps`, and `billing_workspace_subscriptions` (the allowlist in
+`server/internal/featureflags/keys.go`). Missing flags, mismatches, malformed
+responses and HTTP failures fail the operation without recording success.
+The comparison uses the anonymous request's decision: allow/deny targets
+do not match, and percent rules use the backend's deterministic FNV-1a
+bucket for an empty identifier instead of the default value. Flags not in
+the frontend-public allowlist are not compared. Environment overrides that
+disagree with the file also fail this guard.
+
+On a mismatch, the candidate is stopped before compatibility-gated recovery
+restarts the original containers and verifies their identity and public
+route. Rollback recovery requires the ledger to be unchanged since drain.
+If recovery cannot be proven, the operation raises the existing outage
+alert for manual intervention; it does not start a second backend or write
+a success state.
+
 ### Scoped Jev runtime inputs (CHE-1854)
 
 A backend recreated from the base files alone loses three things a scoped Jev
 shadow runtime needs: the deployment key, the workspace-scoped feature-flag
-file and the gateway network. `docker-compose.jev.yml` keeps them. It is
-opt-in per installation: `cutover.sh` loads it only when the compose dir's
-`.env` sets `MULTICA_JEV_FLAGS_FILE` or `MULTICA_JEV_GATEWAY_NETWORK`. With
-neither set, no overlay loads and every Compose call is unchanged. Jev stays
+file and the gateway network. `docker-compose.flags.yml` keeps the flag
+file; `docker-compose.jev.yml` keeps the Jev key and network. Jev is
+opt-in per installation: `cutover.sh` loads the Jev overlay only when the
+compose dir's `.env` sets `MULTICA_JEV_GATEWAY_NETWORK`. Without that setting,
+no Jev overlay loads. Jev stays
 off everywhere else; the overlay never sets `FF_JEV_ENABLED` or `JEV_API_KEY`.
 
 Protected operator inputs, all in the C00 compose dir's `.env` (never in the
@@ -421,7 +489,8 @@ repository, CI, logs or PR evidence):
 | Variable | Meaning |
 | --- | --- |
 | `MULTICA_JEV_SECRET_KEY` | Deployment key: standard base64 of 32 bytes. Already passed through by `docker-compose.selfhost.yml`. |
-| `MULTICA_JEV_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only at `/app/feature-flags.yaml`; `MULTICA_FEATURE_FLAGS_FILE` points there. |
+| `MULTICA_FEATURE_FLAGS_FILE` | Absolute host path of a non-empty flag file. Bind-mounted read-only by the generic overlay at `/app/feature-flags.yaml`. |
+| `MULTICA_JEV_FLAGS_FILE` | Existing host flag-path setting, used only when `MULTICA_FEATURE_FLAGS_FILE` is empty or unset. No C00 configuration change is required. |
 | `MULTICA_JEV_GATEWAY_NETWORK` | Name of the existing external network. Both backends join it next to the project network. |
 
 The flag file decides which workspace may use Jev. Shape (workspace ID is
@@ -436,10 +505,10 @@ not recover. The Go loader classifies the same corpus
 Edit the file in place: replacing it by rename leaves a running colour on the
 old inode until recreation.
 
-Once either path or network is set, all three must hold. Before the first
+Once the Jev gateway network is set, all three must hold. Before the first
 drain, pull, migration or start, `cutover` and `rollback` refuse and name the
 failing variable (never its value) when the key is not base64 of 32 bytes,
-the flag file is not an absolute readable non-empty file that
+the selected flag file is not an absolute readable non-empty file that
 `flagfile-check.mjs` admits, or the network does not exist. A refusal leaves the incumbent serving.
 
 Joining the gateway network adds a second `postgres` to the backend's DNS
@@ -451,7 +520,7 @@ the deploy lock, rollback and the one-active-backend rule are untouched.
 
 Temporary-to-durable transition (operator, on C00; no value is printed):
 1. Copy the key already in the protected backend environment into
-   `.env` as `MULTICA_JEV_SECRET_KEY`, and add the other two variables.
+   `.env` as `MULTICA_JEV_SECRET_KEY`, and configure the flag path and network.
 2. The next CD cutover recreates the candidate colour with the overlay. The
    hand-made container from the temporary recovery is replaced by it; the
    original `unless-stopped` policy comes from the base files.
@@ -501,6 +570,20 @@ assuming `deploy/cd/router/state`).
 6. If the router selects a colour whose ports differ from Compose's render,
    re-select it with the rendered ports (`BACKEND_<C>_PORT=... FRONTEND_<C>_PORT=... bash deploy/cd/router.sh select --colour <colour>`).
    Take the ports from `docker compose "${ab[@]}" port ...`, never from memory.
+
+### Deploy drift gate (CHE-2396)
+
+The cutover bundle carries the released `docker-compose.selfhost.yml` and the
+blue/green, flags and Jev overlays. Under the deploy lock, `cutover` copies
+them into `--compose-dir` (`drift-receipt.mjs sync`) before anything renders.
+After the candidate starts and before the router switches,
+`drift-receipt.mjs check` writes `<state-dir>/drift-receipt.json` and exits
+nonzero, failing the cutover (incumbent recovery), when any of these differ:
+
+- deployed compose bytes vs the released source;
+- the candidate containers' env key names vs the released compose render plus
+  the image's own env (names only, never values);
+- the candidate containers' image digests vs the manifest.
 
 ### What this unit does NOT cover
 
@@ -583,9 +666,12 @@ admission/deploy chain are skipped, not failed. The summary records the real
 candidate SHA and the skip reason. API or tooling errors still fail closed.
 
 `cd-qualification.yml` groups pushes by `github.ref` with
-`cancel-in-progress: true`: a new `main` push cancels superseded qualification
-work instead of waiting for the old build. This group is separate from every
-approval and C00 mutation lock; cancellation cannot interrupt a started deploy.
+`cancel-in-progress: false`: the running qualification build finishes, and a new
+`main` push replaces only the older pending run, so at most one build runs and
+one waits. The newest commit can wait for the running build (about 25-45 min).
+A finished older build is not wasted: `require-current.sh` accepts a qualified
+older `main` commit that is a forward move from C00. This group is separate from
+every approval and C00 mutation lock.
 
 An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual
@@ -821,9 +907,13 @@ package (`multica-backend`, `multica-web`) to list `cheese-work/multica` under
 Package settings, Manage Actions access, with role Read. The token is scoped
 to the job, so D1's `cd-qualification.yml` stays credential-free.
 `deploy.sh` logs in to `ghcr.io` with that token immediately before the pull step
-and logs out unconditionally on exit — success, rollback, or an early
+and cleans up on exit — success, rollback, or an early
 argument/file-check failure — via a single EXIT trap; unset, both steps are
 skipped (local `--dry-run` runs, or a host with its own credential store).
+The login uses a private temporary Docker configuration and a credential
+helper that reads the job token from the environment. The helper never
+stores the token on disk. Exit cleanup removes only that configuration and
+helper and restores the caller's Docker configuration and executable path.
 `cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
 by exporting it inside a script piped over the session's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
@@ -831,3 +921,6 @@ command-line argument or a file written to C00, so it is not visible to
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
 scenarios (mocked `docker login`/`logout`; a real end-to-end pull against
 GHCR is still pending the runner above).
+`deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
+on-disk credentials, cleanup after successful and failed login, and restoration
+of the caller's environment without contacting a registry.

@@ -33,6 +33,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -42,6 +43,7 @@ import {
 import { Check, Copy, Frame, Maximize2, Minus, Plus } from "lucide-react";
 import { parse, stringify } from "yaml";
 import type { MermaidConfig } from "mermaid";
+import { useMermaidOrientationSetting } from "@multica/core/workspace/mermaid-orientation";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useT } from "../i18n";
@@ -49,7 +51,16 @@ import { DYNAMIC_BLOCK_COLLAPSE_AT_PX, DynamicBlockSkeleton } from "./dynamic-bl
 import { useDragToScroll } from "./hooks/use-drag-to-scroll";
 import { useInlineZoom, type InlineZoom } from "./hooks/use-inline-zoom";
 import { useThemeVersion } from "./hooks/use-theme-version";
-import { MermaidViewer } from "./mermaid-viewer";
+import { MermaidViewer, MermaidViewerStandalone } from "./mermaid-viewer";
+import { useStandaloneMedia } from "../media/media-context";
+import { orientChart, pickOrientation, type Orientation } from "./utils/mermaid-orientation";
+import {
+  MERMAID_SEQUENCE_CONFIG,
+  buildMermaidThemeCss,
+  buildMermaidThemeVariables,
+  shouldStackVertically,
+  type MermaidThemeColors,
+} from "./utils/mermaid-theme";
 import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
 
@@ -78,17 +89,26 @@ function themedChart(chart: string, host: HTMLElement | null): string {
   const parsed = frontmatter ? parse(frontmatter[1] ?? "") : null;
   const metadata = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   const config: MermaidConfig = metadata.config ?? {};
+  const colors = getMermaidThemeColors(host);
   return `---\n${stringify({
     ...metadata,
     config: {
       theme: "base",
+      look: "neo",
+      themeCSS: buildMermaidThemeCss(colors),
       ...config,
-      themeVariables: { ...getMermaidThemeVariables(host), ...config.themeVariables },
+      sequence: { ...MERMAID_SEQUENCE_CONFIG, ...config.sequence },
+      themeVariables: { ...buildMermaidThemeVariables(colors, isDarkHost(host)), ...config.themeVariables },
     },
   })}---\n${frontmatter ? source.slice(frontmatter[0].length) : source}`;
 }
 
-function toLegacyColor(color: string, fallback: string, ownerDocument: Document): string {
+function toLegacyColor(
+  color: string,
+  fallback: string,
+  ownerDocument: Document,
+  base?: string,
+): string {
   const canvas = ownerDocument.createElement("canvas");
   canvas.width = 1;
   canvas.height = 1;
@@ -99,6 +119,12 @@ function toLegacyColor(color: string, fallback: string, ownerDocument: Document)
   // modern CSS Color 4 values such as oklch(), then getImageData gives concrete
   // 8-bit sRGB bytes that Mermaid can consume safely.
   context.fillStyle = "#000";
+  if (base) {
+    // A translucent token (dark mode's --border) is only a color once it sits
+    // on something; read it off its backdrop instead of dropping its alpha.
+    context.fillStyle = base;
+    context.fillRect(0, 0, 1, 1);
+  }
   context.fillStyle = color || fallback;
   context.fillRect(0, 0, 1, 1);
   const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
@@ -110,6 +136,7 @@ function resolveCssColor(
   host: HTMLElement,
   variableName: string,
   fallback: string,
+  base?: string,
 ): string {
   const probe = host.ownerDocument.createElement("span");
   probe.style.color = `var(${variableName})`;
@@ -118,42 +145,70 @@ function resolveCssColor(
   const color = getComputedStyle(probe).color;
   probe.remove();
 
-  return toLegacyColor(color || fallback, fallback, host.ownerDocument);
+  return toLegacyColor(color || fallback, fallback, host.ownerDocument, base);
 }
 
 const FALLBACK_BACKGROUND = "rgb(255, 255, 255)";
 
-export function getMermaidThemeVariables(host: HTMLElement | null) {
-  if (!host) {
-    return {
-      primaryColor: "rgb(245, 245, 245)",
-      primaryBorderColor: "rgb(59, 130, 246)",
-      primaryTextColor: "rgb(17, 24, 39)",
-      lineColor: "rgb(107, 114, 128)",
-      fontFamily: "inherit",
-    };
-  }
+const FALLBACK_THEME_COLORS: MermaidThemeColors = {
+  background: "rgb(255, 255, 255)",
+  card: "rgb(255, 255, 255)",
+  muted: "rgb(245, 245, 245)",
+  border: "rgb(229, 231, 235)",
+  primary: "rgb(59, 130, 246)",
+  foreground: "rgb(17, 24, 39)",
+  mutedForeground: "rgb(107, 114, 128)",
+  success: "rgb(22, 163, 74)",
+  warning: "rgb(217, 119, 6)",
+  chart: Array(5).fill("rgb(59, 130, 246)"),
+};
 
+function isDarkScheme(declared: string): boolean {
+  return /\bdark\b/.test(declared) && !/\blight\b/.test(declared);
+}
+
+function getMermaidThemeColors(host: HTMLElement | null): MermaidThemeColors {
+  if (!host) return FALLBACK_THEME_COLORS;
+
+  const fallback = FALLBACK_THEME_COLORS;
+  const muted = resolveCssColor(host, "--muted", fallback.muted);
   return {
-    primaryColor: resolveCssColor(host, "--muted", "rgb(245, 245, 245)"),
-    primaryBorderColor: resolveCssColor(host, "--primary", "rgb(59, 130, 246)"),
-    primaryTextColor: resolveCssColor(host, "--foreground", "rgb(17, 24, 39)"),
-    lineColor: resolveCssColor(host, "--muted-foreground", "rgb(107, 114, 128)"),
-    fontFamily: "inherit",
+    background: resolveCssColor(host, "--background", fallback.background),
+    card: resolveCssColor(host, "--card", fallback.card),
+    muted,
+    border: resolveCssColor(host, "--border", fallback.border, muted),
+    primary: resolveCssColor(host, "--primary", fallback.primary),
+    foreground: resolveCssColor(host, "--foreground", fallback.foreground),
+    mutedForeground: resolveCssColor(host, "--muted-foreground", fallback.mutedForeground),
+    success: resolveCssColor(host, "--success", fallback.success),
+    warning: resolveCssColor(host, "--warning", fallback.warning),
+    chart: [1, 2, 3, 4, 5].map((n) => resolveCssColor(host, `--chart-${n}`, fallback.chart[n - 1]!)),
   };
+}
+
+function isDarkHost(host: HTMLElement | null): boolean {
+  return host ? isDarkScheme(getComputedStyle(host).colorScheme) : false;
+}
+
+export function getMermaidThemeVariables(host: HTMLElement | null) {
+  return buildMermaidThemeVariables(getMermaidThemeColors(host), isDarkHost(host));
 }
 
 function getSandboxCssVariables(host: HTMLElement | null): string {
   const styles = host ? getComputedStyle(host) : null;
-  const variables = ["--muted", "--primary", "--foreground", "--muted-foreground"]
+  const variables = [
+    "--muted",
+    "--primary",
+    "--foreground",
+    "--muted-foreground",
+  ]
     .map((name) => `${name}: ${styles?.getPropertyValue(name).trim() || "initial"};`)
     .join(" ");
   // The diagram is drawn in the app's colors, so its document declares the
   // app's scheme too. Without it a light document inside a dark page is
   // painted on an opaque white canvas, under a diagram colored for dark.
   const declared = styles?.colorScheme ?? "";
-  const scheme = /\bdark\b/.test(declared) && !/\blight\b/.test(declared) ? "dark" : "light";
-  return `${variables} color-scheme: ${scheme};`;
+  return `${variables} color-scheme: ${isDarkScheme(declared) ? "dark" : "light"};`;
 }
 
 /**
@@ -240,6 +295,8 @@ export function framedMermaidBodyHeightPx(chart: string): number {
 }
 
 interface CachedLayout extends Size {
+  /** Direction the diagram was drawn in; absent when drawn as the author wrote it. */
+  orientation?: Orientation;
   /**
    * Height the fitted preview drew at, which depends on the column's width
    * and so can only be recorded after the preview has been measured.
@@ -273,7 +330,11 @@ function readCachedLayout(chart: string): CachedLayout | null {
         typeof parsed.previewHeight === "number" && parsed.previewHeight > 0
           ? parsed.previewHeight
           : undefined;
-      return { width: parsed.width, height: parsed.height, previewHeight };
+      const orientation =
+        parsed.orientation === "horizontal" || parsed.orientation === "vertical"
+          ? parsed.orientation
+          : undefined;
+      return { width: parsed.width, height: parsed.height, previewHeight, orientation };
     }
     return null;
   } catch {
@@ -291,6 +352,7 @@ function writeCachedLayout(chart: string, layout: CachedLayout | null): void {
         width: layout.width,
         height: layout.height,
         previewHeight: layout.previewHeight,
+        orientation: layout.orientation,
       }),
     );
   } catch {
@@ -385,6 +447,8 @@ const FALLBACK_LAYOUT: Size = { width: 800, height: MERMAID_SKELETON_HEIGHT_PX }
 
 interface RenderedDiagram {
   svg: string;
+  /** Direction this was drawn in; null when drawn as the author wrote it. */
+  orientation: Orientation | null;
   inlineDocument: string;
   /**
    * Natural size. Always concrete — neither the inline zoom nor the viewer can
@@ -423,7 +487,19 @@ export function MermaidDiagram({
   const themeVersion = useThemeVersion();
   // One object rather than parallel states: a half-applied re-render (new SVG,
   // old layout) would size the viewer's iframe against the wrong diagram.
+  const standalone = useStandaloneMedia();
   const [rendered, setRendered] = useState<RenderedDiagram | null>(null);
+  const auto = useMermaidOrientationSetting() === "auto";
+  // undefined: not measured yet, so nothing renders; null: draw as written.
+  const [orientation, setOrientation] = useState<Orientation | null | undefined>(undefined);
+  // The chart redrawn top-down because its labels would scale below the
+  // minimum in this column. Keyed by chart so a different diagram starts clean.
+  // ponytail: stays stacked if the column later widens; reset by remount.
+  const [stackedFor, setStackedFor] = useState<string | null>(null);
+  const drawn = auto && stackedFor === chart ? "vertical" : orientation;
+  // The viewer's own direction, from its canvas width, and the diagram drawn in it.
+  const [viewerOrientation, setViewerOrientation] = useState<Orientation | null>(null);
+  const [viewerVariant, setViewerVariant] = useState<RenderedDiagram | null>(null);
   // Lazy initial value: if we've rendered this exact chart already in the
   // current session, the cached layout lets us reserve correct space on the
   // very first paint — eliminating the 0px → real-height shift that breaks
@@ -435,16 +511,50 @@ export function MermaidDiagram({
   const [ownViewerOpen, setOwnViewerOpen] = useState(false);
   const viewerOpen = frame ? frame.viewerOpen : ownViewerOpen;
   const setViewerOpen = frame ? frame.onViewerOpenChange : setOwnViewerOpen;
+  // The inline diagram, unless the viewer's width picks the other direction.
+  const viewed =
+    viewerVariant && viewerVariant.orientation === viewerOrientation ? viewerVariant : rendered;
   const viewerDocument = useMemo(
-    () => viewerOpen && rendered
-      ? buildViewerMermaidDocument(rendered.svg, containerRef.current, rendered.layout)
+    () => (viewerOpen || standalone) && viewed
+      ? buildViewerMermaidDocument(viewed.svg, containerRef.current, viewed.layout)
       : null,
-    [viewerOpen, rendered],
+    [viewerOpen, standalone, viewed],
   );
   const onErrorChange = frame?.onErrorChange;
   const [copied, setCopied] = useState(false);
 
+  // Measure before the first render: drawing the author's direction and then
+  // redrawing flashes the wrong layout, and the first draw is the costly one.
+  useLayoutEffect(() => {
+    const host = containerRef.current;
+    if (!auto || !host) {
+      setOrientation(null);
+      return;
+    }
+    const measure = () => {
+      const width = host.getBoundingClientRect().width;
+      // 0 means hidden or not laid out; keep the direction we have.
+      setOrientation((previous) =>
+        width > 0 ? pickOrientation(width, previous ?? undefined) : (previous ?? null),
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [auto]);
+
+  const handleViewerWidth = useCallback(
+    (width: number) => {
+      if (!auto || width <= 0) return;
+      setViewerOrientation((previous) => pickOrientation(width, previous ?? undefined));
+    },
+    [auto],
+  );
+
   useEffect(() => {
+    if (drawn === undefined) return;
     let cancelled = false;
 
     async function renderDiagram() {
@@ -455,19 +565,23 @@ export function MermaidDiagram({
         // closing it, and with it the user's zoom and position. Keeping the
         // previous diagram on screen until the new one is ready also removes
         // a flash of the loading skeleton on every theme toggle.
-        setSkeletonLayout(readCachedLayout(chart));
+        // A layout cached in the other direction is the wrong height to reserve.
+        const cached = readCachedLayout(chart);
+        setSkeletonLayout(cached?.orientation === (drawn ?? undefined) ? cached : null);
         const mermaid = await getMermaid();
         if (cancelled) return;
-        const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(chart, containerRef.current));
+        const source = drawn ? orientChart(chart, drawn) : chart;
+        const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(source, containerRef.current));
         if (cancelled) return;
 
         const measured = getMermaidLayout(renderedSvg);
         const layout = measured ?? FALLBACK_LAYOUT;
         const exportStyle = getExportStyle(containerRef.current);
-        writeCachedLayout(chart, measured);
-        setSkeletonLayout(measured);
+        writeCachedLayout(chart, measured && { ...measured, orientation: drawn ?? undefined });
+        setSkeletonLayout(measured && { ...measured, orientation: drawn ?? undefined });
         setRendered({
           svg: renderedSvg,
+          orientation: drawn ?? null,
           inlineDocument: buildSandboxedMermaidDocument(renderedSvg, containerRef.current),
           layout,
           exportBackground: exportStyle.background,
@@ -486,7 +600,61 @@ export function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [chart, diagramId, themeVersion]);
+  }, [chart, diagramId, themeVersion, drawn]);
+
+  // The viewer's variant, drawn only while it is open and wants the other direction.
+  const variantOrientation =
+    auto && viewerOpen && rendered && viewerOrientation && viewerOrientation !== rendered.orientation
+      ? viewerOrientation
+      : null;
+  useEffect(() => {
+    if (!variantOrientation) {
+      setViewerVariant((previous) => (previous ? null : previous));
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = await getMermaid();
+        if (cancelled) return;
+        const { svg } = await mermaid.render(
+          `${diagramId}-viewer`,
+          themedChart(orientChart(chart, variantOrientation), containerRef.current),
+        );
+        if (cancelled) return;
+        setViewerVariant({
+          svg,
+          orientation: variantOrientation,
+          inlineDocument: "",
+          layout: getMermaidLayout(svg) ?? FALLBACK_LAYOUT,
+          exportBackground: "",
+          exportFontFamily: "",
+        });
+      } catch {
+        // The inline diagram stays in the viewer; the next change retries.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, diagramId, themeVersion, variantOrientation]);
+
+  // The column is only known once the preview mounted; judge the first draw.
+  useEffect(() => {
+    if (!auto || !rendered || rendered.orientation === "vertical") return;
+    const column = scrollRef.current?.offsetWidth ?? 0;
+    if (
+      shouldStackVertically(rendered.layout.width, column) &&
+      orientChart(chart, "vertical") !== chart
+    ) {
+      setStackedFor(chart);
+    }
+  }, [auto, chart, rendered]);
+
+  // A reopened viewer measures itself afresh.
+  useEffect(() => {
+    if (!viewerOpen) setViewerOrientation(null);
+  }, [viewerOpen]);
 
   useEffect(() => {
     onErrorChange?.(error);
@@ -504,7 +672,11 @@ export function MermaidDiagram({
   const fittedHeight = zoom.fitted ? zoom.size.height : null;
   useEffect(() => {
     if (!rendered || fittedHeight === null) return;
-    writeCachedLayout(chart, { ...rendered.layout, previewHeight: fittedHeight });
+    writeCachedLayout(chart, {
+      ...rendered.layout,
+      previewHeight: fittedHeight,
+      orientation: rendered.orientation ?? undefined,
+    });
   }, [chart, rendered, fittedHeight]);
 
   const overflow = useHorizontalOverflow(scrollRef, [
@@ -520,6 +692,12 @@ export function MermaidDiagram({
       setTimeout(() => setCopied(false), 2000);
     }
   }, [chart]);
+
+  if (standalone) {
+    return <div ref={containerRef} className="flex h-full min-h-0 w-full flex-col">
+      {error ? <div role="alert" className="p-4">{error}</div> : rendered ? <MermaidViewerStandalone chart={chart} svg={rendered.svg} viewerDocument={viewerDocument} layout={rendered.layout} exportBackground={rendered.exportBackground} exportFontFamily={rendered.exportFontFamily} /> : <div className="p-4">{t(($) => $.mermaid.rendering)}</div>}
+    </div>;
+  }
 
   if (error && frame) {
     // The frame shows the error panel; keep the host so a theme switch can
@@ -632,11 +810,12 @@ export function MermaidDiagram({
             open={viewerOpen}
             onOpenChange={setViewerOpen}
             chart={chart}
-            svg={rendered.svg}
+            svg={(viewed ?? rendered).svg}
             viewerDocument={viewerDocument}
-            layout={rendered.layout}
+            layout={(viewed ?? rendered).layout}
             exportBackground={rendered.exportBackground}
             exportFontFamily={rendered.exportFontFamily}
+            onViewportWidth={handleViewerWidth}
             finalFocusRef={frame ? frame.finalFocusRef : expandButtonRef}
           />
         </>

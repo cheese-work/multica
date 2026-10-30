@@ -483,6 +483,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
@@ -673,6 +674,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
+				if store != nil && patcher.SetAttachments(store) {
+					h.DeclareChannelFileDelivery(string(channel.TypeFeishu))
+				}
 				patcher.Register(bus)
 
 				// Typing indicator: shows a "processing" reaction on the user's
@@ -1693,6 +1697,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/start", h.StartTask)
 		r.Post("/tasks/{taskId}/supplements/claim", h.ClaimTaskSupplement)
 		r.Post("/tasks/{taskId}/supplements/{commentId}/ack", h.AckTaskSupplement)
+		r.Post("/tasks/{taskId}/pr-events/claim", h.ClaimTaskPREvent)
+		r.Post("/tasks/{taskId}/pr-events/{eventId}/ack", h.AckTaskPREvent)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
@@ -1725,6 +1731,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.MethodNotAllowed(publicapiv1.MethodNotAllowed)
 		})
 	})
+
+	registerSearchSuggestionsRoutes(r, h, middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner), middleware.RequireWorkspaceMember(queries))
 
 	// Browser-session relay for sandboxed plugin surfaces. The iframe talks to
 	// the host over MessagePort; the host calls this internal route with the
@@ -1864,6 +1872,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-2454: delegated governed writes. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
+					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
@@ -2122,6 +2133,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
+			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.
 			r.Route("/api/search-index", func(r chi.Router) {
@@ -2162,6 +2177,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/run-budget", h.GetIssueRunBudget)
+					r.Post("/run-budget", h.RaiseIssueRunBudget)
+					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
+					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
@@ -2281,14 +2300,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// member; edits and deletes are gated inside the handlers to the
 			// workflow's owner and workspace owners/admins (MUL-8120), and
 			// switching a project's workflow to admins and the project's lead.
+			// Edits, deletes and handoff writes refuse machine credentials
+			// (task_token, cloud_pat): an agent must not rewrite its own workflow.
+			// The one exception is a task token on an edit or handoff write whose
+			// body carries a decision the workspace owner approved (CHE-2456);
+			// the handler checks it, and without a decision id the answer is 403.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
-					r.Patch("/", h.UpdateIssueWorkflow)
-					r.Delete("/", h.DeleteIssueWorkflow)
-					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
+					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
+					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
 				})
 			})
@@ -2307,6 +2331,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
+					r.Get("/github-route-grants", h.ListGitHubRouteGrants)
+					r.Put("/github-route-grants/{userId}", h.SetGitHubRouteGrant)
+					r.Delete("/github-route-grants/{userId}", h.DeleteGitHubRouteGrant)
 					r.Route("/wakeup-definitions", func(r chi.Router) {
 						d := h.WakeupDefinitionAPI(service.WakeupScopeProject)
 						r.Get("/", d.List)
@@ -2603,6 +2630,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Get("/usage", h.GetChatSessionUsage)
+					r.Get("/wakeups", h.ListChatSessionWakeups)
+					r.Delete("/wakeups/{wakeupId}", h.CancelChatSessionWakeup)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Post("/continue", h.ContinueChatSession)
@@ -2639,6 +2668,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
 			r.Post("/api/chat/continue", h.ContinueChatSession)
+			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
@@ -2671,11 +2701,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
+				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/{id}", h.GetDecision)
 				r.Post("/{id}/withdraw", h.WithdrawDecision)
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/challenge", h.ChallengePasskeyRevocation)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke", h.RevokePasskey)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/code", h.StartPasskeyRevocationByCode)
+			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/confirm", h.ConfirmPasskeyRevocationByCode)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {

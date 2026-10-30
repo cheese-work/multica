@@ -91,7 +91,7 @@ func (d *Daemon) latestClaimGeneration(task Task) string {
 // startTaskWithCurrentClaim acknowledges the start with the newest claim. A
 // duplicate delivery can refresh the claim while the start is in flight, so a
 // rejection is retried with the refreshed generation.
-func (d *Daemon) startTaskWithCurrentClaim(ctx context.Context, task Task, capabilities ...string) (bool, error) {
+func (d *Daemon) startTaskWithCurrentClaim(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
 	for {
 		task.DispatchedAt = d.latestClaimGeneration(task)
 		negotiated, err := d.client.StartTask(ctx, task, capabilities...)

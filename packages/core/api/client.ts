@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -105,10 +106,12 @@ import type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
+  ChatSearchPage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
@@ -270,6 +273,7 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
+  OpenDecisionRequestListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -279,12 +283,15 @@ import {
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
   ChatMessagesPageSchema,
+  ChatSearchPageSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
   ChatSessionUsageSchema,
   EMPTY_CHAT_SESSION_USAGE,
+  ChatWakeupsSchema,
+  EMPTY_CHAT_WAKEUPS,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -3199,7 +3206,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -3933,6 +3940,18 @@ export class ApiClient {
     });
   }
 
+  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
+  }
+
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",
@@ -4046,6 +4065,17 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
+  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
+    const raw: unknown = await this.fetch("/api/decisions/open");
+    return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
+      endpoint: "GET /api/decisions/open",
+    });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
     params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
@@ -4087,15 +4117,32 @@ export class ApiClient {
     }
   }
 
+  /** Search the caller's DMs by title and message text (`q` is 1-200 characters). */
+  async searchChats(params: { q: string; limit?: number; cursor?: string | null }): Promise<ChatSearchPage> {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.cursor) query.set("cursor", params.cursor);
+    const raw: unknown = await this.fetch(`/api/chat/search?${query.toString()}`);
+    return parseWithFallback(
+      raw,
+      ChatSearchPageSchema,
+      { results: [], next_cursor: null },
+      { endpoint: "GET /api/chat/search" },
+    );
+  }
+
   async sendChatMessage(
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    decisionRequestId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      decision_request_id?: string;
     } = { content };
+    if (decisionRequestId) body.decision_request_id = decisionRequestId;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }

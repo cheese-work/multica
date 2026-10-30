@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "Ajouté : ",
+    "removed": "Supprimé : ",
+    "revision": "Révision {{number}}",
+    "readonly": "Lecture seule",
+    "issue": "Tâche source",
+    "diff": "Diff",
+    "split": "Côte à côte",
+    "unify": "Unifié",
+    "compare": "Comparer avec",
+    "choose_base": "Choisir une révision de référence",
+    "change": "Modification {{current}} / {{total}}",
+    "previous": "Modification précédente",
+    "next": "Modification suivante",
+    "download": "Télécharger",
+    "close": "Fermer",
+    "more": "Plus d’options",
+    "base": "Référence",
+    "current": "Actuel",
+    "loading_revisions": "Chargement des révisions…",
+    "revisions_error": "Impossible de charger les révisions",
+    "no_earlier": "Aucune révision antérieure",
+    "loading": "Chargement du document…",
+    "current_error": "Impossible de charger le document",
+    "loading_diff": "Chargement de la comparaison…",
+    "comparison_error": "Impossible de charger la comparaison",
+    "too_large": "Cette comparaison est trop volumineuse. Téléchargez les fichiers pour les comparer localement.",
+    "identical": "Aucune modification entre ces révisions",
+    "empty": "Ce document est vide",
+    "unchanged": "{{count}} lignes inchangées",
+    "retry": "Réessayer"
+  },
+  "media": {
+    "title": "Média",
+    "more": "Plus",
+    "open_in_new_window": "Ouvrir dans une nouvelle fenêtre",
+    "open_failed": "Impossible d’ouvrir la page du média",
+    "loading": "Chargement du média…",
+    "load_failed": "Impossible de charger le média",
+    "offline": "Hors ligne — affichage de la dernière copie chargée.",
+    "retry": "Réessayer"
+  },
   "bubble_menu": {
     "bold": "Gras",
     "italic": "Italique",
@@ -114,6 +156,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "lance l’agent",
     "focus_hint": "[focus]",
     "title_hint": "[titre]",
     "message_hint": "[message]",
@@ -123,7 +166,11 @@
       "note": "Ajouter une note — ne déclenchera aucun agent",
       "compact": "Résumer cette conversation et continuer dans une nouvelle",
       "rename": "Renommer cette conversation sans lancer l’agent",
-      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé"
+      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé",
+      "statistic": "Afficher l’utilisation et le coût de cette conversation",
+      "archive": "Archiver cette conversation sans lancer l’agent",
+      "pin": "Épingler ou détacher cette conversation",
+      "unarchive": "Désarchiver cette conversation. Rien n’est envoyé à l’agent."
     }
   },
   "code_block": {
@@ -189,5 +236,8 @@
     "clear_filter": "Effacer le filtre",
     "no_matches": "Aucune ligne correspondante",
     "close": "Fermer"
+  },
+  "next_self_mention": {
+    "label": "Ma prochaine mention"
   }
 }

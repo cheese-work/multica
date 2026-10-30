@@ -98,7 +98,7 @@ const listIssueLinkedPullRequestStates = `-- name: ListIssueLinkedPullRequestSta
 SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-WHERE ipr.issue_id = $1
+WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
 UNION ALL
 SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state
 FROM vcs_pull_request pr
@@ -114,8 +114,8 @@ type ListIssueLinkedPullRequestStatesRow struct {
 	State    string      `json:"state"`
 }
 
-// Every PR linked to the issue across GitHub and self-hosted providers, for
-// the merge decision. Ordered by number so reasons read stably.
+// Delivery PRs across GitHub and self-hosted providers, for the merge decision.
+// GitHub reference links are excluded. Ordered by number so reasons read stably.
 func (q *Queries) ListIssueLinkedPullRequestStates(ctx context.Context, issueID pgtype.UUID) ([]ListIssueLinkedPullRequestStatesRow, error) {
 	rows, err := q.db.Query(ctx, listIssueLinkedPullRequestStates, issueID)
 	if err != nil {
@@ -159,21 +159,21 @@ WHERE i.id = $1
   AND i.status = $4::text
   AND i.status <> $3::text
   AND EXISTS (
-      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id
+      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
       UNION ALL
       SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
   )
   AND NOT EXISTS (
       SELECT 1 FROM issue_pull_request ipr
       JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+      WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
   )
   AND NOT EXISTS (
       SELECT 1 FROM issue_vcs_pull_request ipr
       JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
       WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
   )
-RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override
 `
 
 type MoveIssueFromPullRequestsParams struct {
@@ -230,6 +230,7 @@ func (q *Queries) MoveIssueFromPullRequests(ctx context.Context, arg MoveIssueFr
 		&i.DuplicateOfIssueID,
 		&i.WorkflowID,
 		&i.RequestedByID,
+		&i.MaxRunsOverride,
 	)
 	return i, err
 }

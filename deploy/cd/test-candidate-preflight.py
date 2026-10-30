@@ -59,6 +59,8 @@ elif "/check-runs?" in endpoint:
     for run in runs:
         print(json.dumps(run))
 elif endpoint.endswith("/commits/" + os.environ["LIVE_SHA"][:7]):
+    if os.environ.get("STUB_AMBIGUOUS_SHORT"):
+        sys.exit("gh: No commit found for SHA: " + os.environ["LIVE_SHA"][:7] + " (HTTP 422)")
     print(os.environ["LIVE_SHA"])
 elif "/commits/" in endpoint:
     print(json.dumps({"files": json.loads(os.environ["STUB_FILES"]), "truncated": False}))
@@ -87,7 +89,8 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         curl.chmod(0o755)
 
     def approval_state(self, heads, checks=None, files=None, wait_seconds="60",
-                       live_status="ahead", main_status="ahead", live_versions=None):
+                       live_status="ahead", main_status="ahead", live_versions=None,
+                       live_sha=LIVE_SHA, ambiguous_short=False):
         protected = self.workflow["jobs"]["approve-c00"]
         self.assertEqual(protected["environment"], "c00-production")
         dependencies = protected.get("needs", [])
@@ -110,14 +113,15 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary),
             "SOURCE_SHA": SOURCE_SHA,
-            "LIVE_SHA": LIVE_SHA,
+            "LIVE_SHA": live_sha,
+            "STUB_AMBIGUOUS_SHORT": "1" if ambiguous_short else "",
             "C00_CONFIG_URL": "https://c00.example.test/api/config",
             "STUB_STATE": str(self.directory),
             "STUB_HEADS": json.dumps(heads),
             "STUB_CHECKS": json.dumps(checks if checks is not None else [SUCCESS]),
             "STUB_LIVE_STATUS": live_status,
             "STUB_MAIN_STATUS": main_status,
-            "STUB_LIVE_VERSIONS": json.dumps(live_versions or [LIVE_SHA[:7]]),
+            "STUB_LIVE_VERSIONS": json.dumps(live_versions or [live_sha[:7]]),
             "STUB_FILES": json.dumps(files if files is not None else ["server/only.go"]),
             "CHECKS_WAIT_SECONDS": wait_seconds,
             "CHECKS_POLL_SECONDS": "0",
@@ -155,6 +159,15 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
                 self.assertEqual(state, "skipped", reason)
         self.assertFalse((self.directory / "check-reads").exists())
 
+    def test_ambiguous_short_live_version_resolves_through_local_git(self):
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
+        subprocess.run(git + ["init", "--quiet"], cwd=self.directory, check=True)
+        subprocess.run(git + ["commit", "--quiet", "--allow-empty", "-m", "live"], cwd=self.directory, check=True)
+        live_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.directory, check=True,
+                                  text=True, capture_output=True).stdout.strip()
+        state, reason = self.approval_state([SOURCE_SHA], live_sha=live_sha, ambiguous_short=True)
+        self.assertEqual(state, "waiting", reason)
+
     def test_live_version_is_rechecked_after_required_checks(self):
         state, reason = self.approval_state([SOURCE_SHA], live_versions=[LIVE_SHA[:7], SOURCE_SHA])
         self.assertEqual(state, "skipped", reason)
@@ -185,13 +198,15 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             else:
                 os.environ["STUB_LIVE_ERROR"] = original
 
-    def test_new_main_push_cancels_running_qualification(self):
+    def test_new_main_push_keeps_running_qualification_and_replaces_only_pending(self):
         qualification = yaml.safe_load((ROOT / ".github/workflows/cd-qualification.yml").read_text())
         triggers = qualification.get("on", qualification.get(True))
         self.assertEqual(triggers["push"]["branches"], ["main"])
         lock = qualification["concurrency"]
         self.assertEqual(lock["group"], "cd-qualification-build-${{ github.ref }}")
-        self.assertIs(lock["cancel-in-progress"], True)
+        # false: one running + one pending run per group; a newer push replaces
+        # only the pending run, never the build already in progress.
+        self.assertIs(lock["cancel-in-progress"], False)
 
     def test_candidate_checks_that_fail_while_settling_skip(self):
         state, reason = self.approval_state(
@@ -262,6 +277,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertIn("conclusion == 'success'", preflight["if"])
         checkout = next(step for step in preflight["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
         self.assertNotIn("secrets.C00", json.dumps(preflight))
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
         self.assertEqual(selection["env"]["C00_CONFIG_URL"],

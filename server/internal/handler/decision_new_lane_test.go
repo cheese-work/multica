@@ -85,7 +85,7 @@ func TestDecisionRequestConcurrentNewDM(test *testing.T) {
 }
 
 func TestDecisionRequestLaneChoiceRefusals(test *testing.T) {
-	for _, scenario := range []string{"implicit", "both", "new_without_person", "unlisted", "unnamed_person"} {
+	for _, scenario := range []string{"implicit", "both", "new_without_person", "archived", "unnamed_person"} {
 		test.Run(scenario, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			body := map[string]any{"issue_id": fixture.issueID, "ask": fixture.structuredAsk(), "escalation_class": "reversible"}
@@ -98,10 +98,8 @@ func TestDecisionRequestLaneChoiceRefusals(test *testing.T) {
 			case "unnamed_person":
 				body["new_dm"], body["for"] = true, testUserID
 				want = http.StatusForbidden
-			case "unlisted":
-				for index := 0; index < 10; index++ {
-					dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "more recent"})
-				}
+			case "archived":
+				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)
 				body["session_id"] = fixture.sessionID
 				want = http.StatusForbidden
 			}

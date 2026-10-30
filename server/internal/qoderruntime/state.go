@@ -31,6 +31,7 @@ type run struct {
 	AgentID            string           `json:"agent_id,omitempty"`
 	Page               string           `json:"page,omitempty"`
 	TaskID             string           `json:"task_id"`
+	CancelAckProof     string           `json:"cancel_ack_proof,omitempty"`
 	SessionID          string           `json:"session_id,omitempty"`
 	Prompt             string           `json:"prompt,omitempty"`
 	Resources          []map[string]any `json:"resources,omitempty"`

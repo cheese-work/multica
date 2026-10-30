@@ -138,31 +138,78 @@ deploy_lock="$state_dir/deploy.lock"
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
+flags_file=""
+
+flags_overlay_prepare() {
+  local flags flags_var=MULTICA_FEATURE_FLAGS_FILE
+  flags="$(env_setting "$flags_var")"
+  if [ -z "$flags" ]; then
+    flags_var=MULTICA_JEV_FLAGS_FILE
+    flags="$(env_setting "$flags_var")"
+  fi
+  if [ -z "$flags" ]; then
+    local colour cid mounted
+    colour="$(active_colour)"
+    colour="${colour:-blue}"
+    if ! cid="$(compose ps --all -q "backend-${colour}")"; then
+      echo "!! flags continuity: cannot resolve previous active backend; refusing before any change" >&2
+      exit 1
+    fi
+    [ -n "$cid" ] || return 0
+    if ! mounted="$(docker inspect --format '{{json .Mounts}}' "$cid" | node -e '
+      let input = "";
+      process.stdin.on("data", (chunk) => input += chunk).on("end", () => {
+        const mounts = JSON.parse(input);
+        if (!Array.isArray(mounts)) process.exit(1);
+        console.log(mounts.some((mount) => mount.Destination === "/app/feature-flags.yaml"));
+      });
+    ')"; then
+      echo "!! flags continuity: cannot inspect previous active backend flags mount; refusing before any change" >&2
+      exit 1
+    fi
+    if [ "$mounted" = true ]; then
+      echo "!! flags continuity: MULTICA_FEATURE_FLAGS_FILE and MULTICA_JEV_FLAGS_FILE are unset but previous active backend has a flags mount; refusing before any change" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  flags_refuse() {
+    echo "!! flags overlay: $flags_var $1; refusing before any change" >&2
+    exit 1
+  }
+  case "$flags" in
+    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || flags_refuse "is not a readable, non-empty file"
+      node "$script_dir/flagfile-check.mjs" "$flags" || flags_refuse "is not a valid feature-flag file (see the line above)" ;;
+    *) flags_refuse "is unset or not an absolute path" ;;
+  esac
+  compose_files+=("$script_dir/docker-compose.flags.yml")
+  flags_file="$flags"
+  echo "==> flags overlay enabled (flag file verified)"
+}
+
+frontend_flags_match() {
+  [ -n "$flags_file" ] || return 0
+  curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$1/api/config" |
+    node "$script_dir/flagfile-check.mjs" "$flags_file" --config-stdin
+}
 
 # Scoped Jev runtime overlay (CHE-1854). Opt-in per installation: the compose
-# dir's .env sets MULTICA_JEV_FLAGS_FILE and/or MULTICA_JEV_GATEWAY_NETWORK.
-# Once either is set, ALL prerequisites must hold (key, flag file, network);
+# dir's .env sets MULTICA_JEV_GATEWAY_NETWORK.
+# Once set, ALL prerequisites must hold (key, flag file, network);
 # any gap refuses here, before the first drain, pull, migration or start, and
-# names the variable but never its value. Unset = overlay not loaded and every
-# compose call is identical to a plain A/B install.
+# names the variable but never its value. Unset = Jev overlay not loaded.
 jev_overlay_prepare() {
   local flags network key
-  flags="$(env_setting MULTICA_JEV_FLAGS_FILE)"
   network="$(env_setting MULTICA_JEV_GATEWAY_NETWORK)"
-  [ -n "$flags$network" ] || return 0
+  [ -n "$network" ] || return 0
+  flags="$(env_setting MULTICA_FEATURE_FLAGS_FILE)"
+  [ -n "$flags" ] || flags="$(env_setting MULTICA_JEV_FLAGS_FILE)"
   key="$(env_setting MULTICA_JEV_SECRET_KEY)"
   jev_refuse() {
     echo "!! jev overlay: $1 $2; refusing before any change" >&2
     exit 1
   }
-  case "$flags" in
-    /*) [ -f "$flags" ] && [ -r "$flags" ] && [ -s "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a readable, non-empty file"
-      # Both colours mount this file and the backend refuses to start on a
-      # malformed one, so a bad file must stop us before the incumbent drains.
-      node "$script_dir/flagfile-check.mjs" "$flags" || jev_refuse MULTICA_JEV_FLAGS_FILE "is not a valid feature-flag file (see the line above)" ;;
-    *) jev_refuse MULTICA_JEV_FLAGS_FILE "is unset or not an absolute path" ;;
-  esac
-  [ -n "$network" ] || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "is unset"
+  [ -n "$flags" ] || jev_refuse MULTICA_JEV_FLAGS_FILE "is unset (or set MULTICA_FEATURE_FLAGS_FILE)"
   docker network inspect "$network" >/dev/null 2>&1 || jev_refuse MULTICA_JEV_GATEWAY_NETWORK "names a network that does not exist"
   # Same contract as the server's credential.DecodeKey: standard base64 of 32 bytes.
   printf '%s' "$key" | node -e '
@@ -251,7 +298,11 @@ published_port_matches() {
 conf_upstreams() {
   awk '
     /listen 127\.0\.0\.1:[0-9]+/ { match($0, /:[0-9]+/); listen = substr($0, RSTART + 1, RLENGTH - 1) }
-    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ { match($0, /127\.0\.0\.1:[0-9]+/); print listen "=" substr($0, RSTART + 10, RLENGTH - 10) }
+    /proxy_pass http:\/\/127\.0\.0\.1:[0-9]+/ {
+      match($0, /127\.0\.0\.1:[0-9]+/)
+      route = listen "=" substr($0, RSTART + 10, RLENGTH - 10)
+      if (!seen[route]++) print route
+    }
   '
 }
 
@@ -377,20 +428,30 @@ JSON
 # Any unproven step raises alert_outage instead. Always exits nonzero: the
 # cutover itself failed.
 recover_incumbent() {
-  local reason=$1 ledger final
+  local reason=$1 ledger final minimum
   echo "!! $reason" >&2
   echo "==> post-drain failure; attempting compatibility-gated recovery of incumbent colour=$from_colour" >&2
   if ! stop_confirmed "backend-${to_colour}" "frontend-${to_colour}"; then
     alert_outage "$reason; candidate $to_colour shutdown NOT confirmed, so $from_colour was NOT started (never two backends on one DB); stop $to_colour by hand, then follow the runbook"
     exit 1
   fi
+  if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] ||
+    [ -z "$incumbent_backend_image_id" ] || [ -z "$incumbent_web_image_id" ] || [ -z "$incumbent_ledger" ]; then
+    alert_outage "$reason; pre-drain incumbent identity is unproven, so $from_colour was NOT restarted"
+    exit 1
+  fi
 
   ledger="$(current_ledger_version)" || ledger=""
-  final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  minimum="$incumbent_ledger"
+  final="$incumbent_ledger"
+  if [ "$command" = cutover ]; then
+    minimum="$packet_minimum_rollback_version"
+    final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  fi
   if [ -z "$ledger" ] || { [ "$ledger" != "$incumbent_ledger" ] && {
-    ! ledger_at_or_after "$ledger" "$packet_minimum_rollback_version" "$root_dir/server/migrations" ||
+    ! ledger_at_or_after "$ledger" "$minimum" "$root_dir/server/migrations" ||
       ! ledger_at_or_after "$final" "$ledger" "$root_dir/server/migrations"; }; }; then
-    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$packet_minimum_rollback_version, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
+    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$minimum, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
     exit 1
   fi
   if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
@@ -451,7 +512,10 @@ if ! flock -w "$lock_wait_seconds" 9; then
   exit 1
 fi
 
-[ "$command" = status ] || jev_overlay_prepare
+if [ "$command" != status ]; then
+  flags_overlay_prepare
+  jev_overlay_prepare
+fi
 
 case "$command" in
   status)
@@ -489,6 +553,15 @@ case "$command" in
     if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest" \
       --migrations-dir "$root_dir/server/migrations"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
+      exit 1
+    fi
+
+    # Released compose files (CHE-2396): the deployed copies are replaced by
+    # the verified bundle's before anything renders, so a stale compose dir
+    # can never configure the candidate. Still under the deploy lock.
+    echo "==> syncing released compose files into $compose_dir"
+    if ! node "$script_dir/drift-receipt.mjs" sync --source-root "$root_dir" --compose-dir "$compose_dir"; then
+      echo "!! could not sync the released compose files; refusing to cut over" >&2
       exit 1
     fi
 
@@ -701,6 +774,9 @@ case "$command" in
     if ! wait_http_ok "http://127.0.0.1:${candidate_web_port}/" 120; then
       recover_incumbent "candidate frontend-$to_colour did not answer on port $candidate_web_port within 120s"
     fi
+    if ! frontend_flags_match "$candidate_port"; then
+      recover_incumbent "frontend flag verification failed for candidate colour=$to_colour"
+    fi
 
     # Require the EXACT expected /health commit — a 200 alone only proves
     # something is listening on the port, not that it is the release just
@@ -708,6 +784,21 @@ case "$command" in
     echo "==> verifying candidate /health identity"
     if ! verify_health_identity "$candidate_port" "$source_sha"; then
       recover_incumbent "candidate colour=$to_colour /health identity mismatch"
+    fi
+
+    # Deploy drift receipt (CHE-2396): deployed compose bytes, env key names
+    # (never values) and running image digests must equal the released
+    # source and manifest. Any difference fails the deploy before traffic moves.
+    echo "==> deploy drift receipt"
+    drift_services=()
+    for svc in "backend-${to_colour}" "frontend-${to_colour}"; do
+      drift_services+=(--service "${svc}=$(compose ps -q "$svc" | head -1)")
+    done
+    # The interpolated render holds secrets: stream it, never write it to disk.
+    if ! compose config --format json | node "$script_dir/drift-receipt.mjs" check \
+      --source-root "$root_dir" --compose-dir "$compose_dir" --config /dev/stdin --manifest "$manifest" \
+      "${drift_services[@]}" --output "$state_dir/drift-receipt.json"; then
+      recover_incumbent "deploy drift receipt: candidate colour=$to_colour differs from the released source (see $state_dir/drift-receipt.json)"
     fi
 
     # Activate the complete router generation. router.sh's own `nginx -t`
@@ -744,6 +835,17 @@ case "$command" in
     # the matching comment in the `cutover)` branch above for the measured
     # overhead difference, CHE-655).
     postgres_container="$(postgres_container_id)" || exit 1
+
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; refusing rollback before drain" >&2
+      exit 1
+    fi
+    incumbent_commit="$(health_commit "$(slot_port backend "$from_colour")" || true)"
+    incumbent_backend_image="$(running_image_ref "backend-${from_colour}" || true)"
+    incumbent_web_image="$(running_image_ref "frontend-${from_colour}" || true)"
+    incumbent_backend_image_id="$(container_image_id "backend-${from_colour}" || true)"
+    incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
+    incumbent_ledger="$(current_ledger_version || true)"
 
     # Drain and stop the failing candidate BEFORE the strict quiescence
     # final-gate runs — same root cause and same fix as the `cutover)`
@@ -805,10 +907,6 @@ case "$command" in
       exit 1
     fi
 
-    if ! resolve_slot_ports; then
-      echo "!! slot ports unresolved; $to_colour NOT started — MANUAL INTERVENTION REQUIRED" >&2
-      exit 1
-    fi
     backend_port="$(slot_port backend "$to_colour")"
     echo "==> starting retained predecessor colour=$to_colour without migrations"
     if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
@@ -821,6 +919,9 @@ case "$command" in
       ! wait_ready_on_port "$backend_port" 120; then
       echo "!! retained predecessor colour=$to_colour did not become healthy within 120s — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
+    fi
+    if ! frontend_flags_match "$backend_port"; then
+      recover_incumbent "frontend flag verification failed for retained predecessor colour=$to_colour"
     fi
 
     echo "==> restoring router generation for colour=$to_colour"

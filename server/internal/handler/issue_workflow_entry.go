@@ -44,10 +44,25 @@ type workflowHandoff struct {
 // prospective update and may rewrite params: the status of an issue moving
 // into the project, and the assignee when the write enters a handoff step.
 // enterOnMove makes a project move enter the step the issue lands on.
-// run is the calling agent's run on this issue (nil for members): it may only
-// move the issue from the step it works on. It returns the handoff that write
-// triggers, or nil.
-func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+// caller is who writes: a run on this issue may only move the issue from the
+// step it works on, and an agent only along its step's exits. It returns the
+// handoff that write triggers, or nil.
+func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
+	run := caller.run
+	// A review superseded by a newer head has no say on the status, in any
+	// workflow (CHE-2307).
+	if oldHead, stale := staleVerdictRun(ctx, q, run); stale && statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
+		h.recordReviewActivity(ctx, prev.ID, "agent", uuidToString(run.AgentID), "review_verdict_stale", map[string]string{
+			"message": "verdict for " + oldHead + " is stale", "task_id": uuidToString(run.ID), "head_sha": oldHead,
+		})
+		return nil, &issueworkflow.StaleVerdictError{
+			IssueIdentifier: h.getIssuePrefix(ctx, prev.WorkspaceID) + "-" + strconv.Itoa(int(prev.Number)),
+			ReviewedSHA:     oldHead,
+		}
+	}
+	if err := h.checkAgentMove(ctx, q, prev, params, statusExplicit, caller); err != nil {
+		return nil, err
+	}
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
 	if err != nil || def == nil {
 		return nil, err
@@ -105,6 +120,21 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	params.AssigneeType = pgtype.Text{String: assigneeType, Valid: true}
 	params.AssigneeID = assigneeID
 	return &workflowHandoff{def: *def, step: step, project: project}, nil
+}
+
+// checkAgentMove refuses an agent's status write the issue's current step has
+// no agent exit for. An agent decides its step's exits, whichever issue its run
+// belongs to, so the step comes from the workflow the issue is in now: a write
+// that also clears or changes the project must not drop that policy first.
+func (h *Handler) checkAgentMove(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit bool, caller workflowCaller) error {
+	if !caller.agent || !statusExplicit || !params.Status.Valid || params.Status.String == prev.Status {
+		return nil
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, prev.ProjectID)
+	if err != nil || def == nil {
+		return err
+	}
+	return issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String)
 }
 
 // createHandoffError is a handoff handler the caller may not use, found while
@@ -192,6 +222,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var notAllowed *issueworkflow.MoveNotAllowedError
+	if errors.As(err, &notAllowed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":         notAllowed.Error(),
+			"code":          "status_move_not_allowed",
+			"from":          notAllowed.From,
+			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
 	if errors.Is(err, errHandoffPreviewStale) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; review the move again",
@@ -216,7 +256,24 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var stale *issueworkflow.StaleVerdictError
+	if errors.As(err, &stale) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        stale.Error(),
+			"code":         "review_verdict_stale",
+			"reviewed_sha": stale.ReviewedSHA,
+		})
+		return true
+	}
 	return false
+}
+
+// workflowCaller is who makes a status write: run is the agent's run on this
+// issue, nil for members and for runs on other issues; agent is true for any
+// agent, whatever run it carries.
+type workflowCaller struct {
+	run   *db.AgentTaskQueue
+	agent bool
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,
@@ -445,7 +502,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 
 // claimProjectWorkflow renders the issue's project workflow for a task claim,
 // or nil when there is nothing to say beyond the runtime's own status rules:
-// no project, or Default with no handoffs. The issue's assignee gets the
+// no project, or Default with no handoffs and no run budget. The issue's assignee gets the
 // step's instructions and commands; any other agent working on the issue
 // gets the observer brief, so it does not move a step it does not own.
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue) *TaskProjectWorkflowData {
@@ -455,7 +512,15 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			"issue_id", uuidToString(issue.ID), "error", err)
 		return nil
 	}
-	if def == nil || (def.IsDefault && !def.HandsOffAnywhere()) {
+	if def == nil {
+		return nil
+	}
+	if def.IsDefault && !def.HandsOffAnywhere() {
+		// Nothing to say about the workflow, but a budgeted Default still
+		// refuses runs at admission, so the run is told its budget.
+		if line := h.runBudgetLine(ctx, issue, def); line != "" {
+			return &TaskProjectWorkflowData{Brief: line}
+		}
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)
@@ -465,7 +530,40 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			in.AssigneeName = h.actorDisplayName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 		}
 	}
-	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in)}
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def)}
+}
+
+// runBudgetLine tells the run how much of the issue's run budget is left
+// (CHE-2297 L1b): runs left, tokens used, and runs that reported no usage.
+// Tokens are input plus output; the server cannot see tokens during a run, so
+// the figure lags by the runs still in flight. It is empty for a workflow with
+// no budget start, matching guardRunBudget.
+func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issueworkflow.Definition) string {
+	if def.RunBudgetSince.IsZero() {
+		return ""
+	}
+	since, err := service.RunBudgetStart(ctx, h.Queries, issue.ID, def)
+	if err != nil {
+		slog.Warn("task claim: run budget window failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return ""
+	}
+	runs, err := h.Queries.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: since, Valid: true}})
+	if err != nil {
+		slog.Warn("task claim: run budget count failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return ""
+	}
+	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return ""
+	}
+	limit := def.EffectiveMaxRuns()
+	unit := "runs"
+	if usage.UnreportedTaskCount == 1 {
+		unit = "run"
+	}
+	return fmt.Sprintf("Run budget: %d runs left of %d; %d tokens used (%d %s unreported).\n",
+		max(0, limit-int(runs)), limit, usage.TotalInputTokens+usage.TotalOutputTokens, usage.UnreportedTaskCount, unit)
 }
 
 // taskRunsForAssignee reports whether a run works on the issue as its

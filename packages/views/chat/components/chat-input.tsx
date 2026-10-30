@@ -15,6 +15,7 @@ import {
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
+import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
 import type { ForkResult } from "./use-chat-fork";
 import {
   useCoordinatedUploads,
@@ -36,6 +37,7 @@ import { useT } from "../../i18n";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { EMPTY_REPLY_ANNOTATIONS, composeAnnotatedReply, hasReplyIntent, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { ChatAnnotationChip, type ChatInputAnnotations } from "./chat-annotations";
+import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 const logger = createLogger("chat.ui");
 const EMPTY_UPLOADS: DraftUpload[] = [];
@@ -71,11 +73,26 @@ interface ChatInputProps {
    * message. Resolves with the outcome so the composer can show one error line.
    */
   onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
+  /**
+   * DM commands the owner answers itself; nothing is sent to the agent. Pass a
+   * handler only when the command applies to the open DM: `/archive` and `/pin`
+   * on an active DM, `/unarchive` on an archived one. A handler that resolves
+   * `false` keeps the command in the box.
+   */
+  onStatistic?: () => void | boolean | Promise<void | boolean>;
+  onArchive?: () => void | boolean | Promise<void | boolean>;
+  onPin?: () => void | boolean | Promise<void | boolean>;
+  onUnarchive?: () => void | boolean | Promise<void | boolean>;
+  /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
+  sessionArchived?: boolean;
+  /** Identifies the composer for UI checks; the floating window overrides it. */
+  testId?: string;
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
     commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
     draftAttachments: Attachment[],
+    decisionRequestId?: string,
   ) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: {
     id: string;
@@ -174,13 +191,17 @@ interface ChatInputProps {
  * (id and note). A slash command is not a message about a reply: it is left
  * alone and the comments stay.
  */
-function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[] } {
+function prepareDmSend(raw: string, saved: readonly ReplyAnnotation[]): { content: string; sent: { id: string; note: string }[]; decisionRequestId?: string; mixedRequests?: boolean } {
   const text = raw.replace(/(\n\s*)+$/, "").trim();
   if (!saved.length || /^\/\S/.test(text)) return { content: text, sent: [] };
   if (!hasReplyIntent(text, saved)) return { content: "", sent: [] };
+  const notes = saved.filter((annotation) => annotation.note.trim());
+  const requestSource = notes.find((annotation) => annotation.sourceCommentId.startsWith(DECISION_REQUEST_SOURCE_PREFIX))?.sourceCommentId;
   return {
     content: composeAnnotatedReply(text, saved, { plainQuotes: true }),
-    sent: saved.filter((a) => a.note.trim()).map(({ id, note }) => ({ id, note })),
+    sent: notes.map(({ id, note }) => ({ id, note })),
+    decisionRequestId: requestSource?.slice(DECISION_REQUEST_SOURCE_PREFIX.length),
+    mixedRequests: !!requestSource && notes.some((annotation) => annotation.sourceCommentId !== requestSource),
   };
 }
 
@@ -189,6 +210,12 @@ export function ChatInput({
   onSend,
   onRename,
   onFork,
+  onStatistic,
+  onArchive,
+  onPin,
+  onUnarchive,
+  sessionArchived,
+  testId = "chat-composer",
   restoreDraftRequest,
   conversationStarterRequest,
   onConversationStarterApplied,
@@ -268,7 +295,12 @@ export function ChatInput({
   }, [draftKey]);
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
-  const isForkInput = !!onFork && parseForkCommand(inputDraft) !== null;
+  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
+  const draftDmAttempt = parseDmClientCommandAttempt(inputDraft);
+  // A DM command is answered locally and never joins the agent's queue either.
+  const isForkInput =
+    (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
   // But `isEmpty` is never re-derived when the composer switches draft slots
@@ -527,10 +559,28 @@ export function ChatInput({
       const annotationKeyAtSend = annotationKey;
       const prepared = prepareDmSend(raw, annotationKeyAtSend ? useCommentDraftStore.getState().getAnnotations(annotationKeyAtSend) : EMPTY_REPLY_ANNOTATIONS);
       const sentAnnotations = prepared.content === content ? prepared.sent : [];
+      if (prepared.mixedRequests) {
+        toast.error(t(($) => $.annotations.one_request));
+        return false;
+      }
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork)) {
+      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
+      const dmAttempt = hasDmCommandHandler
+        ? parseDmClientCommandAttempt(editorRef.current?.getText() ?? "")
+        : null;
+      const isLegacyOrdinaryArchiveNow =
+        dmAttempt?.command === "archive" &&
+        dmAttempt.extraArgs === "now" &&
+        sessionArchived === undefined &&
+        !onStatistic &&
+        !onPin;
+      const dmCommandHandler =
+        dmAttempt && !isLegacyOrdinaryArchiveNow
+          ? dmCommandHandlers[dmAttempt.command]
+          : undefined;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -627,8 +677,27 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
+      if (dmCommandHandler && dmAttempt) {
+        if (dmAttempt.extraArgs) {
+          setForkError(t(($) => $.input.command_no_arguments, { command: dmAttempt.command }));
+          return false;
+        }
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: dmAttempt.command }));
+          return false;
+        }
+        setForkError(null);
+        if ((await dmCommandHandler()) === false) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "rename" }));
+          return false;
+        }
+        setForkError(null);
         const title = command.slice("/rename".length).replace(/\s*[\r\n]+\s*/g, " ").trim();
         if (!await onRename(title)) return false;
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
@@ -645,6 +714,7 @@ export function ChatInput({
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
+        ...(prepared.decisionRequestId ? [prepared.decisionRequestId] as const : []),
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for
@@ -714,6 +784,8 @@ export function ChatInput({
     ? t(($) => $.input.placeholder_no_agent)
     : compacting
     ? t(($) => $.input.placeholder_compacting)
+    : sessionArchived && !disabled
+    ? t(($) => $.input.placeholder_archived_send)
     : disabled
       ? agentArchived
         ? t(($) => $.input.placeholder_archived_agent)
@@ -739,6 +811,7 @@ export function ChatInput({
   return (
     <div
       ref={composerRef}
+      data-testid={testId}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line
@@ -854,6 +927,11 @@ export function ChatInput({
             enableSlashCommands
             enableRenameCommand={!!onRename}
             enableForkCommand={!!onFork}
+            enableStatisticCommand={!!onStatistic}
+            enableArchiveCommand={!!onArchive}
+            enablePinCommand={!!onPin}
+            enableUnarchiveCommand={!!onUnarchive}
+            enableCompactCommand={!sessionArchived}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list
             // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a

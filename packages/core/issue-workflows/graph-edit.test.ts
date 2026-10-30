@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { IssueWorkflowStep } from "../types";
 import {
   addStepEdge,
+  EDITABLE_GUARDS,
   removeStepEdge,
   stepEdges,
   updateStepEdge,
@@ -65,6 +66,17 @@ describe("validateWorkflowGraph", () => {
       ),
     ).toEqual(["in_progress:missing_target", "in_progress:missing_target"]);
   });
+
+  it.each(["pr.review_changes_requested", "pr.review_approved"])(
+    "accepts the %s guard and requires a timeout on it",
+    (guard) => {
+      expect(EDITABLE_GUARDS).toContain(guard);
+      expect(codes(base({ edges: [{ to: "in_review", guard, timeout: "72h" }] }))).toEqual([]);
+      expect(codes(base({ edges: [{ to: "in_review", guard }] }))).toEqual([
+        "in_progress:bad_timeout",
+      ]);
+    },
+  );
 
   it("rejects a guard the server does not know", () => {
     expect(

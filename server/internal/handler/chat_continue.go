@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,6 +24,7 @@ type ChatContinueResponse struct {
 	Session           ChatSessionResponse `json:"session"`
 	PreviousSessionID string              `json:"previous_session_id"`
 	URL               string              `json:"url"`
+	WebURL            string              `json:"web_url,omitempty"`
 }
 
 func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +116,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "the continuation is no longer available")
 			return
 		}
-		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID), WebURL: weblink.Build(h.cfg.AppURL, chatURL(next.ID))})
 		return
 	}
 	if session.Status != "active" {
@@ -149,6 +151,16 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session, err = qtx.ArchiveContinuedChatSession(r.Context(), db.ArchiveContinuedChatSessionParams{ID: session.ID, ContinuedIntoSessionID: next.ID})
 	}
+	// Turns still queued in the source DM are answered in the new one.
+	if err == nil {
+		var movedTaskIDs []pgtype.UUID
+		movedTaskIDs, err = qtx.MoveUnstartedChatTasksToSession(r.Context(), db.MoveUnstartedChatTasksToSessionParams{FromSessionID: session.ID, ToSessionID: next.ID})
+		if err == nil && len(movedTaskIDs) > 0 {
+			err = qtx.MoveChatMessagesOfTasksToSession(r.Context(), db.MoveChatMessagesOfTasksToSessionParams{
+				FromSessionID: session.ID, ToSessionID: next.ID, TaskIds: movedTaskIDs, SummaryCreatedAt: summary.CreatedAt,
+			})
+		}
+	}
 	// An agent rollover archives the DM the run was replying in, so that reply
 	// cannot notify. The summary is the agent's message: notify in the new DM.
 	// A continue the DM creator submitted stays silent.
@@ -182,7 +194,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status, Pinned: &pinned,
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
-	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID), WebURL: weblink.Build(h.cfg.AppURL, chatURL(next.ID))})
 }
 
 // compactSummaryContent is the new DM's first message: the agent's summary and

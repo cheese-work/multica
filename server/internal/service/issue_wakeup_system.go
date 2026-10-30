@@ -201,6 +201,14 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	} else if err != nil {
 		return err
 	}
+	// The kill switch (CHE-2220) drops the event rather than queueing it. A read
+	// that fails returns the error, so the delivery fails and GitHub redelivers.
+	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
+		return err
+	} else if halted {
+		slog.Warn("github dispatch halted: pull request wakeup dropped", "issue_id", util.UUIDToString(issueID), "repo", in.RepoOwner+"/"+in.RepoName, "rule", in.Rule)
+		return tx.Commit(ctx)
+	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
@@ -327,6 +335,20 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		announceWithdrawn()
 		return nil
 	}
+	baseSHA, covered, err := s.prEventCarries(ctx, q, issue.ID, in)
+	if err != nil {
+		return err
+	}
+	if covered {
+		// The pr.event fallback already carries this cause (CHE-2540); its
+		// identity is spent here so a later snapshot never wakes it again.
+		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		announceWithdrawn()
+		return nil
+	}
 	if !config.matchesPR(in) {
 		// The event's identity is spent: a redelivery never fires once the
 		// filter changes. The refusal is visible on the timeline.
@@ -365,6 +387,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		if in.MergeState != "" {
 			payload["merge_state"] = in.MergeState
 		}
+		if baseSHA != "" {
+			payload["base_sha"] = baseSHA
+		}
 		if in.EventAt != "" {
 			payload["converted_at"] = in.EventAt
 		}
@@ -392,6 +417,34 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	return s.dispatchSystem(ctx, w)
 }
 
+// prEventCarries reports whether the pr.event fallback already carries the
+// cause of a legacy checks-failed or conflict input, and returns the base commit
+// a conflict was captured on (empty when none was, e.g. capture is off). The
+// legacy receipt records that base so the fallback can tell a new conflict on
+// the same head from the one this wake carries (CHE-2540).
+func (s *IssueWakeupService) prEventCarries(ctx context.Context, q *db.Queries, issueID pgtype.UUID, in PullRequestWakeupInput) (string, bool, error) {
+	var kind, baseSHA string
+	switch {
+	case in.Rule == SystemRulePRChecksFailed:
+		kind = "checks_failed"
+	case in.Rule == SystemRulePRAttention && in.Reason == PRAttentionMergeability && in.MergeState == "DIRTY":
+		kind = "conflict"
+		base, err := q.LatestPRConflictBase(ctx, db.LatestPRConflictBaseParams{
+			IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, HeadSha: in.HeadSHA,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", false, err
+		}
+		baseSHA = base
+	default:
+		return "", false, nil
+	}
+	covered, err := q.PREventCarriesLegacyWake(ctx, db.PREventCarriesLegacyWakeParams{
+		IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, Kind: kind, HeadSha: in.HeadSHA, BaseSha: baseSHA,
+	})
+	return baseSHA, covered, err
+}
+
 // captureRunGatePR writes the shadow ledger row for a pr_merged or
 // pr_checks_failed input (CHE-1918). It shares the input's transaction behind a
 // savepoint: the row exists exactly when the receipt does, and a failure to
@@ -407,7 +460,7 @@ func (s *IssueWakeupService) captureRunGatePR(ctx context.Context, tx pgx.Tx, q 
 			Issue: issue, Source: source, EventKey: eventKey, CandidateKey: util.UUIDToString(w.ID), Origin: RunGateOriginSystemWakeup,
 			EventTime: time.Now(), PRHeadSHA: in.HeadSHA, SystemRule: in.Rule, Wakeup: w, ReceiptID: receiptID,
 		}
-		if target, err := builtinTarget(ctx, s, sq, issue, config); err == nil && target.Agent.ID.Valid {
+		if target, err := builtinTarget(ctx, s, sq, issue, config, w); err == nil && target.Agent.ID.Valid {
 			ev.AgentID, ev.SquadID = target.Agent.ID, target.SquadID
 		}
 		return ev
@@ -857,13 +910,7 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		}
 		return text + "Read the current issue and repository state, then decide what follow-up is needed."
 	case SystemRulePRAttention:
-		headSHA, _ := facts["head_sha"].(string)
-		base, _ := facts["base_branch"].(string)
-		if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
-			return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
-		}
-		state, _ := facts["merge_state"].(string)
-		return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
+		return prAttentionInstruction(receipts, pr, facts)
 	case SystemRulePRChecksFailed:
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
@@ -874,6 +921,18 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 	default:
 		return w.Instruction
 	}
+}
+
+// prAttentionLegacyText words one mergeability or returned-to-draft receipt.
+func prAttentionLegacyText(pr string, facts map[string]any) string {
+	issueStatus, _ := facts["issue_status"].(string)
+	headSHA, _ := facts["head_sha"].(string)
+	base, _ := facts["base_branch"].(string)
+	if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
+		return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
+	}
+	state, _ := facts["merge_state"].(string)
+	return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
 }
 
 func systemWakeupTriggerSummary(rule string) string {
@@ -921,7 +980,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil && !errors.Is(err, errWakeupConfigHeld) && !errors.Is(err, errMalformedPRWakeupSettings) {
 		return err
 	}
-	target, err := builtinTarget(ctx, s, s.Tasks.Queries, snapshot, snapshotConfig)
+	target, err := builtinTarget(ctx, s, s.Tasks.Queries, snapshot, snapshotConfig, prev)
 	if err != nil {
 		return err
 	}
@@ -1032,7 +1091,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 		return nil
 	}
-	current, err := builtinTarget(ctx, s, q, issue, config)
+	current, err := builtinTarget(ctx, s, q, issue, config, w)
 	if err != nil {
 		return err
 	}
@@ -1124,6 +1183,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		state := w.ConditionState
 		switch {
 		case met && fingerprint != state:
+			if conditionDropped(observed, state, fingerprint, false) {
+				state = fingerprint
+				break
+			}
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return err
 			}
@@ -1163,6 +1226,12 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	receipts, holding, taken, err := takenReceipts(ctx, q, receipts)
 	if err != nil {
 		return err
+	}
+	if usesPRResolver(config, w) {
+		receipts, err = prResolverReceipts(ctx, q, issue, current, receipts)
+		if err != nil {
+			return err
+		}
 	}
 	if isPRWakeup {
 		var refused []db.IssueWakeupReceipt
@@ -1261,12 +1330,19 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if current.Refused != "" {
 			facts["outcome"] = current.Refused
 		}
-		if current.Type == "member" && !isPRWakeup {
+		if current.Type == "member" && (!isPRWakeup || usesPRResolver(config, w)) {
 			facts["outcome"] = "notified"
+			kind := "children_done"
+			var body pgtype.Text
+			if isPRWakeup {
+				kind = "agent_blocked"
+				body = pgtype.Text{String: "No resolver agent was found for the linked pull request. This is an FYI; no action is requested from you.", Valid: true}
+				facts["note"] = body.String
+			}
 			details, _ := json.Marshal(facts)
 			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
 				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
-				Type: "children_done", Severity: "info", IssueID: issue.ID, Title: issue.Title,
+				Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
 				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
 			})
 			if err != nil {
@@ -1292,6 +1368,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	taskExists := err == nil
+	if taskExists && usesPRResolver(config, w) && task.AgentID != current.Agent.ID {
+		return commitWithdrawn()
+	}
 	if taskExists && task.Status == "dispatched" {
 		// A claimed prompt is immutable; the new facts wait for the next run.
 		return commitWithdrawn()
@@ -1361,35 +1440,16 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 	}
 	if isPRWakeup || deferring {
-		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		_, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			// A deferring rule keeps every fact for the next idle pass; a
-			// suppressing one consumes what arrived after the run started.
-			if deferring {
-				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
-					return err
-				}
-				return commit()
-			}
-			var suppressed []db.IssueWakeupReceipt
-			for _, receipt := range receipts {
-				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
-					suppressed = append(suppressed, receipt)
-				}
-			}
-			if len(suppressed) > 0 {
-				activeFacts := systemWakeupFacts(w, suppressed)
-				activeFacts["target_type"], activeFacts["target_id"] = current.Type, util.UUIDToString(current.ID)
-				activeFacts["outcome"] = "suppressed_active_run"
-				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(suppressed)}); err != nil {
-					return err
-				}
-				if err := note(wakeupActivityTriggered, activeFacts); err != nil {
-					return err
-				}
+			// Every fact waits for the next idle pass. A PR rule that did not
+			// choose defer still keeps what it captured (CHE-2298 a3): its
+			// facts are queued, never dropped, and never expire.
+			if err := deferForActiveRun(ctx, q, w, current, receipts, now, note, !deferring); err != nil {
+				return err
 			}
 			return commit()
 		}
@@ -1445,7 +1505,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup"}); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
@@ -1466,6 +1526,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
+	noteRunInserted(ctx, q, issue.ID)
 	if err := settleQueued(task.ID); err != nil {
 		return err
 	}
