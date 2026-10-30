@@ -23,6 +23,11 @@ func settlementReveal(f agentDecisionFixture, agent, opinion string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// The HTTP path locks the issue row (LockWakeupIssue) before the instance
+	// advisory lock; take them in the same order so races match production.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR UPDATE`, f.issueID); err != nil {
+		return err
+	}
 	params := db.CreateCommentParams{ID: parseUUID(uuid.NewString()), WorkspaceID: parseUUID(testWorkspaceID), IssueID: parseUUID(f.issueID), AuthorType: "agent", AuthorID: parseUUID(agent), SourceTaskID: parseUUID(f.tasks[agent]), Type: "comment", Content: "Vote: PASS decision:" + f.instance + " " + boundAfter + "\n\n```opinion\n" + opinion + "```\n"}
 	annotation, err := prepareAgentDecision(ctx, tx, params, true)
 	if err != nil {

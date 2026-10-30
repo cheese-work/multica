@@ -40,14 +40,24 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 	if err != nil {
 		return err
 	}
-	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(gate) || route != "cosign" {
+	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(gate) {
 		return nil
 	}
 	var scope agentDecisionScope
 	if err := json.Unmarshal(encoded, &scope); err != nil {
 		return err
 	}
-	if len(scope.Signers) != 2 || scope.Signers[0].AgentID == scope.Signers[1].AgentID || scope.Signers[0].Lab == "" || scope.Signers[1].Lab == "" || scope.Signers[0].Lab == scope.Signers[1].Lab {
+	switch route {
+	case "cosign":
+		if len(scope.Signers) != 2 || scope.Signers[0].AgentID == scope.Signers[1].AgentID || scope.Signers[0].Lab == "" || scope.Signers[1].Lab == "" || scope.Signers[0].Lab == scope.Signers[1].Lab {
+			return nil
+		}
+	case "adjudicate":
+		// One third-lab adjudicator; only a PASS (which upholds the author) settles.
+		if len(scope.Signers) != 1 || scope.Signers[0].Lab == "" || scope.Signers[0].Lab == scope.Author.Lab {
+			return nil
+		}
+	default:
 		return nil
 	}
 	events, err := loadAgentDecisionEvents(ctx, tx, workspaceID, instance)

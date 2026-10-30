@@ -93,7 +93,7 @@ Retract: decision:<instance-uuid>
 
 Retraction after a commitment permanently removes that signer's vote from the
 `agent_decision_live_vote` tally input. Neither the view nor a recorded PASS grants
-authority. Veto and settlement are outside C1.
+authority. Veto and settlement are outside C1 (see C3 below).
 
 ## Adjudication
 
@@ -110,14 +110,15 @@ protected gates and co-signer splits cannot be adjudicated.
 The one adjudicator must differ from both disputants and their labs. Its frozen
 opinion uses the same commit/reveal protocol, plus `disputed_point: <point>` and
 `upholds: author|reviewer`. Upholding the author requires PASS; upholding the
-reviewer requires BLOCK. C1 records the verdict only.
+reviewer requires BLOCK. C3 settles it: PASS with `upholds: author` from the one adjudicator permits the
+same single settlement insert as a co-sign quorum.
 
 ## Settlement and reliance (C2)
 
 Settlement creation is hard-disabled in C2. There is no environment, API or CLI
 switch to enable it. The quorum engine is exercised directly by database tests;
-no live comment can create an effective record. Adjudication settlement, veto,
-notifications and pilot activation belong to later slices.
+no live comment can create an effective record. Notifications and pilot
+activation belong to later slices.
 
 The dormant co-sign engine runs after the vote snapshot in the comment-insert
 transaction, under the instance advisory lock. Two valid named PASS reveals with
@@ -149,3 +150,38 @@ multica decision rely --issue CHE-2643 --gate screenshot_evidence \
 
 Read the JSON `decided` field. Exit status 0 alone does not mean a gate is waived.
 Human merge, deployment and excluded gates still require their own authority.
+
+## Veto, revocation and undo (C3)
+
+A veto is a protocol comment on the instance thread:
+
+```
+Veto: decision:<instance uuid> <candidate sha256>
+
+<reason, 1 to 4096 bytes>
+```
+
+Allowed vetoers: a named signer of the instance, the issue's assignee agent, the
+leader or a member of the non-archived assignee squad, and a workspace `owner`
+member (no task token needed). Anyone else gets 403. The digest must match the
+bound candidate. A veto needs a reason.
+
+Under the instance advisory lock a veto revokes the instance:
+
+- Before the instance is effective, it inserts a revoked settlement row. The later
+  quorum insert hits `ON CONFLICT DO NOTHING`, so a veto and the second reveal
+  end in one consistent state: no live settlement.
+- After it is effective, it sets `revoked_at` and `revoked_by` once. The settlement
+  trigger allows only that NULL-to-value update; a revoked instance never becomes
+  effective again.
+- Each reliance already registered gets one `decision_agent_undo` row and an
+  `agent_decision_undo` inbox item for the relying agent. A reliance that loses the
+  race to a veto is refused (lookup shows `revoked`); one that wins is listed in
+  the undo assignment.
+
+A revoked instance refuses every further protocol action. `Retract:` is refused
+once the instance has a settlement row.
+
+Supersession: a proposal may set `supersedes: "<instance uuid>"` to revoke the
+author's own earlier instance for the same issue and gate. The reason recorded is
+`superseded by decision:<new instance>`.

@@ -828,6 +828,19 @@ type DecisionAgentSettlement struct {
 	RevokeReason pgtype.Text        `json:"revoke_reason"`
 }
 
+type DecisionAgentUndo struct {
+	ID          pgtype.UUID        `json:"id"`
+	RelianceID  pgtype.UUID        `json:"reliance_id"`
+	InstanceID  pgtype.UUID        `json:"instance_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Purpose     string             `json:"purpose"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type DecisionAnswer struct {
 	ID                      pgtype.UUID        `json:"id"`
 	DecisionRequestID       pgtype.UUID        `json:"decision_request_id"`

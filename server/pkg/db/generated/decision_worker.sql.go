@@ -88,6 +88,22 @@ func (q *Queries) DeleteDecisionOrphanAgentSettlement(ctx context.Context, arg D
 	return err
 }
 
+const deleteDecisionOrphanAgentUndo = `-- name: DeleteDecisionOrphanAgentUndo :exec
+DELETE FROM decision_agent_undo undo
+WHERE undo.instance_id = $1 AND undo.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentUndoParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentUndo(ctx context.Context, arg DeleteDecisionOrphanAgentUndoParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentUndo, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const deleteDecisionOrphanIntent = `-- name: DeleteDecisionOrphanIntent :exec
 DELETE FROM decision_intent intent
 WHERE intent.workspace_id = $1 AND intent.id = $2
