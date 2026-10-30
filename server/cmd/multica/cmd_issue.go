@@ -1451,6 +1451,7 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 			strVal(issue, "description"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		printWebURL(os.Stdout, issue)
 		fmt.Fprintf(os.Stderr, "Observed at %s. ETA is unknown: no structured ETA field exists on an issue; due date is a separate, unrelated field and is never used as an ETA.\n", observedAt)
 		return nil
 	}
@@ -1953,6 +1954,7 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		printWebURL(os.Stdout, result)
 		return nil
 	}
 
@@ -3054,6 +3056,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
+		printWebURL(os.Stdout, result)
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)

@@ -460,6 +460,8 @@ type AttachmentResponse struct {
 	ID          string `json:"id"`
 	URL         string `json:"url"`
 	DownloadURL string `json:"download_url"`
+	// WebURL is the absolute attachment preview link; empty when the server has no app origin configured.
+	WebURL string `json:"web_url"`
 	// MarkdownURL is the durable, persistable URL to embed in markdown bodies
 	// (chat replies, comments). Unlike DownloadURL it never carries a TTL.
 	MarkdownURL string `json:"markdown_url"`
