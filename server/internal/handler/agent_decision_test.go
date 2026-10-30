@@ -14,6 +14,7 @@ import (
 type agentDecisionFixture struct {
 	voteFixture
 	instance, proposal string
+	workspaceID        string
 	scope              map[string]any
 }
 
@@ -54,6 +55,9 @@ func (f agentDecisionFixture) post(t *testing.T, agent, content string, status i
 	t.Helper()
 	req := asAgentActor(withURLParam(newRequest(http.MethodPost, "/api/issues/"+f.issueID+"/comments", map[string]any{"content": content}), "id", f.issueID), agent, f.tasks[agent])
 	req.Header.Set("X-Actor-Source", "task_token")
+	if f.workspaceID != "" {
+		req.Header.Set("X-Workspace-ID", f.workspaceID)
+	}
 	w := httptest.NewRecorder()
 	testHandler.CreateComment(w, req)
 	if w.Code != status {
