@@ -97,6 +97,9 @@ type runBudgetUsage struct {
 	// values; both are 0 while token accounting is off for the workflow.
 	TokenAllowance int64
 	TokenReserve   int64
+	// ActivationMoved is the balance change activation made in this call, so the
+	// usage report that activates can still be judged against 80%.
+	ActivationMoved int64
 }
 
 // loadRunBudgetUsage reads the issue's workflow cap and the runs counted in its

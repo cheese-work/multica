@@ -118,9 +118,11 @@ func activateRunBudgetTokens(ctx context.Context, q *db.Queries, issue db.Issue,
 		return RunBudgetTokens{}, false, fmt.Errorf("run budget: activation tasks: %w", err)
 	}
 	for _, id := range ids {
-		if _, err := settleTaskTokens(ctx, q, issue, id, windowID); err != nil {
+		moved, err := settleTaskTokens(ctx, q, issue, id, windowID)
+		if err != nil {
 			return RunBudgetTokens{}, false, err
 		}
+		usage.ActivationMoved += moved
 	}
 	if err := recordRunBudgetTokens(ctx, q, issue, windowID, runBudgetKindActivation, runBudgetKindActivation, 0); err != nil {
 		return RunBudgetTokens{}, false, fmt.Errorf("run budget: activation entry: %w", err)
@@ -147,11 +149,25 @@ func claimRunBudgetAllowance(ctx context.Context, q *db.Queries, issue db.Issue,
 	if !usage.tokensStored() {
 		return nil
 	}
-	if _, found, err := activationEpoch(ctx, q, issue.ID); err != nil || !found {
+	epoch, found, err := activationEpoch(ctx, q, issue.ID)
+	if err != nil || !found {
 		return err
 	}
-	if err := recordRunBudgetTokens(ctx, q, issue, windowID, runBudgetKindAllowance, runBudgetKindAllowance+":"+windowID, usage.TokenAllowance); err != nil {
-		return fmt.Errorf("run budget: window allowance: %w", err)
+	// A person's status move opens a window even when nothing is admitted in it
+	// (a move that starts no run), so every move since the epoch gets its
+	// allowance here, not only the latest window.
+	moves, err := q.ListMemberStatusChangesAfter(ctx, db.ListMemberStatusChangesAfterParams{IssueID: issue.ID, After: pgtype.Timestamptz{Time: epoch, Valid: true}})
+	if err != nil {
+		return fmt.Errorf("run budget: member windows: %w", err)
+	}
+	ids := []string{windowID}
+	for _, m := range moves {
+		ids = append(ids, runBudgetWindowID(m.Time))
+	}
+	for _, id := range ids {
+		if err := recordRunBudgetTokens(ctx, q, issue, id, runBudgetKindAllowance, runBudgetKindAllowance+":"+id, usage.TokenAllowance); err != nil {
+			return fmt.Errorf("run budget: window allowance: %w", err)
+		}
 	}
 	return nil
 }
@@ -199,7 +215,7 @@ func SettleRunBudgetUsage(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	if err != nil {
 		return err
 	}
-	return warnTokensAtEighty(ctx, q, issue, usage, moved)
+	return warnTokensAtEighty(ctx, q, issue, usage, moved+usage.ActivationMoved)
 }
 
 // settleTaskTokens charges one task's reported tokens and releases its

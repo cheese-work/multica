@@ -358,3 +358,42 @@ func TestRunBudgetWorkflowWithoutBothTokenValuesStaysRunsOnly(t *testing.T) {
 		t.Fatalf("token entries with only A stored = %d, want 0", got)
 	}
 }
+
+// Member moves recorded with no admission in between (a no-start status move)
+// still open one window each, and each window gets its allowance.
+func TestRunBudgetEveryMemberWindowGetsItsAllowanceWithoutAdmissions(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 1)
+	legacy := legacyTask(t, c)
+	storeTokenValues(t, c)
+	admitRun(t, c) // activates
+	finishRuns(t, c)
+	memberMove(t, c)
+	memberMove(t, c)
+	reportUsage(t, legacy, usageRow{Model: "m1", In: 100})
+	if got := entrySum(t, c.issueID, "allowance"); got != 3*actAllowance {
+		t.Fatalf("allowances after two moves with no admission = %d, want %d", got, 3*actAllowance)
+	}
+	reportUsage(t, legacy, usageRow{Model: "m1", In: 200})
+	if got := entrySum(t, c.issueID, "allowance"); got != 3*actAllowance {
+		t.Fatalf("allowances after a second report = %d, want %d", got, 3*actAllowance)
+	}
+}
+
+// The report that activates the issue settles earlier usage first, and the
+// crossing it makes still writes the warning.
+func TestRunBudgetActivatingReportThatCrossesEightyPercentWarns(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	bc := newBudgetCase(t, 2314003, mergeEdgeSteps, 40)
+	task := admitRun(t, bc.edgeCase) // before A and E are stored
+	storeTokenValues(t, bc.edgeCase)
+	reportUsage(t, task, usageRow{Model: "m1", In: 8500})
+	wantTokens(t, bc.edgeCase, actAllowance-8500, "after the activating report")
+	if comments, inbox := bc.waitNotices(t, service.RunBudgetKindWarn80Tokens, 1); comments != 1 || inbox != 1 {
+		t.Fatalf("token warning = %d comments, %d inbox items, want 1 and 1", comments, inbox)
+	}
+}
