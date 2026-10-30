@@ -13,6 +13,7 @@ export type ShortcutActionId =
   | "toggleChat"
   | "findInIssue"
   | "archiveInboxItem"
+  | "searchChat"
   | "send"
   | "goBack"
   | "goForward"
@@ -100,6 +101,10 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = [
     defaultShortcut: createShortcutChord("E"),
     allowInEditable: false,
   },
+  // Bare "/" focuses the DM search field on the chat page (Cheese chose it over
+  // Mod+/, which toggles the right sidebar). It is a plain printable key, so it
+  // must never fire while the caret sits in an input, textarea or editor.
+  { id: "searchChat", category: "general", defaultShortcut: createShortcutChord("/"), allowInEditable: false },
   { id: "send", category: "general", defaultShortcut: primary("Enter"), allowInEditable: true },
   // Browser-style history navigation (Mod+[ / Mod+]). Neither bracket is
   // app-owned (PRIMARY_RESERVED_KEYS) nor browser-owned

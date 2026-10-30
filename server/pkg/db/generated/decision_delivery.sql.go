@@ -97,7 +97,7 @@ func (q *Queries) DecisionDeliveryClock(ctx context.Context) (pgtype.Timestamptz
 }
 
 const listDecisionDeliveryAnswers = `-- name: ListDecisionDeliveryAnswers :many
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id FROM decision_answer answer
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND request.id = ANY($2::uuid[])
   AND request.status = 'answered' AND answer.disclaimed_at IS NULL
@@ -148,6 +148,8 @@ func (q *Queries) ListDecisionDeliveryAnswers(ctx context.Context, arg ListDecis
 			&i.ChosenOptionIndex,
 			&i.ReplyText,
 			&i.ContextMessageID,
+			&i.Excerpted,
+			&i.AnsweredLabel,
 		); err != nil {
 			return nil, err
 		}

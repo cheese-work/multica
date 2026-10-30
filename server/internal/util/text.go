@@ -7,6 +7,16 @@ import (
 	"unicode/utf8"
 )
 
+// EstimateInstructionTokens approximates token count using UTF-8 rune count
+// for instruction limit checks, preventing non-ASCII text from tripping limits prematurely.
+func EstimateInstructionTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	tokens := int(float64(utf8.RuneCountInString(s))/3.0) + 1
+	return tokens
+}
+
 // UnescapeBackslashEscapes decodes the common backslash escape sequences
 // (\n, \r, \t, \\) that LLM agents routinely emit as 4-character literals
 // because Python/JSON-style string conventions are their default. The same

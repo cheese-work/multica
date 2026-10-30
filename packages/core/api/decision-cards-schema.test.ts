@@ -57,6 +57,14 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: { ...answer, state: "future" } } }).decision_request?.answer?.state).toBe("recorded");
   });
 
+  it("keeps the run that picked the answer up and degrades a malformed run on its own", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+    const answer = { state: "picked_up", run: { id: "task", agent_name: "Sol" }, answered_at: "2026-10-26T06:00:00Z" };
+    const parsed = (next: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: next } }).decision_request?.answer;
+    expect(parsed(answer)).toEqual(answer);
+    expect(parsed({ ...answer, run: "x" })).toMatchObject({ state: "picked_up", run: undefined });
+  });
+
   it("keeps request state, source and original ask from additive metadata", () => {
     const request = {
       id: "request", issue_id: "issue", source_comment_id: "source",

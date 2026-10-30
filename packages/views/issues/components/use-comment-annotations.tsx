@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageSquarePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
@@ -43,20 +43,26 @@ function AnnotationNoteEditor({ inputRef, initialNote, label, showLabel, placeho
   placeholder: string;
   confirmLabel: string;
   removeLabel?: string;
-  onEdit?: () => void;
+  onEdit: (note: string) => void;
   onConfirm: (note: string) => void;
   onCancel: () => void;
   onRemove: () => void;
 }) {
   const [note, setNote] = useState(initialNote);
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }, [note, inputRef]);
   return <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1">
     {showLabel && <p className="px-2 pt-1 text-caption text-muted-foreground">{label}</p>}
-    <textarea ref={inputRef} value={note} rows={Math.min(4, Math.max(1, note.split("\n").length))}
+    <textarea ref={inputRef} value={note} rows={1}
       aria-label={label}
       data-testid="annotation-note"
       placeholder={placeholder}
-      className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none field-sizing-content rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
-      onChange={(event) => { setNote(event.target.value); onEdit?.(); }}
+      className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none overflow-y-auto rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
+      onChange={(event) => { setNote(event.target.value); onEdit(event.target.value); }}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !isImeComposing(event) &&
           !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -118,6 +124,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   const editingExisting = editor?.existing === true;
   const editingRef = useRef(editing);
   editingRef.current = editing;
+  const noteDrafts = useRef(new Map<string, { note: string; savedNote: string }>());
+  const noteDraftKey = useCallback((annotation: ReplyAnnotation) => JSON.stringify([
+    draftKey, annotation.sourceCommentId, annotation.start, annotation.quote, annotation.prefix, annotation.suffix,
+  ]), [draftKey]);
   const editingId = editing?.id;
   const [error, setError] = useState(false);
   const [anchors, setAnchors] = useState<SourceAnchor[]>([]);
@@ -179,7 +189,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
-  useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
+  useEffect(() => { noteDrafts.current.clear(); setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
 
   // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
   // a document-level pointerup; captureCommentSelection then decides from the selection alone.
@@ -197,6 +207,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   // Dismiss on the next press, never on the click completing the opening drag.
   useEffect(() => {
     if (!selection) return;
+    let touch: { id: number; x: number; y: number; moved: boolean } | null = null;
     const onEditorOpen = (event: Event) => {
       if (!(event instanceof CustomEvent) || event.detail === highlightName) return;
       setSelection(null); setEditor(null); setError(false);
@@ -204,10 +215,26 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Element &&
         event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
+      if (event.pointerType === "touch") {
+        touch = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+        return;
+      }
       setSelection(null); setEditor(null); setError(false);
     };
+    const onPointerMove = (event: PointerEvent) => {
+      if (touch?.id === event.pointerId && Math.hypot(event.clientX - touch.x, event.clientY - touch.y) > 8) touch.moved = true;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (touch?.id !== event.pointerId) return;
+      onPointerMove(event);
+      const dismiss = !touch.moved;
+      touch = null;
+      if (dismiss) { setSelection(null); setEditor(null); setError(false); }
+    };
+    const onPointerCancel = () => { touch = null; };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
+      if (editingRef.current) noteDrafts.current.delete(noteDraftKey(editingRef.current));
       if (selection.root.isConnected) {
         const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
         target.focus({ preventScroll: true });
@@ -215,21 +242,27 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       setSelection(null); setEditor(null); setError(false);
     };
     const onFocusIn = (event: FocusEvent) => {
-      if (!(event.target instanceof Element) || selection.root.contains(event.target) ||
+      if (touch || !(event.target instanceof Element) || selection.root.contains(event.target) ||
         event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
       setSelection(null); setEditor(null); setError(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+    document.addEventListener("pointercancel", onPointerCancel);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener(editorOpenEvent, onEditorOpen);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
+      document.removeEventListener("pointercancel", onPointerCancel);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener(editorOpenEvent, onEditorOpen);
     };
-  }, [selection, draftKey, editable, editorOpenEvent, highlightName]);
+  }, [selection, draftKey, editable, editorOpenEvent, highlightName, noteDraftKey]);
 
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
@@ -348,6 +381,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       setError(true);
       return;
     }
+    noteDrafts.current.delete(noteDraftKey(editing));
     if (chat && !editingExisting) { pendingMarkerFocus.current = editing.id; close(false); }
     else close(true);
     if (!editingExisting) onAddedRef.current?.();
@@ -372,6 +406,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     return () => { CSS.highlights.delete(name); };
   }, [enabled, anchors, activeId, editingId, highlightName]);
   const confirmLabel = editor?.existing ? L.save : L.confirmAdd;
+  const noteDraft = editing && noteDrafts.current.get(noteDraftKey(editing));
 
   return {
     cardRef,
@@ -420,12 +455,13 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={editing.note}
+          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={noteDraft?.savedNote === editing.note ? noteDraft.note : editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
               confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
-              onEdit={error ? () => setError(false) : undefined} onConfirm={confirmNote}
-              onCancel={() => close(true)}
+              onEdit={(note) => { noteDrafts.current.set(noteDraftKey(editing), { note, savedNote: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}
+              onCancel={() => { noteDrafts.current.delete(noteDraftKey(editing)); close(true); }}
               onRemove={() => {
+                noteDrafts.current.delete(noteDraftKey(editing));
                 useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
                 close(true);
               }} /> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"

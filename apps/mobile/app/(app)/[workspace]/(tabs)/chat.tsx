@@ -35,6 +35,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   View,
 } from "react-native";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
@@ -43,6 +44,7 @@ import type {
   Agent,
   ChatMessage,
   ChatPendingTask,
+  ChatSession,
 } from "@multica/core/types";
 import {
   enqueuePendingChatTask,
@@ -66,17 +68,26 @@ import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
+  useSetChatSessionArchived,
+  useSetChatSessionPinned,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
+import { useChatSessionActionsStore } from "@/data/stores/chat-session-actions-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
   seedAcceptedPendingTask,
 } from "@/data/realtime/chat-ws-updaters";
+import {
+  ArchivedSendInterceptedError,
+  buildArchivedSendAlertButtons,
+  splitChatSessions,
+  unarchiveThenSendOnce,
+} from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import {
   dispatchReasonCode,
@@ -84,6 +95,7 @@ import {
 import { useT } from "@/lib/i18n";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { Header } from "@/components/ui/header";
+import { Text } from "@/components/ui/text";
 import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
@@ -138,15 +150,20 @@ export default function ChatTab() {
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
+  const { active: activeSessions } = useMemo(
+    () => splitChatSessions(sessions),
+    [sessions],
+  );
+
   // ── Auto-hydrate active session on first Chat tab entry ────────────────
   // Mobile-only deviation from web: web's chat-window opens to an empty
   // state when no `activeSessionId` is persisted; on a phone, picking
-  // a session is 4 taps, so jump straight to the most recent session.
+  // a session is 4 taps, so jump straight to the most recent active session.
   // Hydration is one-shot per workspace.
   const [hydratedWs, setHydratedWs] = useState<string | null>(null);
   if (wsId && hydratedWs !== wsId) {
     setHydratedWs(wsId);
-    if (sessions.length > 0) setActiveSessionId(sessions[0].id);
+    if (sessions.length > 0) setActiveSessionId((activeSessions[0] ?? sessions[0]).id);
   }
   const { data: messages = [], isLoading: messagesLoading } = useQuery(
     chatMessagesOptions(activeSessionId),
@@ -259,6 +276,112 @@ export default function ChatTab() {
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession();
+  const setPinned = useSetChatSessionPinned();
+  const setArchived = useSetChatSessionArchived();
+
+  const actionPending = useChatSessionActionsStore((s) =>
+    activeSession ? (s.pendingBySession[activeSession.id] ?? null) : null,
+  );
+  const undoToast = useChatSessionActionsStore((s) => s.undoToast);
+  const beginSessionAction = useChatSessionActionsStore(
+    (s) => s.beginSessionAction,
+  );
+  const endSessionAction = useChatSessionActionsStore(
+    (s) => s.endSessionAction,
+  );
+  const showArchiveUndo = useChatSessionActionsStore((s) => s.showArchiveUndo);
+  const dismissArchiveUndo = useChatSessionActionsStore(
+    (s) => s.dismissArchiveUndo,
+  );
+
+  const handleUnarchive = useCallback(
+    async (session: ChatSession): Promise<boolean> => {
+      if (!beginSessionAction(session.id, "unarchive")) return false;
+      try {
+        await setArchived.mutateAsync({
+          sessionId: session.id,
+          archived: false,
+        });
+        dismissArchiveUndo();
+        return true;
+      } catch (err) {
+        Alert.alert(
+          t("sessions.unarchive_failed"),
+          err instanceof Error ? err.message : undefined,
+        );
+        return false;
+      } finally {
+        endSessionAction(session.id);
+      }
+    },
+    [beginSessionAction, endSessionAction, setArchived, dismissArchiveUndo, t],
+  );
+
+  const handleArchive = useCallback(
+    async (session: ChatSession): Promise<boolean> => {
+      if (!beginSessionAction(session.id, "archive")) return false;
+      try {
+        await setArchived.mutateAsync({
+          sessionId: session.id,
+          archived: true,
+        });
+        if (activeSessionId === session.id) {
+          const nextActive = activeSessions.find((s) => s.id !== session.id);
+          setActiveSessionId(nextActive?.id ?? null);
+        }
+        showArchiveUndo({
+          sessionId: session.id,
+          title: session.title || t("sessions.new_chat"),
+        });
+        return true;
+      } catch (err) {
+        Alert.alert(
+          t("sessions.archive_failed"),
+          err instanceof Error ? err.message : undefined,
+        );
+        return false;
+      } finally {
+        endSessionAction(session.id);
+      }
+    },
+    [
+      beginSessionAction,
+      endSessionAction,
+      setArchived,
+      activeSessionId,
+      activeSessions,
+      showArchiveUndo,
+      t,
+    ],
+  );
+
+  const handleTogglePin = useCallback(
+    async (session: ChatSession) => {
+      try {
+        await setPinned.mutateAsync({
+          sessionId: session.id,
+          pinned: !session.pinned,
+        });
+      } catch (err) {
+        Alert.alert(
+          t("sessions.pin_failed"),
+          err instanceof Error ? err.message : undefined,
+        );
+      }
+    },
+    [setPinned, t],
+  );
+
+  const handleOpenStatistics = useCallback(
+    (session: ChatSession) => {
+      if (!wsSlug) return;
+      router.push({
+        pathname: "/[workspace]/chat-statistics",
+        params: { workspace: wsSlug, sessionId: session.id },
+      });
+    },
+    [wsSlug],
+  );
 
   // ── Send burst ─────────────────────────────────────────────────────────
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -286,16 +409,13 @@ export default function ChatTab() {
     [activeSessionId, currentAgent, createSession],
   );
 
-  const handleSend = useCallback(
+  const executeSend = useCallback(
     async (
       content: string,
       attachmentIds: string[] = [],
       options: { clearDraft?: boolean } = {},
     ) => {
       if (!currentAgent) return;
-      // Invoke permission was revoked while this session was open — the server
-      // would refuse before persisting anything. The composer is disabled in
-      // this state; this is the belt-and-braces guard.
       if (accessRevoked) {
         Alert.alert(
           t("alerts.no_permission_title"),
@@ -316,9 +436,6 @@ export default function ChatTab() {
       try {
         sessionId = await ensureSession(content);
       } catch (err) {
-        // Session create runs the same invoke gate as a send, so a permission
-        // change refuses here too — and this is the only layer that sees the
-        // reason code (MUL-6380).
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
       }
@@ -361,9 +478,6 @@ export default function ChatTab() {
         const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
-        // Replace the local bubble before reconciling pending state. When the
-        // server says this is a follow-up, its real message id lets the shared
-        // queue filter hide it immediately instead of waiting for the refetch.
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old?.map((message) =>
             message.id === optimistic.id
@@ -398,9 +512,6 @@ export default function ChatTab() {
           chatKeys.pendingTask(sessionId),
           (old) => removePendingChatTask(old, optimisticTaskId),
         );
-        // The composer restores the draft on a thrown rejection but says nothing
-        // about it, so a revoked-permission 403 used to read as a silent no-op
-        // (MUL-6380). Name the cause here: only this layer sees the error body.
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
       }
@@ -417,6 +528,74 @@ export default function ChatTab() {
       promoteNewDraft,
       clearDraft,
     ],
+  );
+
+  const handleSend = useCallback(
+    async (
+      content: string,
+      attachmentIds: string[] = [],
+      options: { clearDraft?: boolean } = {},
+    ) => {
+      if (activeSession?.status === "archived") {
+        const archivedSession = activeSession;
+        const newerSession = archivedSession.continued_into_session_id
+          ? (sessions.find(
+              (s) => s.id === archivedSession.continued_into_session_id,
+            ) ?? null)
+          : null;
+
+        const messageParts = [
+          t("archived_send.question"),
+          newerSession
+            ? t("archived_send.newer", {
+                title: newerSession.title || t("sessions.new_chat"),
+              })
+            : null,
+          t("archived_send.kept"),
+        ].filter(Boolean);
+
+        return new Promise<void>((resolve, reject) => {
+          const confirmUnarchiveAndSend = () => {
+            unarchiveThenSendOnce(
+              () => handleUnarchive(archivedSession),
+              () => executeSend(content, attachmentIds, options),
+            ).then(resolve, reject);
+          };
+
+          const cancelIntercept = () => {
+            reject(new ArchivedSendInterceptedError());
+          };
+
+          const buttons = buildArchivedSendAlertButtons({
+            platform: Platform.OS,
+            hasNewer: newerSession !== null,
+            labels: {
+              openNewer: t("archived_send.open_newer"),
+              confirm: t("archived_send.confirm"),
+              cancel: t("archived_send.cancel"),
+            },
+            onOpenNewer: () => {
+              if (!newerSession) return;
+              setSelectedAgentId(null);
+              setActiveSessionId(newerSession.id);
+              reject(new ArchivedSendInterceptedError());
+            },
+            onConfirm: confirmUnarchiveAndSend,
+            onCancel: cancelIntercept,
+          });
+
+          Alert.alert(
+            t("archived_send.title"),
+            messageParts.join("\n\n"),
+            buttons,
+            { cancelable: true, onDismiss: cancelIntercept },
+          );
+        });
+      }
+
+      return executeSend(content, attachmentIds, options);
+    },
+    [activeSession, sessions, t, handleUnarchive, executeSend],
   );
 
   // ── Cancel in-flight ───────────────────────────────────────────────────
@@ -462,33 +641,39 @@ export default function ChatTab() {
     if (selectRequest && selectRequest === appliedSelect) consumeSelect();
   }, [selectRequest, appliedSelect, consumeSelect]);
 
-  const handleDeleteActive = useCallback(() => {
-    if (!activeSession) return;
-    Alert.alert(
-      t("alerts.delete_title"),
-      activeSession.title || t("sessions.new_chat"),
-      [
-        { text: t("common:actions.cancel"), style: "cancel" },
-        {
-          text: t("alerts.delete_confirm"),
-          style: "destructive",
-          onPress: () => {
-            const id = activeSession.id;
-            setActiveSessionId(null);
-            deleteSession.mutate(id);
+  const handleDeleteSession = useCallback(
+    (session: ChatSession) => {
+      if (session.status !== "archived") return;
+      Alert.alert(
+        t("alerts.delete_title"),
+        session.title || t("sessions.new_chat"),
+        [
+          { text: t("common:actions.cancel"), style: "cancel" },
+          {
+            text: t("alerts.delete_confirm"),
+            style: "destructive",
+            onPress: () => {
+              const id = session.id;
+              if (activeSessionId === id) {
+                setActiveSessionId(null);
+              }
+              deleteSession.mutate(id);
+            },
           },
-        },
-      ],
-      { cancelable: true },
-    );
-  }, [activeSession, deleteSession, t]);
+        ],
+        { cancelable: true },
+      );
+    },
+    [activeSessionId, deleteSession, t],
+  );
 
   // ── Composer disabled-state ────────────────────────────────────────────
+  const isArchiveActionPending = actionPending !== null;
   const disabled =
     !currentAgent ||
     accessRevoked ||
     availability === "none" ||
-    isArchived === true ||
+    isArchiveActionPending ||
     !runtimeBound;
   const disabledReason = !currentAgent
     ? t("composer.no_agent")
@@ -496,11 +681,13 @@ export default function ChatTab() {
       ? t("composer.revoked")
       : availability === "none"
         ? t("composer.no_agents")
-        : isArchived
-          ? t("composer.archived")
-          : !runtimeBound
-            ? t("composer.runtime_required")
-          : undefined;
+        : actionPending === "archive"
+          ? t("header.archiving")
+          : actionPending === "unarchive"
+            ? t("header.unarchiving")
+            : !runtimeBound
+              ? t("composer.runtime_required")
+              : undefined;
 
   return (
     <View className="flex-1 bg-background">
@@ -520,8 +707,12 @@ export default function ChatTab() {
         }
         right={
           <ChatSessionActions
-            showMore={!!activeSession}
-            onMorePress={handleDeleteActive}
+            session={activeSession}
+            onOpenStatistics={handleOpenStatistics}
+            onTogglePin={(session) => void handleTogglePin(session)}
+            onArchive={(session) => void handleArchive(session)}
+            onUnarchive={(session) => void handleUnarchive(session)}
+            onDelete={handleDeleteSession}
             onNewPress={handleNewChat}
           />
         }
@@ -545,6 +736,47 @@ export default function ChatTab() {
           liveTaskMessages={liveTaskMessages}
           availability={presenceAvailability}
         />
+        {undoToast ? (
+          <View className="mx-3 mb-2 flex-row items-center justify-between rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+            <Text
+              numberOfLines={1}
+              className="flex-1 pr-3 text-xs text-foreground"
+            >
+              {t("sessions.archived_toast")} · {undoToast.title}
+            </Text>
+            <Pressable
+              onPress={() => {
+                const target = sessions.find(
+                  (s) => s.id === undoToast.sessionId,
+                );
+                const fallbackSession: ChatSession = target ?? {
+                  id: undoToast.sessionId,
+                  workspace_id: wsId ?? "",
+                  agent_id: currentAgent?.id ?? "",
+                  creator_id: userId ?? "",
+                  title: undoToast.title,
+                  status: "archived",
+                  has_unread: false,
+                  created_at: "",
+                  updated_at: "",
+                };
+                void handleUnarchive(fallbackSession).then((ok) => {
+                  if (ok) {
+                    setSelectedAgentId(null);
+                    setActiveSessionId(undoToast.sessionId);
+                  }
+                });
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.undo")}
+              className="min-h-[36px] justify-center rounded-md px-2 active:bg-accent"
+            >
+              <Text className="text-xs font-semibold text-primary">
+                {t("sessions.undo")}
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
         {runtimeBound ? (
           <OfflineBanner
             agentName={currentAgent?.name}
@@ -562,6 +794,7 @@ export default function ChatTab() {
           allowStop={pendingTask?.status !== "queued"}
           disabled={disabled}
           disabledReason={disabledReason}
+          archived={isArchived}
         />
       </KeyboardAvoidingView>
 

@@ -38,9 +38,17 @@ export interface DecisionRequestCard {
   answer?: DecisionRequestAnswer;
 }
 
-/** Receipt half of a request card: recorded, then delivered once the asking agent was woken. */
+/** The run that resumed the issue after the answer was recorded. */
+export interface DecisionRequestRun {
+  id: string;
+  agent_name: string;
+}
+
+/** Receipt half of a request card: recorded, delivered once the asking agent was woken, then picked up once a run started. */
 export interface DecisionRequestAnswer {
-  state: "recorded" | "delivered" | "disclaimed";
+  state: "recorded" | "delivered" | "picked_up" | "disclaimed";
+  /** Set with `picked_up`. */
+  run?: DecisionRequestRun;
   /** 0-based into the card's options; absent for a free-text answer. */
   chosen_option_index?: number;
   option_label?: string;
@@ -101,4 +109,12 @@ export interface DecisionCommentFields {
   /** The DM message that asked, in the request's own session (a continued DM can differ from the answer's). */
   decision_request_session_id?: string;
   decision_request_message_id?: string;
+  /** The offered-option label (for example D1) an excerpted record answers. */
+  decision_answered_label?: string;
+  /** The whole source message, sent only for an excerpted record so the card can disclose it. */
+  decision_full_message?: string;
+  /** When the record was made; `effective_at` minus this is the disclaim window. */
+  decision_answered_at?: string;
+  /** When the answer became effective; absent while pending. */
+  decision_woken_at?: string | null;
 }
