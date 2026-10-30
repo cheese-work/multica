@@ -810,7 +810,11 @@ SET status = 'dispatched',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
+    chat_compaction_epoch = COALESCE(
+        chat_compaction_epoch,
+        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
+    )
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
