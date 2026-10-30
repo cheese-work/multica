@@ -20,14 +20,15 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	var input struct {
-		IssueID         string          `json:"issue_id"`
-		SessionID       string          `json:"session_id"`
-		NewDM           bool            `json:"new_dm"`
-		For             string          `json:"for"`
-		Ask             json.RawMessage `json:"ask"`
-		Footer          string          `json:"footer"`
-		ParentID        string          `json:"parent_id"`
-		EscalationClass string          `json:"escalation_class"`
+		IssueID         string              `json:"issue_id"`
+		SessionID       string              `json:"session_id"`
+		NewDM           bool                `json:"new_dm"`
+		For             string              `json:"for"`
+		Ask             json.RawMessage     `json:"ask"`
+		Footer          string              `json:"footer"`
+		ParentID        string              `json:"parent_id"`
+		EscalationClass string              `json:"escalation_class"`
+		Action          *decisionActionWire `json:"action"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -89,18 +90,31 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
+	var draft *decisionActionDraft
+	if input.Action != nil {
+		if draft, err = draftDecisionAction(input.Action); err != nil {
+			writeDecisionError(writer, err, "decision request")
+			return
+		}
+		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
+	}
 	askJSON, err := json.Marshal(parsed)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Parsed: &parsed, Slug: workspace.Slug})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
 	if result.Replayed {
-		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints})
+		action, err := handler.replayedDecisionAction(request.Context(), issue, result.Request)
+		if err != nil {
+			writeDecisionError(writer, err, "decision request")
+			return
+		}
+		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints, action})
 		return
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
@@ -145,13 +159,18 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
-	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints})
+	var action *decisionActionResponse
+	if result.Action != nil {
+		action = newDecisionActionResponse(*result.Action)
+	}
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
 }
 
 // decisionRequestResponse adds advisory ask-lint hints to the stored request.
 type decisionRequestResponse struct {
 	db.DecisionRequest
-	Hints []string `json:"hints,omitempty"`
+	Hints  []string                `json:"hints,omitempty"`
+	Action *decisionActionResponse `json:"action,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {

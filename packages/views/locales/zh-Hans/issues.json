@@ -595,6 +595,7 @@
     "wakeup_link_run": "查看运行"
   },
   "comment": {
+    "show_full": "显示完整评论",
     "you": "你",
     "add_reaction": "添加表情回应",
     "collapse_thread": "收起讨论",

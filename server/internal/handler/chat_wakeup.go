@@ -16,12 +16,13 @@ import (
 type ChatWakeupResponse struct {
 	ID          string `json:"id"`
 	FireAt      string `json:"fire_at"`
+	Title       string `json:"title"`
 	Instruction string `json:"instruction"`
 	Status      string `json:"status"`
 }
 
 func chatWakeupToResponse(w db.ChatWakeup) ChatWakeupResponse {
-	return ChatWakeupResponse{ID: uuidToString(w.ID), FireAt: timestampToString(w.FireAt), Instruction: w.Instruction, Status: w.Status}
+	return ChatWakeupResponse{ID: uuidToString(w.ID), FireAt: timestampToString(w.FireAt), Title: w.Title, Instruction: w.Instruction, Status: w.Status}
 }
 
 // chatWakeupTaskID returns the chat task the request runs as. Wakeups are an
@@ -52,7 +53,8 @@ func writeChatWakeupError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrChatWakeupLimit):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, service.ErrChatWakeupTooFar), errors.Is(err, service.ErrChatWakeupPast),
-		errors.Is(err, service.ErrChatWakeupEmpty), errors.Is(err, service.ErrChatWakeupTooLong):
+		errors.Is(err, service.ErrChatWakeupEmpty), errors.Is(err, service.ErrChatWakeupTooLong),
+		errors.Is(err, service.ErrChatWakeupTitleTooLong):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "chat wakeup failed")
@@ -67,6 +69,7 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AfterSeconds int64  `json:"after_seconds"`
 		At           string `json:"at"`
+		Title        string `json:"title"`
 		Instruction  string `json:"instruction"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
@@ -91,7 +94,7 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	default:
 		at = time.Now().Add(time.Duration(req.AfterSeconds) * time.Second)
 	}
-	wakeup, err := h.chatWakeupService().Create(r.Context(), service.ChatWakeupInput{TaskID: taskID, At: at, Instruction: req.Instruction})
+	wakeup, err := h.chatWakeupService().Create(r.Context(), service.ChatWakeupInput{TaskID: taskID, At: at, Title: req.Title, Instruction: req.Instruction})
 	if err != nil {
 		writeChatWakeupError(w, err)
 		return

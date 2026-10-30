@@ -595,6 +595,7 @@
     "wakeup_link_run": "실행 보기"
   },
   "comment": {
+    "show_full": "전체 댓글 보기",
     "you": "나",
     "add_reaction": "반응 추가",
     "collapse_thread": "스레드 접기",
