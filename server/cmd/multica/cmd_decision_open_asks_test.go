@@ -74,3 +74,14 @@ func TestBriefWithWaitingSectionStaysWithinThirtyLines(test *testing.T) {
 		test.Fatalf("a squeezed section must say how many it omitted:\n%s", section)
 	}
 }
+
+func TestWithoutIssuesDropsAsksAnotherSectionAlreadyLists(test *testing.T) {
+	now := time.Date(2026, 10, 31, 15, 0, 0, 0, time.UTC)
+	kept := withoutIssues(openAsksAt(now, 3), []string{"uuid-0", "uuid-2"})
+	if len(kept) != 1 || kept[0].IssueID != "uuid-1" {
+		test.Fatalf("want only uuid-1, got %+v", kept)
+	}
+	if got := withoutIssues(openAsksAt(now, 3), nil); len(got) != 3 {
+		test.Fatalf("no exclusions must keep every ask, got %d", len(got))
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,8 @@ func runDecisionListOpenAsks(command *cobra.Command, memberID string) error {
 		olderThanHours, _ := command.Flags().GetInt("older-than-hours")
 		maxLines, _ := command.Flags().GetInt("max-lines")
 		linesUsed, _ := command.Flags().GetInt("brief-lines-used")
+		excluded, _ := command.Flags().GetStringSlice("exclude-issue")
+		asks = withoutIssues(asks, excluded)
 		_, err := fmt.Fprint(os.Stdout, waitingSectionInBrief(asks, time.Now(), time.Duration(olderThanHours)*time.Hour, maxLines, linesUsed))
 		return err
 	}
@@ -64,6 +67,18 @@ func runDecisionListOpenAsks(command *cobra.Command, memberID string) error {
 		asks = []openAsk{}
 	}
 	return cli.PrintJSON(os.Stdout, asks)
+}
+
+// withoutIssues drops asks on issues another brief section already lists, so
+// one issue never appears twice in the same brief.
+func withoutIssues(asks []openAsk, issueIDs []string) []openAsk {
+	kept := make([]openAsk, 0, len(asks))
+	for _, ask := range asks {
+		if !slices.Contains(issueIDs, ask.IssueID) {
+			kept = append(kept, ask)
+		}
+	}
+	return kept
 }
 
 // waitingSectionInBrief caps the section by what is left of the brief's
