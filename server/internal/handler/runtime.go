@@ -57,6 +57,12 @@ type AgentRuntimeResponse struct {
 	ServerCommit    string `json:"server_commit"`
 	ServerVersion   string `json:"server_version"`
 	UpdateReason    string `json:"update_reason,omitempty"`
+	// Pause and DaemonRunningTasks are filled by ListAgentRuntimes only
+	// (CHE-2430). Pause is null when the machine takes claims;
+	// DaemonRunningTasks counts dispatched and running tasks across every
+	// runtime on the same daemon.
+	Pause              *RuntimePauseResponse `json:"pause"`
+	DaemonRunningTasks *int                  `json:"daemon_running_tasks"`
 }
 
 func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
@@ -1204,6 +1210,10 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 	resp := make([]AgentRuntimeResponse, len(runtimes))
 	for i, rt := range runtimes {
 		resp[i] = h.runtimeResponse(rt)
+	}
+	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), runtimes, resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load machine pause state")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, resp)

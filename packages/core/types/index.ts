@@ -52,6 +52,8 @@ export type {
   AgentRuntime,
   RuntimeDevice,
   RuntimeUpdateInfo,
+  RuntimePause,
+  RuntimePauseReason,
   RuntimeProfile,
   RuntimeProtocolFamily,
   RuntimeProfileType,
