@@ -19,7 +19,7 @@ import (
 // reads it: not a task token, a chat task, a cloud PAT, a JWT or an unscoped PAT.
 const DecisionFeedScope = "decisions:feed"
 
-const decisionFeedPageSize = 200
+const decisionFeedPageSize = 50
 
 type DecisionFeedItem struct {
 	AnswerID       string  `json:"answer_id"`
@@ -92,7 +92,7 @@ func (h *Handler) ListDecisionFeed(w http.ResponseWriter, r *http.Request) {
 		ask, _, _ := strings.Cut(strings.TrimSpace(row.Ask), "\n")
 		items = append(items, DecisionFeedItem{
 			AnswerID: uuidToString(row.ID), StateVersion: row.StateVersion, Issue: row.IssuePrefix + "-" + strconv.Itoa(int(row.IssueNumber)),
-			Ask: ask, Class: row.EscalationClass, Quote: row.Quote, AnsweredAt: timestampToString(row.EffectiveAt),
+			Ask: ask, Class: row.EscalationClass, Quote: row.Quote, AnsweredAt: timestampToString(row.CreatedAt),
 			State: decisionFeedState(row), DisclaimReason: textToPtr(row.DisclaimReason), ProjectTitle: textToPtr(row.ProjectTitle),
 		})
 	}

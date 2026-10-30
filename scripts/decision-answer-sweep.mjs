@@ -58,9 +58,17 @@ export async function sweepOnce({ readFeed, retain, ack, log = console.error }) 
   return { failed };
 }
 
+// One feed page holds up to 50 quotes of 64 KiB; JSON escaping can multiply that.
+// 64 MiB covers the worst page, where execFile's default 1 MiB does not.
+const CLI_MAX_BUFFER = 64 * 1024 * 1024;
+
+export async function cliJson(args, bin = 'multica') {
+  return JSON.parse((await run(bin, [...args, '--output', 'json'], { maxBuffer: CLI_MAX_BUFFER })).stdout);
+}
+
 async function main() {
   const bank = process.env.HINDSIGHT_BANK ?? 'multica-org';
-  const multica = async (...args) => JSON.parse((await run('multica', [...args, '--output', 'json'])).stdout);
+  const multica = (...args) => cliJson(args);
   const result = await sweepOnce({
     readFeed: async () => (await multica('decision', 'feed')).answers ?? [],
     retain: async (doc) => {

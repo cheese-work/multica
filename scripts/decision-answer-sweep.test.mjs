@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderDocument, sweepOnce } from './decision-answer-sweep.mjs';
+import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cliJson, renderDocument, sweepOnce } from './decision-answer-sweep.mjs';
 
 const item = (over = {}) => ({
   answer_id: 'a1', state_version: 3, issue: 'CHE-12', ask: 'Ship it?', class: 'reversible',
@@ -52,4 +55,16 @@ test('a retain failure is never acked, so the next run repeats the upsert', asyn
   const { acked, result } = await run([item(), item({ answer_id: 'a2' })], new Set(['decision-answer:a1']));
   assert.deepEqual(acked, [['a2', 3]]);
   assert.equal(result.failed, 1);
+});
+
+test('a feed page bigger than the default 1 MiB child buffer is still read', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sweep-cli-'));
+  const bin = join(dir, 'fake-multica');
+  const quote = 'q'.repeat(60 * 1024);
+  const answers = Array.from({ length: 20 }, (_, i) => ({ answer_id: `a${i}`, quote }));
+  writeFileSync(join(dir, 'feed.json'), JSON.stringify({ answers }));
+  writeFileSync(bin, `#!/bin/sh\ncat ${join(dir, 'feed.json')}\n`);
+  chmodSync(bin, 0o755);
+  const feed = await cliJson(['decision', 'feed'], bin);
+  assert.equal(feed.answers.length, 20);
 });

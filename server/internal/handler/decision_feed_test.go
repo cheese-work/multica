@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -245,4 +246,28 @@ func TestCreatePersonalAccessTokenScopes(test *testing.T) {
 		test.Fatalf("unknown scope accepted: %d %s", response.Code, response.Body.String())
 	}
 	testPool.Exec(context.Background(), `DELETE FROM personal_access_token WHERE name = 'sweep'`)
+}
+
+// A held answer takes effect ten minutes after the human answered; the feed reports
+// the time the human answered, not the hold deadline.
+func TestDecisionFeedAnswerTimeIsNotTheHoldDeadline(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	record, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET effective_at = created_at + interval '10 minutes' WHERE id = $1`, record.Answer.ID)
+	var createdAt string
+	if err := testPool.QueryRow(context.Background(), `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') FROM decision_answer WHERE id = $1`, record.Answer.ID).Scan(&createdAt); err != nil {
+		test.Fatal(err)
+	}
+	item := feedItems(test)[uuidToString(record.Answer.ID)]
+	answered, err := time.Parse(time.RFC3339Nano, item.AnsweredAt)
+	if err != nil {
+		test.Fatal(err)
+	}
+	created, _ := time.Parse(time.RFC3339Nano, createdAt)
+	if !answered.Equal(created.Truncate(time.Second)) {
+		test.Fatalf("answered_at=%s, want the answer's created_at=%s, not the hold deadline", item.AnsweredAt, createdAt)
+	}
 }

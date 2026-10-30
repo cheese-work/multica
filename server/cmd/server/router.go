@@ -2885,6 +2885,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 		return "", false
 	}
 
+	// A scoped PAT never opens a realtime connection.
+	if len(pat.Scopes) > 0 {
+		return "", false
+	}
+
 	userID := util.UUIDToString(pat.UserID)
 
 	var expiresAt time.Time

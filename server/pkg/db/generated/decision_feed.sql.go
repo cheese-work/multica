@@ -39,7 +39,7 @@ func (q *Queries) AckDecisionAnswerFeed(ctx context.Context, arg AckDecisionAnsw
 }
 
 const listDecisionAnswerFeed = `-- name: ListDecisionAnswerFeed :many
-SELECT answer.id, answer.state_version, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome,
+SELECT answer.id, answer.state_version, answer.effective_at, answer.created_at, answer.wake_at, answer.woken_at, answer.wake_outcome,
        answer.disclaimed_at, answer.disclaim_reason, request.id AS decision_request_id, request.ask, request.escalation_class,
        issue.id AS issue_id, issue.number AS issue_number, workspace.issue_prefix, project.title AS project_title,
        quote.content AS quote
@@ -64,6 +64,7 @@ type ListDecisionAnswerFeedRow struct {
 	ID                pgtype.UUID        `json:"id"`
 	StateVersion      int64              `json:"state_version"`
 	EffectiveAt       pgtype.Timestamptz `json:"effective_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	WakeAt            pgtype.Timestamptz `json:"wake_at"`
 	WokenAt           pgtype.Timestamptz `json:"woken_at"`
 	WakeOutcome       pgtype.Text        `json:"wake_outcome"`
@@ -92,6 +93,7 @@ func (q *Queries) ListDecisionAnswerFeed(ctx context.Context, arg ListDecisionAn
 			&i.ID,
 			&i.StateVersion,
 			&i.EffectiveAt,
+			&i.CreatedAt,
 			&i.WakeAt,
 			&i.WokenAt,
 			&i.WakeOutcome,
