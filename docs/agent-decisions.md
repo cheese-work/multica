@@ -156,7 +156,7 @@ Human merge, deployment and excluded gates still require their own authority.
 A veto is a protocol comment on the instance thread:
 
 ```
-Veto: decision:<instance uuid> <candidate sha256>
+Veto: decision:<instance uuid> <candidate sha256> <agent|member>:<undo owner uuid>
 
 <reason, 1 to 4096 bytes>
 ```
@@ -164,7 +164,11 @@ Veto: decision:<instance uuid> <candidate sha256>
 Allowed vetoers: a named signer of the instance, the issue's assignee agent, the
 leader or a member of the non-archived assignee squad, and a workspace `owner`
 member (no task token needed). Anyone else gets 403. The digest must match the
-bound candidate. A veto needs a reason.
+bound candidate. A veto needs a reason and an undo owner: an unarchived agent of
+the workspace (`agent:<uuid>`) or a workspace member (`member:<user uuid>`). An
+unknown owner is refused with 400. A veto does not depend on current policy: a
+record made effective under an older allowlist, delegation or gate list stays
+vetoable. Settlement and reliance still check the current policy.
 
 Under the instance advisory lock a veto revokes the instance:
 
@@ -174,14 +178,17 @@ Under the instance advisory lock a veto revokes the instance:
 - After it is effective, it sets `revoked_at` and `revoked_by` once. The settlement
   trigger allows only that NULL-to-value update; a revoked instance never becomes
   effective again.
-- Each reliance already registered gets one `decision_agent_undo` row and an
-  `agent_decision_undo` inbox item for the relying agent. A reliance that loses the
-  race to a veto is refused (lookup shows `revoked`); one that wins is listed in
-  the undo assignment.
+- Each reliance already registered gets one `decision_agent_undo` row. The call
+  that revokes also queues one `agent_decision_undo` inbox item, `action_required`,
+  for the undo owner. Its `details` list every reliance (id, task, agent, purpose)
+  and the evidence, candidate digest and gate to reverify. The item is queued
+  with no reliance too, so the owner confirms nothing leaned on the record.
+  A reliance that loses the race to a veto is refused (lookup shows `revoked`);
+  one that wins is in the list. The owner is stored on the revoked settlement.
 
 A revoked instance refuses every further protocol action. `Retract:` is refused
 once the instance has a settlement row.
 
 Supersession: a proposal may set `supersedes: "<instance uuid>"` to revoke the
 author's own earlier instance for the same issue and gate. The reason recorded is
-`superseded by decision:<new instance>`.
+`superseded by decision:<new instance>`. The superseding author owns the undo.

@@ -68,11 +68,17 @@ type agentDecisionScope struct {
 	Signers    []agentDecisionIdentity
 	Disputants []agentDecisionIdentity
 }
-type agentDecisionLine struct{ kind, instance, digest, commitment, verdict string }
+
+// undoOwner is set for a veto: who must undo the work that relied on the record.
+type agentDecisionUndoOwner struct{ kind, id string }
+type agentDecisionLine struct {
+	kind, instance, digest, commitment, verdict string
+	undoOwner                                   agentDecisionUndoOwner
+}
 type agentDecisionAnnotation struct {
 	line           agentDecisionLine
 	event, verdict string
-	// Set for a veto: who vetoes and why. Revocation runs with the snapshot.
+	// Set for a veto: why it was vetoed.
 	vetoReason string
 }
 type agentDecisionEvent struct{ agent, kind, verdict, commitment, provider, model string }
@@ -140,12 +146,18 @@ func parseAgentDecisionLine(body string) (*agentDecisionLine, error) {
 		line.kind = "retract"
 		line.instance = fields[1]
 	case "Veto:":
-		if len(fields) != 3 {
-			return nil, agentDecisionRefusal("invalid Veto line")
+		if len(fields) != 4 {
+			return nil, agentDecisionRefusal("invalid Veto line: Veto: decision:<uuid> <sha256> <agent|member>:<uuid>")
+		}
+		kind, id, _ := strings.Cut(fields[3], ":")
+		parsed, err := uuid.Parse(id)
+		if (kind != "agent" && kind != "member") || err != nil || parsed == uuid.Nil || parsed.String() != id {
+			return nil, agentDecisionRefusal("a veto must name its undo owner as agent:<uuid> or member:<uuid>")
 		}
 		line.kind = "veto"
 		line.instance = fields[1]
 		line.digest = fields[2]
+		line.undoOwner = agentDecisionUndoOwner{kind, id}
 	default:
 		return nil, agentDecisionRefusal("unknown protocol line")
 	}
@@ -559,7 +571,9 @@ func prepareAgentDecision(ctx context.Context, tx pgx.Tx, params db.CreateCommen
 	if err := json.Unmarshal(encoded, &scope); err != nil {
 		return nil, err
 	}
-	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate) {
+	// Policy gates what may become effective or be relied on. A veto only
+	// takes effect away, so a record made under an older policy stays vetoable.
+	if line.kind != "veto" && (version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate)) {
 		return nil, agentDecisionRefusal("delegation or allowlist no longer matches")
 	}
 	if line.kind != "retract" && line.digest != digest {
