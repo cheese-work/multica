@@ -70,6 +70,16 @@ test("timestamped application events are not compiler or test-harness diagnostic
   assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: "warning: C compiler diagnostic\n2026/10/28 06:00:22.123456 WARN expected negative-control event", annotations: [] }])).length, 1)
 })
 
+test("a leading BOM does not defeat the runtime WARN exclusion, and a new warning is still counted", () => {
+  const expected = "2026/10/28 06:00:22 WARN plugins: event dispatch queue full, dropping event"
+  const count = (log) => warningCounts([{ name: "backend-tests", log, annotations: [] }])
+  assert.deepEqual(count(`﻿${expected}`), {})
+  assert.deepEqual(count(`2026-10-28T06:00:22.1234567Z ﻿${expected}`), {})
+  assert.deepEqual(count(`﻿2026-10-28T06:00:22.1234567Z ${expected}`), {})
+  assert.deepEqual(count("﻿Warning: fixture diagnostic"), { "backend-tests: Warning: fixture diagnostic": 1 })
+  assert.deepEqual(count("﻿Warning: fixture diagnostic"), count("Warning: fixture diagnostic"))
+})
+
 test("eslint warnings follow file and rule rather than line numbers", () => {
   const job = (file, line) => ({
     name: "frontend-build",
