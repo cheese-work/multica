@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -223,4 +224,12 @@ func numVal(m map[string]any, key string) string {
 		return strconv.Itoa(int(v))
 	}
 	return ""
+}
+
+// printWebURL prints the server-built absolute link of a table-mode result. It
+// prints nothing when the server sent no web_url, so no origin is ever guessed.
+func printWebURL(w io.Writer, object map[string]any) {
+	if link := strVal(object, "web_url"); link != "" {
+		fmt.Fprintln(w, "Web URL:", link)
+	}
 }
