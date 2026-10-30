@@ -138,6 +138,7 @@ deploy_lock="$state_dir/deploy.lock"
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
+flags_file=""
 
 flags_overlay_prepare() {
   local flags flags_var=MULTICA_FEATURE_FLAGS_FILE
@@ -146,7 +147,32 @@ flags_overlay_prepare() {
     flags_var=MULTICA_JEV_FLAGS_FILE
     flags="$(env_setting "$flags_var")"
   fi
-  [ -n "$flags" ] || return 0
+  if [ -z "$flags" ]; then
+    local colour cid mounted
+    colour="$(active_colour)"
+    colour="${colour:-blue}"
+    if ! cid="$(compose ps --all -q "backend-${colour}")"; then
+      echo "!! flags continuity: cannot resolve previous active backend; refusing before any change" >&2
+      exit 1
+    fi
+    [ -n "$cid" ] || return 0
+    if ! mounted="$(docker inspect --format '{{json .Mounts}}' "$cid" | node -e '
+      let input = "";
+      process.stdin.on("data", (chunk) => input += chunk).on("end", () => {
+        const mounts = JSON.parse(input);
+        if (!Array.isArray(mounts)) process.exit(1);
+        console.log(mounts.some((mount) => mount.Destination === "/app/feature-flags.yaml"));
+      });
+    ')"; then
+      echo "!! flags continuity: cannot inspect previous active backend flags mount; refusing before any change" >&2
+      exit 1
+    fi
+    if [ "$mounted" = true ]; then
+      echo "!! flags continuity: MULTICA_FEATURE_FLAGS_FILE and MULTICA_JEV_FLAGS_FILE are unset but previous active backend has a flags mount; refusing before any change" >&2
+      exit 1
+    fi
+    return 0
+  fi
   flags_refuse() {
     echo "!! flags overlay: $flags_var $1; refusing before any change" >&2
     exit 1
@@ -157,7 +183,14 @@ flags_overlay_prepare() {
     *) flags_refuse "is unset or not an absolute path" ;;
   esac
   compose_files+=("$script_dir/docker-compose.flags.yml")
+  flags_file="$flags"
   echo "==> flags overlay enabled (flag file verified)"
+}
+
+frontend_flags_match() {
+  [ -n "$flags_file" ] || return 0
+  curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$1/api/config" |
+    node "$script_dir/flagfile-check.mjs" "$flags_file" --config-stdin
 }
 
 # Scoped Jev runtime overlay (CHE-1854). Opt-in per installation: the compose
@@ -395,20 +428,30 @@ JSON
 # Any unproven step raises alert_outage instead. Always exits nonzero: the
 # cutover itself failed.
 recover_incumbent() {
-  local reason=$1 ledger final
+  local reason=$1 ledger final minimum
   echo "!! $reason" >&2
   echo "==> post-drain failure; attempting compatibility-gated recovery of incumbent colour=$from_colour" >&2
   if ! stop_confirmed "backend-${to_colour}" "frontend-${to_colour}"; then
     alert_outage "$reason; candidate $to_colour shutdown NOT confirmed, so $from_colour was NOT started (never two backends on one DB); stop $to_colour by hand, then follow the runbook"
     exit 1
   fi
+  if [ -z "$incumbent_commit" ] || [ -z "$incumbent_backend_image" ] || [ -z "$incumbent_web_image" ] ||
+    [ -z "$incumbent_backend_image_id" ] || [ -z "$incumbent_web_image_id" ] || [ -z "$incumbent_ledger" ]; then
+    alert_outage "$reason; pre-drain incumbent identity is unproven, so $from_colour was NOT restarted"
+    exit 1
+  fi
 
   ledger="$(current_ledger_version)" || ledger=""
-  final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  minimum="$incumbent_ledger"
+  final="$incumbent_ledger"
+  if [ "$command" = cutover ]; then
+    minimum="$packet_minimum_rollback_version"
+    final="$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(p.ordered_migrations.at(-1)?.version??"")' "$packet")"
+  fi
   if [ -z "$ledger" ] || { [ "$ledger" != "$incumbent_ledger" ] && {
-    ! ledger_at_or_after "$ledger" "$packet_minimum_rollback_version" "$root_dir/server/migrations" ||
+    ! ledger_at_or_after "$ledger" "$minimum" "$root_dir/server/migrations" ||
       ! ledger_at_or_after "$final" "$ledger" "$root_dir/server/migrations"; }; }; then
-    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$packet_minimum_rollback_version, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
+    alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$minimum, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
     exit 1
   fi
   if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
@@ -731,6 +774,9 @@ case "$command" in
     if ! wait_http_ok "http://127.0.0.1:${candidate_web_port}/" 120; then
       recover_incumbent "candidate frontend-$to_colour did not answer on port $candidate_web_port within 120s"
     fi
+    if ! frontend_flags_match "$candidate_port"; then
+      recover_incumbent "frontend flag verification failed for candidate colour=$to_colour"
+    fi
 
     # Require the EXACT expected /health commit — a 200 alone only proves
     # something is listening on the port, not that it is the release just
@@ -789,6 +835,17 @@ case "$command" in
     # the matching comment in the `cutover)` branch above for the measured
     # overhead difference, CHE-655).
     postgres_container="$(postgres_container_id)" || exit 1
+
+    if ! resolve_slot_ports; then
+      echo "!! slot ports unresolved; refusing rollback before drain" >&2
+      exit 1
+    fi
+    incumbent_commit="$(health_commit "$(slot_port backend "$from_colour")" || true)"
+    incumbent_backend_image="$(running_image_ref "backend-${from_colour}" || true)"
+    incumbent_web_image="$(running_image_ref "frontend-${from_colour}" || true)"
+    incumbent_backend_image_id="$(container_image_id "backend-${from_colour}" || true)"
+    incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
+    incumbent_ledger="$(current_ledger_version || true)"
 
     # Drain and stop the failing candidate BEFORE the strict quiescence
     # final-gate runs — same root cause and same fix as the `cutover)`
@@ -850,10 +907,6 @@ case "$command" in
       exit 1
     fi
 
-    if ! resolve_slot_ports; then
-      echo "!! slot ports unresolved; $to_colour NOT started — MANUAL INTERVENTION REQUIRED" >&2
-      exit 1
-    fi
     backend_port="$(slot_port backend "$to_colour")"
     echo "==> starting retained predecessor colour=$to_colour without migrations"
     if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
@@ -866,6 +919,9 @@ case "$command" in
       ! wait_ready_on_port "$backend_port" 120; then
       echo "!! retained predecessor colour=$to_colour did not become healthy within 120s — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
+    fi
+    if ! frontend_flags_match "$backend_port"; then
+      recover_incumbent "frontend flag verification failed for retained predecessor colour=$to_colour"
     fi
 
     echo "==> restoring router generation for colour=$to_colour"

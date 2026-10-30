@@ -25,7 +25,7 @@ type intentFixture struct {
 
 func newIntentFixture(test *testing.T) intentFixture {
 	test.Helper()
-	agentID := createHandlerTestAgent(test, "decision-intent", []byte("[]"))
+	agentID := createHandlerTestAgent(test, "decision-intent-"+uuid.NewString()[:8], []byte("[]"))
 	issueID := dbfx.Issue(test, "intent issue", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(test, agentID, testutil.Cols{"issue_id": issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	humanID := dbfx.User(test, "Asked human", "intent-"+uuid.NewString()+"@test.invalid")

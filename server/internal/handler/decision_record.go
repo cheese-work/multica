@@ -256,7 +256,7 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 			return empty, deny
 		}
 		lane, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: decision.ChatSessionID})
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && (lane.CreatorID != decision.HumanUserID || lane.AgentID != decision.AskingAgentID || lane.Status != "active" || lane.ChannelOriginAt.Valid || lane.IsAgentIntro) {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (lane.CreatorID != decision.HumanUserID || lane.Status != "active" || lane.ChannelOriginAt.Valid || lane.IsAgentIntro) {
 			return empty, deny
 		}
 		if err != nil {
@@ -432,7 +432,12 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if messageIDs == nil {
 		messageIDs = []pgtype.UUID{}
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID, ReplyText: pgtype.Text{String: source.Snapshot, Valid: true}, ContextMessageID: input.ContextMessageID})
+	// No task means no turn to wait for: the asking agent wakes at once.
+	var wakeAt pgtype.Timestamptz
+	if !source.TaskID.Valid {
+		wakeAt = effectiveAt
+	}
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByTaskID: source.TaskID, WakeAt: wakeAt, SourceChatSessionID: source.SourceSessionID, ChatMessageIds: messageIDs, SourceCommentID: input.SourceCommentID, ContentSnapshot: source.Snapshot, EffectiveAt: effectiveAt, IssueCommentID: source.CommentID, ReplyText: pgtype.Text{String: source.Snapshot, Valid: true}, ContextMessageID: input.ContextMessageID})
 	if err != nil {
 		return empty, err
 	}
@@ -451,7 +456,11 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nPending until this answering turn finishes.\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
+	pending := "\nPending until this answering turn finishes."
+	if !source.TaskID.Valid {
+		pending = ""
+	}
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.%s\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, pending, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: source.SessionID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err
