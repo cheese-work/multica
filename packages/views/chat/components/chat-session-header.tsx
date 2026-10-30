@@ -1,7 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Minimize2, MoreHorizontal, Pencil, Trash2, UserRound } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  Info,
+  Minimize2,
+  MoreHorizontal,
+  Pencil,
+  Pin,
+  PinOff,
+  Trash2,
+  UserRound,
+} from "lucide-react";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,
@@ -45,6 +56,9 @@ export function ChatSessionHeader({
   session,
   agent,
   onArchive,
+  onUnarchive,
+  onTogglePin,
+  onOpenStatistics,
   renameRequest = 0,
   autoCompactThresholdPct = null,
   onCompact,
@@ -55,6 +69,12 @@ export function ChatSessionHeader({
   // next chat on desktop, back to the list on mobile), so the parent owns it —
   // see ChatPage.handleArchive. Falls back to a plain status flip if unwired.
   onArchive?: (session: ChatSession) => void;
+  /** Unarchive through the shared guard. Falls back to a plain status flip if unwired. */
+  onUnarchive?: (session: ChatSession) => void;
+  /** Pins or unpins an active DM. Omit to hide the Pin item. */
+  onTogglePin?: (session: ChatSession) => void;
+  /** Opens the Statistics dialog. Omit to hide the Statistics item. */
+  onOpenStatistics?: () => void;
   renameRequest?: number;
   /** Auto-compact threshold for this DM, or null when auto-compact is off. */
   autoCompactThresholdPct?: number | null;
@@ -140,7 +160,10 @@ export function ChatSessionHeader({
     onArchive
       ? onArchive(session)
       : setArchived.mutate({ sessionId: session.id, archived: true });
-  const doUnarchive = () => setArchived.mutate({ sessionId: session.id, archived: false });
+  const doUnarchive = () =>
+    onUnarchive
+      ? onUnarchive(session)
+      : setArchived.mutate({ sessionId: session.id, archived: false });
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
@@ -247,12 +270,25 @@ export function ChatSessionHeader({
           <MoreHorizontal className="h-4 w-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-auto">
-          <DropdownMenuItem onClick={startRename}>
+          {onOpenStatistics ? (
+            <DropdownMenuItem data-testid="chat-more-menu-statistics" onClick={onOpenStatistics}>
+              <Info className="h-4 w-4" />
+              {t(($) => $.header.statistics)}
+            </DropdownMenuItem>
+          ) : null}
+          {onTogglePin && !isArchived ? (
+            <DropdownMenuItem data-testid="chat-more-menu-pin" onClick={() => onTogglePin(session)}>
+              {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
+              {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem data-testid="chat-more-menu-rename" onClick={startRename}>
             <Pencil className="h-4 w-4" />
             {t(($) => $.header.rename)}
           </DropdownMenuItem>
           {agent && (
             <DropdownMenuItem
+              data-testid="chat-more-menu-view-profile"
               render={<AppLink href={wsPaths.agentDetail(agent.id)} />}
             >
               <UserRound className="h-4 w-4" />
@@ -260,7 +296,11 @@ export function ChatSessionHeader({
             </DropdownMenuItem>
           )}
           {onCompact && !isArchived ? (
-            <DropdownMenuItem disabled={session.compacting === true} onClick={onCompact}>
+            <DropdownMenuItem
+              data-testid="chat-more-menu-compact"
+              disabled={session.compacting === true}
+              onClick={onCompact}
+            >
               <Minimize2 className="h-4 w-4" />
               {t(($) => $.header.compact_now)}
             </DropdownMenuItem>
@@ -268,18 +308,22 @@ export function ChatSessionHeader({
           <DropdownMenuSeparator />
           {isArchived ? (
             <>
-              <DropdownMenuItem onClick={doUnarchive}>
+              <DropdownMenuItem data-testid="chat-more-menu-archive" onClick={doUnarchive}>
                 <ArchiveRestore className="h-4 w-4" />
                 {t(($) => $.header.unarchive)}
               </DropdownMenuItem>
               {/* Hard delete is offered only once a chat is archived. */}
-              <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
+              <DropdownMenuItem
+                data-testid="chat-more-menu-delete"
+                variant="destructive"
+                onClick={() => setConfirmDelete(true)}
+              >
                 <Trash2 className="h-4 w-4" />
                 {t(($) => $.header.delete)}
               </DropdownMenuItem>
             </>
           ) : (
-            <DropdownMenuItem onClick={doArchive}>
+            <DropdownMenuItem data-testid="chat-more-menu-archive" onClick={doArchive}>
               <Archive className="h-4 w-4" />
               {t(($) => $.header.archive)}
             </DropdownMenuItem>

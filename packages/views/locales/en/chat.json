@@ -47,7 +47,8 @@
     "change_project_context": "Change project context",
     "remove_project_context": "Remove project context",
     "no_projects": "No projects yet",
-    "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade"
+    "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade",
+    "placeholder_archived_send": "This DM is archived. Send to unarchive it first…"
   },
   "queue": {
     "title_one": "{{count}} queued message",
@@ -275,7 +276,12 @@
     "archive": "Archive",
     "unarchive": "Unarchive",
     "archived_title": "Archived",
-    "row_actions_aria": "Chat actions"
+    "row_actions_aria": "Chat actions",
+    "archived_toast": "Chat archived",
+    "archive_failed": "Couldn't archive this chat",
+    "unarchive_failed": "Couldn't unarchive this chat",
+    "pin_failed": "Couldn't update the pin",
+    "undo": "Undo"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
@@ -286,7 +292,10 @@
     "rename": "Rename chat",
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
-    "delete": "Delete chat"
+    "delete": "Delete chat",
+    "statistics": "Statistics",
+    "pin": "Pin chat",
+    "unpin": "Unpin chat"
   },
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",
@@ -308,6 +317,51 @@
     "selection_failed": "Could not capture the selection. Select text inside one reply and try again.",
     "source_changed": "The source changed or is unavailable. Your saved quote is kept.",
     "removed": "Comment {{number}} removed"
+  },
+  "stats": {
+    "title": "Statistics",
+    "scope": "This DM only",
+    "estimated": "Estimated",
+    "partial": "Partial",
+    "tokens": "{{tokens}} tokens",
+    "usage_missing_one": "Usage missing for {{count}} finished run",
+    "usage_missing_other": "Usage missing for {{count}} finished runs",
+    "in_progress_one": "{{count}} run in progress — totals update when it finishes",
+    "in_progress_other": "{{count}} runs in progress — totals update when they finish",
+    "runs": "Runs",
+    "runs_value": "{{completed}} completed · {{failed}} failed",
+    "runs_cancelled": " · {{cancelled}} cancelled",
+    "run_time": "Agent run time",
+    "messages": "Messages",
+    "messages_value": "You {{user}} · Agent {{agent}}",
+    "by_model": "By model",
+    "col_model": "Model",
+    "col_input": "Input",
+    "col_output": "Output",
+    "col_cache_read": "Cache read",
+    "col_cache_write": "Cache write",
+    "col_cost": "Cost",
+    "no_value": "—",
+    "no_cost": "No cost reported",
+    "no_runs": "No runs yet.",
+    "related": "Related DMs",
+    "continued_from": "Continued from",
+    "continued_into": "Continued in",
+    "forked_from": "Forked from",
+    "error": "Statistics could not be loaded. Nothing was recorded as zero.",
+    "offline": "You're offline. These numbers are from when you opened Statistics at {{time}}. Reconnect to refresh.",
+    "retry": "Retry",
+    "close": "Close",
+    "less_than_a_minute": "<1m"
+  },
+  "archived_send": {
+    "title": "This DM is archived",
+    "question": "Unarchive it and send?",
+    "kept": "Your message is kept. It sends after the DM is unarchived.",
+    "newer": "A newer DM continues this conversation: {{title}}.",
+    "confirm": "Unarchive and send",
+    "cancel": "Cancel",
+    "open_newer": "Open the newer DM"
   },
   "decision": {
     "request_title": "Decision request",
@@ -332,6 +386,27 @@
     "from_original_dm": "from the original DM",
     "inherited": "Inherited",
     "message_unavailable": "Message no longer available"
+  },
+  "search": {
+    "label": "Search chats",
+    "placeholder": "Search chats",
+    "shortcut_hint": "/",
+    "clear": "Clear search",
+    "results_label": "Search results",
+    "count_one": "{{count}} result",
+    "count_other": "{{count}} results",
+    "searching": "Searching…",
+    "empty": "No chats match “{{query}}”",
+    "failed": "Search failed. Try again.",
+    "timed_out": "Search took too long. Try a shorter or more specific query.",
+    "disconnected": "You're offline. Search needs a connection.",
+    "retry": "Retry",
+    "too_long": "Search is limited to {{max}} characters.",
+    "show_more": "Show more",
+    "loading_more": "Loading…",
+    "archived_badge": "Archived",
+    "title_match": "Title match",
+    "actions_aria": "Actions for {{title}}"
   },
   "wakeup": {
     "node_label": "Scheduled wakeup fired",

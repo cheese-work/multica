@@ -311,6 +311,8 @@ export interface ChatNavIntent {
   newChat: boolean;
 }
 
+type ChatSessionAction = "archive" | "unarchive";
+
 export interface ChatState {
   isOpen: boolean;
   /** Settings preference: is the floating chat window available at all. */
@@ -318,6 +320,12 @@ export interface ChatState {
   activeSessionId: string | null;
   /** One-shot URL-write intent for the next session change. Never persisted. */
   navIntent: ChatNavIntent | null;
+  /**
+   * Sessions with an archive or unarchive in flight, so the menu, the commands
+   * and the thread list share one guard and a second request cannot start.
+   * Never persisted.
+   */
+  sessionActionPending: Record<string, ChatSessionAction>;
   selectedAgentId: string | null;
   /** Project context for the next session. Existing sessions remain bound to
    *  their server-persisted project_id. */
@@ -341,6 +349,9 @@ export interface ChatState {
   setActiveSession: (id: string | null) => void;
   /** Record how the next session change reaches the URL; the latest request wins. */
   requestNav: (intent: ChatNavIntent) => void;
+  /** Claim the session's archive guard. False when an action is already in flight. */
+  beginSessionAction: (sessionId: string, action: ChatSessionAction) => boolean;
+  endSessionAction: (sessionId: string) => void;
   /** Return the recorded intent and clear it, so it applies to one URL write. */
   consumeNavIntent: () => ChatNavIntent | null;
   setSelectedAgentId: (id: string) => void;
@@ -410,6 +421,7 @@ export function createChatStore(options: ChatStoreOptions) {
     floatingChatEnabled: initialFloatingEnabled,
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
     navIntent: null,
+    sessionActionPending: {},
     selectedAgentId: initialAgentId,
     selectedProjectId: storage.getItem(wsKey(PROJECT_STORAGE_KEY)),
     inputDrafts: initialDraftSlots.inputDrafts,
@@ -448,6 +460,16 @@ export function createChatStore(options: ChatStoreOptions) {
       set({ activeSessionId: id });
     },
     requestNav: (intent) => set({ navIntent: intent }),
+    beginSessionAction: (sessionId, action) => {
+      if (get().sessionActionPending[sessionId]) return false;
+      set({ sessionActionPending: { ...get().sessionActionPending, [sessionId]: action } });
+      return true;
+    },
+    endSessionAction: (sessionId) => {
+      if (!get().sessionActionPending[sessionId]) return;
+      const { [sessionId]: _done, ...rest } = get().sessionActionPending;
+      set({ sessionActionPending: rest });
+    },
     consumeNavIntent: () => {
       const intent = get().navIntent;
       if (intent) set({ navIntent: null });

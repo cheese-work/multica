@@ -165,7 +165,11 @@
       "note": "Add a note — won't trigger any agents",
       "compact": "Summarize this DM and continue in a new one",
       "rename": "Rename this DM without starting an agent turn",
-      "fork": "Copy this DM into a new one; optional message is sent there"
+      "fork": "Copy this DM into a new one; optional message is sent there",
+      "statistic": "Show usage and cost for this DM",
+      "archive": "Archive this DM without starting an agent turn",
+      "pin": "Pin or unpin this DM",
+      "unarchive": "Unarchive this DM. Nothing is sent to the agent."
     }
   },
   "code_block": {
