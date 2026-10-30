@@ -24,7 +24,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
-    include: ["app.config.test.ts", "lib/**/*.test.ts", "data/**/*.test.ts"],
+    include: ["app.config.test.ts", "plugins/**/*.test.ts", "lib/**/*.test.ts", "data/**/*.test.ts"],
     passWithNoTests: true,
   },
 });
