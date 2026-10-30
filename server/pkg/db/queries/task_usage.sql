@@ -334,3 +334,12 @@ WHERE a.workspace_id = $1
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
+
+-- name: SumTaskWeightedTokens :one
+-- A run's tokens as the run budget counts them: input + output + cache write
+-- + 0.1 x cache read, over every provider and model row, and how many rows
+-- there are: a run with none reported no usage.
+SELECT (COALESCE(SUM(input_tokens + output_tokens + cache_write_tokens), 0)
+      + COALESCE(SUM(cache_read_tokens), 0) / 10)::bigint AS weighted,
+      COUNT(*)::bigint AS model_rows
+FROM task_usage WHERE task_id = $1;
