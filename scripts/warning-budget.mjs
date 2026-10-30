@@ -34,8 +34,8 @@ export function warningCounts(jobs) {
     const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    // GitHub inserts a byte-order mark mid-log at chunk boundaries; it would hide a line from the anchored skips.
-    for (const line of stripVTControlCharacters(job.log).replaceAll("\ufeff", "").split("\n")) {
+    // Go test output can carry a U+FEFF byte-order mark that defeats the anchored runtime-WARN exclusion below.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\uFEFF", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""
