@@ -289,6 +289,23 @@ export interface ChatMessagesPage {
   has_newer?: boolean;
 }
 
+/** One DM search hit (`GET /api/chat/search`). `message_id` is null for a title hit. */
+export interface ChatSearchHit {
+  session_id: string;
+  title: string;
+  agent_id: string;
+  message_id: string | null;
+  /** Plain-text window that starts about 40 characters before the first match. */
+  snippet: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+export interface ChatSearchPage {
+  results: ChatSearchHit[];
+  next_cursor: string | null;
+}
+
 export interface SendChatMessageResponse {
   message_id: string;
   task_id: string;
@@ -411,4 +428,14 @@ export interface ChatPendingTask {
    * database status `queued` before claim, but is never duplicated here.
    */
   queued_tasks?: ChatQueuedTask[];
+}
+
+/** `GET /api/chat/sessions/{id}/wakeups`: a pending one-shot turn an agent scheduled in this DM. */
+export interface ChatWakeup {
+  id: string;
+  agent_id: string;
+  /** RFC 3339 instant the turn fires. */
+  fire_at: string;
+  instruction: string;
+  status: string;
 }

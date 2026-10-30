@@ -104,6 +104,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Use disposable build caches
         shell: bash

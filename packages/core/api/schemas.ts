@@ -22,6 +22,7 @@ import type {
   ChatPendingTask,
   ChatSession,
   ChatSessionUsage,
+  ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -1008,6 +1009,10 @@ const decisionCommentShape = {
   decision_source_message_id: z.string().optional().catch(undefined),
   decision_request_session_id: z.string().optional().catch(undefined),
   decision_request_message_id: z.string().optional().catch(undefined),
+  decision_answered_label: z.string().optional().catch(undefined),
+  decision_full_message: z.string().optional().catch(undefined),
+  decision_answered_at: z.string().optional().catch(undefined),
+  decision_woken_at: z.string().nullable().optional().catch(undefined),
 };
 
 const DecisionCardSchema = z.object({
@@ -1041,7 +1046,8 @@ const DecisionRequestCardSchema = z.object({
   reason: z.string().optional().catch(undefined),
   record_comment_id: z.string().nullish().catch(undefined),
   answer: z.object({
-    state: z.enum(["recorded", "delivered", "disclaimed"]).catch("recorded"),
+    state: z.enum(["recorded", "delivered", "picked_up", "disclaimed"]).catch("recorded"),
+    run: z.object({ id: z.string(), agent_name: z.string().default("") }).loose().optional().catch(undefined),
     chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),
@@ -1097,6 +1103,19 @@ export const ChatMessagesPageSchema = z.object({
     id: z.string(),
   }).loose().nullable().optional(),
   has_newer: z.boolean().optional().catch(undefined),
+}).loose();
+
+export const ChatSearchPageSchema = z.object({
+  results: z.array(z.object({
+    session_id: z.string(),
+    title: z.string().default(""),
+    agent_id: z.string(),
+    message_id: z.string().nullable().optional().transform((v) => v ?? null),
+    snippet: z.string().default(""),
+    updated_at: z.string(),
+    archived: z.boolean().default(false),
+  }).loose()).default([]),
+  next_cursor: z.string().nullable().optional().transform((v) => v ?? null),
 }).loose();
 
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
@@ -2426,6 +2445,18 @@ export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
   forked_from_session_id: null,
 };
 
+const ChatWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  fire_at: z.string(),
+  instruction: z.string().default(""),
+  status: z.string().default("pending"),
+}).loose();
+
+export const ChatWakeupsSchema = z.array(ChatWakeupSchema);
+
+export const EMPTY_CHAT_WAKEUPS: ChatWakeup[] = [];
+
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
   previous_session_id: "",
@@ -2487,7 +2518,8 @@ export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),
-  task_id: z.string().min(1),
+  // Empty when the send started no task (a decision reply for another agent's ask).
+  task_id: z.string(),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),

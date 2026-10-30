@@ -18,6 +18,7 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatSession,
+  ChatSessionUsage,
   Comment,
   InboxItem,
   InboxWorkspaceUnread,
@@ -39,7 +40,11 @@ import type {
   User,
   Workspace,
 } from "@multica/core/types";
-import { IssueSchema } from "@multica/core/api/schemas";
+import {
+  ChatSessionUsageSchema,
+  EMPTY_CHAT_SESSION_USAGE,
+  IssueSchema,
+} from "@multica/core/api/schemas";
 
 /** Upload response. Only fields mobile actually consumes — `url` to put
  *  into the markdown link, `filename` for the `[📎 name](url)` form, `id`
@@ -243,6 +248,14 @@ export const EMPTY_LIST_PROJECT_RESOURCES_RESPONSE: ListProjectResourcesResponse
 // agent/creator ids). `.loose()` so server-added fields pass through. The two
 // fields mobile keys behaviour on — `id` and `chat_session_id` — are required.
 
+const ChatLastMessageSchema = z.object({
+  content: z.string().default(""),
+  role: z.enum(["user", "assistant"]).catch("assistant"),
+  created_at: z.string().default(""),
+  failure_reason: z.string().nullable().optional(),
+  message_kind: z.enum(["message", "no_response"]).catch("message").optional(),
+}).loose();
+
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
@@ -257,9 +270,29 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   // so the badge math can tell "older server didn't send it" from a real 0 —
   // the tab badge sums `unread_count ?? 0`, same rule as web's sidebar.
   unread_count: z.number().optional(),
+  pinned: z.boolean().optional().catch(undefined),
+  continued_from_session_id: z.string().nullable().optional().catch(null),
+  continued_into_session_id: z.string().nullable().optional().catch(null),
+  forked_from_session_id: z.string().nullable().optional().catch(null),
+  last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
+
+export const EMPTY_CHAT_SESSION: ChatSession = {
+  id: "",
+  workspace_id: "",
+  agent_id: "",
+  creator_id: "",
+  title: "",
+  status: "active",
+  has_unread: false,
+  created_at: "",
+  updated_at: "",
+};
+
+export { ChatSessionUsageSchema, EMPTY_CHAT_SESSION_USAGE };
+export type { ChatSession, ChatSessionUsage };
 
 export const ChatSessionListSchema = z.array(ChatSessionSchema).default([]);
 

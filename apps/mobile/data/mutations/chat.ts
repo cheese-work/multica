@@ -14,6 +14,7 @@ import type { ChatSession } from "@multica/core/types";
 import { api } from "@/data/api";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { chatKeys } from "@/data/queries/chat";
+import { patchSessionArchived, sortAllChatSessions } from "@/lib/chat-dm-stats-archive";
 
 export function useCreateChatSession() {
   const qc = useQueryClient();
@@ -84,6 +85,76 @@ export function useMarkChatSessionRead() {
       return { prev, key };
     },
     onError: (_err, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(ctx.key, ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
+
+export function useSetChatSessionPinned() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      pinned,
+    }: {
+      sessionId: string;
+      pinned: boolean;
+    }) => api.setChatSessionPinned(sessionId, pinned),
+    onMutate: async ({ sessionId, pinned }) => {
+      const key = chatKeys.sessions(wsId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<ChatSession[]>(key);
+      qc.setQueryData<ChatSession[]>(key, (old) =>
+        old
+          ? sortAllChatSessions(
+              old.map((s) => (s.id === sessionId ? { ...s, pinned } : s)),
+            )
+          : old,
+      );
+      return { prev, key };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(ctx.key, ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
+
+export function useSetChatSessionArchived() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      archived,
+    }: {
+      sessionId: string;
+      archived: boolean;
+    }) => api.setChatSessionArchived(sessionId, archived),
+    onMutate: async ({ sessionId, archived }) => {
+      const key = chatKeys.sessions(wsId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<ChatSession[]>(key);
+      qc.setQueryData<ChatSession[]>(key, (old) =>
+        old
+          ? sortAllChatSessions(
+              old.map((s) =>
+                s.id === sessionId ? patchSessionArchived(s, archived) : s,
+              ),
+            )
+          : old,
+      );
+      return { prev, key };
+    },
+    onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(ctx.key, ctx.prev);
     },
     onSettled: () => {
