@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -239,5 +241,60 @@ func TestMaintainRepoCacheReleasesOrphanPinsAmongLinkedWorktrees(t *testing.T) {
 	}
 	if gitRefExists(t, barePath, dead) {
 		t.Errorf("orphan keep-ref %s was kept because a linked worktree sits beside the live checkout", dead)
+	}
+}
+
+// cancelAfterCtx reports cancellation from its n+1th Err call on and counts
+// the calls, so a test can cancel a scan part way through it.
+type cancelAfterCtx struct {
+	context.Context
+	after int
+	calls int
+}
+
+func (c *cancelAfterCtx) Err() error {
+	c.calls++
+	if c.calls > c.after {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestLiveKeepRefTaskKeysStopsWhenMaintenanceIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	recordTestCheckout(t, d, liveKeepKey)
+	workdir := filepath.Join(d.cfg.WorkspacesRoot, "ws", "task-env", "workdir")
+	const dirs = 200
+	for i := range dirs {
+		if err := os.MkdirAll(filepath.Join(workdir, "bulk", strings.Repeat("d", 1+i%7), string(rune('a'+i%26)), "x"+strings.Repeat("y", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := &cancelAfterCtx{Context: t.Context(), after: 10}
+	if _, err := liveKeepRefTaskKeys(ctx, d.cfg.WorkspacesRoot); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if ctx.calls > 20 {
+		t.Fatalf("scan checked for cancellation %d times, want it to stop right after the 10th", ctx.calls)
+	}
+}
+
+func TestMaintainRepoCacheKeepsPinsWhenMaintenanceIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	dead := pinTestKeepRef(t, barePath, deadKeepKey)
+	recordTestCheckout(t, d, liveKeepKey)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	d.releaseOrphanKeepRefsLocked(ctx, barePath)
+
+	if !gitRefExists(t, barePath, dead) {
+		t.Errorf("keep-ref %s was released by a cancelled maintenance pass", dead)
 	}
 }

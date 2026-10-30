@@ -1349,15 +1349,20 @@ func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *
 // the scan walks every workdir completely and reads the record of each
 // directory that holds a .git directory. A .git file is a linked worktree and
 // records nothing. It reports every read failure other than a path that
-// vanished, because a borrower it could not see must not lose its pins.
-func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
+// vanished, because a borrower it could not see must not lose its pins. The
+// scan runs under the repo lock, so it returns ctx's error as soon as
+// maintenance is cancelled and a waiting checkout is not held behind it.
+func liveKeepRefTaskKeys(ctx context.Context, workspacesRoot string) (map[string]struct{}, error) {
 	live := map[string]struct{}{}
-	workdirs, err := taskWorkdirs(workspacesRoot)
+	workdirs, err := taskWorkdirs(ctx, workspacesRoot)
 	if err != nil {
 		return nil, err
 	}
 	for _, workdir := range workdirs {
 		err := filepath.WalkDir(workdir, func(path string, entry fs.DirEntry, err error) error {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
@@ -1387,7 +1392,7 @@ func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
 // with reads that report errors (filepath.Glob would drop a directory it
 // cannot list, and its workdir with it). A directory that does not exist, or a
 // plain file where a directory would be, is skipped; anything else fails.
-func taskWorkdirs(workspacesRoot string) ([]string, error) {
+func taskWorkdirs(ctx context.Context, workspacesRoot string) ([]string, error) {
 	var workdirs []string
 	workspaces, err := os.ReadDir(workspacesRoot)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -1397,6 +1402,9 @@ func taskWorkdirs(workspacesRoot string) ([]string, error) {
 		return nil, err
 	}
 	for _, workspace := range workspaces {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !workspace.IsDir() || workspace.Name() == reposDirName {
 			continue
 		}
@@ -1408,6 +1416,9 @@ func taskWorkdirs(workspacesRoot string) ([]string, error) {
 			return nil, err
 		}
 		for _, task := range tasks {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if !task.IsDir() {
 				continue
 			}
@@ -1427,11 +1438,14 @@ func taskWorkdirs(workspacesRoot string) ([]string, error) {
 // releaseOrphanKeepRefsLocked drops the keep-refs whose borrowing checkout is
 // gone, so the cache's next prune can reclaim the objects they pinned. The
 // caller holds the repo lock, which also serializes it against a checkout that
-// is pinning its base. Pins stay on any failure, including a borrower scan that
-// could not read every record; the eviction guard then sees them too.
+// is pinning its base. Pins stay on any failure, including a cancelled
+// maintenance pass and a borrower scan that could not read every record; the eviction guard then sees them too.
 func (d *Daemon) releaseOrphanKeepRefsLocked(ctx context.Context, barePath string) {
-	live, err := liveKeepRefTaskKeys(d.cfg.WorkspacesRoot)
+	live, err := liveKeepRefTaskKeys(ctx, d.cfg.WorkspacesRoot)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		d.logger.Warn("gc: keep-ref borrower scan failed; pins kept", "repo", barePath, "error", err)
 		return
 	}
