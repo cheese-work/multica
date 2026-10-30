@@ -174,7 +174,7 @@ const listOpenDecisionAsksForHuman = `-- name: ListOpenDecisionAsksForHuman :man
 SELECT request.id,
     (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
     request.issue_id, workspace.slug AS workspace_slug,
-    COALESCE(NULLIF(request.ask_json->>'decision', ''), NULLIF(split_part(split_part(request.ask, E'**Decision**\n', 2), E'\n', 1), ''), split_part(request.ask, E'\n', 1))::text AS ask_headline,
+    COALESCE(NULLIF(split_part(btrim(request.ask_json->>'decision', E' \t\r\n'), E'\n', 1), ''), NULLIF(split_part(split_part(request.ask, E'**Decision**\n', 2), E'\n', 1), ''), split_part(request.ask, E'\n', 1))::text AS ask_headline,
     request.escalation_class, request.created_at, request.chat_session_id,
     request.asking_agent_id, COALESCE(request.ask_json->>'default_if_no_reply', '')::text AS default_if_no_reply
 FROM decision_request request
