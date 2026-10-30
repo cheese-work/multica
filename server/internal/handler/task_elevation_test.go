@@ -24,11 +24,19 @@ type elevatedFixture struct {
 // returns the task once the claim has recorded its elevation.
 func claimElevated(t *testing.T, scopes ...string) elevatedFixture {
 	t.Helper()
+	return claimElevatedGrants(t, scopes)
+}
+
+// claimElevatedGrants is claimElevated with one live grant per scope list.
+func claimElevatedGrants(t *testing.T, grants ...[]string) elevatedFixture {
+	t.Helper()
 	ctx := context.Background()
 	name := "Elevation " + uuid.NewString()[:8]
 	runtimeID := createClaimReclaimRuntime(t, ctx, name+" runtime")
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, name+" agent")
-	insertGrant(t, issueID, testWorkspaceID, scopes, "1 minute", "1 hour", false)
+	for _, scopes := range grants {
+		insertGrant(t, issueID, testWorkspaceID, scopes, "1 minute", "1 hour", false)
+	}
 	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
 	req := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
 	var resp struct {
@@ -106,6 +114,33 @@ func TestClaimRecordsElevationOnce(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1`, f.taskID); n != 1 {
 		t.Fatalf("rows = %d, want 1", n)
+	}
+}
+
+func TestReclaimAfterOneGrantLapsedIsNotElevated(t *testing.T) {
+	f := claimElevatedGrants(t, []string{"docker"}, []string{"repo_write:1234"})
+	dbfx.Exec(t, `UPDATE run_capability_grant SET revoked_at = now() WHERE issue_id = $1 AND scopes = ARRAY['docker']`, f.issueID)
+	// Before the fence sweep runs, a re-claim must not hand out the frozen scopes.
+	got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID))
+	if got.Profile == "elevated" {
+		t.Fatalf("re-claim profile = %+v, want not elevated", got)
+	}
+	for _, s := range got.Scopes {
+		if s == "docker" {
+			t.Fatalf("re-claim kept the revoked docker scope: %v", got.Scopes)
+		}
+	}
+}
+
+func TestClaimKeepsEveryScopeOfSeveralGrants(t *testing.T) {
+	var a, b []string
+	for i := 0; i < 9; i++ {
+		a = append(a, "repo_write:"+strings.Repeat("1", i+1))
+		b = append(b, "device:d"+strings.Repeat("2", i+1))
+	}
+	f := claimElevatedGrants(t, a, b)
+	if n := dbfx.Count(t, `SELECT cardinality(scopes) FROM task_elevation WHERE task_id = $1`, f.taskID); n != 18 {
+		t.Fatalf("recorded scopes = %d, want 18", n)
 	}
 }
 

@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS task_elevation (
     workspace_id uuid NOT NULL,
     issue_id uuid NOT NULL,
     grant_ids uuid[] NOT NULL CHECK (cardinality(grant_ids) >= 1),
-    scopes text[] NOT NULL CHECK (cardinality(scopes) BETWEEN 1 AND 16),
+    scopes text[] NOT NULL CHECK (cardinality(scopes) >= 1),
     epoch bigint NOT NULL DEFAULT 1,
     state text NOT NULL DEFAULT 'elevated' CHECK (state IN ('elevated', 'fencing', 'restricted_final')),
     launch_scopes_ended_at timestamptz,

@@ -76,7 +76,13 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 	if rp.Profile != runProfileElevated {
 		return rp
 	}
-	if !known {
+	if known {
+		// The frozen grants must all still be live; the fence sweep may not have run yet.
+		live, err := h.Queries.CountLiveGrantsByID(ctx, te.GrantIds)
+		if err != nil || int(live) != len(te.GrantIds) {
+			return restricted
+		}
+	} else {
 		ids := make([]pgtype.UUID, len(grants))
 		for i, g := range grants {
 			ids[i] = g.ID
