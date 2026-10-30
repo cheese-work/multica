@@ -2146,6 +2146,14 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type ProtectedPathPolicy struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Name              string             `json:"name"`
+	Patterns          []string           `json:"patterns"`
+	UpdatedByMemberID pgtype.UUID        `json:"updated_by_member_id"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ProtocolLintRun struct {
 	ID             pgtype.UUID        `json:"id"`
 	TaskID         pgtype.UUID        `json:"task_id"`
