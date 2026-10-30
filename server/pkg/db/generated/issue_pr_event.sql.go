@@ -154,6 +154,20 @@ WHERE e.kind NOT IN ('draft', 'ready')
         AND r.event_type = 'pr.event'
         AND r.payload->>'event_id' = e.id::text
         AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM issue_wakeup lw
+      JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id
+      LEFT JOIN agent_task_queue lt ON lt.id = lr.task_id
+      WHERE lw.issue_id = e.issue_id
+        AND lr.payload->>'head_sha' = e.head_sha
+        AND lr.payload->>'repo_owner' = pr.repo_owner
+        AND lr.payload->>'repo_name' = pr.repo_name
+        AND lr.payload->>'pr_number' = pr.pr_number::text
+        AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
+             OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
+                 AND lr.payload->>'merge_state' = 'DIRTY'))
+        AND (lr.processed_at IS NULL OR lt.status IN ('queued', 'dispatched') OR lt.started_at IS NOT NULL))
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
   AND ($2::timestamptz IS NULL
        OR (e.observed_at, e.id) > ($2::timestamptz, $3::uuid))
@@ -288,9 +302,11 @@ func (q *Queries) MarkPREventNextTurn(ctx context.Context, id pgtype.UUID) error
 const markStartedPREventsDelivered = `-- name: MarkStartedPREventsDelivered :execrows
 UPDATE issue_pr_event e
 SET status = 'delivered'
-WHERE e.status = 'next_turn'
+FROM github_pull_request pr
+WHERE pr.id = e.pull_request_id
+  AND e.status IN ('accepted', 'next_turn')
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
-  AND EXISTS (
+  AND (EXISTS (
       SELECT 1
       FROM issue_wakeup w
       JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
@@ -300,9 +316,24 @@ WHERE e.status = 'next_turn'
         AND r.event_type = 'pr.event'
         AND r.payload->>'event_id' = e.id::text
         AND t.started_at IS NOT NULL)
+   OR EXISTS (
+      SELECT 1
+      FROM issue_wakeup lw
+      JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id
+      JOIN agent_task_queue lt ON lt.id = lr.task_id
+      WHERE lw.issue_id = e.issue_id
+        AND lr.payload->>'head_sha' = e.head_sha
+        AND lr.payload->>'repo_owner' = pr.repo_owner
+        AND lr.payload->>'repo_name' = pr.repo_name
+        AND lr.payload->>'pr_number' = pr.pr_number::text
+        AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
+             OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
+                 AND lr.payload->>'merge_state' = 'DIRTY'))
+        AND lt.started_at IS NOT NULL))
 `
 
-// A next-turn wake that started carries its receipts' events.
+// A wake that started carries its receipts' events: a next-turn pr.event
+// receipt's, or the legacy rule's receipt for the same cause (CHE-2540).
 func (q *Queries) MarkStartedPREventsDelivered(ctx context.Context, workspaceIds []pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markStartedPREventsDelivered, workspaceIds)
 	if err != nil {
