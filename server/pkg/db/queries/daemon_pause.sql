@@ -39,7 +39,13 @@ GROUP BY COALESCE(rt.owner_id, rt.workspace_id), rt.daemon_id;
 SELECT DISTINCT workspace_id FROM agent_runtime
 WHERE COALESCE(owner_id, workspace_id) = $1 AND daemon_id = $2;
 
--- name: ListDaemonPausesSetFromWorkspace :many
--- Machines held by a pause that this workspace set. Deleting the workspace
--- removes these rows, which lifts the pause for the owner's other workspaces.
-SELECT * FROM daemon_pause WHERE workspace_id = $1;
+-- name: ListMachinesOfWorkspace :many
+-- Machines a workspace's runtimes sit on, plus machines held by a pause this
+-- workspace set. Deleting the workspace removes both, which can lift a pause
+-- for the owner's other workspaces; they hear about it whether or not a pause
+-- existed when this was read.
+SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id
+FROM agent_runtime rt
+WHERE rt.workspace_id = $1 AND rt.daemon_id IS NOT NULL
+UNION
+SELECT dp.machine_owner_id, dp.daemon_id FROM daemon_pause dp WHERE dp.workspace_id = $1;

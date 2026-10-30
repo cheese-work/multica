@@ -73,39 +73,6 @@ func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPausePa
 	return result.RowsAffected(), nil
 }
 
-const listDaemonPausesSetFromWorkspace = `-- name: ListDaemonPausesSetFromWorkspace :many
-SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at FROM daemon_pause WHERE workspace_id = $1
-`
-
-// Machines held by a pause that this workspace set. Deleting the workspace
-// removes these rows, which lifts the pause for the owner's other workspaces.
-func (q *Queries) ListDaemonPausesSetFromWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]DaemonPause, error) {
-	rows, err := q.db.Query(ctx, listDaemonPausesSetFromWorkspace, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DaemonPause{}
-	for rows.Next() {
-		var i DaemonPause
-		if err := rows.Scan(
-			&i.MachineOwnerID,
-			&i.DaemonID,
-			&i.WorkspaceID,
-			&i.Reason,
-			&i.PausedBy,
-			&i.PausedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
 SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at FROM daemon_pause
 WHERE machine_owner_id = ANY($1::uuid[])
@@ -180,6 +147,43 @@ func (q *Queries) ListMachineWorkspaceIDs(ctx context.Context, arg ListMachineWo
 			return nil, err
 		}
 		items = append(items, workspace_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMachinesOfWorkspace = `-- name: ListMachinesOfWorkspace :many
+SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id
+FROM agent_runtime rt
+WHERE rt.workspace_id = $1 AND rt.daemon_id IS NOT NULL
+UNION
+SELECT dp.machine_owner_id, dp.daemon_id FROM daemon_pause dp WHERE dp.workspace_id = $1
+`
+
+type ListMachinesOfWorkspaceRow struct {
+	MachineOwnerID pgtype.UUID `json:"machine_owner_id"`
+	DaemonID       string      `json:"daemon_id"`
+}
+
+// Machines a workspace's runtimes sit on, plus machines held by a pause this
+// workspace set. Deleting the workspace removes both, which can lift a pause
+// for the owner's other workspaces; they hear about it whether or not a pause
+// existed when this was read.
+func (q *Queries) ListMachinesOfWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListMachinesOfWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listMachinesOfWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMachinesOfWorkspaceRow{}
+	for rows.Next() {
+		var i ListMachinesOfWorkspaceRow
+		if err := rows.Scan(&i.MachineOwnerID, &i.DaemonID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

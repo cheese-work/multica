@@ -1341,11 +1341,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The sweep below removes the pauses this workspace set, which lifts them for
-	// the owner's other workspaces. Note the machines now, refresh after commit.
-	pausedMachines, err := qtx.ListDaemonPausesSetFromWorkspace(r.Context(), requester.WorkspaceID)
+	// The sweep below removes the runtimes and the pauses this workspace set, which
+	// can lift a machine pause for the owner's other workspaces. Pause does not take
+	// the delete lock, so one can land after this read: note the machines, not the
+	// pauses, and refresh their other workspaces after commit regardless.
+	machines, err := qtx.ListMachinesOfWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
-		failWorkspaceDelete(w, r, workspaceID, "list machine pauses", err)
+		failWorkspaceDelete(w, r, workspaceID, "list workspace machines", err)
 		return
 	}
 
@@ -1568,8 +1570,8 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	for _, runtimeID := range runtimeIDs {
 		h.NotifyRuntimeGone(uuidToString(runtimeID))
 	}
-	for _, pause := range pausedMachines {
-		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, pause.MachineOwnerID, pause.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
+	for _, machine := range machines {
+		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
 	}
 	h.deleteS3Objects(r.Context(), append(sourceContextAttachmentURLs, sourceContextIntentURLs...))
 
