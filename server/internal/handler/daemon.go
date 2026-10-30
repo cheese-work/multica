@@ -2200,6 +2200,28 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		runtimeByID[uuidToString(rt.ID)] = rt
 		authorized = append(authorized, rt.ID)
 	}
+	// Machine pause (CHE-2430): drop runtimes whose daemon is paused. The gate
+	// sits here, not in the daemon, so old daemon versions are covered too.
+	if len(authorized) > 0 {
+		candidates := make([]db.AgentRuntime, 0, len(authorized))
+		for _, id := range authorized {
+			candidates = append(candidates, runtimeByID[uuidToString(id)])
+		}
+		paused, err := h.pausedDaemonSet(r.Context(), candidates)
+		if err != nil {
+			slog.Warn("daemon pause check failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to check machine pause")
+			return
+		}
+		authorized = authorized[:0]
+		for _, rt := range candidates {
+			if runtimeOnPausedDaemon(paused, rt) {
+				delete(runtimeByID, uuidToString(rt.ID))
+				continue
+			}
+			authorized = append(authorized, rt.ID)
+		}
+	}
 	if len(authorized) == 0 {
 		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
 		return
@@ -2849,7 +2871,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	resp.LeaderRoleResolved = true
 	// CHE-2216 plan 3.1: always answer, so an absent profile on the wire means a
 	// server that predates the resolver.
-	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID)
+	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID)
 	resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
 	// Agent-trigger plugin hooks, as tools. A failure here degrades to no
 	// tools rather than failing the claim: a plugin that cannot be listed must
@@ -4370,6 +4392,21 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
 	authMs = time.Since(start).Milliseconds()
+
+	// Machine pause (CHE-2430): a paused daemon takes no new claims. Queued
+	// tasks stay queued for resume.
+	paused, err := h.pausedDaemonSet(r.Context(), []db.AgentRuntime{runtime})
+	if err != nil {
+		outcome = "error_pause_check"
+		slog.Warn("daemon pause check failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to check machine pause")
+		return
+	}
+	if runtimeOnPausedDaemon(paused, runtime) {
+		outcome = "paused"
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
+		return
+	}
 
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))

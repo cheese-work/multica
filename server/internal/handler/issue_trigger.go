@@ -28,6 +28,9 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, uuidToString(issue.WorkspaceID))
+		},
 		IsSelfLoop: func() bool {
 			return h.isAgentRunningOnIssue(r, actorType, issue)
 		},
@@ -51,6 +54,9 @@ func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID str
 func (h *Handler) issueTriggerPreviewProbe(r *http.Request, actorType, actorID, workspaceID string, issue db.Issue) service.IssueTriggerProbe {
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
 	return service.IssueTriggerProbe{
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, workspaceID)
+		},
 		CanAccessAgent: func(agent db.Agent) bool {
 			return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 		},

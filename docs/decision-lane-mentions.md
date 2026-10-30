@@ -106,6 +106,18 @@ the field. The source issue must match `--issue`. The source comment must exist
 on that issue in the selected workspace and must not be deleted. The API
 accepts the same object as `ask` in `POST /api/decisions`.
 
+An ask that approves a file adds two optional fields. `subject` is
+`artifact_approval`; it requires at least one entry in `artifacts[]`. Each
+artifact has `attachment_id`, `label`, `sha256` (64 lowercase hex characters),
+and optionally `supersedes_attachment_id` and `signed_by` (`reviewer` and the
+signed review `comment_id`). The server refuses the request when an attachment
+is not on the source issue in the workspace, or when the stored bytes do not
+hash to `sha256`. `signed_by` is recorded as given and is not checked against
+the comment. `GET /api/decisions/{id}/artifacts` returns each artifact with its
+file card and, when it supersedes an earlier text attachment, the changed
+hunks only (`diff.hunks`, lines prefixed ` `, `-` or `+`). `diff.problem` is
+`not_text`, `too_large` or `unavailable` when no hunks can be shown.
+
 Advisory lint: the CLI prints a `hint:` line on stderr, and the API returns
 `hints[]`, when `context_eli10`, `stakes_if_wrong` or an option's
 `what_happens` holds a commit SHA or an internal code such as `L2` or `RGS-1`,
