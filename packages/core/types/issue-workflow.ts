@@ -38,6 +38,13 @@ export interface IssueWorkflowStep {
   advance_on_ci_green?: boolean;
   /** Guarded exits; the first whose guard holds is taken. */
   edges?: IssueWorkflowEdge[];
+  /** Entering the step starts a child issue on another workflow; a `children_done` edge joins. */
+  sub_workflow?: IssueWorkflowSubWorkflow;
+}
+
+export interface IssueWorkflowSubWorkflow {
+  workflow_id: string;
+  stage?: number;
 }
 
 /** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */

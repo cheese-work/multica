@@ -10,7 +10,7 @@ function normalize(message) {
     .replace(/_\d{10,}_\d+/g, "_<id>")
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
     .replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)\b/g, "<time>")
-    .replace(/\b(?:duration|duration_ms|request_id)=(?:"[^"]*"|\S+)/g, (field) => `${field.split("=")[0]}=<runtime>`)
+    .replace(/\b(?:duration|duration_ms|request_id|dropped_total)=(?:"[^"]*"|\S+)/g, (field) => `${field.split("=")[0]}=<runtime>`)
     .replace(/(\/tmp\/Test[^/\s"]*?)\d{6,}(?=\/)/g, "$1<id>")
     .replace(/(\/tmp\/[A-Za-z0-9_-]+\.)[A-Za-z0-9]{6,}(?=\/)/g, "$1<id>")
     .replace(/((?:https?:\/\/|tcp )[^/:\s"\\]+):\d{2,5}\b/g, "$1:<port>")
@@ -34,7 +34,8 @@ export function warningCounts(jobs) {
     const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    for (const line of stripVTControlCharacters(job.log).split("\n")) {
+    // Go test output can carry a U+FEFF byte-order mark that defeats the anchored runtime-WARN exclusion below.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\uFEFF", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""

@@ -88,6 +88,8 @@ type IssueWorkflowStepPayload struct {
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 	// Edges are the step's guarded exits; see issueworkflow.Edge.
 	Edges []issueworkflow.Edge `json:"edges,omitempty"`
+	// SubWorkflow makes the step a sub-workflow node; see issueworkflow.SubWorkflow.
+	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -145,6 +147,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 		Edges:            s.Edges,
+		SubWorkflow:      s.SubWorkflow,
 	}
 }
 
@@ -158,6 +161,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		Edges:            in.Edges,
+		SubWorkflow:      in.SubWorkflow,
 	}
 }
 
@@ -374,6 +378,8 @@ type IssueWorkflowStepInput struct {
 	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
 	AdvanceOnCIGreen bool                 `json:"advance_on_ci_green,omitempty"`
 	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
+	// SubWorkflow: see IssueWorkflowStepPayload.
+	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -435,6 +441,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 			Edges:            in.Edges,
+			SubWorkflow:      in.SubWorkflow,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -614,6 +621,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, false, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	if status, msg := h.validateHandoffHandlers(ctx, r, workspaceID, steps, nil); status != 0 {
@@ -840,6 +854,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, current.IsDefault, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	if status, msg := h.validateHandoffHandlers(ctx, r, workspaceID, steps, currentSteps); status != 0 {
@@ -1292,10 +1313,13 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to read workflow")
 		return
 	}
-	// The handoff form knows nothing of edges: keep the step's own.
-	if step.Edges == nil {
-		if stored, ok := def.Step(step.StatusKey); ok {
+	// The handoff form knows nothing of edges or a sub-workflow: keep the step's own.
+	if stored, ok := def.Step(step.StatusKey); ok {
+		if step.Edges == nil {
 			step.Edges = stored.Edges
+		}
+		if step.SubWorkflow == nil {
+			step.SubWorkflow = stored.SubWorkflow
 		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
