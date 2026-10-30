@@ -175,7 +175,7 @@ VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
 -- Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
--- receipt keeps every comment it has held, migration 812). A new wakeup task and
+-- receipt keeps every comment it has held, migration 816). A new wakeup task and
 -- a merge into a queued one both end here; the task trigger keeps what it had.
 WITH receipt_taint AS (
  SELECT COALESCE(array_agg(DISTINCT x ORDER BY x),'{}')::text[] AS ids

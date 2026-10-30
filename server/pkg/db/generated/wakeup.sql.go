@@ -289,7 +289,7 @@ type ConsumeWakeupReceiptsParams struct {
 }
 
 // Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
-// receipt keeps every comment it has held, migration 812). A new wakeup task and
+// receipt keeps every comment it has held, migration 816). A new wakeup task and
 // a merge into a queued one both end here; the task trigger keeps what it had.
 func (q *Queries) ConsumeWakeupReceipts(ctx context.Context, arg ConsumeWakeupReceiptsParams) error {
 	_, err := q.db.Exec(ctx, consumeWakeupReceipts, arg.TaskID, arg.Ids)

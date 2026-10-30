@@ -397,7 +397,7 @@ SELECT
         AND COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         AND pr.head_sha = sqlc.narg('head_sha')::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
-    -- The assigning task's taint (migration 812): the trigger unions in every
+    -- The assigning task's taint (migration 816): the trigger unions in every
     -- other source, but only the request knows which task is acting.
     COALESCE(sqlc.narg('taint_ids')::text[], '{}'),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
