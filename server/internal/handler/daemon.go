@@ -2858,6 +2858,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// not — because its absence is what tells an upgraded daemon it is talking
 	// to a server too old to have answered the question (MUL-5811).
 	resp.LeaderRoleResolved = true
+	// CHE-2216 plan 3.1: always answer, so an absent profile on the wire means a
+	// server that predates the resolver.
+	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID)
+	resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
 	// Agent-trigger plugin hooks, as tools. A failure here degrades to no
 	// tools rather than failing the claim: a plugin that cannot be listed must
 	// not stop an agent from working on the issue.
