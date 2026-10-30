@@ -3,11 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -191,13 +194,21 @@ func (h *Handler) PauseDaemon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "reason must be maintenance, incident or suspended")
 		return
 	}
-	pause, err := h.Queries.UpsertDaemonPause(r.Context(), db.UpsertDaemonPauseParams{
+	tx, qtx, ok := h.beginMachinePauseTx(w, r, rt)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+	pause, err := qtx.UpsertDaemonPause(r.Context(), db.UpsertDaemonPauseParams{
 		MachineOwnerID: machineOwnerID(rt),
 		DaemonID:       rt.DaemonID.String,
 		WorkspaceID:    rt.WorkspaceID,
 		Reason:         req.Reason,
 		PausedBy:       member.UserID,
 	})
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
 	if err != nil {
 		slog.Error("pause daemon failed", "error", err, "runtime_id", uuidToString(rt.ID))
 		writeError(w, http.StatusInternalServerError, "failed to pause machine")
@@ -207,13 +218,61 @@ func (h *Handler) PauseDaemon(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pauseToResponse(pause))
 }
 
+// pauseLockTimeout bounds how long Pause or Resume waits behind a workspace
+// delete; a delete of a large workspace can run longer, and the caller retries.
+const pauseLockTimeout = 5 * time.Second
+
+// beginMachinePauseTx opens the transaction a pause or resume writes in and takes
+// the runtime's workspace row FOR SHARE. The delete holds that row FOR UPDATE for
+// its whole sweep, so the write either lands before the delete's machine read or
+// waits and finds the workspace gone (404, nothing written). On false it has
+// already answered.
+func (h *Handler) beginMachinePauseTx(w http.ResponseWriter, r *http.Request, rt db.AgentRuntime) (pgx.Tx, *db.Queries, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Error("machine pause tx begin failed", "error", err, "runtime_id", uuidToString(rt.ID))
+		writeError(w, http.StatusInternalServerError, "failed to update machine pause")
+		return nil, nil, false
+	}
+	fail := func(status int, msg string) (pgx.Tx, *db.Queries, bool) {
+		_ = tx.Rollback(r.Context())
+		writeError(w, status, msg)
+		return nil, nil, false
+	}
+	if _, err := tx.Exec(r.Context(), fmt.Sprintf("SET LOCAL lock_timeout = %d", pauseLockTimeout.Milliseconds())); err != nil {
+		slog.Error("machine pause lock timeout failed", "error", err, "runtime_id", uuidToString(rt.ID))
+		return fail(http.StatusInternalServerError, "failed to update machine pause")
+	}
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockWorkspaceForMachinePause(r.Context(), rt.WorkspaceID); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return fail(http.StatusNotFound, "runtime not found")
+		case isRetryableLockFailure(err):
+			return fail(http.StatusConflict, "the workspace is being changed, try again")
+		}
+		slog.Error("machine pause workspace lock failed", "error", err, "runtime_id", uuidToString(rt.ID))
+		return fail(http.StatusInternalServerError, "failed to update machine pause")
+	}
+	return tx, qtx, true
+}
+
 // ResumeDaemon lets the machine claim again. Idempotent.
 func (h *Handler) ResumeDaemon(w http.ResponseWriter, r *http.Request) {
 	rt, member, ok := h.requireDaemonPauseAccess(w, r)
 	if !ok {
 		return
 	}
-	if _, err := h.Queries.DeleteDaemonPause(r.Context(), db.DeleteDaemonPauseParams{MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String}); err != nil {
+	tx, qtx, ok := h.beginMachinePauseTx(w, r, rt)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+	_, err := qtx.DeleteDaemonPause(r.Context(), db.DeleteDaemonPauseParams{MachineOwnerID: machineOwnerID(rt), DaemonID: rt.DaemonID.String})
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
+	if err != nil {
 		slog.Error("resume daemon failed", "error", err, "runtime_id", uuidToString(rt.ID))
 		writeError(w, http.StatusInternalServerError, "failed to resume machine")
 		return

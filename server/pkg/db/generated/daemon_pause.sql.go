@@ -191,6 +191,19 @@ func (q *Queries) ListMachinesOfWorkspace(ctx context.Context, workspaceID pgtyp
 	return items, nil
 }
 
+const lockWorkspaceForMachinePause = `-- name: LockWorkspaceForMachinePause :one
+SELECT id FROM workspace WHERE id = $1 FOR SHARE
+`
+
+// Pause and Resume share this row with the workspace delete's FOR UPDATE, so a
+// pause is either in the delete's machine read or refused once the row is gone.
+func (q *Queries) LockWorkspaceForMachinePause(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForMachinePause, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const upsertDaemonPause = `-- name: UpsertDaemonPause :one
 INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by)
 VALUES ($1, $2, $3, $4, $5)

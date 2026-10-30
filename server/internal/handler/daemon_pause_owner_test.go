@@ -354,8 +354,7 @@ func TestDaemonPause_WorkspaceDeleteRefreshesTheSurvivingWorkspaces(t *testing.T
 }
 
 // beforeSweepStarter runs hook once, inside the workspace delete transaction,
-// after the delete has taken its snapshots and before it sweeps any rows: the
-// seam where a concurrent Pause can land (Pause does not take the delete lock).
+// after the delete has taken its lock and snapshots and before it sweeps any rows.
 type beforeSweepStarter struct {
 	inner txStarter
 	hook  func()
@@ -383,47 +382,124 @@ func (tx *beforeSweepTx) Exec(ctx context.Context, sql string, args ...any) (pgc
 	return tx.Tx.Exec(ctx, sql, args...)
 }
 
-// A Pause that completes after the delete took its snapshots is still swept
-// with the workspace, so the refresh cannot depend on what the snapshots saw.
-func TestDaemonPause_PauseLandingMidDeleteStillRefreshesTheSurvivingWorkspaces(t *testing.T) {
+// pauseLockStarter reports, once, that a transaction is about to ask for the
+// workspace lock Pause shares with the delete, so a test can release the delete
+// only after the Pause is past its checks and queued behind it.
+type pauseLockStarter struct {
+	inner   txStarter
+	reached chan struct{}
+}
+
+func (s pauseLockStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pauseLockTx{Tx: tx, reached: s.reached}, nil
+}
+
+type pauseLockTx struct {
+	pgx.Tx
+	reached chan struct{}
+}
+
+func (tx *pauseLockTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if tx.reached != nil && strings.Contains(sql, "FROM workspace WHERE id = $1 FOR SHARE") {
+		close(tx.reached)
+		tx.reached = nil
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+// A Pause through B that starts while B's delete holds the workspace row must
+// not leave A and C paused behind a sweep nobody refreshes: it waits for the
+// delete, finds the workspace gone, writes nothing and publishes nothing.
+func TestDaemonPause_PauseThroughADeletingWorkspaceIsRefusedAndLeavesNoPause(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	const daemonID = "pause-delete-race-machine"
+	const daemonID = "pause-delete-lock-machine"
 	cleanupPausesFor(t, daemonID)
-	_, _ = seedPausableRuntime(t, ctx, daemonID, "Pause race A")
-	wsB, runtimeB, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-race-b")
-	wsC, _, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-race-c")
-	_, intruderWS, _, _ := seedForeignOwnerRuntime(t, daemonID, "pause-race-intruder")
+	_, _ = seedPausableRuntime(t, ctx, daemonID, "Pause lock A")
+	wsC, _, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-lock-c")
+	wsB := dbfx.Workspace(t, "Pause pause-lock-b", "pause-lock-b")
+	dbfx.Member(t, wsB, testUserID, "owner")
+	runtimeB := dbfx.Runtime(t, "Pause lock B runtime", testutil.Cols{"workspace_id": wsB, "daemon_id": daemonID})
 	rec := recordRuntimeRefreshes(t)
 
-	handler := *testHandler
-	handler.TxStarter = beforeSweepStarter{inner: testHandler.TxStarter, hook: func() {
-		if w := putPause(t, testUserID, runtimeB, map[string]any{"reason": "maintenance"}); w.Code != http.StatusOK {
-			t.Errorf("pause mid-delete = %d: %s", w.Code, w.Body.String())
+	pauseHandler := *testHandler
+	reached := make(chan struct{})
+	pauseHandler.TxStarter = pauseLockStarter{inner: testHandler.TxStarter, reached: reached}
+	pauseDone := make(chan *httptest.ResponseRecorder, 1)
+
+	deleteHandler := *testHandler
+	deleteHandler.TxStarter = beforeSweepStarter{inner: testHandler.TxStarter, hook: func() {
+		// The delete holds B's workspace row and has not swept anything yet.
+		go func() {
+			w := httptest.NewRecorder()
+			pauseHandler.PauseDaemon(w, withURLParam(newRequestAs(testUserID, http.MethodPut, "/api/runtimes/"+runtimeB+"/pause", map[string]any{"reason": "maintenance"}), "runtimeId", runtimeB))
+			pauseDone <- w
+		}()
+		select {
+		case <-reached:
+		case got := <-pauseDone: // finished without ever queueing behind the delete
+			pauseDone <- got
 		}
 	}}
 	w := httptest.NewRecorder()
-	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsB, nil), "id", wsB)
-	handler.DeleteWorkspace(w, req)
+	deleteHandler.DeleteWorkspace(w, withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsB, nil), "id", wsB))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("DeleteWorkspace = %d: %s", w.Code, w.Body.String())
 	}
 
+	if got := <-pauseDone; got.Code != http.StatusNotFound {
+		t.Fatalf("pause through the deleted workspace = %d, want 404: %s", got.Code, got.Body.String())
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM daemon_pause WHERE daemon_id = $1`, daemonID); n != 0 {
+		t.Fatalf("pause rows after the refused pause: %d, want 0", n)
+	}
+	for name, ws := range map[string]string{"first": testWorkspaceID, "third": wsC} {
+		// The delete's own refresh may still say "resume" (a harmless refetch);
+		// what must never happen is a "pause" they hear and nothing lifts.
+		for _, action := range rec.actions(ws) {
+			if action == "pause" {
+				t.Fatalf("surviving %s workspace heard a pause from the refused request", name)
+			}
+		}
+	}
+}
+
+// A Pause that finished before the delete asked for its lock is in the machine
+// read, so the surviving workspaces hear the pause and then the resume.
+func TestDaemonPause_PauseBeforeTheDeleteLockIsSeenAndRefreshed(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const daemonID = "pause-before-lock-machine"
+	cleanupPausesFor(t, daemonID)
+	_, _ = seedPausableRuntime(t, ctx, daemonID, "Pause before-lock A")
+	wsC, _, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-before-lock-c")
+	wsB := dbfx.Workspace(t, "Pause pause-before-lock-b", "pause-before-lock-b")
+	dbfx.Member(t, wsB, testUserID, "owner")
+	runtimeB := dbfx.Runtime(t, "Pause before-lock B runtime", testutil.Cols{"workspace_id": wsB, "daemon_id": daemonID})
+	rec := recordRuntimeRefreshes(t)
+
+	if w := putPause(t, testUserID, runtimeB, map[string]any{"reason": "maintenance"}); w.Code != http.StatusOK {
+		t.Fatalf("pause = %d: %s", w.Code, w.Body.String())
+	}
+	w := httptest.NewRecorder()
+	testHandler.DeleteWorkspace(w, withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsB, nil), "id", wsB))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d: %s", w.Code, w.Body.String())
+	}
 	for name, ws := range map[string]string{"first": testWorkspaceID, "third": wsC} {
 		if got := rec.actions(ws); len(got) != 2 || got[0] != "pause" || got[1] != "resume" {
 			t.Fatalf("surviving %s workspace refreshes = %v, want [pause resume]", name, got)
 		}
 	}
-	// B heard its own pause while it still existed, and nothing after the delete.
-	if got := rec.actions(wsB); len(got) != 1 || got[0] != "pause" {
-		t.Fatalf("the deleted workspace refreshes = %v, want [pause]", got)
-	}
-	if got := rec.actions(intruderWS); len(got) != 0 {
-		t.Fatalf("another owner's workspace was refreshed: %v", got)
-	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM daemon_pause WHERE daemon_id = $1`, daemonID); n != 0 {
-		t.Fatalf("pause rows left after the workspace delete: %d", n)
+		t.Fatalf("pause rows left after the delete: %d", n)
 	}
 }

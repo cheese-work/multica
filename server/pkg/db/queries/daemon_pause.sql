@@ -49,3 +49,8 @@ FROM agent_runtime rt
 WHERE rt.workspace_id = $1 AND rt.daemon_id IS NOT NULL
 UNION
 SELECT dp.machine_owner_id, dp.daemon_id FROM daemon_pause dp WHERE dp.workspace_id = $1;
+
+-- name: LockWorkspaceForMachinePause :one
+-- Pause and Resume share this row with the workspace delete's FOR UPDATE, so a
+-- pause is either in the delete's machine read or refused once the row is gone.
+SELECT id FROM workspace WHERE id = $1 FOR SHARE;
