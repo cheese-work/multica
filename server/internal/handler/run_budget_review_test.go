@@ -187,7 +187,7 @@ func TestRunBudgetPreparedMentionAdmitsFirstReview(t *testing.T) {
 	c := newEdgeCase(t, 2226093, mergeEdgeSteps)
 	issue := spendBudget(t, c, 2, "in_review")
 	linkPR(t, c.issueID, 2226093, "review-prepared")
-	params, err := testHandler.TaskService.PrepareTaskForMention(ctx, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
+	params, err := testHandler.TaskService.PrepareTaskForMention(ctx, testHandler.Queries, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
 	if err != nil {
 		t.Fatal(err)
 	}
