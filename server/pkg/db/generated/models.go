@@ -214,6 +214,7 @@ type AgentTaskQueue struct {
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
+	TaintIds                  []string           `json:"taint_ids"`
 }
 
 type AgentToLabel struct {
@@ -692,6 +693,7 @@ type Comment struct {
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
+	TaintIds            []string           `json:"taint_ids"`
 }
 
 type CommentReaction struct {

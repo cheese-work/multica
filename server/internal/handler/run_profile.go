@@ -54,16 +54,16 @@ func resolveRunProfile(grants []db.RunCapabilityGrant, taintIDs []string, issueT
 	return p
 }
 
-// runProfileForTask resolves the profile of a task on one issue. Taint marks
-// and the fence state have no storage yet (B5a, B4a), so they enter as empty;
-// a read error resolves restricted.
-func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID pgtype.UUID) runProfile {
+// runProfileForTask resolves the profile of a task on one issue. The task's
+// taint IDs come from its row; issue-level taint and the fence state have no
+// storage yet (B5b, B4a), so they enter as empty. A read error resolves restricted.
+func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID pgtype.UUID, taintIDs []string) runProfile {
 	grants, err := h.Queries.ListActiveRunCapabilityGrants(ctx, db.ListActiveRunCapabilityGrantsParams{WorkspaceID: workspaceID, IssueID: issueID})
 	if err != nil {
 		slog.Warn("run profile grant read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
 		grants = nil
 	}
-	return resolveRunProfile(grants, nil, false, false)
+	return resolveRunProfile(grants, taintIDs, false, false)
 }
 
 // initialProtectedPaths is the policy a workspace has until an admin writes one

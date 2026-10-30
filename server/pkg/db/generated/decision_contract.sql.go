@@ -114,7 +114,7 @@ func (q *Queries) GetDecisionAnswerReference(ctx context.Context, arg GetDecisio
 }
 
 const lockDecisionSourceComment = `-- name: LockDecisionSourceComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only FROM comment
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids FROM comment
 WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
 FOR SHARE NOWAIT
 `
@@ -153,6 +153,7 @@ func (q *Queries) LockDecisionSourceComment(ctx context.Context, arg LockDecisio
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
 		&i.GithubNotifyOnly,
+		&i.TaintIds,
 	)
 	return i, err
 }
