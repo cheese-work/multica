@@ -107,7 +107,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Setup Node
         uses: actions/setup-node@v7

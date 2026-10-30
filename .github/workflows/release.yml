@@ -44,7 +44,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Validate tag name
         id: release_meta
@@ -200,7 +200,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Compute backend image labels
         id: meta
@@ -370,7 +370,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Compute web image labels
         id: meta

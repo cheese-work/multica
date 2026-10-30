@@ -108,7 +108,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Download optional fork entries
         id: fork-entries
@@ -282,7 +282,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Download both immutable image results
         uses: actions/download-artifact@v8

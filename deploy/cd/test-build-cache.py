@@ -28,8 +28,8 @@ class BuildCacheTests(unittest.TestCase):
                         fake_df.write_text('#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/nvme1n1 100 1 99 1%% /_work\n"\n')
                         fake_df.chmod(0o755)
                         output = Path(directory, 'environment')
-                        result = subprocess.run(['bash', '-euc', step['run']], cwd=ROOT, capture_output=True, text=True,
-                                                env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                        result = subprocess.run(['bash', '-euc', step['run']], cwd=directory, capture_output=True, text=True,
+                                                env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'PATH': directory + os.pathsep + os.environ['PATH'],
                                                      'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output), 'GOFLAGS': '-count=1'})
                         self.assertEqual(result.returncode, 0, result.stderr)
                         environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
@@ -49,7 +49,7 @@ class BuildCacheTests(unittest.TestCase):
                         checkout = True
                     if step.get('name') == 'Use disposable build caches' and checkout and path.name != 'pr-close-target-check.yml':
                         shared += 1
-                        self.assertEqual(step['run'].strip(), 'bash .github/scripts/build-cache-env.sh')
+                        self.assertEqual(step['run'].strip(), 'bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"')
         self.assertGreater(shared, 0)
 
     def test_maintenance_has_no_build_cache_setup(self):
@@ -98,8 +98,8 @@ class BuildCacheTests(unittest.TestCase):
                         if step.get('name') == 'Use disposable build caches')
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory, 'environment')
-                subprocess.run(['bash', '-euc', step['run']], cwd=ROOT, check=True,
-                               env={**os.environ, 'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
+                subprocess.run(['bash', '-euc', step['run']], cwd=directory, check=True,
+                               env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
                 environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
             for variable in ['GOCACHE', 'GOMODCACHE', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR']:
                 with self.subTest(workflow=filename, variable=variable):
@@ -163,7 +163,7 @@ class BuildCacheTests(unittest.TestCase):
                     (workspace / 'web-fork-changelog.json').write_bytes(entries)
                 source_sha = '1' * 40
                 result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step['run']], cwd=workspace,
-                                        env={**os.environ, 'GITHUB_SHA': source_sha, 'GITHUB_REPOSITORY': 'cheese-work/multica',
+                                        env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'GITHUB_SHA': source_sha, 'GITHUB_REPOSITORY': 'cheese-work/multica',
                                              'BACKEND_IMAGE': 'ghcr.io/cheese-work/multica-backend',
                                              'WEB_IMAGE': 'ghcr.io/cheese-work/multica-web'},
                                         capture_output=True, text=True)
