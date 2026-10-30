@@ -160,6 +160,7 @@ const FALLBACK_THEME_COLORS: MermaidThemeColors = {
   mutedForeground: "rgb(107, 114, 128)",
   success: "rgb(22, 163, 74)",
   warning: "rgb(217, 119, 6)",
+  chart: Array(5).fill("rgb(59, 130, 246)"),
 };
 
 function isDarkScheme(declared: string): boolean {
@@ -181,6 +182,7 @@ function getMermaidThemeColors(host: HTMLElement | null): MermaidThemeColors {
     mutedForeground: resolveCssColor(host, "--muted-foreground", fallback.mutedForeground),
     success: resolveCssColor(host, "--success", fallback.success),
     warning: resolveCssColor(host, "--warning", fallback.warning),
+    chart: [1, 2, 3, 4, 5].map((n) => resolveCssColor(host, `--chart-${n}`, fallback.chart[n - 1]!)),
   };
 }
 
