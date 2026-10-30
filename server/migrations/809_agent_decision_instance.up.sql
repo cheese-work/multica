@@ -74,6 +74,7 @@ WHEN (NEW.author_type IN ('agent', 'member')) EXECUTE FUNCTION record_governed_v
 
 CREATE FUNCTION preserve_agent_decision_scope() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF TG_OP = 'DELETE' AND current_setting('multica.workspace_teardown', true) = 'on' THEN RETURN OLD; END IF;
     IF TG_OP = 'DELETE' AND NOT EXISTS (SELECT 1 FROM issue WHERE id = OLD.issue_id AND workspace_id = OLD.workspace_id) THEN
         RETURN OLD; -- explicit orphan cleanup only
     END IF;
@@ -85,6 +86,7 @@ FOR EACH ROW EXECUTE FUNCTION preserve_agent_decision_scope();
 
 CREATE FUNCTION preserve_agent_decision_request() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF TG_OP = 'DELETE' AND current_setting('multica.workspace_teardown', true) = 'on' THEN RETURN OLD; END IF;
     IF EXISTS (SELECT 1 FROM decision_agent_scope WHERE instance_id = OLD.id) THEN
         RAISE EXCEPTION 'agent decision request is immutable' USING ERRCODE = '23514';
     END IF;
@@ -97,6 +99,7 @@ FOR EACH ROW EXECUTE FUNCTION preserve_agent_decision_request();
 
 CREATE FUNCTION preserve_agent_decision_record() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF TG_OP = 'DELETE' AND current_setting('multica.workspace_teardown', true) = 'on' THEN RETURN OLD; END IF;
     IF OLD.vote_lines LIKE '%decision:%' THEN
         IF TG_OP = 'DELETE' AND NOT EXISTS (SELECT 1 FROM issue WHERE id = OLD.issue_id AND workspace_id = OLD.workspace_id) THEN RETURN OLD; END IF;
         -- The insert transaction may annotate an immutable snapshot exactly once.

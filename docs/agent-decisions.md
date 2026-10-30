@@ -18,6 +18,11 @@ The proposer must be the work author. The full comment and its SHA256 are frozen
 along with the issue, casting task, provider/model/lab, evidence, signer identities,
 D3 delegation and allowlist version. Neither edits nor deletions change the record.
 
+Workspace teardown may delete these records under the transaction-local
+`multica.workspace_teardown` flag. The decision worker removes orphan scopes and
+requests after their issue disappears. Updates remain forbidden even in teardown
+mode.
+
 ````text
 Proposal: decision:<instance-uuid> <candidate-sha256>
 
