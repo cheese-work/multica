@@ -223,11 +223,12 @@ stop reason follow. `link` opens the instance's frozen proposal comment, not onl
 the issue. `veto_line` already ends in `member:<reader's user uuid>`, so the
 reader is the undo owner when they paste it.
 
-Not done in this code: the daily brief is a Multica autopilot (6f676b71, "Cheese
-evening brief", agent x99-claude-opus), and its prompt does not call the command
-yet. Until a workspace instruction change adds the step "run
-`multica decision brief --format markdown` and add its output as a section after
-`## Cần anh`", the section is not printed by itself.
+The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
+prompt change, "run `multica decision brief --format markdown` and paste its
+output after `## Cần anh`", is a standing-instruction change and goes through
+the instruction-change process: cheese-work/multica-dotfiles#406 holds the
+candidate, the digests and a digest-guarded apply script. Until Cheese
+authorizes that apply, the brief does not print the section by itself.
 
 Notice: a settlement writes one `decision_agent_notice` row in its own
 transaction. The decision worker delivers it after commit, in one transaction,
