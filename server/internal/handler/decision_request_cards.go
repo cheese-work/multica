@@ -33,12 +33,20 @@ type DecisionRequestCard struct {
 
 // DecisionRequestAnswer is the receipt half of a request card.
 type DecisionRequestAnswer struct {
-	// State is recorded, delivered or disclaimed.
+	// State is recorded, delivered, picked_up or disclaimed.
 	State string `json:"state"`
+	// Run is the run that resumed the issue after the record, set with picked_up.
+	Run *DecisionRequestRun `json:"run,omitempty"`
 	// ChosenOptionIndex is 0-based into the card's options, absent for a free-text answer.
 	ChosenOptionIndex *int   `json:"chosen_option_index,omitempty"`
 	OptionLabel       string `json:"option_label,omitempty"`
 	AnsweredAt        string `json:"answered_at"`
+}
+
+// DecisionRequestRun names the run that picked an answer up.
+type DecisionRequestRun struct {
+	ID        string `json:"id"`
+	AgentName string `json:"agent_name"`
 }
 
 func decisionRequestAnswerFromRow(row db.ListDecisionRequestCardsRow) *DecisionRequestAnswer {
@@ -52,6 +60,10 @@ func decisionRequestAnswerFromRow(row db.ListDecisionRequestCardsRow) *DecisionR
 		answer.State = "disclaimed"
 	case decisionAnswerDelivered(row.AnswerWokenAt, row.AnswerWakeOutcome, row.AnswerDisclaimedAt):
 		answer.State = "delivered"
+	}
+	if row.PickupTaskID.Valid && answer.State != "disclaimed" {
+		answer.State = "picked_up"
+		answer.Run = &DecisionRequestRun{ID: uuidToString(row.PickupTaskID), AgentName: row.PickupAgentName}
 	}
 	return answer
 }

@@ -294,6 +294,15 @@
     "pin": "チャットをピン留め",
     "unpin": "チャットのピン留めを解除"
   },
+  "scheduled": {
+    "chip": "予約済み {{count}}",
+    "title": "{{name}} が予約",
+    "title_unknown_agent": "予約済みのフォローアップ",
+    "cancel": "キャンセル",
+    "cancel_label": "{{time}} に予約されたフォローアップをキャンセル",
+    "cancel_failed": "フォローアップをキャンセルできませんでした",
+    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行"
+  },
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
     "source_label": "{{name}} のメッセージ",
@@ -360,7 +369,10 @@
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "disclaimed": "撤回済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み" },
+    "picked_up_by": "{{agent}} が着手",
+    "not_picked_up": "回答の記録後に実行が開始されていません。",
+    "open_issue": "{{issue}} を開く",
     "answer_options": "選択肢",
     "answer_text": "または回答を入力",
     "answer_send": "送信",

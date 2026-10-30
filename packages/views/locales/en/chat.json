@@ -299,6 +299,15 @@
     "pin": "Pin chat",
     "unpin": "Unpin chat"
   },
+  "scheduled": {
+    "chip": "Scheduled {{count}}",
+    "title": "Scheduled by {{name}}",
+    "title_unknown_agent": "Scheduled follow-ups",
+    "cancel": "Cancel",
+    "cancel_label": "Cancel scheduled follow-up at {{time}}",
+    "cancel_failed": "Couldn't cancel the follow-up",
+    "load_failed": "Couldn't load scheduled follow-ups. Retry"
+  },
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",
@@ -368,7 +377,10 @@
   "decision": {
     "request_title": "Decision request",
     "request_label": "Decision request: {{state}}",
-    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "disclaimed": "Disclaimed" },
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "picked_up": "Picked up", "not_picked_up": "Not picked up", "disclaimed": "Disclaimed" },
+    "picked_up_by": "Picked up by {{agent}}",
+    "not_picked_up": "No run started after the answer was recorded.",
+    "open_issue": "Open {{issue}}",
     "answer_options": "Options",
     "answer_text": "Or write an answer",
     "answer_send": "Send",

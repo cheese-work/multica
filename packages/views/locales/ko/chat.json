@@ -294,6 +294,15 @@
     "pin": "채팅 고정",
     "unpin": "채팅 고정 해제"
   },
+  "scheduled": {
+    "chip": "예약됨 {{count}}",
+    "title": "{{name}}이(가) 예약함",
+    "title_unknown_agent": "예약된 후속 작업",
+    "cancel": "취소",
+    "cancel_label": "{{time}}에 예약된 후속 작업 취소",
+    "cancel_failed": "후속 작업을 취소하지 못했습니다",
+    "load_failed": "예약된 후속 작업을 불러오지 못했습니다. 다시 시도"
+  },
   "annotations": {
     "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
@@ -360,7 +369,10 @@
   "decision": {
     "request_title": "결정 요청",
     "request_label": "결정 요청: {{state}}",
-    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨", "recorded": "기록됨", "delivered": "전달됨", "disclaimed": "철회됨" },
+    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨", "recorded": "기록됨", "delivered": "전달됨", "picked_up": "작업 시작됨", "not_picked_up": "작업 미시작", "disclaimed": "철회됨" },
+    "picked_up_by": "{{agent}}님이 작업 시작",
+    "not_picked_up": "답변 기록 후 실행이 시작되지 않았습니다.",
+    "open_issue": "{{issue}} 열기",
     "answer_options": "선택지",
     "answer_text": "또는 답변 입력",
     "answer_send": "보내기",

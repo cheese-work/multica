@@ -18,7 +18,7 @@ import (
 )
 
 func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, input CreateCommentRequest) {
-	if input.ParentID == nil || strings.TrimSpace(input.Content) == "" || len(input.Content) > maxCommentContentBytes || input.DecisionIntent || input.DecisionRecord || input.Type != "comment" || len(input.MessageIDs) > 0 || input.ContextMessageID != "" || input.EscalationClass != "" || len(input.AttachmentIDs) > 0 || len(input.SuppressAgentIDs) > 0 || len(input.SteerTaskIDs) > 0 {
+	if input.ParentID == nil || strings.TrimSpace(input.Content) == "" || len(input.Content) > maxCommentContentBytes || input.DecisionIntent || input.DecisionRecord || input.Type != "comment" || len(input.MessageIDs) > 0 || input.ContextMessageID != "" || len(input.Excerpts) > 0 || input.EscalationClass != "" || len(input.AttachmentIDs) > 0 || len(input.SuppressAgentIDs) > 0 || len(input.SteerTaskIDs) > 0 {
 		writeError(writer, http.StatusBadRequest, "decision veto requires a stamped parent and a reason, without other decision, attachment, steering or suppression inputs")
 		return
 	}

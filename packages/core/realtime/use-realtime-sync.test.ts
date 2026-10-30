@@ -6,7 +6,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
-import { chatKeys } from "../chat/queries";
+import { chatKeys, chatWakeupsOptions } from "../chat/queries";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
 import { notificationPreferenceKeys } from "../notification-preferences/queries";
@@ -28,6 +28,7 @@ import {
   applyChatQuickActionsToCache,
   applyChatSessionUpdatedToCache,
   applyDecisionAnswerUpdated,
+  applyIssueRunStarted,
   applyWorkspaceUpdatedToCache,
   handleInboxNew,
   invalidateChatMessageQueries,
@@ -72,6 +73,26 @@ function donePayload(overrides: Partial<ChatDonePayload> = {}): ChatDonePayload 
 }
 
 describe("applyChatDoneToCache", () => {
+  it("refetches a mounted wakeups list when the agent finishes a turn that scheduled one", async () => {
+    const listChatSessionWakeups = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listChatSessionWakeups } as unknown as ApiClient);
+    const qc = createQueryClient();
+    const observer = new QueryObserver(qc, chatWakeupsOptions(sessionId));
+    const unsubscribe = observer.subscribe(() => undefined);
+    try {
+      await observer.refetch();
+      const scheduled = { id: "w-new", agent_id: "a1", fire_at: "2026-10-30T00:00:00Z", instruction: "Follow up", status: "pending" };
+      listChatSessionWakeups.mockResolvedValue([scheduled]);
+
+      applyChatDoneToCache(qc, donePayload());
+
+      await vi.waitFor(() => expect(qc.getQueryData(chatKeys.wakeups(sessionId))).toEqual([scheduled]));
+    } finally {
+      unsubscribe();
+      setApiInstance(undefined as unknown as ApiClient);
+    }
+  });
+
   it("writes the assistant message before clearing pending task", () => {
     const qc = createQueryClient();
     qc.setQueryData<ChatMessage[]>(messagesKey, [userMessage()]);
@@ -1232,6 +1253,22 @@ describe("chat quick-actions supplement flow", () => {
 });
 
 describe("applyChatMessageToCache", () => {
+  it("invalidates the DM's pending wakeups so a fired one leaves the chip", () => {
+    const qc = createQueryClient();
+    qc.setQueryData(chatKeys.wakeups(sessionId), [{ id: "w1" }]);
+
+    applyChatMessageToCache(qc, {
+      chat_session_id: sessionId,
+      message_id: "msg-sys",
+      role: "user",
+      content: "[Scheduled wakeup]",
+      task_id: taskId,
+      created_at: "2026-05-13T05:00:05Z",
+    });
+
+    expect(qc.getQueryState(chatKeys.wakeups(sessionId))?.isInvalidated).toBe(true);
+  });
+
   function messagePayload(
     overrides: Partial<ChatMessageEventPayload> = {},
   ): ChatMessageEventPayload {
@@ -1346,6 +1383,17 @@ describe("applyDecisionAnswerUpdated", () => {
     applyDecisionAnswerUpdated(qc, { answer_id: "answer", issue_id: "issue-1", state: "disclaimed" });
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toContainEqual(issueKeys.timeline("issue-1"));
+    expect(keys).toContainEqual(chatKeys.messagesAll());
+    expect(keys).toContainEqual(chatKeys.messagesPageAll());
+  });
+});
+
+describe("applyIssueRunStarted", () => {
+  it("refreshes every DM message list so a decision card sees the run that just started", () => {
+    const qc = createQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyIssueRunStarted(qc);
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toContainEqual(chatKeys.messagesAll());
     expect(keys).toContainEqual(chatKeys.messagesPageAll());
   });
