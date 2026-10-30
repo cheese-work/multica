@@ -1333,11 +1333,53 @@ func (d *Daemon) pruneRepoWorktreesContext(ctx context.Context, workspacesRoot s
 
 func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *gcStats) {
 	d.withRepoMaintenance(ctx, barePath, func(maintenanceCtx context.Context) {
+		d.releaseOrphanKeepRefsLocked(maintenanceCtx, barePath)
 		d.pruneWorktreeLocked(maintenanceCtx, barePath)
 		if maintenanceCtx.Err() == nil {
 			d.evictRepoCacheLocked(maintenanceCtx, barePath, stats)
 		}
 	})
+}
+
+// liveKeepRefTaskKeys returns the task keys some checkout under the workspaces
+// root still records as a borrower of a repo cache (repocache keep-refs). A
+// checkout sits at <workspace>/<task env>/workdir/<repo>, or one directory
+// deeper when the repo is nested.
+func liveKeepRefTaskKeys(workspacesRoot string) map[string]struct{} {
+	live := map[string]struct{}{}
+	for _, pattern := range []string{
+		"*/*/workdir/*/.git/multica-keep-refs",
+		"*/*/workdir/*/*/.git/multica-keep-refs",
+	} {
+		records, err := filepath.Glob(filepath.Join(workspacesRoot, pattern))
+		if err != nil {
+			continue
+		}
+		for _, record := range records {
+			checkout := filepath.Dir(filepath.Dir(record))
+			for _, key := range repocache.CheckoutKeepRefTaskKeys(checkout) {
+				live[key] = struct{}{}
+			}
+		}
+	}
+	return live
+}
+
+// releaseOrphanKeepRefsLocked drops the keep-refs whose borrowing checkout is
+// gone, so the cache's next prune can reclaim the objects they pinned. The
+// caller holds the repo lock, which also serializes it against a checkout that
+// is pinning its base. Pins stay on any failure.
+func (d *Daemon) releaseOrphanKeepRefsLocked(ctx context.Context, barePath string) {
+	released, remaining, err := repocache.PruneKeepRefs(ctx, barePath, liveKeepRefTaskKeys(d.cfg.WorkspacesRoot))
+	if err != nil {
+		if ctx.Err() == nil {
+			d.logger.Warn("gc: keep-ref release failed", "repo", barePath, "error", err)
+		}
+		return
+	}
+	if released > 0 {
+		d.logger.Info("gc: keep-refs released", "repo", filepath.Base(barePath), "released", released, "remaining", remaining)
+	}
 }
 
 // pruneWorktree runs only the maintenance half — prune stale worktrees and
@@ -1405,7 +1447,7 @@ func (d *Daemon) withRepoLock(barePath string, fn func()) {
 //     empty one cannot widen what we delete; it can only drop a layer of
 //     protection that conditions 3 and 4 still enforce.
 //
-//  3. No worktrees are left, checked after `git worktree prune` has dropped the
+//  3. No worktrees or shared-objects borrowers are left, checked after `git worktree prune` has dropped the
 //     entries whose task dirs the GC already removed. A live worktree's .git
 //     points into this directory, so removing it would break that checkout.
 //
@@ -1435,6 +1477,19 @@ func (d *Daemon) evictRepoCacheLocked(ctx context.Context, barePath string, stat
 		return
 	}
 	if worktrees > 0 {
+		return
+	}
+
+	// A shared-objects checkout borrows this cache's objects without being a
+	// linked worktree; removing the cache would break it.
+	borrowers, err := repocache.KeepRefTaskKeys(ctx, barePath)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.logger.Warn("gc: keep-ref count failed", "repo", barePath, "error", err)
+		}
+		return
+	}
+	if len(borrowers) > 0 {
 		return
 	}
 
