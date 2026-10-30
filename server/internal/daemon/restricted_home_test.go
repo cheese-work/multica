@@ -220,3 +220,79 @@ func TestApplyRestrictedHomeAuditLogsNamesNotValues(t *testing.T) {
 		t.Errorf("audit log must name GH_TOKEN and never its value: %s", logs.String())
 	}
 }
+
+func TestRestrictedHomeReuseDoesNotFollowParentSymlink(t *testing.T) {
+	user, root, outside := hostHome(t), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "home", ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Provider: "claude"})
+	if err == nil {
+		t.Error("expected an error for a destination parent that escapes the per-run HOME")
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, ".credentials.json")); statErr == nil {
+		t.Error("credential was written outside the per-run HOME")
+	}
+}
+
+func TestRestrictedHomeReuseTemplateDoesNotTruncateSymlinkTarget(t *testing.T) {
+	user, root, tmpl, outside := hostHome(t), t.TempDir(), t.TempDir(), t.TempDir()
+	putFile(t, filepath.Join(tmpl, "settings.json"), "{}", 0o644)
+	victim := filepath.Join(outside, "victim")
+	putFile(t, victim, "keep-me", 0o600)
+	if err := os.MkdirAll(filepath.Join(root, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(root, "home", "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Template: tmpl, Provider: "claude"})
+	if b, _ := os.ReadFile(victim); string(b) != "keep-me" {
+		t.Errorf("symlink target was overwritten: %q", b)
+	}
+}
+
+func TestRestrictedHomeCodexUsesCustomSharedHome(t *testing.T) {
+	user, root, custom := hostHome(t), t.TempDir(), t.TempDir()
+	putFile(t, filepath.Join(custom, "auth.json"), "custom-secret", 0o600)
+	t.Setenv("CODEX_HOME", custom)
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(custom, "auth.json"), filepath.Join(codexHome, "auth.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Provider: "codex", CodexHome: codexHome}); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(codexHome, "auth.json")
+	fi, err := os.Lstat(dst)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("auth.json is not a regular copy: %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "custom-secret" {
+		t.Errorf("copied %q, want the custom CODEX_HOME credential", b)
+	}
+}
+
+func TestRestrictedHomeCodexMissingSourceLeavesNoCredential(t *testing.T) {
+	user, root, custom := hostHome(t), t.TempDir(), t.TempDir() // custom has no auth.json
+	t.Setenv("CODEX_HOME", custom)
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(user, ".codex", "auth.json"), filepath.Join(codexHome, "auth.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Provider: "codex", CodexHome: codexHome}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(codexHome, "auth.json")); err == nil {
+		t.Error("shared auth symlink or stale copy survived a missing source")
+	}
+}

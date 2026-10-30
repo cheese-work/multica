@@ -35,49 +35,83 @@ func prepareRestrictedHome(l homeLayout) (string, error) {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", fmt.Errorf("restricted home: %w", err)
 	}
+	homeRoot, err := os.OpenRoot(home)
+	if err != nil {
+		return "", fmt.Errorf("restricted home: %w", err)
+	}
+	defer homeRoot.Close()
 	if l.Template != "" {
-		if err := copyTemplate(l.Template, home); err != nil {
+		if err := copyTemplate(l.Template, homeRoot); err != nil {
 			return "", fmt.Errorf("restricted home template: %w", err)
 		}
 	}
-	var src, dst string
+	var src, rel string
+	dstRoot := homeRoot
 	switch l.Provider {
 	case "claude":
 		src = filepath.Join(l.UserHome, ".claude", ".credentials.json")
-		dst = filepath.Join(home, ".claude", ".credentials.json")
+		rel = filepath.Join(".claude", ".credentials.json")
 	case "codex":
 		if l.CodexHome == "" {
 			return "", errors.New("restricted home: codex run without CODEX_HOME")
 		}
-		src = filepath.Join(l.UserHome, ".codex", "auth.json")
-		dst = filepath.Join(l.CodexHome, "auth.json")
+		src = filepath.Join(sharedCodexHome(l.UserHome), "auth.json")
+		rel = "auth.json"
+		if dstRoot, err = os.OpenRoot(l.CodexHome); err != nil {
+			return "", fmt.Errorf("restricted home credential: %w", err)
+		}
+		defer dstRoot.Close()
 	default:
 		return home, nil
 	}
-	if err := copyCredential(src, dst); err != nil {
+	if err := copyCredential(src, dstRoot, rel); err != nil {
 		return "", fmt.Errorf("restricted home credential: %w", err)
 	}
 	return home, nil
 }
 
-// copyCredential replaces dst (possibly a symlink to the shared file) with a
-// 0400 regular copy of src. Only the destination name is ever reported.
-func copyCredential(src, dst string) error {
+// sharedCodexHome mirrors execenv's shared-home resolution ($CODEX_HOME, else
+// ~/.codex) so the copy comes from the account the preparer symlinked.
+func sharedCodexHome(userHome string) string {
+	if v := os.Getenv("CODEX_HOME"); v != "" {
+		if abs, err := filepath.Abs(v); err == nil {
+			return abs
+		}
+	}
+	return filepath.Join(userHome, ".codex")
+}
+
+// replaceFile removes rel (a stale file or a symlink; never followed) and
+// creates it again exclusively, all inside root so no destination component
+// can lead outside it.
+func replaceFile(root *os.Root, rel string, mode os.FileMode) (*os.File, error) {
+	if err := root.Remove(rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+}
+
+// copyCredential replaces rel in root (possibly a symlink to the shared file)
+// with a 0400 regular copy of src. A missing source leaves no credential at
+// rel. Only the destination name is ever reported.
+func copyCredential(src string, root *os.Root, rel string) error {
 	in, err := os.Open(src)
 	if errors.Is(err, fs.ErrNotExist) {
+		if err := root.Remove(rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := root.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
 	}
-	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+	out, err := replaceFile(root, rel, 0o400)
 	if err != nil {
 		return err
 	}
@@ -90,23 +124,26 @@ func copyCredential(src, dst string) error {
 
 // copyTemplate copies regular files and directories only: a symlink in the
 // template could point at a credential, so it is skipped, never followed.
-func copyTemplate(src, dst string) error {
+// Writes go through root, so a symlink left in a reused HOME cannot redirect them.
+func copyTemplate(src string, root *os.Root) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
 		switch {
 		case d.IsDir():
-			return os.MkdirAll(target, 0o700)
+			if rel == "." {
+				return nil
+			}
+			return root.MkdirAll(rel, 0o700)
 		case d.Type().IsRegular():
 			in, err := os.Open(path)
 			if err != nil {
 				return err
 			}
 			defer in.Close()
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			out, err := replaceFile(root, rel, 0o600)
 			if err != nil {
 				return err
 			}
