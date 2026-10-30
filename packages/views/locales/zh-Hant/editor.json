@@ -164,6 +164,7 @@
       "unarchive": "取消封存目前私訊，不會向智慧代理傳送任何內容"
     },
     "client_command": "Multica",
+    "runs_the_agent": "會執行智慧代理",
     "focus_hint": "[focus]",
     "title_hint": "[標題]",
     "message_hint": "[消息]"

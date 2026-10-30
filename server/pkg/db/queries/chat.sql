@@ -518,12 +518,18 @@ RETURNING *;
 -- the agent crashed before establishing one) cannot wipe out a previously
 -- recorded resume pointer. This makes the chat memory robust against
 -- intermittent agent failures.
+--
+-- task_epoch is the compaction epoch the reporting task was dispatched under
+-- (NULL reads as 0). A task that started before an in-place /compact still
+-- holds a pre-boundary session; the write is skipped so it cannot put that
+-- session back on the chat.
 UPDATE chat_session
 SET session_id = COALESCE(sqlc.narg('session_id'), session_id),
     work_dir = COALESCE(sqlc.narg('work_dir'), work_dir),
     runtime_id = COALESCE(sqlc.narg('runtime_id'), runtime_id),
     updated_at = now()
-WHERE id = sqlc.arg('id');
+WHERE id = sqlc.arg('id')
+  AND compaction_epoch = COALESCE(sqlc.narg('task_epoch')::bigint, 0);
 
 -- name: ClearChatSessionSessionIfMatches :exec
 -- Drops the chat session's resume pointer, but only while it still points at
@@ -573,6 +579,9 @@ WHERE id = sqlc.arg('id')
 -- session owns the pointer, and a straggler must not drag the conversation
 -- backwards onto the turn the user interrupted.
 --
+-- A task dispatched before an in-place /compact (older compaction epoch) never
+-- moves the pointer: its session predates the boundary.
+--
 -- The newer-task lookup depends on
 -- idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
 -- nor chat_terminal_resume can replace it: this guard spans both in-flight and
@@ -589,6 +598,7 @@ WHERE t.id = sqlc.arg('task_id')
   AND t.status = 'cancelled'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
   AND NOT EXISTS (
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
