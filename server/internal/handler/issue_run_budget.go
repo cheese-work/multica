@@ -85,10 +85,15 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	// The ledger window opens before the cap changes, or its lazy credit would
-	// already include the raise.
-	if err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID); err != nil {
+	// The window opens, and the cap is read, under the issue lock: a raise
+	// that waited behind another one starts from the cap that one left.
+	current, err = service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
+		return
+	}
+	if req.Runs <= current {
+		writeError(w, http.StatusConflict, fmt.Sprintf("the cap changed while raising it; it is now %d", current))
 		return
 	}
 	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{

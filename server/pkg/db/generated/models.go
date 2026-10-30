@@ -1614,6 +1614,7 @@ type IssueRunBudgetEntry struct {
 	Kind        string             `json:"kind"`
 	EventKey    string             `json:"event_key"`
 	RunsDelta   int32              `json:"runs_delta"`
+	CapDelta    int32              `json:"cap_delta"`
 	TokensDelta int64              `json:"tokens_delta"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }

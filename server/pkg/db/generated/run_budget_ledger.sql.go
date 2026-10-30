@@ -33,8 +33,8 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 }
 
 const insertIssueRunBudgetEntry = `-- name: InsertIssueRunBudgetEntry :exec
-INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (issue_id, kind, event_key) DO NOTHING
 `
 
@@ -46,6 +46,7 @@ type InsertIssueRunBudgetEntryParams struct {
 	Kind        string      `json:"kind"`
 	EventKey    string      `json:"event_key"`
 	RunsDelta   int32       `json:"runs_delta"`
+	CapDelta    int32       `json:"cap_delta"`
 }
 
 // A replayed event (same issue, kind, key) is a no-op.
@@ -58,6 +59,7 @@ func (q *Queries) InsertIssueRunBudgetEntry(ctx context.Context, arg InsertIssue
 		arg.Kind,
 		arg.EventKey,
 		arg.RunsDelta,
+		arg.CapDelta,
 	)
 	return err
 }
@@ -73,6 +75,24 @@ func (q *Queries) LockIssueRunBudget(ctx context.Context, issueID pgtype.UUID) (
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const sumIssueRunBudgetCap = `-- name: SumIssueRunBudgetCap :one
+SELECT COALESCE(SUM(cap_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND window_id = $2::text
+`
+
+type SumIssueRunBudgetCapParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// The cap the window's ledger holds: credited by the window, raises and cap edits.
+func (q *Queries) SumIssueRunBudgetCap(ctx context.Context, arg SumIssueRunBudgetCapParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetCap, arg.IssueID, arg.WindowID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const sumIssueRunBudgetWindow = `-- name: SumIssueRunBudgetWindow :one

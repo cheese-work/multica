@@ -3,13 +3,16 @@ package handler
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -226,5 +229,117 @@ func TestRunBudgetLedgerWakeupsAtZero(t *testing.T) {
 				t.Fatalf("wakeup runs at zero = %d, want %d", n, tc.wantRuns)
 			}
 		})
+	}
+}
+
+// An issue enqueue holds one connection from the budget lock to the debit, so
+// everything it reads must go through that connection, not the pool.
+func TestRunBudgetIssueEnqueueFinishesOnOneConnectionPool(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 2)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns, cfg.MinConns = 1, 0
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	tasks := service.NewTaskService(db.New(small), small, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := tasks.EnqueueTaskForIssue(ctx, issue); err != nil {
+		t.Fatalf("issue enqueue on a one-connection pool = %v, want it admitted", err)
+	}
+}
+
+// waitForLockWaiters blocks until n backends of this test database wait on a lock.
+func waitForLockWaiters(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("fewer than %d backends waited on a lock", n)
+}
+
+// Two raises read the same cap, then run one after the other: the ledger must
+// gain the final cap's difference, not the sum of two stale differences.
+func TestRunBudgetOverlappingRaisesCreditTheFinalCapOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	c, _ := budgetedAt(t, 40, 2)
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT id FROM issue WHERE id=$1 FOR NO KEY UPDATE`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	codes := make(chan int, 2)
+	for i, runs := range []int{50, 60} {
+		go func() { codes <- raiseBudget(t, c.issueID, map[string]any{"runs": runs}, nil).Code }()
+		waitForLockWaiters(t, i+1)
+	}
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if code := <-codes; code != http.StatusOK {
+			t.Fatalf("raise = %d, want 200 (50 then 60 are both above the cap in force)", code)
+		}
+	}
+	if got, want := ledgerBalance(t, c.issueID), int64(60-2); got != want {
+		t.Fatalf("balance after raises to 50 and 60 = %d, want %d (cap 60, 2 runs used)", got, want)
+	}
+}
+
+// The workflow's cap governs the open window in both directions, without the
+// ledger being touched by hand.
+func TestRunBudgetWorkflowCapEditsGovernTheOpenWindow(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	c, _ := budgetedAt(t, 40, 2)
+	if _, err := service.OpenRunBudgetWindow(ctx, testHandler.Queries, parseUUID(c.issueID)); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCap := func(max int) {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, `UPDATE issue_workflow SET max_runs_per_issue=$2 WHERE id=$1`, c.workflowID, max); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setCap(1)
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("run after the cap fell to 1 with 2 used = %v, want ErrRunBudgetExhausted", err)
+	}
+	settle()
+	setCap(10)
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
+		t.Fatalf("run after the cap rose to 10 with 2 used refused: %v", err)
+	}
+	if got := ledgerBalance(t, c.issueID); got != 7 {
+		t.Fatalf("balance = %d, want 7 (cap 10, 3 runs)", got)
 	}
 }

@@ -145,8 +145,6 @@ func TestRunBudgetEarlierCoordinationDoesNotSpendReviewAdmission(t *testing.T) {
 	fixture := newEdgeCase(t, 2226193, mergeEdgeSteps)
 	issue := spendBudget(t, fixture, 2, "in_progress")
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=3 WHERE id=$1`, fixture.workflowID)
-	// A cap edit reaches the issue when its next window opens, not an open one.
-	dbfx.Exec(t, `DELETE FROM issue_run_budget_entry WHERE issue_id=$1`, fixture.issueID)
 	linkPR(t, fixture.issueID, 2226193, "race-coordination-before-review")
 	reviewerID := parseUUID(createHandlerTestAgent(t, "race-future-reviewer", nil))
 	if _, err := testHandler.TaskService.EnqueueTaskForMention(ctx, issue, reviewerID, pgtype.UUID{}, service.OriginDerived); err != nil {

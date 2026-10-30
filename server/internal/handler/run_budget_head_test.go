@@ -64,7 +64,7 @@ func TestRunBudgetHeadAdvanceBetweenGuardAndInsertKeepsOneHead(t *testing.T) {
 	ready := make(chan struct{}, 1)
 	release := make(chan struct{})
 	barrier := &admissionReadBarrier{DBTX: testPool, ready: ready, release: release}
-	tasks := service.NewTaskService(db.New(barrier), admissionTxStarter{barrier}, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
+	tasks := service.NewTaskService(db.New(testPool), admissionTxStarter{barrier}, testHandler.TaskService.Hub, testHandler.TaskService.Bus)
 	result := make(chan error, 1)
 	go func() {
 		_, err := tasks.EnqueueTaskForIssue(ctx, issue)

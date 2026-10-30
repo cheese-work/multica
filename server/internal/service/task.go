@@ -1487,13 +1487,17 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	// One transaction from the budget lock to the debit: concurrent admissions
-	// at a balance of 1 must admit exactly one.
+	// The prepare reads go through the pool, so they run before the
+	// transaction: it holds one connection, from the budget lock to the debit,
+	// and concurrent admissions at a balance of 1 admit exactly one.
+	params, attr, err := s.prepareIssueTaskWithQueriesAndOverlay(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, nil)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	var task db.AgentTaskQueue
-	var attr attribution.Result
 	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
-	err := s.runInTx(ctx, func(qtx *db.Queries) (err error) {
-		task, attr, err = s.enqueueIssueTaskWithQueries(txCtx, qtx, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin)
+	err = s.runInTx(ctx, func(qtx *db.Queries) (err error) {
+		task, err = s.insertPreparedIssueTask(txCtx, qtx, issue, params, fireAt, origin)
 		return err
 	})
 	if err == nil {
@@ -1511,31 +1515,41 @@ func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *
 }
 
 func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.AgentTaskQueue, attribution.Result, error) {
-	if !issue.AssigneeID.Valid {
-		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
-		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
-	}
-	trigger := "assignment or status handoff"
-	if triggerCommentID.Valid {
-		trigger = "comment"
-	}
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid})
+	params, attr, err := s.prepareIssueTaskWithQueriesAndOverlay(ctx, queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, preparedOverlay)
 	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
+	}
+	task, err := s.insertPreparedIssueTask(ctx, queries, issue, params, fireAt, origin)
+	if err != nil {
+		return db.AgentTaskQueue{}, attribution.Result{}, err
+	}
+	return task, attr, nil
+}
+
+// prepareIssueTaskWithQueriesAndOverlay resolves everything an issue task needs except
+// the budget admission. The early guard only keeps a refusal ahead of the other
+// errors: insertPreparedIssueTask takes the lock and decides.
+func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, preparedOverlay *preparedRuntimeMCPOverlay) (db.CreateAgentTaskParams, attribution.Result, error) {
+	if !issue.AssigneeID.Valid {
+		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
+	}
+	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, fireAt)); err != nil {
+		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 
 	agent, err := queries.GetAgent(ctx, issue.AssigneeID)
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
-		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("load agent: %w", err)
+		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("load agent: %w", err)
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
-		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
-		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("agent has no runtime")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent has no runtime")
 	}
 
 	// The issue assignee reacting to an agent-authored comment is a
@@ -1549,12 +1563,12 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
-		return db.AgentTaskQueue{}, attribution.Result{}, err
+		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	createParams := db.CreateAgentTaskParams{
+	return db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              issue.AssigneeID,
 		RuntimeID:            agent.RuntimeID,
@@ -1576,10 +1590,29 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		TriggerEvidenceKind:  attrEvidenceKind,
 		TriggerEvidenceRefID: attrEvidenceRef,
 		// Stamp the reviewed head so dedup can distinguish this run's target
-		// from a later request against a new HEAD (TEN-356).
+		// from a later request against a new HEAD (TEN-356). The admission in
+		// insertPreparedIssueTask replaces it with the head it admits.
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 		// A pinned replacement keeps the identity of its PR, not just its head.
 		PullRequestID: reviewPRPin(ctx),
+	}, attr, nil
+}
+
+func issueRunTarget(issue db.Issue, triggerCommentID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
+	trigger := "assignment or status handoff"
+	if triggerCommentID.Valid {
+		trigger = "comment"
+	}
+	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid}
+}
+
+// insertPreparedIssueTask takes the issue's budget lock through queries, admits
+// the run and inserts it: the lock lasts until the caller's transaction ends.
+// queries must not need a second connection.
+func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Queries, issue db.Issue, createParams db.CreateAgentTaskParams, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, fireAt))
+	if err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
@@ -1628,20 +1661,21 @@ func (s *TaskService) enqueueIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		// path in enqueueMentionTaskWithCommentPlan.
 		if isDuplicatePendingTaskErr(err) {
 			slog.Debug("task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
-			return db.AgentTaskQueue{}, attribution.Result{}, ErrDuplicatePendingTask
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
-		return db.AgentTaskQueue{}, attribution.Result{}, fmt.Errorf("create task: %w", err)
+		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
 
 	slog.Info("task enqueued",
 		"task_id", util.UUIDToString(task.ID),
 		"issue_id", util.UUIDToString(issue.ID),
 		"agent_id", util.UUIDToString(issue.AssigneeID),
-		"force_fresh_session", forceFreshSession,
+		"force_fresh_session", createParams.ForceFreshSession.Bool,
 	)
-	return task, attr, nil
+	return task, nil
 }
+
 
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {

@@ -22,6 +22,8 @@ import (
 //	                     the day of deploy starts with 2.
 //	run:<task id>        -1 for each run inserted.
 //	raise:<activity id>  the runs a person added with a raise.
+//	cap:<uuid>           the difference when the workflow's cap was edited, so
+//	                     the open window follows the cap in force.
 //
 // The window id is the window's start time (RunBudgetStart), the same value
 // the L1a notices use as their claim key. A new window starts from its own
@@ -30,16 +32,17 @@ const (
 	runBudgetKindWindow = "window"
 	runBudgetKindRun    = "run"
 	runBudgetKindRaise  = "raise"
+	runBudgetKindCap    = "cap"
 )
 
 func runBudgetWindowID(since time.Time) string {
 	return since.UTC().Format(time.RFC3339Nano)
 }
 
-func recordRunBudgetEntry(ctx context.Context, q *db.Queries, issue db.Issue, windowID, kind, key string, delta int) error {
+func recordRunBudgetEntry(ctx context.Context, q *db.Queries, issue db.Issue, windowID, kind, key string, delta, capDelta int) error {
 	return q.InsertIssueRunBudgetEntry(ctx, db.InsertIssueRunBudgetEntryParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-		WindowID: windowID, Kind: kind, EventKey: key, RunsDelta: int32(delta),
+		WindowID: windowID, Kind: kind, EventKey: key, RunsDelta: int32(delta), CapDelta: int32(capDelta),
 	})
 }
 
@@ -69,8 +72,19 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 	if err != nil {
 		return issue, nil, 0, fmt.Errorf("run budget: count runs: %w", err)
 	}
-	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindWindow, runBudgetKindWindow+":"+windowID, usage.Max-int(counted)); err != nil {
+	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindWindow, runBudgetKindWindow+":"+windowID, usage.Max-int(counted), usage.Max); err != nil {
 		return issue, nil, 0, fmt.Errorf("run budget: open window: %w", err)
+	}
+	// A cap edited since the ledger last saw it moves the balance by the same
+	// amount; the lock makes the read-and-write one step.
+	held, err := q.SumIssueRunBudgetCap(ctx, db.SumIssueRunBudgetCapParams{IssueID: issue.ID, WindowID: windowID})
+	if err != nil {
+		return issue, nil, 0, fmt.Errorf("run budget: held cap: %w", err)
+	}
+	if diff := usage.Max - int(held); diff != 0 {
+		if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindCap, runBudgetKindCap+":"+util.UUIDToString(dbid.NewV7()), diff, diff); err != nil {
+			return issue, nil, 0, fmt.Errorf("run budget: follow cap: %w", err)
+		}
 	}
 	balance, err := q.SumIssueRunBudgetWindow(ctx, db.SumIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
 	if err != nil {
@@ -80,24 +94,30 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 }
 
 // OpenRunBudgetWindow is openRunBudget for a caller outside the service that
-// changes the cap: it must open the window before it changes the cap, or the
-// lazy credit would count the raise twice.
-func OpenRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
-	_, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+// changes the cap: it locks the issue, brings the window to the cap in force
+// and returns that cap (0: the issue has no budget). The caller raises from
+// this cap, not from one it read before the lock.
+func OpenRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (int, error) {
+	_, usage, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return 0, nil
 	}
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return usage.Max, nil
 }
 
-// RecordRunBudgetRaise credits the runs a person added to the issue's cap.
+// RecordRunBudgetRaise credits the runs a person added to the issue's cap. The
+// caller opened the window first (OpenRunBudgetWindow), so the raise is the
+// only difference between the ledger's cap and the issue's.
 // eventKey is the audit row's id, so a replay is a no-op.
 func RecordRunBudgetRaise(ctx context.Context, q *db.Queries, issue db.Issue, eventKey pgtype.UUID, delta int) error {
-	_, usage, _, err := openRunBudget(ctx, q, issue.ID, pgtype.UUID{})
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
 	if err != nil || usage == nil {
 		return err
 	}
-	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, runBudgetKindRaise+":"+util.UUIDToString(eventKey), delta)
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, runBudgetKindRaise+":"+util.UUIDToString(eventKey), delta, delta)
 }
 
 // debitRun charges the run just inserted to the open window.
@@ -109,5 +129,5 @@ func debitRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) e
 	if err != nil {
 		return err
 	}
-	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1)
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1, 0)
 }
