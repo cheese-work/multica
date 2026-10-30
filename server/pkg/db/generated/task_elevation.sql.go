@@ -120,6 +120,36 @@ func (q *Queries) FenceLapsedTaskElevations(ctx context.Context) ([]pgtype.UUID,
 	return items, nil
 }
 
+const fenceTaintedTaskElevations = `-- name: FenceTaintedTaskElevations :many
+UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
+FROM agent_task_queue t
+WHERE t.id = te.task_id AND te.state = 'elevated' AND cardinality(t.taint_ids) > 0
+  AND ($1::uuid IS NULL OR te.task_id = $1::uuid)
+RETURNING te.task_id
+`
+
+// A task whose taint grew after its elevation was recorded stops being
+// elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
+func (q *Queries) FenceTaintedTaskElevations(ctx context.Context, taskID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, fenceTaintedTaskElevations, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var task_id pgtype.UUID
+		if err := rows.Scan(&task_id); err != nil {
+			return nil, err
+		}
+		items = append(items, task_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const finishDrainedTaskFences = `-- name: FinishDrainedTaskFences :many
 UPDATE task_elevation te SET state = 'restricted_final', updated_at = clock_timestamp()
 WHERE te.state = 'fencing'
@@ -216,6 +246,19 @@ func (q *Queries) LockTaskElevation(ctx context.Context, taskID pgtype.UUID) (Ta
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const lockTaskTaintIDs = `-- name: LockTaskTaintIDs :one
+SELECT taint_ids FROM agent_task_queue WHERE id = $1 FOR SHARE
+`
+
+// Share lock: a taint writer updates the task row, so it waits for an
+// authorization in flight, and an authorization that starts after it sees it.
+func (q *Queries) LockTaskTaintIDs(ctx context.Context, id pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, lockTaskTaintIDs, id)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
 }
 
 const markLapsedElevatedOpsUnknown = `-- name: MarkLapsedElevatedOpsUnknown :many

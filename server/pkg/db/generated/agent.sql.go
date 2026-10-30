@@ -2923,7 +2923,7 @@ SELECT
         AND COALESCE($12::text, '') <> ''
         AND pr.head_sha = $12::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
-    -- The assigning task's taint (migration 816): the trigger unions in every
+    -- The assigning task's taint (migration 831): the trigger unions in every
     -- other source, but only the request knows which task is acting.
     COALESCE($24::text[], '{}'),
     COALESCE($25::uuid, gen_random_uuid())

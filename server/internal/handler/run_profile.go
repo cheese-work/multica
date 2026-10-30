@@ -73,6 +73,14 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 		slog.Warn("task elevation read failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
 		return restricted
 	}
+	if known && len(taintIDs) > 0 && te.State == elevationElevated {
+		// Taint grew after the elevation was recorded (a resumed session, a
+		// late assignment): the stored row must not stay usable. Authorization
+		// refuses tainted tasks on its own; a failed fence here is swept later.
+		if _, err := h.Queries.FenceTaintedTaskElevations(ctx, taskID); err != nil {
+			slog.Warn("tainted task elevation fence failed", "task_id", uuidToString(taskID), "error", err)
+		}
+	}
 	rp := resolveRunProfile(grants, taintIDs, false, known && te.State != elevationElevated)
 	if rp.Profile != runProfileElevated {
 		return rp
