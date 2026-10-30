@@ -120,6 +120,11 @@ func (s *IssueWakeupService) bridgePREvent(ctx context.Context, tx pgx.Tx, q *db
 	if active, err := systemWakeupIssueActive(ctx, q, issue, true); err != nil || !active {
 		return nil, nil, err
 	}
+	// The event was selected before this issue lock: a legacy rule wake that
+	// committed in between already carries it (CHE-2540).
+	if covered, err := q.PREventCoveredByLegacyWake(ctx, e.ID); err != nil || covered {
+		return nil, nil, err
+	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
 		return nil, nil, err

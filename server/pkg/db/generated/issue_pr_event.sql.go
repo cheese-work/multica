@@ -428,6 +428,36 @@ func (q *Queries) PREventCarriesLegacyWake(ctx context.Context, arg PREventCarri
 	return column_1, err
 }
 
+const pREventCoveredByLegacyWake = `-- name: PREventCoveredByLegacyWake :one
+SELECT EXISTS (
+    SELECT 1
+    FROM issue_pr_event e
+    JOIN github_pull_request pr ON pr.id = e.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = e.issue_id
+    JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id
+    LEFT JOIN agent_task_queue lt ON lt.id = lr.task_id
+    WHERE e.id = $1
+      AND lr.payload->>'head_sha' = e.head_sha
+      AND lr.payload->>'repo_owner' = pr.repo_owner
+      AND lr.payload->>'repo_name' = pr.repo_name
+      AND lr.payload->>'pr_number' = pr.pr_number::text
+      AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
+           OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
+               AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
+      AND (lr.processed_at IS NULL OR lt.status IN ('queued', 'dispatched') OR lt.started_at IS NOT NULL)
+)::boolean AS covered
+`
+
+// Whether a legacy PR rule wake already carries this stored event. The sweep
+// reads this under the issue lock, so a legacy receipt that committed after the
+// event was selected still keeps the event from a second wake (CHE-2540).
+func (q *Queries) PREventCoveredByLegacyWake(ctx context.Context, eventID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, pREventCoveredByLegacyWake, eventID)
+	var covered bool
+	err := row.Scan(&covered)
+	return covered, err
+}
+
 const pREventKindEnabled = `-- name: PREventKindEnabled :one
 SELECT COALESCE(
     (w.settings -> 'pr_event_capture' ->> $2::text) IS DISTINCT FROM 'false',
