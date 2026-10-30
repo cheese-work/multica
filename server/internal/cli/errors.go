@@ -459,8 +459,12 @@ var kindMessages = map[ErrorKind][2]string{
 }
 
 // serverMessagePrefixes lists the kinds whose response body carries a
-// hand-written, actionable message worth showing instead of the generic
+// server-authored, actionable message worth showing instead of the generic
 // template, with the {English, Chinese} lead-in used to introduce it.
+//
+// 403 reasons are already visible to the same caller in debug output. The
+// server must keep authorization errors safe to disclose; surfacing them here
+// lets callers distinguish a task-scope refusal from a workspace denial.
 //
 // 409 belongs here because the generic conflict copy is not merely vague, it
 // points the wrong way: it reads as a transient race ("re-fetch the latest
@@ -544,7 +548,7 @@ func userMessage(err error, lang Language) string {
 		if kind == KindAuthRequired && httpErr.TaskScoped {
 			return messageFor(KindTaskTokenRejected, lang)
 		}
-		// Validation and conflict errors carry a useful server-provided
+		// Validation, conflict and forbidden errors carry a useful server-provided
 		// message; surface it instead of the generic line. A body we cannot
 		// recognize still falls back to the template, so this never dumps a
 		// raw response at the user.
@@ -611,9 +615,9 @@ func extractServerMessage(body string) string {
 //
 // It exists so a command can recognize ONE specific refusal and print guidance
 // for it without matching on the English sentence, which changes with copy edits
-// and disappears under translation. Statuses whose generic copy is deliberately
-// vague — 403 above all, where naming the cause could confirm a resource exists —
-// keep that copy for every code a command has not explicitly opted into.
+// and disappears under translation. FormatError surfaces server-authored 403
+// messages; a command can still use a stable code to supply more specific
+// guidance without depending on that prose.
 func ServerErrorCode(err error) string {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) {
