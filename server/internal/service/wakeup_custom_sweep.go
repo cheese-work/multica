@@ -71,6 +71,10 @@ func (s *IssueWakeupService) sweepDefinitions(ctx context.Context, workspaceIDs 
 	return errors.Join(errs...)
 }
 
+// errSweepClaimStale says the definition a pass claimed was revised or deleted
+// before an issue's activation could run under it.
+var errSweepClaimStale = errors.New("wakeup definition revised since the sweep claimed it")
+
 type sweepOutcome int
 
 const (
@@ -147,7 +151,8 @@ func (s *IssueWakeupService) sweepBatch(ctx context.Context, d db.IssueWakeupDef
 	// writer holds is tried again by the next pass, never skipped.
 	last = d.SweepCursor
 	for _, id := range ids {
-		if err := s.activateIssueRule(ctx, d.WorkspaceID, id, d.RuleKey, d.SweepBaseline); scopedLockBusy(err) {
+		if err := s.activateIssueRule(ctx, d, id); scopedLockBusy(err) || errors.Is(err, errSweepClaimStale) {
+			// A revised definition is pending again under its own claim and baseline.
 			return false, last, nil
 		} else if err != nil {
 			return false, pgtype.UUID{}, err
@@ -173,7 +178,14 @@ func sweepAfter(cursor pgtype.UUID) pgtype.UUID {
 // the rule as it resolves now, in one short transaction under the issue's row
 // lock. An issue the rule does not run for (closed, parked in backlog, another
 // project) is left alone, and an instance it has is retired.
-func (s *IssueWakeupService) activateIssueRule(ctx context.Context, ws, issueID pgtype.UUID, key string, baseline bool) error {
+//
+// The claimed definition d fixes the revision the sweep, and its baseline flag,
+// belong to. The rule resolves from the definitions stored now, so an edit that
+// landed after the claim would be activated here without the baseline the edit
+// needs. The transaction therefore reads the swept definition under the issue's
+// lock and gives way when its revision is no longer the claimed one.
+func (s *IssueWakeupService) activateIssueRule(ctx context.Context, d db.IssueWakeupDefinition, issueID pgtype.UUID) error {
+	ws, key := d.WorkspaceID, d.RuleKey
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -190,7 +202,10 @@ func (s *IssueWakeupService) activateIssueRule(ctx context.Context, ws, issueID 
 	if b.outcome != "" || b.rules[key] == nil {
 		return nil
 	}
-	if _, _, err := b.activate(ctx, b.rules[key], baseline); err != nil {
+	if swept := b.rules[key].chain.at(WakeupScope(d.ScopeKind)); swept == nil || swept.Revision != d.Revision {
+		return errSweepClaimStale
+	}
+	if _, _, err := b.activate(ctx, b.rules[key], d.SweepBaseline); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

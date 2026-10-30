@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Activation sweep, activation signal and capacity retry of custom condition
@@ -149,6 +151,40 @@ func TestCustomSweepRevisionChangeDiscardsTheOldCursor(t *testing.T) {
 	k.sweepAll(t)
 	if n := len(k.customInstances(t, view.RuleKey)); n != 120 {
 		t.Fatalf("%d instances, want 120", n)
+	}
+}
+
+// A pass that claimed revision 1 (no baseline: a new root acts on facts already
+// true) and is then overtaken by an edit must not activate under the edit: the
+// edited predicate has to baseline its facts, and the stale pass cannot do that.
+func TestCustomSweepDoesNotActivateAnEditedPredicateWithAStaleClaim(t *testing.T) {
+	k := newCustomEnv(t)
+	ctx := context.Background()
+	view := k.mustSave(t, WakeupScopeProject, "", k.conditionRule(`{"type":"issue_field","field":"status","value":"in_review"}`))
+	claimed, err := k.f.q.ClaimWakeupDefinitionSweep(ctx, db.ClaimWakeupDefinitionSweepParams{
+		Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, WorkspaceIds: []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}, LeaseUntil: pgtype.Timestamptz{Time: time.Now().Add(time.Minute), Valid: true},
+	})
+	if err != nil || claimed.RuleKey != view.RuleKey || claimed.Revision != 1 || claimed.SweepBaseline {
+		t.Fatalf("claim = %+v, %v, want revision 1 without baseline", claimed, err)
+	}
+	// The edit lands after the claim and before activation; the issue already satisfies it.
+	k.mustSave(t, WakeupScopeProject, view.RuleKey, k.conditionRule(statusIsTodo))
+	if _, _, err := k.s.sweepBatch(ctx, claimed); err != nil {
+		t.Fatalf("stale batch: %v", err)
+	}
+	if got := k.customInstances(t, view.RuleKey); len(got) != 0 {
+		t.Fatalf("a stale claim activated %+v, want nothing: the revision-2 sweep owns this issue", got)
+	}
+	// The claim's lease lapses, as it does for a pass that was overtaken.
+	k.f.Exec(t, `UPDATE issue_wakeup_definition SET sweep_retry_at=NULL WHERE workspace_id=$1 AND rule_key=$2`, k.f.WorkspaceID, view.RuleKey)
+	k.sweepAll(t)
+	got := k.customInstances(t, view.RuleKey)
+	if len(got) != 1 || got[0].State != "status:todo" {
+		t.Fatalf("instances = %+v, want one baselined on the facts already true", got)
+	}
+	k.tick(t)
+	if n := k.taskCount(t); n != 0 {
+		t.Fatalf("%d tasks queued for facts that were already true, want none", n)
 	}
 }
 

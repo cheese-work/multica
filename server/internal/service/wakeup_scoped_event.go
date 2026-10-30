@@ -394,6 +394,19 @@ func (c scopedRuleChain) all() []*db.IssueWakeupDefinition {
 	return rows
 }
 
+// at is the chain's definition in the given scope; nil when it has none.
+func (c scopedRuleChain) at(scope WakeupScope) *db.IssueWakeupDefinition {
+	switch scope {
+	case WakeupScopeWorkspace:
+		return c.workspace
+	case WakeupScopeProject:
+		return c.project
+	case WakeupScopeIssue:
+		return c.issue
+	}
+	return nil
+}
+
 // selects reports whether any definition of the chain records the event type in
 // its selector, which is how capture decided the event was worth keeping.
 func (c scopedRuleChain) selects(eventType string) bool {
