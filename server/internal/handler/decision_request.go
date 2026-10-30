@@ -37,8 +37,8 @@ type decisionRequestInput struct {
 	Slug   string          `json:"-"`
 	// LegacyFingerprint is the pre-D1d key, still looked up so a retry that
 	// crosses the deploy replays its stored row.
-	LegacyFingerprint string `json:"-"`
-	Action            *decisionActionDraft
+	LegacyFingerprint string               `json:"-"`
+	Action            *decisionActionDraft `json:",omitempty"`
 	// Options are the card's answer buttons; the flat Ask carries their labels.
 	Options []decisiontx.AskOption
 	// AskJSON is the decoded structured Ask, stored whole for the card to render.
