@@ -49,12 +49,19 @@ var ictZone = time.FixedZone("ICT", 7*60*60)
 // The section stands on its own: the daily brief pastes it after Needs you,
 // never inside it. Times are ICT.
 func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any) error {
+	records, _ := feed["decisions"].([]any)
+	failures, _ := feed["notice_failures"].([]any)
+	stopped, isStopped := feed["stopped"].(map[string]any)
+	// With the pilot off the brief stays as it was: no section. Records made
+	// earlier stay vetoable, so they and a stop or failed notice still print.
+	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && !isStopped {
+		return nil
+	}
 	var b strings.Builder
 	b.WriteString("## Agents decided — veto?\n\n")
-	if stopped, ok := feed["stopped"].(map[string]any); ok {
+	if isStopped {
 		fmt.Fprintf(&b, "Agent decisions are stopped: %v (%s).\n\n", stopped["reason"], ictTime(stopped["at"]))
 	}
-	records, _ := feed["decisions"].([]any)
 	if len(records) == 0 {
 		b.WriteString("No agent decisions to review.\n")
 	}
@@ -67,7 +74,7 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any) error {
 		}
 		fmt.Fprintf(&b, "  Review by %s (a target, not an expiry).\n  To veto, comment on the issue:\n  `%v` followed by your reason.\n", ictTime(rec["review_target_at"]), rec["veto_line"])
 	}
-	if failures, _ := feed["notice_failures"].([]any); len(failures) > 0 {
+	if len(failures) > 0 {
 		b.WriteString("\nNotice delivery failed:\n")
 		for _, raw := range failures {
 			f, _ := raw.(map[string]any)

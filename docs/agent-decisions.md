@@ -222,6 +222,9 @@ veto line. A revoked record shows its reason. Notice delivery failures and the
 stop reason follow. `link` opens the instance's frozen proposal comment, not only
 the issue. `veto_line` already ends in `member:<reader's user uuid>`, so the
 reader is the undo owner when they paste it.
+With the setting off and nothing to show (no record, no stop, no failed notice)
+the command prints nothing, so the brief omits the section. Records made
+earlier stay vetoable, so with any of them the section still prints.
 
 The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
 prompt change, "run `multica decision brief --format markdown` and paste its

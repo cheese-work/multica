@@ -84,3 +84,30 @@ func TestAgentDecisionBriefMarkdownSection(t *testing.T) {
 		t.Errorf("section must stand outside Needs you:\n%s", out)
 	}
 }
+
+func TestAgentDecisionBriefMarkdownIsEmptyWhenOffAndNothingToShow(t *testing.T) {
+	record := map[string]any{"identifier": "CHE-9", "gate": "screenshot_evidence", "state": "effective", "review_target_at": "2026-10-31T10:00:00Z",
+		"link": "https://app/x/issues/CHE-9#comment-c1", "veto_line": "Veto: decision:i1 sha member:u1"}
+	cases := []struct {
+		name      string
+		feed      map[string]any
+		wantEmpty bool
+	}{
+		{"off and empty", map[string]any{"enabled": false, "decisions": []any{}, "stopped": nil}, true},
+		{"off with a record still vetoable", map[string]any{"enabled": false, "decisions": []any{record}}, false},
+		{"off after a stop", map[string]any{"enabled": false, "decisions": []any{}, "stopped": map[string]any{"reason": "excluded gate", "at": "2026-10-31T01:00:00Z"}}, false},
+		{"off with a failed notice", map[string]any{"enabled": false, "decisions": []any{}, "notice_failures": []any{map[string]any{"instance_id": "i1", "attempts": 1, "last_error": "boom"}}}, false},
+		{"on and empty", map[string]any{"enabled": true, "decisions": []any{}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			if err := writeAgentDecisionMarkdown(&buf, tc.feed); err != nil {
+				t.Fatal(err)
+			}
+			if got := buf.Len() == 0; got != tc.wantEmpty {
+				t.Fatalf("empty=%v want %v; output:\n%s", got, tc.wantEmpty, buf.String())
+			}
+		})
+	}
+}
