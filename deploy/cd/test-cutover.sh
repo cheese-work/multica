@@ -102,6 +102,25 @@ if [ "\$1" = "inspect" ]; then
   case "\$*" in
     *'{{.Image}}'*) cat "\$control_dir/image-\${ref#cid-}" 2>/dev/null; exit 0 ;;
     *'--format {{.Id}}'*) printf 'imgid-%s\n' "\$ref"; exit 0 ;;
+    # Drift receipt (CHE-2396): env key names of a container (cid-<service>)
+    # or of its image, and the image's repo digests. env-missing-/env-extra-
+    # <service> and running-digest-<backend|web> model drifted containers.
+    *'{{json .Config.Env}}'*)
+      env='"PATH=/usr/bin"'
+      case "\$ref" in
+        cid-frontend-*) [ -f "\$control_dir/env-missing-\${ref#cid-}" ] || env="\$env,\"MULTICA_APP_URL=\"" ;;
+      esac
+      case "\$ref" in
+        cid-*) [ -f "\$control_dir/env-extra-\${ref#cid-}" ] && env="\$env,\"STALE_FLAG=1\"" ;;
+      esac
+      printf '[%s]\n' "\$env"; exit 0 ;;
+    *'{{json .RepoDigests}}'*)
+      case "\$ref" in
+        *multica-backend*) role=backend; repo=ghcr.io/cheese-work/multica-backend; digest="\${MOCK_BACKEND_DIGEST:-}" ;;
+        *) role=web; repo=ghcr.io/cheese-work/multica-web; digest="\${MOCK_WEB_DIGEST:-}" ;;
+      esac
+      [ -f "\$control_dir/running-digest-\$role" ] && digest="\$(cat "\$control_dir/running-digest-\$role")"
+      printf '["%s@%s"]\n' "\$repo" "\$digest"; exit 0 ;;
   esac
   repo="\${ref%%:*}"
   digest=""
@@ -230,7 +249,7 @@ if [ "\$1" = "compose" ]; then
       bb="\$(render_port BACKEND_BLUE_PORT 18081)"; bg="\$(render_port BACKEND_GREEN_PORT 18082)"
       fb="\$(render_port FRONTEND_BLUE_PORT 13001)"; fg="\$(render_port FRONTEND_GREEN_PORT 13002)"
       printf 'backend-blue=%s\nbackend-green=%s\nfrontend-blue=%s\nfrontend-green=%s\n' "\$bb" "\$bg" "\$fb" "\$fg" >"\$control_dir/rendered-ports"
-      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
+      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
       exit 0
       ;;
     port)
@@ -368,7 +387,7 @@ case "$port" in
     # Route by the generation file Nginx actually includes, not by the
     # active.json metadata.
     [ -f "$active_conf" ] || exit 7
-    port="$(awk -v l="$port" '/listen/ { hit = index($0, ":" l ";") > 0 } hit && /proxy_pass/ { match($0, /127\.0\.0\.1:[0-9]+/); print substr($0, RSTART + 10, RLENGTH - 10); exit }' "$active_conf")"
+    port="$(awk -v l="$port" '/listen/ { hit = index($0, ":" l ";") > 0 } hit && /proxy_pass[[:space:]]/ { match($0, /127\.0\.0\.1:[0-9]+/); print substr($0, RSTART + 10, RLENGTH - 10); exit }' "$active_conf")"
     ;;
 esac
 service="$(sed -n "s/=$port\$//p" "$control_dir/rendered-ports" 2>/dev/null | head -1)"
@@ -536,18 +555,18 @@ bootstrap_incumbent() {
 # Scenario 1: happy path, first-ever cutover (no cutover-state.json) ->
 # treats blue as incumbent, cuts over to green.
 # ---------------------------------------------------------------------------
-state_dir="$(fresh_scenario_dir happy-path)"
+state_dir="$(fresh_scenario_dir che1593-privacy-location-upstreams)"
 output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
-expect_exit 0 "$status" happy-path
-expect_contains "$output" "cutover complete: green is now active" happy-path
+expect_exit 0 "$status" che1593-privacy-location-upstreams
+expect_contains "$output" "cutover complete: green is now active" che1593-privacy-location-upstreams
 if [ ! -f "$state_dir/cutover-state.json" ]; then
-  echo "scenario happy-path: cutover-state.json was not written" >&2
+  echo "scenario che1593-privacy-location-upstreams: cutover-state.json was not written" >&2
   exit 1
 fi
 active="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$state_dir/cutover-state.json")"
 if [ "$active" != "green" ]; then
-  echo "scenario happy-path: active_colour is '$active', want green" >&2
+  echo "scenario che1593-privacy-location-upstreams: active_colour is '$active', want green" >&2
   exit 1
 fi
 
@@ -974,7 +993,8 @@ fi
 # ---------------------------------------------------------------------------
 relocated_root="$work_dir/relocated-controller"
 mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
-cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp docker-compose.selfhost.yml "$relocated_root/"
 cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
 cp -a server/migrations "$relocated_root/server/migrations"
 
@@ -1328,8 +1348,8 @@ if drained_before_refusal "$state_dir"; then echo "scenario che823-pull-persiste
 
 # ---------------------------------------------------------------------------
 # CHE-1854: scoped Jev runtime inputs survive recreation. The optional
-# deploy/cd/docker-compose.jev.yml overlay is added to EVERY compose call
-# only when the compose dir's .env configures it; a configured-but-broken
+# deploy/cd/docker-compose.flags.yml carries flags independently of Jev.
+# The Jev overlay is added only when the compose dir's .env configures its network; a configured-but-broken
 # prerequisite refuses before the first mutation (drain, pull, migrate).
 # Launched CD-shaped (.env sourced, not exported) with synthetic values only.
 # ---------------------------------------------------------------------------
@@ -1364,8 +1384,36 @@ run_jev() { # run_jev <state_dir> <cutover|rollback>
 }
 
 jev_overlay_calls() { grep -c 'docker-compose.jev.yml' "$1/control/docker-calls.log" || true; }
+flags_overlay_calls() { grep -c 'docker-compose.flags.yml' "$1/control/docker-calls.log" || true; }
 compose_calls() { grep -c '^compose ' "$1/control/docker-calls.log" || true; }
 mutated() { [ -f "$1/control/stop-calls.log" ] || grep -qE '^compose .*(pull|up|run) ' "$1/control/docker-calls.log"; }
+
+for flags_setting in MULTICA_FEATURE_FLAGS_FILE MULTICA_JEV_FLAGS_FILE; do
+  write_jev_env "$flags_setting=$jev_flags"
+  state_dir="$(fresh_scenario_dir "flags-only-$flags_setting")"
+  output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-only-$flags_setting"
+  if [ "$(flags_overlay_calls "$state_dir")" -ne "$(compose_calls "$state_dir")" ] || [ "$(compose_calls "$state_dir")" -eq 0 ]; then
+    echo "scenario flags-only-$flags_setting: generic flags overlay missing from compose calls" >&2
+    exit 1
+  fi
+  [ "$(jev_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario flags-only-$flags_setting: Jev overlay loaded without a gateway" >&2; exit 1; }
+  output="$(run_jev "$state_dir" rollback 2>&1)" && status=0 || status=$?
+  expect_exit 0 "$status" "flags-rollback-$flags_setting"
+  grep -E 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log" | grep -q 'docker-compose.flags.yml' || { echo "scenario flags-rollback-$flags_setting: predecessor restarted without flags" >&2; exit 1; }
+done
+
+write_jev_env "MULTICA_FEATURE_FLAGS_FILE=$jev_flags" "MULTICA_JEV_FLAGS_FILE=$work_dir/absent.yaml"
+state_dir="$(fresh_scenario_dir flags-generic-precedence)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" flags-generic-precedence
+
+write_jev_env "MULTICA_FEATURE_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/duplicate-key.yaml"
+state_dir="$(fresh_scenario_dir flags-malformed)"
+output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
+expect_exit 1 "$status" flags-malformed
+expect_contains "$output" MULTICA_FEATURE_FLAGS_FILE flags-malformed
+if mutated "$state_dir"; then echo "scenario flags-malformed: mutated before refusing" >&2; exit 1; fi
 
 # Unconfigured: byte-identical compose arguments, no overlay.
 write_jev_env
@@ -1374,6 +1422,7 @@ output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
 expect_exit 0 "$status" jev-unconfigured
 expect_contains "$output" "cutover complete: green is now active" jev-unconfigured
 [ "$(jev_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario jev-unconfigured: overlay used without configuration" >&2; exit 1; }
+[ "$(flags_overlay_calls "$state_dir")" -eq 0 ] || { echo "scenario jev-unconfigured: flags overlay used without configuration" >&2; exit 1; }
 
 # Configured: the overlay rides on every compose call; one candidate up, the
 # incumbent never started; the key never reaches output or docker arguments.
@@ -1386,6 +1435,7 @@ if [ "$(jev_overlay_calls "$state_dir")" -ne "$(compose_calls "$state_dir")" ] |
   echo "scenario jev-configured: overlay missing from $(( $(compose_calls "$state_dir") - $(jev_overlay_calls "$state_dir") )) compose call(s)" >&2
   exit 1
 fi
+[ "$(flags_overlay_calls "$state_dir")" -eq "$(compose_calls "$state_dir")" ] || { echo "scenario jev-configured: generic flags overlay missing" >&2; exit 1; }
 [ "$(grep -cE 'up -d --no-deps backend-green\b' "$state_dir/control/docker-calls.log")" -eq 1 ] || { echo "scenario jev-configured: want exactly one backend-green up" >&2; exit 1; }
 if grep -qE 'up -d --no-deps backend-blue\b' "$state_dir/control/docker-calls.log"; then
   echo "scenario jev-configured: incumbent backend-blue was started (two active backends)" >&2; exit 1
@@ -1425,7 +1475,6 @@ jev_refusals=(
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/flag-not-map.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-by-one.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
   "MULTICA_JEV_FLAGS_FILE|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$root_dir/deploy/cd/fixtures/flags/invalid/percent-overflow-uint64.yaml,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|"
-  "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags|"
   "MULTICA_JEV_GATEWAY_NETWORK|MULTICA_JEV_SECRET_KEY=$jev_key,MULTICA_JEV_FLAGS_FILE=$jev_flags,MULTICA_JEV_GATEWAY_NETWORK=synthetic_gateway|missing-gateway-network"
 )
 n=0
@@ -1439,7 +1488,7 @@ for spec in "${jev_refusals[@]}"; do
   [ -z "$flag" ] || touch "$state_dir/control/$flag"
   output="$(run_jev "$state_dir" cutover 2>&1)" && status=0 || status=$?
   expect_exit 1 "$status" "jev-refusal-$n"
-  expect_contains "$output" "jev overlay" "jev-refusal-$n"
+  expect_contains "$output" "overlay" "jev-refusal-$n"
   expect_contains "$output" "$var" "jev-refusal-$n"
   expect_not_contains "$output" "$jev_key" "jev-refusal-$n"
   if mutated "$state_dir"; then echo "scenario jev-refusal-$n: mutated before refusing ($var)" >&2; exit 1; fi
@@ -1469,5 +1518,42 @@ expect_exit 1 "$status" jev-rollback-malformed-file
 expect_contains "$output" "MULTICA_JEV_FLAGS_FILE" jev-rollback-malformed-file
 [ "$(wc -l <"$state_dir/control/stop-calls.log")" -eq "$stops_before" ] || { echo "scenario jev-rollback-malformed-file: drained before refusing" >&2; exit 1; }
 cp deploy/cd/fixtures/jev-feature-flags.synthetic.yaml "$jev_flags"
+
+# ---------------------------------------------------------------------------
+# CHE-2396 drift gate. A stale compose dir is overwritten from the released
+# source before anything renders; any env-key or image-digest difference on
+# the started candidate fails the cutover before the router switches.
+# ---------------------------------------------------------------------------
+state_dir="$(fresh_scenario_dir drift-stale-compose-synced)"
+stale_dir="$work_dir/stale-compose"
+rm -rf "$stale_dir"; mkdir -p "$stale_dir/deploy/cd"
+printf 'stale base\n' >"$stale_dir/docker-compose.selfhost.yml"
+printf 'stale overlay\n' >"$stale_dir/deploy/cd/docker-compose.ab.yml"
+output="$(run_cutover "$state_dir" "$stale_dir" 2>&1)" && status=0 || status=$?
+expect_exit 0 "$status" drift-stale-compose-synced
+for f in docker-compose.selfhost.yml deploy/cd/docker-compose.ab.yml deploy/cd/docker-compose.flags.yml deploy/cd/docker-compose.jev.yml; do
+  cmp -s "$root_dir/$f" "$stale_dir/$f" || { echo "scenario drift-stale-compose-synced: $f was not synced from the released source" >&2; exit 1; }
+done
+[ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$state_dir/drift-receipt.json")" = match ] \
+  || { echo "scenario drift-stale-compose-synced: no match receipt" >&2; exit 1; }
+# The interpolated compose render holds secrets: it must never be persisted.
+[ -z "$(find "$state_dir" -name 'compose-config*' 2>/dev/null)" ] \
+  || { echo "scenario drift-stale-compose-synced: compose render was persisted in the state dir" >&2; exit 1; }
+
+drift_case() {
+  local name=$1 flag=$2 content=$3 want=$4
+  state_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$state_dir/control"
+  printf '%s' "$content" >"$state_dir/control/$flag"
+  output="$(run_cutover "$state_dir" 2>&1)" && status=0 || status=$?
+  expect_exit 1 "$status" "$name"
+  expect_contains "$output" "$want" "$name"
+  [ ! -f "$state_dir/cutover-state.json" ] || { echo "scenario $name: success state written despite drift" >&2; exit 1; }
+  [ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status)' "$state_dir/drift-receipt.json")" = drift ] \
+    || { echo "scenario $name: no drift receipt" >&2; exit 1; }
+}
+drift_case drift-env-key-missing env-missing-frontend-green "" "frontend-green env: missing key MULTICA_APP_URL"
+drift_case drift-env-key-unexpected env-extra-backend-green "" "backend-green env: unexpected key STALE_FLAG"
+drift_case drift-image-digest running-digest-web "sha256:$(printf 'e%.0s' {1..64})" "frontend-green image: running digest"
 
 echo "cutover.sh control-flow fixtures passed"

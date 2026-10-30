@@ -10,3 +10,4 @@ export {
   type RichFenceLanguage,
 } from "./rich-code-block";
 export { computeClosedFences } from "./streaming-fence";
+export { RichTableDeferContext } from "./rich-table";

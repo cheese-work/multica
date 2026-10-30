@@ -3,6 +3,7 @@ package issueworkflow
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ const (
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
+	GuardPRReviewChanges  = "pr.review_changes_requested"
+	GuardPRReviewApproved = "pr.review_approved"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
 	GuardWebhook          = "webhook"
@@ -49,7 +52,7 @@ type Guard struct {
 
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
-	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1,
 }
 
@@ -183,6 +186,9 @@ type PRFact struct {
 	HeadFresh    bool
 	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
 	HeadSHA string
+	// Review is the latest human review decision on the PR's current head:
+	// approved, changes_requested, or empty.
+	Review string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -223,6 +229,12 @@ func (f Facts) holds(g Guard) bool {
 		return f.anyPR(func(p PRFact) bool { return p.State == "merged" }) && !f.anyPR(PRFact.open)
 	case GuardPRClosedUnmerged:
 		return f.anyPR(func(p PRFact) bool { return p.State == "closed" }) && !f.anyPR(func(p PRFact) bool { return p.open() || p.State == "merged" })
+	case GuardPRReviewChanges:
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
+	case GuardPRReviewApproved:
+		// One PR asking for changes outweighs another PR's approval.
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "approved" }) &&
+			!f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
 	case GuardChildrenDone:
 		return f.ChildrenDone
 	case GuardIssueStatus:
@@ -347,4 +359,51 @@ func hasGuard(edges []Edge, kind string) bool {
 		}
 	}
 	return false
+}
+
+// HasGuard reports whether any edge of the step uses a guard of this kind.
+func (s Step) HasGuard(kind string) bool { return hasGuard(s.Edges, kind) }
+
+// MoveNotAllowedError refuses an agent's status write the current step has no
+// exit for. Its message lists the allowed moves because agents read it verbatim.
+type MoveNotAllowedError struct {
+	From, To string
+	Allowed  []string
+}
+
+func (e *MoveNotAllowedError) Error() string {
+	if len(e.Allowed) == 0 {
+		return fmt.Sprintf("status %q is not an allowed move from %q; this step has no agent exit, the workflow moves the issue", e.To, e.From)
+	}
+	return fmt.Sprintf("status %q is not an allowed move from %q; use one of: %s",
+		e.To, e.From, strings.Join(e.Allowed, ", "))
+}
+
+// AgentMoves lists the statuses an agent may move an issue to from a step: the
+// targets of its agent_done and agent_verdict exits, in list order.
+func (d Definition) AgentMoves(key string) []string {
+	var moves []string
+	for _, e := range d.EdgesOf(key) {
+		g, err := ParseGuard(e.Guard)
+		if err != nil || g.readsFacts() || slices.Contains(moves, e.To) {
+			continue
+		}
+		moves = append(moves, e.To)
+	}
+	return moves
+}
+
+// CheckAgentMove refuses an agent's move off a step to a status the step has
+// no agent exit for, including every move off a step whose exits all wait on
+// facts. A step with no exits at all restricts nothing, and cancelling stays
+// open so an agent can still close a duplicate.
+func CheckAgentMove(def Definition, from, to string) error {
+	if len(def.EdgesOf(from)) == 0 || to == issuestatus.Cancelled {
+		return nil
+	}
+	moves := def.AgentMoves(from)
+	if slices.Contains(moves, to) {
+		return nil
+	}
+	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
 }

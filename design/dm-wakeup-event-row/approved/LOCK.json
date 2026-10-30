@@ -1,0 +1,25 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "LNn7rliuvZ",
+  "page_id": "LNn7rliuvZ:page1",
+  "screens": [
+    {
+      "screen": "fired-wakeup-row (direction C, thread rail)",
+      "frame_id": "-Yr2vfvBHn",
+      "updatedAt": "2026-10-29T11:07:11.362Z",
+      "content_sha256": "1c314523619979b2068139fc2802b2e58a40c95fd80c94b53f58c6d9459b8674"
+    }
+  ],
+  "export_sha256": "ea598afef7188401882a268ef2d19eefbd76d112d1c460b87f58f160151fa275",
+  "export_files": {
+    "wakeup-row-c-1240.png": "a8cf7cf540c5bf13a4fcfec71e4dcfc3ebb8625c87c30ebb8ca2f3ba95d3b89b",
+    "wakeup-row-c.html": "7fc0d7b9040c2833b3dd9c40352666d83c837e71ce8f0cf8292d83f76ef5d5c6"
+  },
+  "export_transform": "frame HTML with the Google Fonts <link> replaced by embedded Inter woff2 @font-face (vietnamese, latin) as data URIs; no other change",
+  "exported_at": "2026-10-29 18:15 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2459",
+  "selection_id": "01a18753-e957-7ba2-a312-4400a43808a1",
+  "ux_verdict_id": "01a1875a-c9e1-7656-a1a7-965a9b0d1628"
+}

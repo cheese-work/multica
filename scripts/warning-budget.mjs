@@ -10,7 +10,7 @@ function normalize(message) {
     .replace(/_\d{10,}_\d+/g, "_<id>")
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
     .replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)\b/g, "<time>")
-    .replace(/\b(?:duration|duration_ms|request_id)=(?:"[^"]*"|\S+)/g, (field) => `${field.split("=")[0]}=<runtime>`)
+    .replace(/\b(?:duration|duration_ms|request_id|dropped_total)=(?:"[^"]*"|\S+)/g, (field) => `${field.split("=")[0]}=<runtime>`)
     .replace(/(\/tmp\/Test[^/\s"]*?)\d{6,}(?=\/)/g, "$1<id>")
     .replace(/(\/tmp\/[A-Za-z0-9_-]+\.)[A-Za-z0-9]{6,}(?=\/)/g, "$1<id>")
     .replace(/((?:https?:\/\/|tcp )[^/:\s"\\]+):\d{2,5}\b/g, "$1:<port>")
@@ -31,9 +31,11 @@ export function warningCounts(jobs) {
     const logs = {}
     const annotations = {}
     const eslintMessages = new Map()
+    const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    for (const line of stripVTControlCharacters(job.log).split("\n")) {
+    // Go test output can carry a U+FEFF byte-order mark that defeats the anchored runtime-WARN exclusion below.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\uFEFF", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""
@@ -58,7 +60,10 @@ export function warningCounts(jobs) {
         const rule = eslintFile ? eslint[1].match(/\s([@\w-]+(?:\/[\w-]+)*)$/)?.[1] : undefined
         const detail = rule ? eslint[1].slice(0, -rule.length).trim() : eslint[1]
         warning = `${eslintFile ? `${eslintFile}: ` : ""}${rule ?? `warning ${detail}`}`
-        if (eslintFile) eslintMessages.set(`${eslintFile}: ${detail}`, warning)
+        if (eslintFile) {
+          eslintMessages.set(`${eslintFile}: ${detail}`, warning)
+          eslintDetails.add(detail)
+        }
       }
       logs[warning] = (logs[warning] ?? 0) + 1
     }
@@ -66,6 +71,9 @@ export function warningCounts(jobs) {
       if (!["warning", "notice"].includes(annotation.annotation_level)) continue
       const message = normalize(annotation.message)
       const file = /\.[cm]?[jt]sx?$/.test(annotation.path ?? "") ? sourcePath(annotation.path) : ""
+      // GitHub files an eslint annotation under ".github" when its log line has no file reference.
+      // The log counts every eslint warning with its file, so such an annotation adds nothing.
+      if (!file && eslintDetails.has(message)) continue
       const warning = file ? eslintMessages.get(`${file}: ${message}`) ?? `${file}: ${message}` : message
       annotations[warning] = (annotations[warning] ?? 0) + 1
     }
@@ -105,7 +113,7 @@ export function runBudget() {
   const current = api(`${prefix}/actions/runs/${runId}`)
   function jobs(run) {
     return pages(`${prefix}/actions/runs/${run.id}/jobs?filter=latest`, "jobs")
-      .filter((job) => job.name !== "warning-budget" && job.conclusion !== "skipped")
+      .filter((job) => !["warning-budget", "push-go-cache-warm", "push-turbo-cache-warm"].includes(job.name) && job.conclusion !== "skipped")
   }
   function collect(job) {
     if (job.status !== "completed") throw new Error(`Job ${job.name} has not completed`)

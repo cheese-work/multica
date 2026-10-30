@@ -61,7 +61,7 @@ beforeEach(() => {
   // A warm cache: this exact chart already rendered earlier in the session.
   window.sessionStorage.setItem(
     cacheKey(CHART),
-    JSON.stringify({ width: 800, height: CACHED_HEIGHT }),
+    JSON.stringify({ width: 800, height: CACHED_HEIGHT, orientation: "horizontal" }),
   );
   vi.stubGlobal("IntersectionObserver", undefined);
 });

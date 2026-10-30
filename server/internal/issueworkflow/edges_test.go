@@ -27,6 +27,8 @@ func TestParseGuard(t *testing.T) {
 		{"agent_verdict(CHANGES)", Guard{Kind: "agent_verdict", Args: []string{"CHANGES"}}},
 		{"pr.checks_green", Guard{Kind: "pr.checks_green"}},
 		{"pr.closed_unmerged", Guard{Kind: "pr.closed_unmerged"}},
+		{"pr.review_changes_requested", Guard{Kind: "pr.review_changes_requested"}},
+		{"pr.review_approved", Guard{Kind: "pr.review_approved"}},
 		{"children_done", Guard{Kind: "children_done"}},
 		{" issue_status(CHE-1, done) ", Guard{Kind: "issue_status", Args: []string{"CHE-1", "done"}}},
 		{"webhook(ci)", Guard{Kind: "webhook", Args: []string{"ci"}}},
@@ -99,6 +101,8 @@ func TestValidateEdges(t *testing.T) {
 		}, "on_timeout"},
 		{"webhook needs timeout", []Edge{{To: "done", Guard: "webhook(ci)", OnTimeout: "blocked"}}, nil, "timeout"},
 		{"webhook with timeout", []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
+		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
+		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {
@@ -186,6 +190,12 @@ func TestFirstMatchPRReadyClosedChildrenAndIssueGuards(t *testing.T) {
 		{"pr.closed_unmerged", Facts{PRs: []PRFact{{State: "closed"}}}, true},
 		{"pr.closed_unmerged", Facts{PRs: []PRFact{{State: "closed"}, {State: "open"}}}, false},
 		{"pr.merged", Facts{PRs: []PRFact{{State: "closed"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open", Review: "changes_requested"}}}, true},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open", Review: "approved"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "open"}}}, false},
+		{"pr.review_changes_requested", Facts{PRs: []PRFact{{State: "merged", Review: "changes_requested"}}}, false},
+		{"pr.review_approved", Facts{PRs: []PRFact{{State: "draft", Review: "approved"}}}, true},
+		{"pr.review_approved", Facts{PRs: []PRFact{{State: "open", Review: "approved"}, {State: "open", Review: "changes_requested"}}}, false},
 		{"children_done", Facts{ChildrenDone: true}, true},
 		{"children_done", Facts{}, false},
 		{"issue_status(CHE-9, done)", Facts{IssueStatuses: map[string]string{"CHE-9": "done"}}, true},
@@ -320,5 +330,61 @@ func TestWebhookGuardTimesOutLikeAPRGuard(t *testing.T) {
 	d, move, _ := Decide(edges, Facts{}, entered, entered.Add(2*time.Hour), true)
 	if !move || d.To != "implement" || d.Reason != ReasonTimeout {
 		t.Errorf("a sender that never calls must hit on_timeout, got %+v move=%v", d, move)
+	}
+}
+
+const subWorkflowID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+
+func subWorkflowDefinition(sub *SubWorkflow, edges []Edge) Definition {
+	def := devDefinition()
+	for i, s := range def.Steps {
+		if s.StatusKey == "implement" {
+			def.Steps[i].SubWorkflow = sub
+			def.Steps[i].Edges = edges
+		}
+	}
+	return def
+}
+
+func TestSubWorkflowStepValidation(t *testing.T) {
+	join := []Edge{{To: "code_review", Guard: "children_done"}}
+	cases := []struct {
+		name    string
+		sub     *SubWorkflow
+		edges   []Edge
+		wantErr string
+	}{
+		{"valid", &SubWorkflow{WorkflowID: subWorkflowID, Stage: 1}, join, ""},
+		{"no sub-workflow", nil, nil, ""},
+		{"bad workflow id", &SubWorkflow{WorkflowID: "nope"}, join, "workflow id"},
+		{"negative stage", &SubWorkflow{WorkflowID: subWorkflowID, Stage: -1}, join, "stage"},
+		{"no children_done exit", &SubWorkflow{WorkflowID: subWorkflowID}, []Edge{{To: "code_review", Guard: "agent_done"}}, "children_done"},
+		{"no edges at all", &SubWorkflow{WorkflowID: subWorkflowID}, nil, "children_done"},
+	}
+	for _, c := range cases {
+		def := subWorkflowDefinition(c.sub, c.edges)
+		step, _ := def.Step("implement")
+		err := ValidateHandoff(NormalizeHandoff(step), def)
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("%s: unexpected error %v", c.name, err)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("%s: error = %v, want it to mention %q", c.name, err, c.wantErr)
+		}
+	}
+}
+
+func TestSubWorkflowSurvivesStorage(t *testing.T) {
+	in := []Step{{StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, SubWorkflow: &SubWorkflow{WorkflowID: "11111111-1111-4111-8111-111111111111", Stage: 3}}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].SubWorkflow == nil || *out[0].SubWorkflow != *in[0].SubWorkflow {
+		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
 	}
 }

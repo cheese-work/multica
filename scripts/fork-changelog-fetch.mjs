@@ -2,7 +2,7 @@
 import { appendFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { generateEntries, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
+import { generateEntries, loadBackfill, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
 
 export const FETCH_DEADLINE_MS = 180_000;
 const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
@@ -10,7 +10,7 @@ const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "
 export async function fetchChangelog({
   token, out, firstParent, repository = "cheese-work/multica", fetchImpl = fetch,
   generator = generateEntries, deadlineMs = FETCH_DEADLINE_MS, summaryPath,
-  warning = annotate, ...options
+  warning = annotate, note = console.log, ...options
 }) {
   const controller = new AbortController();
   const started = performance.now();
@@ -61,7 +61,8 @@ export async function fetchChangelog({
       checkDeadline();
       writeAtomically(out, serializeEntries(result));
       checkDeadline();
-      for (const { message } of result.warnings) warning(message);
+      // Merged PRs were already warned at PR time (pr-changelog-check); a plain log keeps every build free of annotations nobody can act on.
+      for (const { number, message } of result.warnings) note(`PR #${number}: ${message}`);
       if (summaryPath) {
         const { shown, hidden, byReason } = result.counts;
         appendFileSync(summaryPath, `### Fork changelog\n\nShown: ${shown}\n\nHidden: ${hidden}\n${Object.entries(byReason).sort().map(([reason, count]) => `\n- ${reason}: ${count}`).join("")}\n`);
@@ -98,7 +99,7 @@ export async function main(argv, env) {
       await fetchChangelog({ token: env.GH_TOKEN, out, firstParent: [], summaryPath: env.GITHUB_STEP_SUMMARY });
       return;
     }
-    const options = optionsFromEnv(env);
+    const options = { backfill: loadBackfill(), ...optionsFromEnv(env) };
     if (args.start) options.startDate = args.start;
     if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
     const sha = args.sha ?? env.GITHUB_SHA;

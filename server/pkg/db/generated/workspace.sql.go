@@ -523,39 +523,50 @@ UPDATE workspace SET
     -- CHE-1612: compact_prompt patches one settings key; every other key survives.
     -- CHE-1806: auto_compact patches one settings key the same way, merging the
     -- named fields into the saved object so an unnamed field keeps its value.
+    -- CHE-2269: github_review_members / github_review_authors replace one settings
+    -- key each; the other survives.
     settings = (
         SELECT CASE
-            WHEN $5::bool THEN base.v - 'auto_compact'
-            WHEN $6::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $6::jsonb)
-            ELSE base.v
+            WHEN $5::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $5::jsonb)
+            ELSE m.v
         END
         FROM (SELECT CASE
-            WHEN $7::bool THEN COALESCE($8::jsonb, settings) - 'compact_prompt'
-            WHEN $9::text IS NOT NULL THEN jsonb_set(COALESCE($8::jsonb, settings), '{compact_prompt}', to_jsonb($9::text))
-            ELSE COALESCE($8::jsonb, settings)
-        END AS v) AS base
+            WHEN $6::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $6::jsonb)
+            ELSE a.v
+        END AS v FROM (SELECT CASE
+            WHEN $7::bool THEN base.v - 'auto_compact'
+            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $8::jsonb)
+            ELSE base.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $9::bool THEN COALESCE($10::jsonb, settings) - 'compact_prompt'
+            WHEN $11::text IS NOT NULL THEN jsonb_set(COALESCE($10::jsonb, settings), '{compact_prompt}', to_jsonb($11::text))
+            ELSE COALESCE($10::jsonb, settings)
+        END AS v) AS base) AS a) AS m
     ),
-    repos = COALESCE($10, repos),
-    issue_prefix = COALESCE($11, issue_prefix),
-    avatar_url = COALESCE($12, avatar_url),
+    repos = COALESCE($12, repos),
+    issue_prefix = COALESCE($13, issue_prefix),
+    avatar_url = COALESCE($14, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days
 `
 
 type UpdateWorkspaceParams struct {
-	ID                 pgtype.UUID `json:"id"`
-	Name               pgtype.Text `json:"name"`
-	Description        pgtype.Text `json:"description"`
-	Context            pgtype.Text `json:"context"`
-	AutoCompactReset   pgtype.Bool `json:"auto_compact_reset"`
-	AutoCompact        []byte      `json:"auto_compact"`
-	CompactPromptReset pgtype.Bool `json:"compact_prompt_reset"`
-	Settings           []byte      `json:"settings"`
-	CompactPrompt      pgtype.Text `json:"compact_prompt"`
-	Repos              []byte      `json:"repos"`
-	IssuePrefix        pgtype.Text `json:"issue_prefix"`
-	AvatarUrl          pgtype.Text `json:"avatar_url"`
+	ID                  pgtype.UUID `json:"id"`
+	Name                pgtype.Text `json:"name"`
+	Description         pgtype.Text `json:"description"`
+	Context             pgtype.Text `json:"context"`
+	GithubReviewAuthors []byte      `json:"github_review_authors"`
+	GithubReviewMembers []byte      `json:"github_review_members"`
+	AutoCompactReset    pgtype.Bool `json:"auto_compact_reset"`
+	AutoCompact         []byte      `json:"auto_compact"`
+	CompactPromptReset  pgtype.Bool `json:"compact_prompt_reset"`
+	Settings            []byte      `json:"settings"`
+	CompactPrompt       pgtype.Text `json:"compact_prompt"`
+	Repos               []byte      `json:"repos"`
+	IssuePrefix         pgtype.Text `json:"issue_prefix"`
+	AvatarUrl           pgtype.Text `json:"avatar_url"`
 }
 
 func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
@@ -564,6 +575,8 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.Description,
 		arg.Context,
+		arg.GithubReviewAuthors,
+		arg.GithubReviewMembers,
 		arg.AutoCompactReset,
 		arg.AutoCompact,
 		arg.CompactPromptReset,

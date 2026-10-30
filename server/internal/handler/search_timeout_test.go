@@ -1,14 +1,60 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestSearchFailureLogsOmitTypedText(test *testing.T) {
+	if testPool == nil {
+		test.Fatal("database required")
+	}
+	setSearchStatementTimeoutForTest(test, 50*time.Millisecond)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	test.Cleanup(func() { slog.SetDefault(previous) })
+	for _, testcase := range []struct {
+		table  string
+		handle func(http.ResponseWriter, *http.Request)
+	}{
+		{"issue", testHandler.SearchIssues}, {"project", testHandler.SearchProjects},
+	} {
+		transaction, err := testPool.Begin(context.Background())
+		if err != nil {
+			test.Fatal(err)
+		}
+		if _, err := transaction.Exec(context.Background(), "LOCK TABLE "+testcase.table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+			test.Fatal(err)
+		}
+		query := "typed-private-search-marker"
+		request := httptest.NewRequest("GET", "/search?"+url.Values{"q": {query}, "include_closed": {"true"}}.Encode(), nil)
+		request.Header.Set("X-Workspace-ID", testWorkspaceID)
+		response := httptest.NewRecorder()
+		testcase.handle(response, request)
+		transaction.Rollback(context.Background())
+		if response.Code != 503 {
+			test.Fatalf("%s failure path status %d", testcase.table, response.Code)
+		}
+		if strings.Contains(logs.String(), query) {
+			test.Fatalf("%s logs typed text", testcase.table)
+		}
+	}
+	if effectiveSearchStatementTimeout() != 50*time.Millisecond {
+		test.Fatal("test override not effective")
+	}
+}
 
 func TestIsSearchStatementTimeout(t *testing.T) {
 	tests := []struct {

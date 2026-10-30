@@ -22,6 +22,19 @@ func RequireHumanActor(next http.Handler) http.Handler {
 	})
 }
 
+// RequireHumanOrTaskToken is RequireHumanActor except that an agent task token
+// passes. It is for routes whose handler authorizes the agent itself, such as
+// a decision-bound write (CHE-2456); every other machine credential stays 403.
+func RequireHumanOrTaskToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isMachineCredentialActor(r) && r.Header.Get("X-Actor-Source") != "task_token" {
+			writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isMachineCredentialActor centralizes the authoritative actor-source check so
 // sensitive handlers can keep a fail-closed backstop in addition to their
 // router middleware. Unknown actor sources intentionally remain human-equivalent

@@ -51,3 +51,25 @@ export function derivePRMergeStatus(
   if (typeof value !== "string") return PR_MERGE_STATUS_NONE;
   return value.trim().toLowerCase() || PR_MERGE_STATUS_NONE;
 }
+
+export interface GitHubReviewMappings {
+  /** Numeric GitHub user id → workspace member's user id. */
+  members: Record<string, string>;
+  /** `owner/repo#number` → agent id that authored the pull request. */
+  authors: Record<string, string>;
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+}
+
+/** The GitHub review mappings (CHE-2269); the server validates every write. */
+export function deriveGitHubReviewMappings(
+  workspace: Pick<Workspace, "settings"> | null | undefined,
+): GitHubReviewMappings {
+  const s = (workspace?.settings ?? {}) as Record<string, unknown>;
+  return { members: stringMap(s.github_review_members), authors: stringMap(s.github_review_authors) };
+}

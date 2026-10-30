@@ -73,7 +73,10 @@ func TestContentKeepsLegacyOrderWithLabels(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	content := ask.Content()
+	content := ask.Content("acme")
+	if !strings.Contains(content, "[Comment](/acme/issues/"+testIssueID+"#comment-"+testCommentID+")") {
+		test.Fatalf("ask has wrong comment link: %s", content)
+	}
 	last := -1
 	for _, heading := range []string{"**Agent did**", "**Decision**", "**Options**\n- NOW\n- LATER", "**Recommendation**", "**Default if no reply**", "**Source**"} {
 		at := strings.Index(content, heading)

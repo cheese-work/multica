@@ -35,8 +35,10 @@ import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
+import { useStandaloneMedia } from "../media/media-context";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
+import { useRichContentScrollRoot } from "./scroll-root";
 import { cachedOverflowWidths, headerCells, measureColumns } from "./rich-table-fit";
 import {
   columnWidthKey,
@@ -55,6 +57,13 @@ export interface RichTableSource {
 }
 
 export const RichTableSourceContext = createContext<RichTableSource>({ source: "", rendered: "" });
+
+/**
+ * Set by an oversized comment body: its tables then mount only near the
+ * viewport (CHE-2272). A 63 KB deep-link target mounted ~30 tables and ~65
+ * icons at once, +30 MB of page-renderer RSS over a cold open.
+ */
+export const RichTableDeferContext = createContext(false);
 
 /** Marks the frame's own controls, which the editor must leave to the browser. */
 export const RICH_TABLE_CHROME_ATTRIBUTE = "data-rich-table-chrome";
@@ -472,17 +481,62 @@ const TableContent = memo(function TableContent({ children }: { children: ReactN
   return <>{children}</>;
 });
 
+// One header or body row at one line of text; taller rows grow on mount.
+const ROW_HEIGHT_ESTIMATE = 38;
+const NEAR_VIEWPORT_ROOT_MARGIN = "800px 0px";
+
+/**
+ * Holds a table's space until it is near the viewport, then mounts it for good
+ * (a latch, so scrolling back never rebuilds it). Without IntersectionObserver
+ * it mounts at once, like LazyRichBlock.
+ */
+function NearViewportTable({ rowCount, children }: { rowCount: number; children: ReactNode }) {
+  const [near, setNear] = useState(false);
+  const placeholderRef = useRef<HTMLDivElement>(null);
+  const scrollRoot = useRichContentScrollRoot();
+  useEffect(() => {
+    if (near) return;
+    const placeholder = placeholderRef.current;
+    if (!placeholder || typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setNear(true);
+      },
+      { root: scrollRoot, rootMargin: NEAR_VIEWPORT_ROOT_MARGIN },
+    );
+    observer.observe(placeholder);
+    return () => observer.disconnect();
+  }, [near, scrollRoot]);
+  if (near) return <>{children}</>;
+  return (
+    <div
+      ref={placeholderRef}
+      data-rich-table-placeholder=""
+      aria-hidden
+      className="rich-table"
+      style={{ height: (rowCount + 1) * ROW_HEIGHT_ESTIMATE + 2 }}
+    />
+  );
+}
+
 type RichTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 
 /** react-markdown's `table` override. */
 export function RichTable({ children, node }: RichTableProps) {
+  const standalone = useStandaloneMedia();
   const { source, rendered } = useContext(RichTableSourceContext);
+  const deferred = useContext(RichTableDeferContext);
   const model = useMemo(() => readTableModel(children), [children]);
   const getMarkdown = () =>
     tableMarkdownFromSource(source, rendered, node?.position?.start.offset, node?.position?.end.offset);
-  return (
+  if (standalone) return <RichTableDialog model={model} open onOpenChange={() => {}} getMarkdown={getMarkdown} standalone />;
+  const frame = (
     <RichTableFrame model={model} getMarkdown={getMarkdown}>
       <TableContent>{children}</TableContent>
     </RichTableFrame>
   );
+  return deferred ? <NearViewportTable rowCount={model.rows.length}>{frame}</NearViewportTable> : frame;
 }

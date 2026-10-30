@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,8 @@ type IssueWorkflowStepPayload struct {
 	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
 	// Edges are the step's guarded exits; see issueworkflow.Edge.
 	Edges []issueworkflow.Edge `json:"edges,omitempty"`
+	// SubWorkflow makes the step a sub-workflow node; see issueworkflow.SubWorkflow.
+	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -144,6 +147,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 		Edges:            s.Edges,
+		SubWorkflow:      s.SubWorkflow,
 	}
 }
 
@@ -157,6 +161,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		Edges:            in.Edges,
+		SubWorkflow:      in.SubWorkflow,
 	}
 }
 
@@ -373,9 +378,14 @@ type IssueWorkflowStepInput struct {
 	// AdvanceOnCIGreen: see IssueWorkflowStepPayload.
 	AdvanceOnCIGreen bool                 `json:"advance_on_ci_green,omitempty"`
 	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
+	// SubWorkflow: see IssueWorkflowStepPayload.
+	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
+	// DecisionBindingFields let an agent task token write only the steps; see
+	// DecisionBindingFields.
+	DecisionBindingFields
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
 	// Steps replace the workflow's steps and handoffs. Todo, done and
@@ -431,6 +441,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 			Edges:            in.Edges,
+			SubWorkflow:      in.SubWorkflow,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -612,6 +623,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+		return
+	}
 	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
@@ -652,7 +670,7 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(createdStatuses) > 0 {
-		h.publishIssueStatusChanged(workspaceID, member, "created")
+		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "created")
 	h.writeIssueWorkflow(w, r, http.StatusCreated, row)
@@ -755,6 +773,14 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
+	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+		return
+	}
+	machine := isMachineCredentialActor(r)
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+		return
+	}
 	ctx := r.Context()
 
 	tx, err := h.TxStarter.Begin(ctx)
@@ -776,7 +802,8 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
-	if !canEditIssueWorkflow(member, current) {
+	// A bound agent write is authorized by its decision, checked below.
+	if !machine && !canEditIssueWorkflow(member, current) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
@@ -811,7 +838,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	var createdStatuses []db.IssueStatus
 	if req.Steps != nil {
 		var msg string
-		steps, createdStatuses, msg, err = resolveStepInputs(ctx, qtx, wsUUID, *req.Steps, isWorkspaceAdmin(member))
+		steps, createdStatuses, msg, err = resolveStepInputs(ctx, qtx, wsUUID, *req.Steps, isWorkspaceAdmin(member) && !machine)
 		if msg != "" {
 			writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 			return
@@ -834,6 +861,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := issueworkflow.Validate(name, description, steps, current.IsDefault, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
 	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, current.ID, steps); err != nil {
@@ -893,6 +927,12 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"dry_run": true, "plan": plan})
 		return
 	}
+	if machine {
+		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
+			writeDecisionError(w, err, "workflow write")
+			return
+		}
+	}
 	raw, err := issueworkflow.EncodeSteps(steps)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
@@ -932,7 +972,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	h.publishIssueSnapshots(ctx, changed, "member", uuidToString(member.UserID))
 	h.broadcastCancelledWakeups(ctx, wsUUID, cancelledWakeups)
 	if len(createdStatuses) > 0 {
-		h.publishIssueStatusChanged(workspaceID, member, "created")
+		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
 	h.writeIssueWorkflow(w, r, http.StatusOK, row)
@@ -1212,6 +1252,8 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 type SetIssueWorkflowHandoffRequest struct {
 	IssueWorkflowStepPayload
 	CopyForProjectID string `json:"copy_for_project_id,omitempty"`
+	// DecisionBindingFields let an agent task token write the handoff.
+	DecisionBindingFields
 }
 
 // SetIssueWorkflowHandoff saves what a workflow does when an issue enters
@@ -1237,6 +1279,14 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 	var req SetIssueWorkflowHandoffRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+		return
+	}
+	machine := isMachineCredentialActor(r)
+	if machine && req.CopyForProjectID != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", "a decision-bound write cannot copy the workflow for a project")
 		return
 	}
 	step := issueworkflow.NormalizeHandoff(payloadToStep(chi.URLParam(r, "status"), req.IssueWorkflowStepPayload))
@@ -1267,7 +1317,8 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "workflow not found")
 		return
 	}
-	if !canEditIssueWorkflow(member, current) {
+	// A bound agent write is authorized by its decision, checked below.
+	if !machine && !canEditIssueWorkflow(member, current) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
@@ -1276,10 +1327,13 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to read workflow")
 		return
 	}
-	// The handoff form knows nothing of edges: keep the step's own.
-	if step.Edges == nil {
-		if stored, ok := def.Step(step.StatusKey); ok {
+	// The handoff form knows nothing of edges or a sub-workflow: keep the step's own.
+	if stored, ok := def.Step(step.StatusKey); ok {
+		if step.Edges == nil {
 			step.Edges = stored.Edges
+		}
+		if step.SubWorkflow == nil {
+			step.SubWorkflow = stored.SubWorkflow
 		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
@@ -1290,9 +1344,16 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeErrorCode(w, status, "invalid_handoff", msg)
 		return
 	}
+	previous := slices.Clone(def.Steps)
 	for i, s := range def.Steps {
 		if s.StatusKey == step.StatusKey {
 			def.Steps[i] = step
+		}
+	}
+	if machine {
+		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
+			writeDecisionError(w, err, "workflow write")
+			return
 		}
 	}
 	// A copy is a new workflow and starts with no endpoints, so every webhook
@@ -1576,7 +1637,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		params.ProjectID = projectID
 		enterOnMove = true
 	}
-	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, nil)
+	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{})
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return

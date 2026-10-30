@@ -1,0 +1,132 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2124-46880cccc402/workdir/multica/packages/core
+
+ ❯ attachments/plan-revisions.test.ts (6 tests | 6 failed) 42ms
+     × matches only the exact positive safe-integer filename convention 19ms
+     × orders numeric gaps and excludes other issues, workspaces, unrelated and later files 8ms
+     × does not guess duplicate bases from upload times and never falls back to an older group 4ms
+     × reconstructs both versions, including blank lines and non-executable markup 2ms
+     × handles empty, identical, CRLF and a hundreds-of-lines fixture 4ms
+     × bounds expensive comparisons rather than freezing on oversized inputs 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  attachments/plan-revisions.test.ts > same-issue plan revision lookup > matches only the exact positive safe-integer filename convention
+AssertionError: expected null to be 12 // Object.is equality
+
+- Expected:
+12
+
++ Received:
+null
+
+ ❯ attachments/plan-revisions.test.ts:10:50
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  attachments/plan-revisions.test.ts > same-issue plan revision lookup > orders numeric gaps and excludes other issues, workspaces, unrelated and later files
+AssertionError: expected [] to deeply equal [ 10, 1 ]
+
+- Expected
++ Received
+
+- [
+-   10,
+-   1,
+- ]
++ []
+
+ ❯ attachments/plan-revisions.test.ts:16:48
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  attachments/plan-revisions.test.ts > same-issue plan revision lookup > does not guess duplicate bases from upload times and never falls back to an older group
+AssertionError: expected [] to have a length of 3 but got +0
+
+- Expected
++ Received
+
+- 3
++ 0
+
+ ❯ attachments/plan-revisions.test.ts:22:19
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  attachments/plan-revisions.test.ts > literal plan line diff > reconstructs both versions, including blank lines and non-executable markup
+AssertionError: expected '' to be '# Plan\nkeep\nold\n\n<script>alert(1)…' // Object.is equality
+
+- Expected
++ Received
+
+- # Plan
+- keep
+- old
+-
+- <script>alert(1)</script>
+-
+
+ ❯ attachments/plan-revisions.test.ts:33:93
+     31|     const after = "# Plan\nkeep\nnew\nextra\n\n<script>alert(1)</scrip…
+     32|     const lines = diffRevisionLines(before, after);
+     33|     expect(lines.filter((line) => line.kind !== "add").map((line) => l…
+       |                                                                                             ^
+     34|     expect(lines.filter((line) => line.kind !== "remove").map((line) =…
+     35|     expect(lines.filter((line) => line.kind === "remove").map((line) =…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  attachments/plan-revisions.test.ts > literal plan line diff > handles empty, identical, CRLF and a hundreds-of-lines fixture
+AssertionError: expected [] to deeply equal [ Array(1) ]
+
+- Expected
++ Received
+
+- [
+-   {
+-     "kind": "same",
+-     "newNumber": 1,
+-     "oldNumber": 1,
+-     "text": "same",
+-   },
+- ]
++ []
+
+ ❯ attachments/plan-revisions.test.ts:40:47
+     38|   it("handles empty, identical, CRLF and a hundreds-of-lines fixture",…
+     39|     expect(diffRevisionLines("", "")).toEqual([]);
+     40|     expect(diffRevisionLines("same", "same")).toEqual([{ kind: "same",…
+       |                                               ^
+     41|     expect(diffRevisionLines("old", "")).toEqual([{ kind: "remove", te…
+     42|     expect(diffRevisionLines("", "new")).toEqual([{ kind: "add", text:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  attachments/plan-revisions.test.ts > literal plan line diff > bounds expensive comparisons rather than freezing on oversized inputs
+AssertionError: expected [Function] to throw an error
+
+- Expected:
+null
+
++ Received:
+undefined
+
+ ❯ attachments/plan-revisions.test.ts:57:81
+     55|   });
+     56|   it("bounds expensive comparisons rather than freezing on oversized i…
+     57|     expect(() => diffRevisionLines("old\n".repeat(3000), "new\n".repea…
+       |                                                                                 ^
+     58|   });
+     59| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  6 failed (6)
+   Start at  12:57:08
+   Duration  894ms (transform 246ms, setup 0ms, import 378ms, tests 42ms, environment 0ms)
+

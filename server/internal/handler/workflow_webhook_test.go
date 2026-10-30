@@ -293,7 +293,9 @@ func TestWorkflowWebhookRejectsMalformedCalls(t *testing.T) {
 		{"body over 16 KiB", func(c *whReq) { c.body = []byte(big) }, 413},
 		{"unknown field", func(c *whReq) { c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"success","x":1}`, f.identifier)) }, 400},
 		{"result outside enum", func(c *whReq) { c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"maybe"}`, f.identifier)) }, 400},
-		{"ref with space", func(c *whReq) { c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"success","ref":"a b"}`, f.identifier)) }, 400},
+		{"ref with space", func(c *whReq) {
+			c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"success","ref":"a b"}`, f.identifier))
+		}, 400},
 		{"ref over 128", func(c *whReq) {
 			c.body = []byte(fmt.Sprintf(`{"issue":%q,"result":"success","ref":%q}`, f.identifier, strings.Repeat("a", 129)))
 		}, 400},
@@ -453,11 +455,15 @@ func TestWorkflowWebhookRefNeverReachesPromptSurfaces(t *testing.T) {
 
 type errLimiter struct{}
 
-func (errLimiter) Allow(context.Context, string) bool                  { return true }
-func (errLimiter) AllowWithError(context.Context, string) (bool, error) { return false, errors.New("redis down") }
-func (errLimiter) Check(context.Context, string) bool                  { return true }
-func (errLimiter) CheckWithError(context.Context, string) (bool, error) { return false, errors.New("redis down") }
-func (errLimiter) RetryAfter(context.Context, string) time.Duration    { return time.Second }
+func (errLimiter) Allow(context.Context, string) bool { return true }
+func (errLimiter) AllowWithError(context.Context, string) (bool, error) {
+	return false, errors.New("redis down")
+}
+func (errLimiter) Check(context.Context, string) bool { return true }
+func (errLimiter) CheckWithError(context.Context, string) (bool, error) {
+	return false, errors.New("redis down")
+}
+func (errLimiter) RetryAfter(context.Context, string) time.Duration { return time.Second }
 
 // Case 17.
 func TestWorkflowWebhookFailsClosedWhenALimiterIsDown(t *testing.T) {
@@ -630,7 +636,9 @@ func TestWorkflowWebhookSaveNeedsAnEnabledEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID))
+	})
 	save().Want(http.StatusOK)
 
 	if _, err := testHandler.Queries.DisableWorkflowWebhookEndpoint(context.Background(), ep.ID); err != nil {
@@ -653,7 +661,9 @@ func whEndpoint(t *testing.T, workflowID string) db.WorkflowWebhookEndpoint {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workflow_webhook_endpoint WHERE id=$1`, uuidToString(ep.ID))
+	})
 	return ep
 }
 

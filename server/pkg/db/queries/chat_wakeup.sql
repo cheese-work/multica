@@ -1,6 +1,6 @@
 -- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, instruction, fire_at, created_by_task_id)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, title, instruction, fire_at, created_by_task_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: CountPendingChatWakeups :one
@@ -36,3 +36,7 @@ UPDATE chat_wakeup SET fired_task_id = $2 WHERE id = $1;
 -- name: DropChatWakeup :exec
 UPDATE chat_wakeup SET status = 'cancelled', resolved_at = now()
 WHERE id = $1 AND status = 'pending';
+
+-- name: ListChatWakeupsByFiredTasks :many
+SELECT * FROM chat_wakeup
+WHERE fired_task_id = ANY(@task_ids::uuid[]);

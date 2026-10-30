@@ -819,17 +819,18 @@ var identifierNumberRe = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-(\d+)$`)
 
 // parseQueryNumber extracts an issue number from the query if it looks like
 // an identifier (e.g. "MUL-123" or "V2-12") or a bare number (e.g. "123").
+// Numbers outside PostgreSQL int4 range remain ordinary text search terms.
 func parseQueryNumber(q string) (int, bool) {
 	q = strings.TrimSpace(q)
 	// Check for identifier pattern like "MUL-123"
 	if m := identifierNumberRe.FindStringSubmatch(q); m != nil {
-		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
-			return n, true
+		if n, err := strconv.ParseInt(m[1], 10, 32); err == nil && n > 0 {
+			return int(n), true
 		}
 	}
 	// Check for bare number
-	if n, err := strconv.Atoi(q); err == nil && n > 0 {
-		return n, true
+	if n, err := strconv.ParseInt(q, 10, 32); err == nil && n > 0 {
+		return int(n), true
 	}
 	return 0, false
 }
@@ -1215,34 +1216,8 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 		for rows.Next() {
-			var sr searchResult
-			if err := rows.Scan(
-				&sr.issue.ID,
-				&sr.issue.WorkspaceID,
-				&sr.issue.Title,
-				&sr.issue.Description,
-				&sr.issue.Status,
-				&sr.issue.Priority,
-				&sr.issue.AssigneeType,
-				&sr.issue.AssigneeID,
-				&sr.issue.CreatorType,
-				&sr.issue.CreatorID,
-				&sr.issue.ParentIssueID,
-				&sr.issue.AcceptanceCriteria,
-				&sr.issue.ContextRefs,
-				&sr.issue.Position,
-				&sr.issue.StartDate,
-				&sr.issue.DueDate,
-				&sr.issue.CreatedAt,
-				&sr.issue.UpdatedAt,
-				&sr.issue.LastActivityAt,
-				&sr.issue.Number,
-				&sr.issue.ProjectID,
-				&sr.issue.Revision,
-				&sr.issue.DuplicateOfIssueID,
-				&sr.matchSource,
-				&sr.matchedCommentContent,
-			); err != nil {
+			sr, err := scanSearchIssue(rows)
+			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
 			results = append(results, sr)
@@ -1261,12 +1236,12 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		if isSearchStatementTimeout(err) {
 			slog.Warn("search issues timed out",
 				"workspace_id", workspaceID,
-				"query", q,
+				"query_length", len([]rune(q)),
 				"timeout", searchStatementTimeout)
 			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
 			return
 		}
-		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query", q)
+		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
 		writeError(w, http.StatusInternalServerError, "failed to search issues")
 		return
 	}
@@ -3803,14 +3778,15 @@ func mergeIssueChannelMediaDescription(current, incoming string, base *string, a
 	return merged
 }
 
-func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current db.Issue, rawFields map[string]json.RawMessage) {
+func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current db.Issue, rawFields map[string]json.RawMessage, workflowAssignee bool) {
 	_, assigneeTypeTouched := rawFields["assignee_type"]
 	_, assigneeIDTouched := rawFields["assignee_id"]
 	// Assignee type and id form one validated value. If either half was
 	// supplied, retain the pre-validation counterpart in params rather than
 	// combining the supplied half with a concurrently-written counterpart that
-	// has never been validated with it.
-	if !assigneeTypeTouched && !assigneeIDTouched {
+	// has never been validated with it. A workflow-resolved assignee is also
+	// an intended write, even though the caller sent no assignee fields.
+	if !assigneeTypeTouched && !assigneeIDTouched && !workflowAssignee {
 		params.AssigneeType = current.AssigneeType
 		params.AssigneeID = current.AssigneeID
 	}
@@ -3925,7 +3901,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 			Valid:  true,
 		}
 	}
-	refreshUntouchedNullableIssueParams(&params, current, rawFields)
+	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
 
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
@@ -4207,7 +4183,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// An agent's run may only move the issue from the step it works on.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4426,6 +4402,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 // callers should treat any non-zero status as a rejection and surface it back
 // to the client.
 func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+	return h.validateAssignee(ctx, workspaceID, assigneeType, assigneeID, func(agent db.Agent) bool {
+		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
+		return h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID)
+	})
+}
+
+// validateAssignee is validateAssigneePair's check with the invoke gate's
+// caller supplied: a request judges the requester, a system write (a spawned
+// sub-workflow child) judges the human it acts for. Every other check, and the
+// invoke gate itself, is the same for both.
+func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assigneeType pgtype.Text, assigneeID pgtype.UUID, canInvoke func(db.Agent) bool) (int, string) {
 	// Both unset → unassigned issue, valid.
 	if !assigneeType.Valid && !assigneeID.Valid {
 		return 0, ""
@@ -4458,9 +4446,7 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		if agent.ArchivedAt.Valid {
 			return http.StatusBadRequest, "cannot assign to archived agent"
 		}
-		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
-		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
-		if !h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID) {
+		if !canInvoke(agent) {
 			// Names the missing permission, not the target's configuration: the
 			// old "private agent" wording both disclosed the agent's permission
 			// mode and was simply wrong for a `public_to` agent scoped to
@@ -4487,9 +4473,7 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		if err != nil || leader.ArchivedAt.Valid {
 			return http.StatusBadRequest, "squad leader is archived; cannot assign to this squad"
 		}
-		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
-		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
-		if !h.canInvokeAgent(ctx, leader, actorType, actorID, effectiveInvoker, workspaceID) {
+		if !canInvoke(leader) {
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
@@ -4754,6 +4738,11 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
+		}
+		// DeleteIssue's own event sweep misses a capture that committed while it
+		// waited on that capture's issue lock; this later statement sees it.
+		if err := qtx.DeleteIssuePREvents(ctx, db.DeleteIssuePREventsParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("sweep issue pr events: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -5082,7 +5071,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// entering a handoff step reassigns this issue to the step's handler.
 		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-		handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
+		handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, workflowCaller{run: callerRun, agent: actorType == "agent"})
 		if err != nil {
 			continue
 		}

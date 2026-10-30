@@ -113,7 +113,18 @@ describe("ChatMessageList — decision cards", () => {
     expect(region).toHaveTextContent("12:00 ICT");
   });
 
-  it("keeps the original ask and reason in the withdrawn card, not a text announcement", () => {
+  it("keeps the original request row when a cancellation notice references the same request", () => {
+    const withdrawn = { ...requestCard, state: "withdrawn" as const, reason: "Superseded by the new scope." };
+    const { container } = renderList({ messages: [
+      { ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: withdrawn },
+      { ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice" }), decision_requests: [withdrawn] },
+    ] });
+    expect(container.querySelectorAll("[data-row-key]")).toHaveLength(2);
+    expect(container.querySelector('[data-row-key="ask"]')).toHaveTextContent(requestCard.ask);
+    expect(container.querySelector('[data-row-key="notice"]')).toBeInTheDocument();
+  });
+
+  it("pairs the full withdrawn request with a compact announcement without repeating the ask", () => {
     renderList({ messages: [
       { ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: { ...requestCard, state: "withdrawn", reason: "Superseded by the new scope.", withdrawn_at: "2026-10-26T06:30:00Z" } },
       { ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice", content: "Obsolete text announcement" }), decision_requests: [{ ...requestCard, state: "withdrawn", reason: "Superseded by the new scope.", withdrawn_at: "2026-10-26T06:30:00Z" }] },
@@ -122,13 +133,20 @@ describe("ChatMessageList — decision cards", () => {
     expect(region).toHaveTextContent(requestCard.ask);
     expect(region).toHaveTextContent("Superseded by the new scope.");
     expect(region).toHaveTextContent("13:30 ICT");
+    const announcement = screen.getByRole("region", { name: "Withdrawn in CHE-2088" });
+    expect(announcement).toHaveTextContent("Withdrawn");
+    expect(announcement).toHaveTextContent("Superseded by the new scope.");
+    expect(announcement).not.toHaveTextContent(requestCard.ask);
+    expect(screen.getAllByText(requestCard.ask)).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Withdrawn in CHE-2088" })).toHaveAttribute("href", "/acme/issues/issue-1#comment-source-1");
+    expect(screen.queryByRole("button", { name: "Disclaim" })).toBeNull();
     expect(screen.queryByText("Obsolete text announcement")).toBeNull();
     expect(screen.queryByText(/ask text unavailable/i)).toBeNull();
   });
 
   it("labels answered asks and leaves legacy asks without source metadata usable", () => {
     renderList({ messages: [{ ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: { ...requestCard, state: "answered", source_comment_id: undefined } }] });
-    expect(screen.getByRole("region", { name: "Decision request: Answered" })).toHaveTextContent(requestCard.ask);
+    expect(screen.getByRole("region", { name: "Decision request: Recorded" })).toHaveTextContent(requestCard.ask);
     expect(screen.getByRole("link", { name: "CHE-2088" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Source comment" })).toBeNull();
   });
@@ -139,10 +157,34 @@ describe("ChatMessageList — decision cards", () => {
     expect(screen.queryByTestId("decision-request-card")).toBeNull();
   });
 
-  it("renders the withdrawn card when the original ask is outside the loaded page", () => {
+  it("renders the compact notice when the original ask is outside the loaded page", () => {
     renderList({ messages: [{ ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice", content: "Legacy cancellation text" }), decision_requests: [{ ...requestCard, state: "withdrawn", reason: "Scope changed." }] }] });
-    expect(screen.getByRole("region", { name: "Decision request: Withdrawn" })).toHaveTextContent(requestCard.ask);
+    expect(screen.getByRole("region", { name: "Withdrawn in CHE-2088" })).toBeInTheDocument();
+    expect(screen.queryByText(requestCard.ask)).toBeNull();
     expect(screen.queryByText("Legacy cancellation text")).toBeNull();
+  });
+
+  it("renders one compact row per grouped withdrawal and falls back to the issue without a source comment", () => {
+    renderList({ messages: [{ ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice" }), decision_requests: [
+      { ...requestCard, state: "withdrawn", reason: "Issue closed." },
+      { ...requestCard, id: "request-2", issue_id: "issue-2", issue_identifier: "", source_comment_id: undefined, state: "withdrawn", ask: "Second ask", reason: "Scope changed." },
+    ] }] });
+    expect(screen.getAllByTestId("decision-withdrawal-card")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Withdrawn in CHE-2088" })).toHaveTextContent("Issue closed.");
+    expect(screen.getByRole("region", { name: "Withdrawn in issue-2" })).toHaveTextContent("Scope changed.");
+    expect(screen.getByRole("link", { name: "Withdrawn in issue-2" })).toHaveAttribute("href", "/acme/issues/issue-2");
+    expect(screen.queryByTestId("decision-request-card")).toBeNull();
+    expect(screen.queryByText("Second ask")).toBeNull();
+  });
+
+  it("keeps both cards when paging loads the original request after its withdrawal notice", () => {
+    const withdrawn = { ...requestCard, state: "withdrawn" as const };
+    const notice = { ...message("notice", { role: "assistant", message_kind: "decision_cancel_notice" }), decision_requests: [withdrawn] };
+    const { rerenderList } = renderList({ messages: [notice] });
+    expect(screen.getByTestId("decision-withdrawal-card")).toBeInTheDocument();
+    rerenderList({ messages: [{ ...message("ask", { role: "assistant", message_kind: "decision_request" }), decision_request: withdrawn }, notice] });
+    expect(screen.getAllByTestId("decision-request-card")).toHaveLength(1);
+    expect(screen.getAllByTestId("decision-withdrawal-card")).toHaveLength(1);
   });
 
   it("keeps a cancellation notice readable if additive card metadata is unavailable", () => {

@@ -217,6 +217,19 @@ export function useSettingsSearchIndex(
         anchor: "co-author",
         title: t(($) => $.github.feature_co_author_label),
       },
+      { tab: "code", anchor: "github-review", title: t(($) => $.github_review.section_title) },
+      {
+        tab: "code",
+        anchor: "github-review-members",
+        title: t(($) => $.github_review.members_label),
+        description: t(($) => $.github_review.members_description),
+      },
+      {
+        tab: "code",
+        anchor: "github-review-authors",
+        title: t(($) => $.github_review.authors_label),
+        description: t(($) => $.github_review.authors_description),
+      },
       {
         tab: "code",
         anchor: "pr-merge-status",

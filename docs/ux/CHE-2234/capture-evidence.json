@@ -1,0 +1,17 @@
+{
+  "host": "congvc-X99",
+  "browser": "Google Chrome via Playwright",
+  "theme": "dark",
+  "locale": "en-GB",
+  "time_zone": "Asia/Bangkok",
+  "reduced_motion": "reduce",
+  "source_base": "6ae67d3257d5517862222df9c9c7b23a97cadab1",
+  "fixture": "Real shared ChatMessageList; CHE-2200 withdrawal metadata and shortened ask; no live C00 writes",
+  "capture_server": "stopped",
+  "captures": [
+    { "width": 1440, "scrollWidth": 1440, "requestCards": 1, "withdrawalCards": 0, "stage": "before", "errors": [] },
+    { "width": 390, "scrollWidth": 390, "requestCards": 1, "withdrawalCards": 0, "stage": "before", "errors": [] },
+    { "width": 1440, "scrollWidth": 1440, "requestCards": 1, "withdrawalCards": 1, "stage": "after", "errors": [] },
+    { "width": 390, "scrollWidth": 390, "requestCards": 1, "withdrawalCards": 1, "stage": "after", "errors": [] }
+  ]
+}

@@ -143,6 +143,28 @@ describe("CommentCard — decision quote", () => {
     expect(avatars).toContain("human-1");
   });
 
+  it("puts the receipt under the member's own answering comment, not on a new one", () => {
+    renderCard(
+      quote({
+        id: "m1",
+        actor_type: "member",
+        actor_id: "human-1",
+        content: "Hold.",
+        decision_comment_kind: undefined,
+        decision_answer_id: undefined,
+        decision_receipt_answer_id: "answer-1",
+        decision_state: "pending",
+        decision_chosen_option_index: 1,
+      }),
+    );
+    expect(screen.getByText("Hold.")).toBeTruthy();
+    const receipt = screen.getByTestId("decision-quote-card");
+    expect(receipt).toHaveTextContent("Recorded");
+    expect(receipt).toHaveTextContent("Option 2");
+    expect(receipt).not.toHaveTextContent("Hold.");
+    expect(screen.getByTestId("decision-disclaim-button")).toBeTruthy();
+  });
+
   it("renders the withdrawal note as a compact line", () => {
     renderCard(quote({ id: "d1", decision_comment_kind: "disclaim", content: "Decision withdrawn: human." }));
     expect(screen.getByTestId("decision-withdrawal-line")).toHaveTextContent("Decision withdrawn: human.");
