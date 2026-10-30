@@ -1,7 +1,7 @@
 "use client";
 
 import { lazy, Suspense, useRef, useState } from "react";
-import { GitFork } from "lucide-react";
+import { GitFork } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../../i18n";
 
