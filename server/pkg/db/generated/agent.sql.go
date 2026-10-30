@@ -5601,6 +5601,17 @@ func (q *Queries) GetRunningTaskStartForIssueAndAgent(ctx context.Context, arg G
 	return started_at, err
 }
 
+const getTaskTaintIDs = `-- name: GetTaskTaintIDs :one
+SELECT taint_ids FROM agent_task_queue WHERE id = $1
+`
+
+func (q *Queries) GetTaskTaintIDs(ctx context.Context, id pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, getTaskTaintIDs, id)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const getUnackedSupersededRun = `-- name: GetUnackedSupersededRun :one
 SELECT t.id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
@@ -11011,6 +11022,24 @@ func (q *Queries) StartAgentTask(ctx context.Context, id pgtype.UUID) (AgentTask
 		&i.TaintIds,
 	)
 	return i, err
+}
+
+const taintPendingRunsOnIssue = `-- name: TaintPendingRunsOnIssue :exec
+UPDATE agent_task_queue SET taint_ids = $2::text[]
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched')
+`
+
+type TaintPendingRunsOnIssueParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	TaintIds []string    `json:"taint_ids"`
+}
+
+// Before a tainted writer assigns the issue: every run that has left the
+// queue or is about to still reads the issue afterwards, so each takes the
+// writer's taint (the task trigger unions it with what the run has).
+func (q *Queries) TaintPendingRunsOnIssue(ctx context.Context, arg TaintPendingRunsOnIssueParams) error {
+	_, err := q.db.Exec(ctx, taintPendingRunsOnIssue, arg.IssueID, arg.TaintIds)
+	return err
 }
 
 const taintQueuedRunCarryingIssueWrite = `-- name: TaintQueuedRunCarryingIssueWrite :execrows

@@ -4222,6 +4222,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	if (assigneeSupplied || handoff != nil) && !h.taintPendingRunsBeforeWrite(w, r, prevIssue.ID) {
+		return
+	}
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -5103,6 +5106,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		if (assigneeSupplied || handoff != nil) && !h.taintPendingRunsBeforeWrite(w, r, prevIssue.ID) {
+			return
+		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.

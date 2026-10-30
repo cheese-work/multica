@@ -128,6 +128,25 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 	return false
 }
 
+// taintPendingRunsBeforeWrite gives the runs already pending on the issue the
+// taint of the task making this request. It runs before the issue write: a
+// claim that read the issue after the write must already hold the taint, and
+// one that read it before the write never saw the write. If the requesting
+// task's taint cannot be read, the write does not happen.
+func (h *Handler) taintPendingRunsBeforeWrite(w http.ResponseWriter, r *http.Request, issueID pgtype.UUID) bool {
+	ctx := h.actingTaskContext(r)
+	taint, err := service.ActingTaskTaint(ctx, h.Queries)
+	if err == nil && len(taint) > 0 {
+		err = h.Queries.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issueID})
+	}
+	if err != nil {
+		slog.Error("could not record requesting task taint on pending runs", "issue_id", uuidToString(issueID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return false
+	}
+	return true
+}
+
 // queuedRunCarriesWrite reports whether a queued run of the agent can stand in
 // for the run a write lost to the pending-task unique index.
 func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {

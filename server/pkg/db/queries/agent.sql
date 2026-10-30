@@ -1958,6 +1958,16 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
     ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
   END;
 
+-- name: TaintPendingRunsOnIssue :exec
+-- Before a tainted writer assigns the issue: every run that has left the
+-- queue or is about to still reads the issue afterwards, so each takes the
+-- writer's taint (the task trigger unions it with what the run has).
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+
+-- name: GetTaskTaintIDs :one
+SELECT taint_ids FROM agent_task_queue WHERE id = $1;
+
 -- name: TaintQueuedRunCarryingIssueWrite :execrows
 -- HasQueuedRunCarryingIssueWrite for a write made by a tainted task: the
 -- queued run that stands in for it takes the writer's taint (the task trigger

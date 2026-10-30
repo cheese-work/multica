@@ -1474,7 +1474,7 @@ func actingTask(ctx context.Context) pgtype.UUID {
 // ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
 // names none. Fail closed: a task that cannot be read cannot be shown clean.
 func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
-	acting, _ := ctx.Value(actingTaskKey{}).(pgtype.UUID)
+	acting := actingTask(ctx)
 	if !acting.Valid {
 		return nil, nil
 	}

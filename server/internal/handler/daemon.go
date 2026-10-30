@@ -4297,6 +4297,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.InitiatorEmail = originator.Email
 	}
 
+	// The issue was read above, after the task left the queue. A tainted
+	// assignment written before that read has put its taint on this task by now,
+	// so read the taint last and answer with it.
+	if task.IssueID.Valid {
+		latest, err := h.Queries.GetTaskTaintIDs(r.Context(), task.ID)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, err, "taint", uuidToString(task.ID))
+		}
+		if len(latest) != len(task.TaintIds) {
+			task.TaintIds = latest
+			applyRunProfile()
+		}
+	}
+
 	return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, nil
 }
 
