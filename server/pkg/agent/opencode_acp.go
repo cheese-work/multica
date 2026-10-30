@@ -449,6 +449,10 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 	// session/cancel to stop.
 	var promptSent atomic.Bool
 
+	// cleanupConfirmed is written once inside stop and read only after stop
+	// returns: Result is the daemon's cleanup acknowledgement (CleanupRequired),
+	// so every Result is sent after stop and reports a surviving group.
+	var cleanupConfirmed bool
 	var stopOnce sync.Once
 	stop := func(force bool) {
 		stopOnce.Do(func() {
@@ -471,6 +475,7 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 			_ = cmd.Wait()
 			<-readerDone
 			<-stderrDone
+			cleanupConfirmed = cmd.ProcessState != nil && waitProcessGroupGone(cmd, opencodeTerminateGrace())
 			releaseProcessGroup(cmd)
 		})
 	}
@@ -506,6 +511,8 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 
 		startTime := time.Now()
 		result := func(status, errText, sessionID string, rejected bool) {
+			stop(runCtx.Err() != nil)
+			status, errText = opencodeACPCleanupStatus(cleanupConfirmed, status, errText)
 			resCh <- Result{Status: status, Error: errText, SessionID: sessionID, ResumeRejected: rejected, DurationMs: time.Since(startTime).Milliseconds()}
 		}
 
@@ -698,6 +705,7 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 			}
 			usageMap = map[string]TokenUsage{name: usage}
 		}
+		finalStatus, finalError = opencodeACPCleanupStatus(cleanupConfirmed, finalStatus, finalError)
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("opencode finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 		resCh <- Result{
@@ -710,7 +718,17 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &Session{CleanupRequired: true, Messages: msgCh, Result: resCh}, nil
+}
+
+// opencodeACPCleanupStatus reports a run whose process group outlived the
+// teardown as cleanup_unconfirmed, so the daemon never takes its end as proof
+// that OpenCode's tools and subagents have stopped.
+func opencodeACPCleanupStatus(confirmed bool, status, errText string) (string, string) {
+	if confirmed {
+		return status, errText
+	}
+	return "cleanup_unconfirmed", strings.TrimSpace("opencode process cleanup unconfirmed; background processes may still be running. Check them before manually rerunning this task. " + errText)
 }
 
 // opencodeACPNotify writes a JSON-RPC notification (no id, no response).

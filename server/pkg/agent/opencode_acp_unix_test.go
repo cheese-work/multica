@@ -5,10 +5,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -25,6 +28,7 @@ if [ "$1" = "export" ] || [ "$1" = "session" ]; then
   printf '%s' '{"info":{"id":"ses_fake"},"messages":[{"info":{"role":"assistant","time":{"created":1},"tokens":{"input":999,"output":999,"cache":{"read":0,"write":0}}}},{"info":{"role":"assistant","time":{"created":9999999999999},"tokens":{"input":40,"output":7,"cache":{"read":3,"write":0}}}}]}'
   exit 0
 fi
+echo $$ > "$FAKE_LOG.pid"
 prompt_id=""
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_LOG"
@@ -37,6 +41,10 @@ while IFS= read -r line; do
       fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":false}}}}\n' "$id" ;;
     *'"method":"session/new"'*|*'"method":"session/load"'*)
+      if [ "$FAKE_MODE" = "new-error" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"session store unavailable"}}\n' "$id"
+        continue
+      fi
       if [ "$FAKE_MODE" = "stall" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_fake"}}\n' "$id"
         exec sleep 60
@@ -264,6 +272,53 @@ func TestOpencodeACPTimeoutTearsDownStalledSetupWrite(t *testing.T) {
 		t.Fatalf("teardown took %s; want it bounded by the timeout, not the runtime's own exit", elapsed)
 	}
 	if res.Status != "timeout" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// The daemon may treat a run's end as the end of its processes only when the
+// backend says so: OpenCode runs long tools and subagents in its own process
+// group, so the session must declare the cleanup handshake (MUL-8233).
+func TestOpencodeACPSessionRequiresCleanupHandshake(t *testing.T) {
+	t.Parallel()
+	backend, _ := newFakeOpencodeACP(t, "opencode v2.2.0", "")
+	session, err := backend.Execute(context.Background(), "do it", ExecOptions{Cwd: t.TempDir(), Timeout: 15 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	res := <-session.Result
+	if !session.CleanupRequired {
+		t.Fatalf("opencode ACP session does not require the cleanup handshake (result %+v)", res)
+	}
+}
+
+// Result is the cleanup acknowledgement, so it must not arrive while the
+// runtime's process group is alive — including on a setup path that fails
+// while the runtime keeps running.
+func TestOpencodeACPSetupFailureResultFollowsCleanup(t *testing.T) {
+	t.Parallel()
+	backend, logPath := newFakeOpencodeACP(t, "opencode v2.2.0", "new-error")
+	session, err := backend.Execute(context.Background(), "hello", ExecOptions{Cwd: t.TempDir(), Timeout: 15 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	// Read Result before Messages: the daemon receives Result while its
+	// transcript drain may still be running.
+	res := <-session.Result
+	raw, err := os.ReadFile(logPath + ".pid")
+	if err != nil {
+		t.Fatalf("read runtime pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 1 {
+		t.Fatalf("runtime pid %q: %v", raw, err)
+	}
+	if err := syscall.Kill(-pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("result %q arrived while the runtime process group %d was still alive (kill: %v)", res.Status, pid, err)
+	}
+	if res.Status != "failed" {
 		t.Fatalf("result = %+v", res)
 	}
 }
