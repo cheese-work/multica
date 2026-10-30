@@ -453,6 +453,10 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 	// returns: Result is the daemon's cleanup acknowledgement (CleanupRequired),
 	// so every Result is sent after stop and reports a surviving group.
 	var cleanupConfirmed bool
+	// terminal is the TerminalObserved boundary: OpenCode answered the prompt
+	// before the run was cancelled or timed out, so its outcome is decided.
+	// It is published before the teardown and before Result.
+	var terminal atomic.Bool
 	var stopOnce sync.Once
 	stop := func(force bool) {
 		stopOnce.Do(func() {
@@ -663,6 +667,7 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 			}
 		}
 		if answered && runCtx.Err() == nil {
+			terminal.Store(true)
 			waitForACPNotificationQuiescence(runCtx, activity, readerDone, acpNotificationQuietTime, opencodeACPDrainGrace)
 		}
 		streaming.Store(false)
@@ -718,7 +723,7 @@ func (b *opencodeBackend) executeACP(ctx context.Context, execPath, prompt strin
 		}
 	}()
 
-	return &Session{CleanupRequired: true, Messages: msgCh, Result: resCh}, nil
+	return &Session{CleanupRequired: true, Messages: msgCh, Result: resCh, TerminalObserved: terminal.Load}, nil
 }
 
 // opencodeACPCleanupStatus reports a run whose process group outlived the
