@@ -15,8 +15,7 @@ const countRunningTasksByDaemon = `-- name: CountRunningTasksByDaemon :many
 SELECT rt.daemon_id::text AS daemon_id, COUNT(*)::int AS running_tasks
 FROM agent_task_queue t
 JOIN agent_runtime rt ON rt.id = t.runtime_id
-WHERE rt.workspace_id = $1
-  AND rt.daemon_id IS NOT NULL
+WHERE rt.daemon_id = ANY($1::text[])
   AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
 GROUP BY rt.daemon_id
 `
@@ -26,10 +25,11 @@ type CountRunningTasksByDaemonRow struct {
 	RunningTasks int32  `json:"running_tasks"`
 }
 
-// Tasks still occupying a machine: handed to the daemon or running. Queued
-// tasks do not count; they wait on the server while the daemon is paused.
-func (q *Queries) CountRunningTasksByDaemon(ctx context.Context, workspaceID pgtype.UUID) ([]CountRunningTasksByDaemonRow, error) {
-	rows, err := q.db.Query(ctx, countRunningTasksByDaemon, workspaceID)
+// Tasks still occupying a machine, in any workspace: handed to the daemon or
+// running. Queued tasks do not count; they wait on the server while the daemon
+// is paused.
+func (q *Queries) CountRunningTasksByDaemon(ctx context.Context, daemonIds []string) ([]CountRunningTasksByDaemonRow, error) {
+	rows, err := q.db.Query(ctx, countRunningTasksByDaemon, daemonIds)
 	if err != nil {
 		return nil, err
 	}
@@ -50,37 +50,36 @@ func (q *Queries) CountRunningTasksByDaemon(ctx context.Context, workspaceID pgt
 
 const deleteDaemonPause = `-- name: DeleteDaemonPause :execrows
 DELETE FROM daemon_pause
-WHERE workspace_id = $1 AND daemon_id = $2
+WHERE daemon_id = $1
 `
 
-type DeleteDaemonPauseParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	DaemonID    string      `json:"daemon_id"`
-}
-
-func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPauseParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteDaemonPause, arg.WorkspaceID, arg.DaemonID)
+// A daemon_id is one machine, so resume lifts the pause in every workspace.
+func (q *Queries) DeleteDaemonPause(ctx context.Context, daemonID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDaemonPause, daemonID)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const listDaemonPausesByWorkspace = `-- name: ListDaemonPausesByWorkspace :many
-SELECT workspace_id, daemon_id, reason, paused_by, paused_at FROM daemon_pause
-WHERE workspace_id = $1
+const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
+SELECT DISTINCT ON (daemon_id) workspace_id, daemon_id, reason, paused_by, paused_at FROM daemon_pause
+WHERE daemon_id = ANY($1::text[])
   AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
+ORDER BY daemon_id, paused_at DESC
 `
 
-type ListDaemonPausesByWorkspaceParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	MaintenanceSecs int32       `json:"maintenance_secs"`
-	OtherSecs       int32       `json:"other_secs"`
+type ListLiveDaemonPausesParams struct {
+	DaemonIds       []string `json:"daemon_ids"`
+	MaintenanceSecs int32    `json:"maintenance_secs"`
+	OtherSecs       int32    `json:"other_secs"`
 }
 
-// Live pauses only: a pause past its auto-expiry no longer holds the machine.
-func (q *Queries) ListDaemonPausesByWorkspace(ctx context.Context, arg ListDaemonPausesByWorkspaceParams) ([]DaemonPause, error) {
-	rows, err := q.db.Query(ctx, listDaemonPausesByWorkspace, arg.WorkspaceID, arg.MaintenanceSecs, arg.OtherSecs)
+// Live pauses for the given machines, whichever workspace set them: one daemon
+// polls every workspace its owner joined, so a pause holds the whole machine.
+// A pause past its auto-expiry no longer holds it.
+func (q *Queries) ListLiveDaemonPauses(ctx context.Context, arg ListLiveDaemonPausesParams) ([]DaemonPause, error) {
+	rows, err := q.db.Query(ctx, listLiveDaemonPauses, arg.DaemonIds, arg.MaintenanceSecs, arg.OtherSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -95,45 +94,6 @@ func (q *Queries) ListDaemonPausesByWorkspace(ctx context.Context, arg ListDaemo
 			&i.PausedBy,
 			&i.PausedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPausedDaemons = `-- name: ListPausedDaemons :many
-SELECT workspace_id, daemon_id FROM daemon_pause
-WHERE workspace_id::text || '|' || daemon_id = ANY($1::text[])
-  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
-`
-
-type ListPausedDaemonsParams struct {
-	Keys            []string `json:"keys"`
-	MaintenanceSecs int32    `json:"maintenance_secs"`
-	OtherSecs       int32    `json:"other_secs"`
-}
-
-type ListPausedDaemonsRow struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	DaemonID    string      `json:"daemon_id"`
-}
-
-// Claim gate: which of the given "<workspace_id>|<daemon_id>" keys are paused.
-// A batch claim can span workspaces; the table holds one row per paused machine.
-func (q *Queries) ListPausedDaemons(ctx context.Context, arg ListPausedDaemonsParams) ([]ListPausedDaemonsRow, error) {
-	rows, err := q.db.Query(ctx, listPausedDaemons, arg.Keys, arg.MaintenanceSecs, arg.OtherSecs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListPausedDaemonsRow{}
-	for rows.Next() {
-		var i ListPausedDaemonsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.DaemonID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

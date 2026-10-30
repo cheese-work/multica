@@ -298,3 +298,73 @@ func TestDaemonPause_AdminWhoIsNotOwnerIsRefused(t *testing.T) {
 		t.Fatalf("workspace owner resume = %d, want 204: %s", w.Code, w.Body.String())
 	}
 }
+
+// seedSecondWorkspaceRuntime puts a runtime on daemonID in a second workspace
+// (the test user is a member), with one queued task. One daemon polls every
+// workspace its owner joined, so a machine pause must reach it too.
+func seedSecondWorkspaceRuntime(t *testing.T, ctx context.Context, daemonID, slug string) (workspaceID, runtimeID, taskID string) {
+	t.Helper()
+	workspaceID = dbfx.Workspace(t, "Pause "+slug, slug)
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	runtimeID = dbfx.Runtime(t, "Pause "+slug+" runtime", testutil.Cols{"workspace_id": workspaceID, "daemon_id": daemonID})
+	agentID := dbfx.Agent(t, "Pause "+slug+" agent", runtimeID, testutil.Cols{"workspace_id": workspaceID})
+	issueID := dbfx.Issue(t, "Pause "+slug+" issue", testutil.Cols{"workspace_id": workspaceID})
+	taskID = dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
+	return workspaceID, runtimeID, taskID
+}
+
+func TestDaemonPause_PausedMachineAlsoRefusesClaimsFromOtherWorkspaces(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const daemonID = "pause-xws-claim-machine"
+	_, otherRuntime, otherTask := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-xws-claim")
+	pauseDaemonForTest(t, daemonID) // paused from the default workspace only
+
+	if got := singleClaimTaskID(t, otherRuntime); got != "" {
+		t.Fatalf("paused machine claimed %s for another workspace, want none", got)
+	}
+	resumeRuntime, _ := seedPausableRuntime(t, ctx, daemonID, "Pause xws resume")
+	if w := deletePause(t, testUserID, resumeRuntime); w.Code != http.StatusNoContent {
+		t.Fatalf("resume = %d, want 204: %s", w.Code, w.Body.String())
+	}
+	if got := singleClaimTaskID(t, otherRuntime); got != otherTask {
+		t.Fatalf("after resume other workspace claimed %q, want %s", got, otherTask)
+	}
+}
+
+func TestDaemonPause_DrainCountIncludesOtherWorkspaces(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const daemonID = "pause-xws-count-machine"
+	runtimeID, _ := seedPausableRuntime(t, ctx, daemonID, "Pause xws count")
+	_, _, otherTask := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-xws-count")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, otherTask)
+	pauseDaemonForTest(t, daemonID)
+
+	n := listRuntimesForTest(t)[runtimeID].DaemonRunningTasks
+	if n == nil || *n != 1 {
+		t.Fatalf("daemon_running_tasks = %v, want 1 (a task of another workspace still runs on this machine)", n)
+	}
+}
+
+func TestDaemonPause_WorkspaceOwnerCanPauseAnotherMembersPrivateMachine(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID, _, _ := runtimeVisibilityFixture(t) // private, owned by another member
+	dbfx.Exec(t, `UPDATE agent_runtime SET daemon_id = 'pause-private-machine' WHERE id = $1`, runtimeID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE daemon_id = 'pause-private-machine'`)
+	})
+
+	if w := putPause(t, testUserID, runtimeID, map[string]any{"reason": "maintenance"}); w.Code != http.StatusOK {
+		t.Fatalf("workspace owner pause of a private machine = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if w := deletePause(t, testUserID, runtimeID); w.Code != http.StatusNoContent {
+		t.Fatalf("workspace owner resume of a private machine = %d, want 204: %s", w.Code, w.Body.String())
+	}
+}
