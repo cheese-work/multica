@@ -407,6 +407,22 @@ func (c scopedRuleChain) at(scope WakeupScope) *db.IssueWakeupDefinition {
 	return nil
 }
 
+// sweepPendingBelow reports whether a definition more specific than the scope
+// still has its activation sweep to run. Such an override already decides the
+// rule on the chain's issues, and its sweep baselines the facts.
+func (c scopedRuleChain) sweepPendingBelow(scope WakeupScope) bool {
+	var narrower []*db.IssueWakeupDefinition
+	switch scope {
+	case WakeupScopeWorkspace:
+		narrower = []*db.IssueWakeupDefinition{c.project, c.issue}
+	case WakeupScopeProject:
+		narrower = []*db.IssueWakeupDefinition{c.issue}
+	}
+	return slices.ContainsFunc(narrower, func(d *db.IssueWakeupDefinition) bool {
+		return d != nil && (!d.SweepDone || d.SweepRevision != d.Revision)
+	})
+}
+
 // selects reports whether any definition of the chain records the event type in
 // its selector, which is how capture decided the event was worth keeping.
 func (c scopedRuleChain) selects(eventType string) bool {

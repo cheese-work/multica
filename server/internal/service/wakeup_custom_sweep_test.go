@@ -188,6 +188,40 @@ func TestCustomSweepDoesNotActivateAnEditedPredicateWithAStaleClaim(t *testing.T
 	}
 }
 
+// An override written after the root was claimed changes the predicate the root's
+// pass would activate, though the root's revision is unchanged. The override's
+// own sweep baselines (an override always does); the root's pass must leave the
+// issue to it.
+func TestCustomSweepDoesNotActivateAnOverrideCreatedAfterTheRootClaim(t *testing.T) {
+	k := newCustomEnv(t)
+	ctx := context.Background()
+	root := k.mustSave(t, WakeupScopeWorkspace, "", k.conditionRule(`{"type":"issue_field","field":"status","value":"in_review"}`))
+	claimed, err := k.f.q.ClaimWakeupDefinitionSweep(ctx, db.ClaimWakeupDefinitionSweepParams{
+		Now: pgtype.Timestamptz{Time: time.Now(), Valid: true}, WorkspaceIds: []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}, LeaseUntil: pgtype.Timestamptz{Time: time.Now().Add(time.Minute), Valid: true},
+	})
+	if err != nil || claimed.RuleKey != root.RuleKey || claimed.Revision != 1 || claimed.SweepBaseline {
+		t.Fatalf("claim = %+v, %v, want the root at revision 1 without baseline", claimed, err)
+	}
+	// The override lands after the claim and before activation; the issue already satisfies it.
+	k.mustSave(t, WakeupScopeIssue, root.RuleKey, k.conditionRule(statusIsTodo))
+	if _, _, err := k.s.sweepBatch(ctx, claimed); err != nil {
+		t.Fatalf("stale batch: %v", err)
+	}
+	if got := k.customInstances(t, root.RuleKey); len(got) != 0 {
+		t.Fatalf("the root's pass activated %+v under the override, want nothing: the override's sweep owns this issue", got)
+	}
+	k.f.Exec(t, `UPDATE issue_wakeup_definition SET sweep_retry_at=NULL WHERE workspace_id=$1 AND rule_key=$2`, k.f.WorkspaceID, root.RuleKey)
+	k.sweepAll(t)
+	got := k.customInstances(t, root.RuleKey)
+	if len(got) != 1 || got[0].State != "status:todo" {
+		t.Fatalf("instances = %+v, want one baselined on the facts already true", got)
+	}
+	k.tick(t)
+	if n := k.taskCount(t); n != 0 {
+		t.Fatalf("%d tasks queued for facts that were already true, want none", n)
+	}
+}
+
 func TestCustomSweepStopsWhenTheDefinitionIsDisabledOrDeleted(t *testing.T) {
 	k := newCustomEnv(t)
 	k.bulkIssues(t, 119, k.project, "todo")

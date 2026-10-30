@@ -183,7 +183,10 @@ func sweepAfter(cursor pgtype.UUID) pgtype.UUID {
 // belong to. The rule resolves from the definitions stored now, so an edit that
 // landed after the claim would be activated here without the baseline the edit
 // needs. The transaction therefore reads the swept definition under the issue's
-// lock and gives way when its revision is no longer the claimed one.
+// lock and gives way when its revision is no longer the claimed one. An override
+// whose own sweep is still pending changes the effective predicate without
+// touching the claimed revision; that sweep baselines it, so this one leaves
+// the issue to it.
 func (s *IssueWakeupService) activateIssueRule(ctx context.Context, d db.IssueWakeupDefinition, issueID pgtype.UUID) error {
 	ws, key := d.WorkspaceID, d.RuleKey
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
@@ -204,6 +207,9 @@ func (s *IssueWakeupService) activateIssueRule(ctx context.Context, d db.IssueWa
 	}
 	if swept := b.rules[key].chain.at(WakeupScope(d.ScopeKind)); swept == nil || swept.Revision != d.Revision {
 		return errSweepClaimStale
+	}
+	if b.rules[key].chain.sweepPendingBelow(WakeupScope(d.ScopeKind)) {
+		return nil // an override this pass did not claim decides the rule here; its sweep baselines it
 	}
 	if _, _, err := b.activate(ctx, b.rules[key], d.SweepBaseline); err != nil {
 		return err
