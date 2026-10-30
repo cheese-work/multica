@@ -169,4 +169,36 @@ describe("createAnchorTracker", () => {
     t.record(b, ids);
     expect(loadReadingAnchor(b)).toEqual({ itemId: "d", atLiveEnd: true });
   });
+
+  it("drops the old list's viewability after a New Chat round trip (A -> null -> A)", () => {
+    const key = chatAnchorKey("tracker-roundtrip");
+    const five = ["a", "b", "c", "d", "e"];
+    const six = [...five, "f"];
+    const t = createAnchorTracker();
+    t.setKey(key);
+    t.onViewable(key, [{ index: 3 }, { index: 4 }]);
+    t.onScroll(key, true);
+    t.record(key, five);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "d", atLiveEnd: true });
+
+    t.setKey(null);
+    t.setKey(key);
+    t.onScroll(key, false);
+    t.record(key, six);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "d", atLiveEnd: true });
+
+    t.onViewable(key, [{ index: 3 }, { index: 4 }]);
+    t.record(key, six);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "d", atLiveEnd: false });
+  });
+
+  it("keeps measurements while the key is unchanged", () => {
+    const key = chatAnchorKey("tracker-same-key");
+    const t = createAnchorTracker();
+    t.setKey(key);
+    t.onViewable(key, [{ index: 1 }]);
+    t.setKey(key);
+    t.record(key, ids);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "b", atLiveEnd: false });
+  });
 });

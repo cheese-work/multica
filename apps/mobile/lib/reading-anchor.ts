@@ -113,7 +113,8 @@ export function recordReadingAnchor(
 /**
  * Per-list recording state. FlashList reports viewability ~250ms after a list
  * mounts, and the state outlives a session switch, so every cached value is
- * stamped with the key it was measured for. Until the current key has its own
+ * stamped with the key it was measured for, and `setKey` drops them when the
+ * list instance changes. Until the current key has its own
  * viewability report, `record` does nothing: a saved anchor must survive a
  * scroll that lands before the first report, and one session's rows must never
  * be written under another's key.
@@ -123,7 +124,21 @@ export function createAnchorTracker() {
   let viewable: { index: number | null }[] = [];
   let scrollKey: string | null = null;
   let nearEnd = true;
+  let currentKey: string | null = null;
   return {
+    /**
+     * Call with the list's current key (null while there is no session). Any
+     * change, a null round trip included, is a new list instance: the old
+     * measurements are dropped until the new instance reports.
+     */
+    setKey(key: string | null) {
+      if (key === currentKey) return;
+      currentKey = key;
+      viewKey = null;
+      viewable = [];
+      scrollKey = null;
+      nearEnd = true;
+    },
     onViewable(key: string, rows: { index: number | null }[]) {
       viewKey = key;
       viewable = rows;

@@ -17,11 +17,12 @@ export function useReadingAnchorRecorder(
   ids: string[],
   skipId?: string,
 ) {
+  const [tracker] = useState(createAnchorTracker);
   const latest = useRef({ key, ids, skipId });
   useEffect(() => {
     latest.current = { key, ids, skipId };
+    tracker.setKey(key);
   });
-  const [tracker] = useState(createAnchorTracker);
 
   const [pair] = useState(() => ({
     viewabilityConfig: { itemVisiblePercentThreshold: 1 },
