@@ -1,0 +1,109 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A · Machine card v2</title><style>
+*{margin:0;box-sizing:border-box;font-family:"Helvetica Neue",Arial,"Liberation Sans","DejaVu Sans",sans-serif}code{font-family:"Liberation Mono","DejaVu Sans Mono",monospace}
+:root{--bg:oklch(.988 0 0);--sf:#fff;--bd:oklch(.92 .004 286.3);--fg:oklch(.141 .005 285.8);--mu:oklch(.505 .016 285.9);--fa:oklch(.606 .016 285.9);--m:oklch(.967 .001 286.4);--pri:oklch(.21 .006 285.9);--ok:oklch(.55 .16 145);--wn:oklch(.75 .16 85);--er:oklch(.577 .245 27.3);--in:oklch(.55 .18 250);--ring:oklch(.705 .015 286)}
+body{font-size:14px;line-height:20px;color:var(--fg);background:oklch(.964 .001 286.4);padding:24px}
+h1{font-size:18px;line-height:28px;font-weight:600}.lead{color:var(--mu);max-width:1100px;margin:2px 0 6px}
+.grid{display:grid;grid-template-columns:780px 390px;gap:28px;align-items:start}
+.lab{font-size:11px;line-height:15px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);margin:20px 0 6px}
+.pg{background:var(--bg);border:1px solid var(--bd);border-radius:12px;padding:12px;display:grid;gap:10px}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.bn{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid color-mix(in oklch,var(--wn) 60%,transparent);background:color-mix(in oklch,var(--wn) 14%,var(--sf));border-radius:8px;font-size:13px;line-height:18px}
+.bn .i{color:oklch(.6 .14 80);width:16px;height:16px}.bn .sp{flex:1}.bn.ok .i{color:var(--ok)}.bn.ok{border-color:color-mix(in oklch,var(--ok) 40%,transparent);background:color-mix(in oklch,var(--ok) 8%,var(--sf))}
+.b{height:28px;padding:0 10px;border:1px solid var(--bd);background:var(--sf);border-radius:8px;font-size:13px;font-weight:500;display:inline-flex;gap:6px;align-items:center;color:var(--fg);white-space:nowrap}
+.b.x{height:24px;padding:0 8px;font-size:12px}.b.p{background:var(--pri);color:#fff;border-color:var(--pri)}.b.d{color:var(--er)}.b[disabled]{opacity:.5}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:12px}
+.ch{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:baseline;gap:8px}.ch b{font-weight:600}.ch span{font-size:12px;color:var(--mu)}
+.cr{padding:14px 16px;display:flex;gap:16px;align-items:center;justify-content:space-between}
+.sts{display:flex;gap:10px;align-items:flex-start}.sts .t{font-weight:600}.sts .s{font-size:12px;line-height:16px;color:var(--mu)}
+.sts .x{font-size:12px;line-height:16px;color:var(--fg);display:flex;gap:4px;align-items:center;margin-top:2px}.sts .x .i{width:12px;height:12px;color:var(--mu)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);margin-top:6px;flex:none}.dot.w{background:var(--wn)}.dot.o{background:var(--fa)}
+.sts .i.ok{color:var(--ok);margin-top:3px}
+.cf{padding:10px 16px;border-top:1px solid var(--bd);display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mu);flex-wrap:wrap}.cf .sp{flex:1}.cf code{font-size:12px;color:var(--fg)}
+.mn{width:320px;border:1px solid var(--bd);background:var(--sf);border-radius:8px;box-shadow:0 8px 24px rgb(15 23 42/.08),0 2px 6px rgb(15 23 42/.05);padding:4px;margin:-6px 16px 12px auto}
+.mn p{padding:6px 8px;font-size:12px;line-height:16px;color:var(--mu)}.mi{padding:6px 8px;border-radius:6px;display:block}.mi b{display:block;font-weight:500}.mi small{font-size:12px;color:var(--mu)}.mi.f{background:var(--m);outline:2px solid var(--ring);outline-offset:-2px}
+.sk{height:12px;border-radius:6px;background:var(--m)}
+.nt{margin:0 16px 12px;padding:8px 10px;border-radius:8px;background:var(--m);font-size:12px;line-height:16px;color:var(--mu);display:flex;gap:8px}.nt.er{background:color-mix(in oklch,var(--er) 8%,var(--sf));color:var(--fg)}.nt.er .i{color:var(--er)}.nt.ok{color:var(--fg)}.nt.ok .i{color:var(--ok)}
+.ph{width:390px}.ph .b{height:40px}.ph .b.x{height:40px;font-size:13px}.ph .cr{flex-direction:column;align-items:stretch}.ph .cr .b{justify-content:center}
+.ph .bn{align-items:flex-start;flex-wrap:wrap}.ph .bn .sp{flex-basis:60%}.ph .ttl{font-size:18px;line-height:28px;font-weight:600}.ph .cf .b{flex:1;justify-content:center}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="pa" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="pl" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol><symbol id="ch" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="lk" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol><symbol id="up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16V8M8 12l4-4 4 4"/></symbol><symbol id="cl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol></defs></svg>
+<h1>A · Machine card · v2 (expiry added)</h1>
+<p class="lead">A new "Machine" card between the machine header and the Runtimes list. Status and the one main action sit on one row; Update and Delete runtime keep their existing buttons in the card footer. The owner banner sits above the page content. v2 adds the recorded expiry rules (CHE-2429): a maintenance pause ends after 2 h, an incident or suspended pause after 30 min. The reason menu names each limit, the card and the banner show the time left, and states 8 and 9 show "ending soon" and "ended". Pause rights: machine owner and workspace owner. Left: desktop 780 px. Right: phone 390 px.</p>
+<div class="grid"><div>
+
+<p class="lab">1 · Running (update available)</p>
+<div class="pg"><section class="card" aria-labelledby="a1"><div class="ch"><b id="a1">Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot"></i><div><div class="t">Taking work</div><div class="s">3 tasks running</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="cf"><span>CLI <code>v0.9.4</code> → <code>v0.9.6</code> available</span><button class="b x"><svg class="i"><use href="#up"/></svg>Update</button><span class="sp"></span><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">1b · Running, reason menu open (each reason shows its limit)</p>
+<div class="pg"><section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot"></i><div><div class="t">Taking work</div><div class="s">3 tasks running</div></div></div><button class="b" aria-expanded="true"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="mn" role="menu"><p>Stops new work. Running tasks finish. The pause ends by itself.</p><span class="mi f" role="menuitem"><b>Maintenance</b><small>Planned work. Ends after 2 h</small></span><span class="mi" role="menuitem"><b>Incident</b><small>Something is wrong. Ends after 30 min</small></span><span class="mi" role="menuitem"><b>Suspended</b><small>Out of service. Ends after 30 min</small></span></div>
+<div class="cf"><span>CLI <code>v0.9.6</code></span><span class="sp"></span><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">2 · Pausing (3 tasks left) · owner sees the banner</p>
+<div class="pg"><div class="bn" role="status"><svg class="i"><use href="#al"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> 3 tasks left. Ends in 1 h 48 min.</span><button class="b x">Resume</button></div>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot w"></i><div><div class="t">Paused: maintenance</div><div class="s">Draining: 3 tasks left · by Cheese, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 1 h 48 min (16:20 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div>
+<div class="cf"><span>CLI <code>v0.9.6</code></span><span class="sp"></span><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">3 · Drained (0 tasks)</p>
+<div class="pg"><div class="bn ok" role="status"><svg class="i"><use href="#ck"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> Safe to shut down. Ends in 1 h 10 min.</span><button class="b x">Resume</button></div>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><svg class="i ok"><use href="#ck"/></svg><div><div class="t">Paused: maintenance</div><div class="s">Safe to shut down · by Cheese, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 1 h 10 min (16:20 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div>
+<div class="cf"><span>CLI <code>v0.9.6</code></span><span class="sp"></span><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">4 · Offline (not paused) and 4b · offline, paused (the clock keeps running)</p>
+<div class="pg"><section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot o"></i><div><div class="t">Offline</div><div class="s">Last seen 12 min ago. Pause still stops new work.</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div></section>
+<div class="bn" role="status"><svg class="i"><use href="#al"/></svg><span class="sp"><b>x99 is paused: incident.</b> 2 tasks left (offline; count may be stale). Ends in 12 min.</span><button class="b x">Resume</button></div>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot o"></i><div><div class="t">Paused: incident · Offline</div><div class="s">Draining: 2 tasks left (last report 12 min ago)</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 12 min (14:50 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div></section></div>
+
+<p class="lab">5 · Loading · 6 · Error · 7 · Member without rights</p>
+<div class="pg"><section class="card" aria-busy="true"><div class="ch"><b>Machine</b><span>Loading</span></div>
+<div class="cr"><div style="flex:1;display:grid;gap:8px"><div class="sk" style="width:140px"></div><div class="sk" style="width:90px"></div></div><button class="b" disabled aria-disabled="true"><svg class="i"><use href="#pa"/></svg>Pause</button></div></section>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot o"></i><div><div class="t">Machine state not loaded</div><div class="s">Pause and Resume are off until it loads.</div></div></div><span style="display:flex;gap:8px"><button class="b">Retry</button><button class="b" disabled><svg class="i"><use href="#pa"/></svg>Pause</button></span></div>
+<div class="nt er" role="alert"><svg class="i"><use href="#al"/></svg><span>Could not load the machine state. Check your connection and retry.</span></div></section>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot w"></i><div><div class="t">Paused: maintenance</div><div class="s">Draining: 3 tasks left · by Dana, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 1 h 48 min (16:20 ICT)</div></div></div><button class="b" disabled><svg class="i"><use href="#pl"/></svg>Resume</button></div>
+<div class="nt" role="note"><svg class="i"><use href="#lk"/></svg><span>Only the machine owner and the workspace owner can pause or resume. Ask Dana or Cheese.</span></div></section></div>
+
+<p class="lab">8 · Ending soon (under 5 min left) · owner banner</p>
+<div class="pg"><div class="bn" role="status"><svg class="i"><use href="#al"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> Ends in 4 min. x99 takes work again then.</span><button class="b x">Resume</button></div>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><svg class="i ok"><use href="#ck"/></svg><div><div class="t">Paused: maintenance</div><div class="s">Safe to shut down · by Cheese, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg><b>Ends in 4 min</b>&nbsp;(16:20 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div></section></div>
+
+<p class="lab">9 · Pause ended by itself (page was open at 16:20 ICT) · 9b · ended while offline</p>
+<div class="pg"><section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot"></i><div><div class="t">Taking work</div><div class="s">0 tasks running</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="nt ok" role="status"><svg class="i"><use href="#ck"/></svg><span>The maintenance pause ended at 16:20 ICT. x99 is taking work again.</span></div></section>
+<section class="card"><div class="ch"><b>Machine</b><span>x99 · Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot o"></i><div><div class="t">Offline</div><div class="s">Last seen 2 h 5 min ago.</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="nt" role="status"><svg class="i"><use href="#cl"/></svg><span>The incident pause ended at 14:50 ICT. x99 takes work again when it reconnects.</span></div></section></div>
+
+</div><div>
+
+<p class="lab">Phone · running</p>
+<div class="pg ph"><div class="ttl">x99</div><section class="card"><div class="ch"><b>Machine</b><span>Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot"></i><div><div class="t">Taking work</div><div class="s">3 tasks running</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="cf"><button class="b x"><svg class="i"><use href="#up"/></svg>Update to v0.9.6</button><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">Phone · pausing, banner above the title</p>
+<div class="pg ph"><div class="bn" role="status"><svg class="i"><use href="#al"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> 3 tasks left. Ends in 1 h 48 min.</span><button class="b x">Resume</button></div><div class="ttl">x99</div><section class="card"><div class="ch"><b>Machine</b><span>Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot w"></i><div><div class="t">Paused: maintenance</div><div class="s">Draining: 3 tasks left · by Cheese, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 1 h 48 min (16:20 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div>
+<div class="cf"><button class="b x d">Delete runtime</button></div></section></div>
+
+<p class="lab">Phone · drained</p>
+<div class="pg ph"><div class="bn ok" role="status"><svg class="i"><use href="#ck"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> Safe to shut down. Ends in 1 h 10 min.</span><button class="b x">Resume</button></div><div class="ttl">x99</div><section class="card"><div class="ch"><b>Machine</b><span>Linux amd64</span></div>
+<div class="cr"><div class="sts"><svg class="i ok"><use href="#ck"/></svg><div><div class="t">Paused: maintenance</div><div class="s">Safe to shut down · by Cheese, 14:20 ICT</div><div class="x"><svg class="i"><use href="#cl"/></svg>Ends in 1 h 10 min (16:20 ICT)</div></div></div><button class="b p"><svg class="i"><use href="#pl"/></svg>Resume</button></div></section></div>
+
+<p class="lab">Phone · pause ended</p>
+<div class="pg ph"><div class="ttl">x99</div><section class="card"><div class="ch"><b>Machine</b><span>Linux amd64</span></div>
+<div class="cr"><div class="sts"><i class="dot"></i><div><div class="t">Taking work</div><div class="s">0 tasks running</div></div></div><button class="b"><svg class="i"><use href="#pa"/></svg>Pause<svg class="i"><use href="#ch"/></svg></button></div>
+<div class="nt ok" role="status"><svg class="i"><use href="#ck"/></svg><span>The maintenance pause ended at 16:20 ICT. x99 is taking work again.</span></div></section></div>
+
+</div></div></body></html>
