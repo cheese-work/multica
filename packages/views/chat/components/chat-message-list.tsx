@@ -53,6 +53,8 @@ import { TaskStatusPill } from "./task-status-pill";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
+import { chatAnchorKey, parseChatAnchor, serializeChatAnchor, type ChatAnchor } from "./chat-anchor";
+import { useRestoredViewState, useViewStateWriter } from "../../platform";
 import { formatElapsedMs } from "../lib/format";
 import {
   canonicalAnswerText,
@@ -566,6 +568,63 @@ export function ChatMessageList({
   const firstItem = renderItems[0];
   const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
+  // Reading-position restore. The saved anchor is read once, at mount: it is the
+  // position this list was left at, and the list is remounted per session. It
+  // only applies when the reader was NOT at the live end and the anchor message
+  // is loaded; every other case opens at the newest message as before.
+  const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
+  const savedAnchorRaw = useRestoredViewState(anchorKey ?? "");
+  const writeViewState = useViewStateWriter();
+  const [restore] = useState(() => {
+    const saved = anchorKey ? parseChatAnchor(savedAnchorRaw) : null;
+    if (!saved || saved.atLiveEnd) return null;
+    const index = renderItems.findIndex(
+      (item) => item.kind === "message" && item.message.id === saved.itemId,
+    );
+    return index >= 0 ? { index, offsetInItemPx: saved.offsetInItemPx } : null;
+  });
+  const restoring = restore !== null;
+  // The restored list is shown where it opened, and must not be pulled to the
+  // newest message until the reader scrolls back down to it.
+  const disengageRef = useRef(disengage);
+  disengageRef.current = disengage;
+  useEffect(() => {
+    if (restoring) disengageRef.current();
+  }, [restoring, scrollContainerEl]);
+
+  // Until the list has landed, the range Virtuoso reports is not the reader's
+  // position (it is on its way to the newest message), so nothing is recorded.
+  const anchorReady = restoring || jumped || hasReachedLiveEnd;
+  const atBottomRef = useRef(!restoring);
+  const lastAnchorRef = useRef<ChatAnchor | null>(null);
+  const saveAnchor = useCallback(
+    (anchor: ChatAnchor) => {
+      lastAnchorRef.current = anchor;
+      if (anchorKey) writeViewState(anchorKey, serializeChatAnchor(anchor));
+    },
+    [anchorKey, writeViewState],
+  );
+  const onRangeChanged = useCallback(
+    ({ startIndex }: { startIndex: number }) => {
+      if (!anchorReady || !scrollContainerEl) return;
+      const item = renderItems[startIndex - firstIndex];
+      if (item?.kind !== "message") return;
+      const row = scrollContainerEl.querySelector(`[data-message-id="${CSS.escape(item.message.id)}"]`);
+      const offset = row
+        ? Math.max(0, Math.round(scrollContainerEl.getBoundingClientRect().top - row.getBoundingClientRect().top))
+        : 0;
+      saveAnchor({ itemId: item.message.id, offsetInItemPx: offset, atLiveEnd: atBottomRef.current });
+    },
+    [anchorReady, scrollContainerEl, renderItems, firstIndex, saveAnchor],
+  );
+  const onAtBottomStateChange = useCallback(
+    (atBottom: boolean) => {
+      atBottomRef.current = atBottom;
+      if (anchorReady && lastAnchorRef.current) saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+    },
+    [anchorReady, saveAnchor],
+  );
+
   const forkSource = forkedFromSessionId && sessions
     ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
     : undefined;
@@ -658,7 +717,7 @@ export function ChatMessageList({
       // container paints nothing for that whole window anyway — the rows are
       // not measured yet — so this costs no visible time and spares the
       // reader a frame of the wrong messages (see stick-to-bottom.ts).
-      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && !jumped && "invisible")}
+      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && !jumped && !restoring && "invisible")}
     >
       {/* Already inside the gutter + column, so this pre-mount frame renders the
        *  skeleton BODY rather than <ChatMessageSkeleton>, which brings its own
@@ -686,7 +745,13 @@ export function ChatMessageList({
         // the top, while fetched ones sometimes catch a growth tick and land at
         // the bottom. `align: "end"` bottom-aligns even a last message taller
         // than the viewport, so switching sessions always shows the latest reply.
-        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+        initialTopMostItemIndex={
+          restore
+            ? { index: restore.index, align: "start", offset: -restore.offsetInItemPx }
+            : { index: "LAST", align: "end" }
+        }
+        rangeChanged={onRangeChanged}
+        atBottomStateChange={onAtBottomStateChange}
         increaseViewportBy={{ top: 400, bottom: 600 }}
         atBottomThreshold={FOLLOW_EDGE_THRESHOLD}
         // Follow rapid streamed output only while Virtuoso says the reader is
