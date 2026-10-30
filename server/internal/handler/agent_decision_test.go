@@ -132,6 +132,28 @@ func TestAgentDecisionSignerRules(t *testing.T) {
 	}
 }
 
+func TestAgentDecisionCannotReplaceInstanceSigners(t *testing.T) {
+	for _, replaceSigner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replace_signer_%t", replaceSigner), func(t *testing.T) {
+			f := newAgentDecisionFixture(t)
+			f.propose(t)
+			f.instance = uuid.NewString()
+			if replaceSigner {
+				replacement := createHandlerTestAgent(t, "replacement-"+safeTestName(t), nil)
+				dbfx.Exec(t, `UPDATE agent SET runtime_id=$1,model='gpt-test' WHERE id=$2`, f.runtimeOf(t, f.leaderID), replacement)
+				f.scope["signers"] = []string{replacement, f.peerID}
+			}
+			f.post(t, f.writerID, f.body(t), http.StatusBadRequest)
+			if got := dbfx.Count(t, `SELECT count(*) FROM decision_agent_scope WHERE issue_id=$1`, f.issueID); got != 1 {
+				t.Fatalf("candidate/gate acquired %d immutable scopes", got)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id=$1`, f.issueID); got != 1 {
+				t.Fatalf("refused proposal leaked a request: %d", got)
+			}
+		})
+	}
+}
+
 func TestAgentDecisionRevealValidation(t *testing.T) {
 	for _, kind := range []string{"missing", "duplicate", "instance", "digest", "gate", "signer", "proposal", "evidence", "verdict", "independence", "nonce", "hash", "two_blocks", "two_votes"} {
 		t.Run(kind, func(t *testing.T) {
