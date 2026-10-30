@@ -1643,6 +1643,22 @@ func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 	return task, err
 }
 
+// EnqueueDecisionWaitLeaderTaskInTx shares leader callback admission and
+// attribution. The caller commits its episode receipt with the task and calls
+// PublishTaskEnqueued only after commit. An automated alert is not a review run
+// and cannot use the review-head exception to a spent run budget.
+func (s *TaskService) EnqueueDecisionWaitLeaderTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, OriginDerived, RunTarget{AgentID: leaderID, Trigger: "decision wait guard"}); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	params.TriggerSummary = pgtype.Text{String: "Decision wait has no request", Valid: true}
+	return createAgentTask(ctx, queries, params)
+}
+
 func (s *TaskService) PublishTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
