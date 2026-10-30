@@ -11,8 +11,6 @@ BEGIN
     END IF;
 END $$;
 
-DROP INDEX IF EXISTS provider_failure_recovery_wakeup_idx;
-
 ALTER TABLE provider_failure_recovery
     DROP CONSTRAINT IF EXISTS provider_failure_recovery_effect_shape_check,
     ALTER COLUMN probe_at SET NOT NULL,
