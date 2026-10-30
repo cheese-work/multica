@@ -1,6 +1,6 @@
 import type { ZodType } from "zod";
 import type { OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
+import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
@@ -52,6 +52,8 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  RuntimePause,
+  RuntimePauseReason,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
@@ -2524,6 +2526,29 @@ export class ApiClient {
       body: JSON.stringify(patch),
     });
     return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_RUNTIME, { endpoint: "updateRuntime" });
+  }
+
+  // Pause the whole machine hosting this runtime (CHE-2430). Only the machine
+  // owner and the workspace owner may call it; the server answers 403 otherwise.
+  async pauseRuntimeMachine(
+    runtimeId: string,
+    reason: RuntimePauseReason,
+  ): Promise<RuntimePause> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/pause`, {
+      method: "PUT",
+      body: JSON.stringify({ reason }),
+    });
+    return parseWithFallback(
+      raw,
+      RuntimePauseSchema,
+      { reason, paused_by: null, paused_at: "", expires_at: "" },
+      { endpoint: "pauseRuntimeMachine" },
+    );
+  }
+
+  // Idempotent: resuming a machine that is not paused still answers 204.
+  async resumeRuntimeMachine(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/pause`, { method: "DELETE" });
   }
 
   // Confirmed counterpart to a runtime access restriction PATCH. The PATCH
