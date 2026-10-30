@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -161,6 +162,27 @@ func TestProviderFailureRecoveryEffectShapesPreserveLegacyRows(t *testing.T) {
 	}
 }
 
+// reserveConcurrently reserves through the production seam in its own
+// transaction, so a concurrent duplicate surfaces as a refusal, not a raw 23505.
+func reserveConcurrently(ctx context.Context, pool *pgxpool.Pool, reservation providerFailureReservation) (int64, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error { return nil })
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	if inserted {
+		return 1, nil
+	}
+	return 0, nil
+}
+
 func TestProviderFailureRecoveryReservationIsIdempotentConcurrently(t *testing.T) {
 	pool := sharedTestPool(t)
 	ctx := context.Background()
@@ -176,7 +198,7 @@ func TestProviderFailureRecoveryReservationIsIdempotentConcurrently(t *testing.T
 	for range 2 {
 		go func() {
 			<-start
-			rows, err := insertProviderFailureReservation(ctx, pool, reservation, true)
+			rows, err := reserveConcurrently(ctx, pool, reservation)
 			results <- rows
 			errorsFound <- err
 		}()
