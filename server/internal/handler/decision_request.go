@@ -306,6 +306,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		return empty, err
 	}
+	if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusConflict); err != nil {
+		return empty, err
+	}
 	intent, err := queries.LockDecisionIntent(ctx, db.LockDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: located.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, deny
@@ -518,6 +521,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
+		return empty, err
+	}
+	if err := requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, http.StatusConflict); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: input.HumanUserID}); err != nil {

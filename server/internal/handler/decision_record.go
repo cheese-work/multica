@@ -288,6 +288,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if input.EscalationClass != "" && input.EscalationClass != decision.EscalationClass {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a record cannot change the request's class"}
 		}
+		if err := requireDecisionAuthority(ctx, queries, issue, decision.HumanUserID, decision.EscalationClass, http.StatusForbidden); err != nil {
+			return empty, err
+		}
 		ping, err := queries.GetChatMessage(ctx, decision.PingMessageID)
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && ping.ChatSessionID != decision.ChatSessionID {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "decision ping is unavailable"}
@@ -300,6 +303,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: session.CreatorID}); errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		} else if err != nil {
+			return empty, err
+		}
+		if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusForbidden); err != nil {
 			return empty, err
 		}
 		decision, err = queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, IssueCommentID: commentID, EscalationClass: input.EscalationClass, Origin: "unprompted"})

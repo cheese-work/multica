@@ -491,3 +491,15 @@ LIMIT 1;
 INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
+
+-- name: DecisionHumanAuthority :one
+-- is_owner: the person holds the workspace owner role. is_delegate: the person is
+-- listed in decision_delegates of the project the issue belongs to.
+SELECT (member.role = 'owner')::boolean AS is_owner,
+    COALESCE((
+        SELECT project.decision_delegates @> ARRAY[member.user_id]
+        FROM project
+        WHERE project.id = sqlc.narg('project_id') AND project.workspace_id = member.workspace_id
+    ), false)::boolean AS is_delegate
+FROM member
+WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');

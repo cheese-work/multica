@@ -29,7 +29,7 @@ func newIntentFixture(test *testing.T) intentFixture {
 	issueID := dbfx.Issue(test, "intent issue", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(test, agentID, testutil.Cols{"issue_id": issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	humanID := dbfx.User(test, "Asked human", "intent-"+uuid.NewString()+"@test.invalid")
-	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": humanID, "role": "member"})
+	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": humanID, "role": "owner"})
 	test.Cleanup(func() {
 		_, err := testPool.Exec(context.Background(), `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 		if err != nil {
@@ -149,7 +149,7 @@ func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
 func TestDecisionIntentSupersedesAndKeepsTargets(test *testing.T) {
 	fixture := newIntentFixture(test)
 	secondHuman := dbfx.User(test, "Second human", "intent-"+uuid.NewString()+"@test.invalid")
-	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": secondHuman, "role": "member"})
+	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": secondHuman, "role": "owner"})
 	content := fixture.mention() + " " + fixture.mention() + " [@Second](mention://member/" + secondHuman + ")"
 	var first CommentResponse
 	fixture.post(test, "task_token", fixture.taskID, content, nil).Want(http.StatusCreated).JSON(&first)

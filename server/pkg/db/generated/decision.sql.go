@@ -510,6 +510,37 @@ func (q *Queries) DecisionAnswerSourceRemoved(ctx context.Context, arg DecisionA
 	return removed, err
 }
 
+const decisionHumanAuthority = `-- name: DecisionHumanAuthority :one
+SELECT (member.role = 'owner')::boolean AS is_owner,
+    COALESCE((
+        SELECT project.decision_delegates @> ARRAY[member.user_id]
+        FROM project
+        WHERE project.id = $1 AND project.workspace_id = member.workspace_id
+    ), false)::boolean AS is_delegate
+FROM member
+WHERE member.workspace_id = $2 AND member.user_id = $3
+`
+
+type DecisionHumanAuthorityParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+type DecisionHumanAuthorityRow struct {
+	IsOwner    bool `json:"is_owner"`
+	IsDelegate bool `json:"is_delegate"`
+}
+
+// is_owner: the person holds the workspace owner role. is_delegate: the person is
+// listed in decision_delegates of the project the issue belongs to.
+func (q *Queries) DecisionHumanAuthority(ctx context.Context, arg DecisionHumanAuthorityParams) (DecisionHumanAuthorityRow, error) {
+	row := q.db.QueryRow(ctx, decisionHumanAuthority, arg.ProjectID, arg.WorkspaceID, arg.UserID)
+	var i DecisionHumanAuthorityRow
+	err := row.Scan(&i.IsOwner, &i.IsDelegate)
+	return i, err
+}
+
 const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
 SELECT CASE
     WHEN intent.sealed_at IS NOT NULL THEN 'sealed'
