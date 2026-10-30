@@ -15,14 +15,20 @@ import (
 // runs used in the open window against the limit in force, and what a raise
 // would do. Token fields join it when CHE-2297 turns token accounting on.
 type RunBudgetSnapshot struct {
-	Budgeted        bool              `json:"budgeted"`
-	RunsUsed        int64             `json:"runs_used"`
-	RunsLimit       int               `json:"runs_limit"`
-	RunsSource      string            `json:"runs_source,omitempty"` // "workflow" or "issue"
-	WindowStartedAt time.Time         `json:"window_started_at"`
-	RunsState       string            `json:"runs_state,omitempty"`
-	State           string            `json:"state,omitempty"`
-	Blocking        []string          `json:"blocking"`
+	Budgeted        bool      `json:"budgeted"`
+	RunsUsed        int64     `json:"runs_used"`
+	RunsLimit       int       `json:"runs_limit"`
+	RunsSource      string    `json:"runs_source,omitempty"` // "workflow" or "issue"
+	WindowStartedAt time.Time `json:"window_started_at"`
+	RunsState       string    `json:"runs_state,omitempty"`
+	State           string    `json:"state,omitempty"`
+	Blocking        []string  `json:"blocking"`
+	// TokensActive is true once the issue is activated for token accounting;
+	// the balance is then A credits minus the tokens used and held, and a
+	// negative balance is overshoot.
+	TokensActive    bool              `json:"tokens_active"`
+	TokensBalance   int64             `json:"tokens_balance"`
+	TokensOvershoot int64             `json:"tokens_overshoot"`
 	CanRaise        bool              `json:"can_raise"`
 	RaisePreview    *RunBudgetPreview `json:"raise_preview,omitempty"`
 }
@@ -87,6 +93,10 @@ type runBudgetUsage struct {
 	Max    int
 	Source string
 	Since  time.Time
+	// TokenAllowance (A) and TokenReserve (E) are the workflow's stored token
+	// values; both are 0 while token accounting is off for the workflow.
+	TokenAllowance int64
+	TokenReserve   int64
 }
 
 // loadRunBudgetUsage reads the issue's workflow cap and the runs counted in its
@@ -111,7 +121,10 @@ func loadRunBudgetUsage(ctx context.Context, q *db.Queries, issue db.Issue) (*ru
 	if err != nil {
 		return nil, fmt.Errorf("run budget: count runs: %w", err)
 	}
-	usage := &runBudgetUsage{Runs: runs, Max: def.EffectiveMaxRuns(), Source: "workflow", Since: since}
+	usage := &runBudgetUsage{
+		Runs: runs, Max: def.EffectiveMaxRuns(), Source: "workflow", Since: since,
+		TokenAllowance: def.TokenAllowance, TokenReserve: def.TokenReserve,
+	}
 	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > usage.Max {
 		usage.Max, usage.Source = int(issue.MaxRunsOverride.Int32), "issue"
 	}
@@ -125,5 +138,33 @@ func LoadRunBudgetSnapshot(ctx context.Context, q *db.Queries, issue db.Issue) (
 	if err != nil || usage == nil {
 		return RunBudgetSnapshot{Blocking: []string{}}, err
 	}
-	return NewRunBudgetSnapshot(usage.Runs, usage.Max, usage.Source, usage.Since), nil
+	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, usage.Source, usage.Since)
+	return withTokenBalance(ctx, q, issue, usage, snap)
 }
+
+// withTokenBalance adds the token side to a snapshot once the issue is
+// activated. A negative balance is overshoot: runs already admitted spent past
+// it.
+func withTokenBalance(ctx context.Context, q *db.Queries, issue db.Issue, usage *runBudgetUsage, snap RunBudgetSnapshot) (RunBudgetSnapshot, error) {
+	if !usage.tokensStored() {
+		return snap, nil
+	}
+	if _, found, err := activationEpoch(ctx, q, issue.ID); err != nil || !found {
+		return snap, err
+	}
+	balance, err := q.SumIssueRunBudgetTokens(ctx, issue.ID)
+	if err != nil {
+		return snap, fmt.Errorf("run budget: token balance: %w", err)
+	}
+	snap.TokensActive, snap.TokensBalance = true, balance
+	if balance < 0 {
+		snap.TokensOvershoot = -balance
+	}
+	if balance <= 0 {
+		snap.Blocking = append(snap.Blocking, "tokens")
+	}
+	return snap, nil
+}
+
+// tokensStored reports whether the workflow stores both token values.
+func (u *runBudgetUsage) tokensStored() bool { return u.TokenAllowance > 0 && u.TokenReserve > 0 }

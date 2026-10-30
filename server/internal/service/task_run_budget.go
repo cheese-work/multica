@@ -93,6 +93,10 @@ type RunBudgetExhausted struct {
 	Since   time.Time
 	Status  string
 	Target  RunTarget
+	// TokensSpent is true when the token balance, not the run count, refused
+	// the run; Tokens is that balance.
+	TokensSpent bool
+	Tokens      int64
 }
 
 // Run-budget notice kinds (CHE-2297 L1a). They are also the kind half of the
@@ -100,6 +104,8 @@ type RunBudgetExhausted struct {
 const (
 	RunBudgetKindWarn80    = "warn80"
 	RunBudgetKindExhausted = "exhausted"
+	// RunBudgetKindWarn80Tokens is the 80% warning of the token balance.
+	RunBudgetKindWarn80Tokens = "warn80_tokens"
 )
 
 // RunBudgetEvent describes one budget notice: its kind, how many runs the issue
@@ -113,6 +119,10 @@ type RunBudgetEvent struct {
 	Max     int
 	Since   time.Time
 	Xid     int64
+	// Tokens and TokenBase are the token balance and the window's allowance
+	// behind a RunBudgetKindWarn80Tokens event.
+	Tokens    int64
+	TokenBase int64
 }
 
 var onRunBudgetEvent atomic.Pointer[func(context.Context, RunBudgetEvent)]
@@ -210,6 +220,11 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	}
 	runs, max := usage.Runs, usage.Max
 	spent := balance < 1
+	tokens, tokensSpent, err := tokenBalanceSpent(ctx, q, issue, usage)
+	if err != nil {
+		return ReviewGate{}, fmt.Errorf("run budget: %w", err)
+	}
+	spent = spent || tokensSpent
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
 	if spent && isFinishedStatus(ctx, q, issue) {
@@ -230,7 +245,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
 			IssueID: issue.ID, Runs: runs, Max: max, Since: usage.Since,
-			Status: issue.Status, Target: target,
+			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
 		})
 	}
 	return ReviewGate{}, ErrRunBudgetExhausted
