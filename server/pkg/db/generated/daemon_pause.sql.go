@@ -69,10 +69,18 @@ func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPausePa
 const listDaemonPausesByWorkspace = `-- name: ListDaemonPausesByWorkspace :many
 SELECT workspace_id, daemon_id, reason, paused_by, paused_at FROM daemon_pause
 WHERE workspace_id = $1
+  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
 `
 
-func (q *Queries) ListDaemonPausesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]DaemonPause, error) {
-	rows, err := q.db.Query(ctx, listDaemonPausesByWorkspace, workspaceID)
+type ListDaemonPausesByWorkspaceParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	MaintenanceSecs int32       `json:"maintenance_secs"`
+	OtherSecs       int32       `json:"other_secs"`
+}
+
+// Live pauses only: a pause past its auto-expiry no longer holds the machine.
+func (q *Queries) ListDaemonPausesByWorkspace(ctx context.Context, arg ListDaemonPausesByWorkspaceParams) ([]DaemonPause, error) {
+	rows, err := q.db.Query(ctx, listDaemonPausesByWorkspace, arg.WorkspaceID, arg.MaintenanceSecs, arg.OtherSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +108,14 @@ func (q *Queries) ListDaemonPausesByWorkspace(ctx context.Context, workspaceID p
 const listPausedDaemons = `-- name: ListPausedDaemons :many
 SELECT workspace_id, daemon_id FROM daemon_pause
 WHERE workspace_id::text || '|' || daemon_id = ANY($1::text[])
+  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
 `
+
+type ListPausedDaemonsParams struct {
+	Keys            []string `json:"keys"`
+	MaintenanceSecs int32    `json:"maintenance_secs"`
+	OtherSecs       int32    `json:"other_secs"`
+}
 
 type ListPausedDaemonsRow struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
@@ -109,8 +124,8 @@ type ListPausedDaemonsRow struct {
 
 // Claim gate: which of the given "<workspace_id>|<daemon_id>" keys are paused.
 // A batch claim can span workspaces; the table holds one row per paused machine.
-func (q *Queries) ListPausedDaemons(ctx context.Context, keys []string) ([]ListPausedDaemonsRow, error) {
-	rows, err := q.db.Query(ctx, listPausedDaemons, keys)
+func (q *Queries) ListPausedDaemons(ctx context.Context, arg ListPausedDaemonsParams) ([]ListPausedDaemonsRow, error) {
+	rows, err := q.db.Query(ctx, listPausedDaemons, arg.Keys, arg.MaintenanceSecs, arg.OtherSecs)
 	if err != nil {
 		return nil, err
 	}

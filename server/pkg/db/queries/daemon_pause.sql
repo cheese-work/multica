@@ -10,14 +10,17 @@ DELETE FROM daemon_pause
 WHERE workspace_id = $1 AND daemon_id = $2;
 
 -- name: ListDaemonPausesByWorkspace :many
+-- Live pauses only: a pause past its auto-expiry no longer holds the machine.
 SELECT * FROM daemon_pause
-WHERE workspace_id = $1;
+WHERE workspace_id = @workspace_id
+  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now();
 
 -- name: ListPausedDaemons :many
 -- Claim gate: which of the given "<workspace_id>|<daemon_id>" keys are paused.
 -- A batch claim can span workspaces; the table holds one row per paused machine.
 SELECT workspace_id, daemon_id FROM daemon_pause
-WHERE workspace_id::text || '|' || daemon_id = ANY(@keys::text[]);
+WHERE workspace_id::text || '|' || daemon_id = ANY(@keys::text[])
+  AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now();
 
 -- name: CountRunningTasksByDaemon :many
 -- Tasks still occupying a machine: handed to the daemon or running. Queued

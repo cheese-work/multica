@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -14,6 +15,20 @@ import (
 
 // Machine pause (CHE-2430). A daemon_pause row stops new task claims for every
 // runtime on that daemon; running tasks finish.
+
+// A pause lifts itself so a forgotten one cannot hold a machine for ever
+// (Cheese, 29/10/2026). Maintenance is planned work, so it gets the longer window.
+const (
+	maintenancePauseTTL = 2 * time.Hour
+	otherPauseTTL       = 30 * time.Minute
+)
+
+func pauseTTL(reason string) time.Duration {
+	if reason == "maintenance" {
+		return maintenancePauseTTL
+	}
+	return otherPauseTTL
+}
 
 func daemonPauseKey(workspaceID pgtype.UUID, daemonID string) string {
 	return uuidToString(workspaceID) + "|" + daemonID
@@ -32,7 +47,11 @@ func (h *Handler) pausedDaemonSet(ctx context.Context, runtimes []db.AgentRuntim
 	if len(keys) == 0 {
 		return paused, nil
 	}
-	rows, err := h.Queries.ListPausedDaemons(ctx, keys)
+	rows, err := h.Queries.ListPausedDaemons(ctx, db.ListPausedDaemonsParams{
+		Keys:            keys,
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()),
+		OtherSecs:       int32(otherPauseTTL.Seconds()),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -54,22 +73,24 @@ var validPauseReasons = map[string]bool{"maintenance": true, "incident": true, "
 
 func pauseToResponse(p db.DaemonPause) RuntimePauseResponse {
 	return RuntimePauseResponse{
-		Reason:   p.Reason,
-		PausedBy: uuidToPtr(p.PausedBy),
-		PausedAt: timestampToString(p.PausedAt),
+		Reason:    p.Reason,
+		PausedBy:  uuidToPtr(p.PausedBy),
+		PausedAt:  timestampToString(p.PausedAt),
+		ExpiresAt: timestampToString(pgtype.Timestamptz{Time: p.PausedAt.Time.Add(pauseTTL(p.Reason)), Valid: p.PausedAt.Valid}),
 	}
 }
 
-// requireDaemonPauseAccess resolves the runtime, then requires the same rights
-// as updating it (runtime owner, or a workspace admin who can see the runtime).
-// The pause applies to the runtime's whole machine.
+// requireDaemonPauseAccess resolves the runtime, then requires the runtime
+// (daemon) owner or the workspace owner. A workspace admin who is neither may
+// not pause: stopping a machine is the lender's call. The pause applies to the
+// runtime's whole machine.
 func (h *Handler) requireDaemonPauseAccess(w http.ResponseWriter, r *http.Request) (db.AgentRuntime, db.Member, bool) {
 	rt, member, ok := h.requireRuntimeReadAccess(w, r, obsmetrics.RuntimeLookupSourceRuntimeAPI, chi.URLParam(r, "runtimeId"))
 	if !ok {
 		return rt, member, false
 	}
-	if !canEditRuntime(member, rt) {
-		writeError(w, http.StatusForbidden, "only runtime owners and workspace admins can pause or resume a machine")
+	if !canPauseDaemon(member, rt) {
+		writeError(w, http.StatusForbidden, "only the machine owner and the workspace owner can pause or resume a machine")
 		return rt, member, false
 	}
 	if !rt.DaemonID.Valid {
@@ -77,6 +98,10 @@ func (h *Handler) requireDaemonPauseAccess(w http.ResponseWriter, r *http.Reques
 		return rt, member, false
 	}
 	return rt, member, true
+}
+
+func canPauseDaemon(member db.Member, rt db.AgentRuntime) bool {
+	return member.Role == "owner" || (rt.OwnerID.Valid && uuidToString(rt.OwnerID) == uuidToString(member.UserID))
 }
 
 // PauseDaemon stops new task claims on the runtime's machine. Re-pausing
@@ -135,7 +160,11 @@ func (h *Handler) ResumeDaemon(w http.ResponseWriter, r *http.Request) {
 
 // attachDaemonPauseState fills Pause and DaemonRunningTasks on a runtime list.
 func (h *Handler) attachDaemonPauseState(ctx context.Context, workspaceID pgtype.UUID, resp []AgentRuntimeResponse) error {
-	pauses, err := h.Queries.ListDaemonPausesByWorkspace(ctx, workspaceID)
+	pauses, err := h.Queries.ListDaemonPausesByWorkspace(ctx, db.ListDaemonPausesByWorkspaceParams{
+		WorkspaceID:     workspaceID,
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()),
+		OtherSecs:       int32(otherPauseTTL.Seconds()),
+	})
 	if err != nil {
 		return err
 	}
@@ -170,4 +199,6 @@ type RuntimePauseResponse struct {
 	Reason   string  `json:"reason"`
 	PausedBy *string `json:"paused_by"`
 	PausedAt string  `json:"paused_at"`
+	// ExpiresAt is when the pause lifts on its own (see pauseTTL).
+	ExpiresAt string `json:"expires_at"`
 }

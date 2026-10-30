@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -89,9 +90,10 @@ func TestDaemonPause_BatchClaimRefusedUntilResume(t *testing.T) {
 }
 
 type pauseJSON struct {
-	Reason   string  `json:"reason"`
-	PausedBy *string `json:"paused_by"`
-	PausedAt string  `json:"paused_at"`
+	Reason    string  `json:"reason"`
+	PausedBy  *string `json:"paused_by"`
+	PausedAt  string  `json:"paused_at"`
+	ExpiresAt string  `json:"expires_at"`
 }
 
 func putPause(t *testing.T, actorID, runtimeID string, body any) *httptest.ResponseRecorder {
@@ -199,5 +201,100 @@ func TestDaemonPause_WorkspaceDeleteRemovesRows(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT count(*) FROM daemon_pause WHERE workspace_id = $1`, ws).Scan(&left)
 	if left != 0 {
 		t.Fatalf("daemon_pause rows after workspace delete = %d, want 0", left)
+	}
+}
+
+// Auto-expiry (Cheese, 29/10/2026): maintenance lasts 2 h, incident and
+// suspended 30 min. An expired pause no longer blocks claims.
+func TestDaemonPause_ExpiredPauseDoesNotBlockClaim(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	cases := []struct {
+		name        string
+		reason      string
+		age         string
+		wantBlocked bool
+	}{
+		{"maintenance 3h old expired", "maintenance", "3 hours", false},
+		{"maintenance 1h old live", "maintenance", "1 hour", true},
+		{"incident 31m old expired", "incident", "31 minutes", false},
+		{"incident 29m old live", "incident", "29 minutes", true},
+		{"suspended 31m old expired", "suspended", "31 minutes", false},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonID := "pause-expiry-" + string(rune('a'+i))
+			runtimeID, taskID := seedPausableRuntime(t, ctx, daemonID, "Pause expiry "+daemonID)
+			dbfx.Exec(t, `INSERT INTO daemon_pause (workspace_id, daemon_id, reason, paused_by, paused_at)
+				VALUES ($1, $2, $3, $4, now() - $5::interval)`, testWorkspaceID, daemonID, tc.reason, testUserID, tc.age)
+			t.Cleanup(func() {
+				testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = $2`, testWorkspaceID, daemonID)
+			})
+			got := singleClaimTaskID(t, runtimeID)
+			if tc.wantBlocked && got != "" {
+				t.Fatalf("live %s pause claimed task %s, want none", tc.reason, got)
+			}
+			if !tc.wantBlocked && got != taskID {
+				t.Fatalf("expired %s pause claimed %q, want task %s", tc.reason, got, taskID)
+			}
+			if p := listRuntimesForTest(t)[runtimeID].Pause; tc.wantBlocked != (p != nil) {
+				t.Fatalf("listed pause = %+v, want present=%v", p, tc.wantBlocked)
+			}
+		})
+	}
+}
+
+func TestDaemonPause_ResponseCarriesExpiry(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID, _ := seedPausableRuntime(t, ctx, "pause-expiry-body", "Pause expiry body")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = 'pause-expiry-body'`, testWorkspaceID)
+	})
+	w := putPause(t, testUserID, runtimeID, map[string]any{"reason": "incident"})
+	var got pauseJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || got.ExpiresAt == "" {
+		t.Fatalf("pause body = %s (err %v), want expires_at", w.Body.String(), err)
+	}
+	paused, err1 := time.Parse(time.RFC3339Nano, got.PausedAt)
+	expires, err2 := time.Parse(time.RFC3339Nano, got.ExpiresAt)
+	if err1 != nil || err2 != nil || expires.Sub(paused) != 30*time.Minute {
+		t.Fatalf("incident expiry = %s after pause (%v %v), want 30m", expires.Sub(paused), err1, err2)
+	}
+}
+
+// Only the daemon (runtime) owner and the workspace owner may pause or resume.
+// A workspace admin who is neither is refused.
+func TestDaemonPause_AdminWhoIsNotOwnerIsRefused(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID, runtimeOwnerID, _ := runtimeVisibilityFixture(t)
+	dbfx.Exec(t, `UPDATE agent_runtime SET daemon_id = 'pause-authz-machine', visibility = 'public' WHERE id = $1`, runtimeID)
+	var adminID string
+	if err := testPool.QueryRow(context.Background(), `INSERT INTO "user" (name, email) VALUES ('Pause Admin', 'pause-admin@multica.test') RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatalf("create admin user: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE email = 'pause-admin@multica.test'`)
+		testPool.Exec(context.Background(), `DELETE FROM daemon_pause WHERE workspace_id = $1 AND daemon_id = 'pause-authz-machine'`, testWorkspaceID)
+	})
+	dbfx.Exec(t, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'admin')`, testWorkspaceID, adminID)
+
+	if w := putPause(t, adminID, runtimeID, map[string]any{"reason": "maintenance"}); w.Code != http.StatusForbidden {
+		t.Fatalf("admin (not owner) pause = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	if w := putPause(t, runtimeOwnerID, runtimeID, map[string]any{"reason": "maintenance"}); w.Code != http.StatusOK {
+		t.Fatalf("runtime owner pause = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if w := deletePause(t, adminID, runtimeID); w.Code != http.StatusForbidden {
+		t.Fatalf("admin (not owner) resume = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	if w := deletePause(t, testUserID, runtimeID); w.Code != http.StatusNoContent {
+		t.Fatalf("workspace owner resume = %d, want 204: %s", w.Code, w.Body.String())
 	}
 }

@@ -24,8 +24,8 @@ reflect: unavailable. Hindsight `reflect` on `multica-org` via `POST http://127.
 
 | Question | Default | Why |
 |---|---|---|
-| Auto-expiry? | No. Stays paused until Resume | An expiry that fires while someone is shutting a machine down reopens claims. Optional expiry can come later as a column |
-| Who may pause? | Runtime owner, and workspace owner or admin who can see the runtime | Same rule as Update (`canEditRuntime`). A private runtime of another member stays hidden (404), as today |
+| Auto-expiry? | Yes (Cheese, 29/10/2026): `maintenance` 2 h, `incident` and `suspended` 30 min. An expired pause is treated as not paused | A forgotten pause cannot hold a machine for ever. Resume at any time; re-pausing restarts the clock |
+| Who may pause? | Machine (runtime) owner and workspace owner (Cheese, 29/10/2026). A workspace admin who is neither gets 403 | Narrower than Update (`canEditRuntime`). A private runtime of another member stays hidden (404), as today |
 | Auto-stop at 0 tasks? | L2, opt-in per pause | The daemon then needs a manual start on the host. Not in L1 |
 
 None of these is unsafe, so none blocks.
@@ -71,7 +71,7 @@ flowchart TD
 
 | Call | Auth | Result |
 |---|---|---|
-| `PUT /api/runtimes/{runtimeId}/pause` body `{"reason": "maintenance"}` | `canEditRuntime` | 200 `{reason, paused_by, paused_at}`. Reason defaults to `maintenance`. Bad reason 400. Runtime without `daemon_id` 400 |
+| `PUT /api/runtimes/{runtimeId}/pause` body `{"reason": "maintenance"}` | machine owner or workspace owner | 200 `{reason, paused_by, paused_at, expires_at}`. Reason defaults to `maintenance`. Bad reason 400. Runtime without `daemon_id` 400 |
 | `DELETE /api/runtimes/{runtimeId}/pause` | same | 204. Idempotent |
 | `GET /api/runtimes` | unchanged | Each runtime gains `pause` (object or null) and `daemon_running_tasks` (dispatched, running and waiting tasks across all runtimes on its daemon; null without a daemon) |
 
