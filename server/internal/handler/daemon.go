@@ -5817,13 +5817,49 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A negative counter would turn into a token credit at settlement. Reject
+	// the whole report before anything is written.
+	for _, u := range req.Usage {
+		if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+			writeError(w, http.StatusBadRequest, "token counts must not be negative")
+			return
+		}
+	}
+
+	// The rows and their run-budget charge commit together (CHE-2297 L2b).
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Warn("begin task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store usage")
+		return
+	}
+	defer tx.Rollback(context.WithoutCancel(r.Context()))
+	qtx := h.Queries.WithTx(tx)
+	// Take a lock before any usage row, so two reports for one task that write
+	// their rows in different orders cannot each hold a row the other waits
+	// for. Settlement needs the issue lock anyway; a task with no issue (a chat
+	// task) is serialized on its own id.
+	var lockErr error
+	if task.IssueID.Valid {
+		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); !errors.Is(err, pgx.ErrNoRows) {
+			lockErr = err
+		}
+	} else {
+		lockErr = qtx.LockTaskUsageReport(r.Context(), task.ID)
+	}
+	if lockErr != nil {
+		slog.Warn("lock task usage report failed", "task_id", taskID, "error", lockErr)
+		writeError(w, http.StatusInternalServerError, "failed to store usage")
+		return
+	}
 	// Provider is lowercased on write so client-side pricing lookups tolerate
 	// case drift. An empty provider (an older daemon that omits the field) is
 	// stamped from the task's runtime, so generic model ids like `auto` still
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
-	for _, u := range req.Usage {
+	providers := make([]string, len(req.Usage))
+	for i, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
 			if !runtimeProviderLoaded {
@@ -5837,7 +5873,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			provider = runtimeProvider
 		}
-		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
+		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
 			TaskID:           parseUUID(taskID),
 			Provider:         provider,
 			Model:            u.Model,
@@ -5848,8 +5884,23 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
-			continue
+			writeError(w, http.StatusInternalServerError, "failed to store usage")
+			return
 		}
+		providers[i] = provider
+	}
+	if err := service.SettleRunBudgetUsage(r.Context(), qtx, task); err != nil {
+		slog.Warn("settle run budget usage failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store usage")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("commit task usage failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store usage")
+		return
+	}
+	for i, u := range req.Usage {
+		provider := providers[i]
 		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
