@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  anchorFromViewable,
-  saveReadingAnchor,
-} from "@/lib/reading-anchor";
+import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
+import { isNearEnd, recordReadingAnchor } from "@/lib/reading-anchor";
+
+type Viewable = { index: number | null }[];
 
 /**
- * FlashList viewability pair that records the reading anchor under `key`.
- * FlashList captures `viewabilityConfigCallbackPairs` at mount, so the pair is
- * built once and forwards to the latest key/ids through a ref. A null key (no
- * session yet) records nothing.
+ * Records the reading anchor under `key` from FlashList viewability plus
+ * scroll distance. FlashList captures `viewabilityConfigCallbackPairs` at
+ * mount, so the pair is built once and forwards to the latest key/ids through
+ * a ref. A null key (no session yet) records nothing. Pass `onScroll` to the
+ * list too: it keeps the live-end flag in step with a tall last row that
+ * never changes the viewable set.
  */
 export function useReadingAnchorRecorder(
   key: string | null,
@@ -19,18 +21,31 @@ export function useReadingAnchorRecorder(
   useEffect(() => {
     latest.current = { key, ids, skipId };
   });
+  const viewable = useRef<Viewable>([]);
+  const nearEnd = useRef(true);
+
+  const record = () => {
+    const { key, ids, skipId } = latest.current;
+    if (key) recordReadingAnchor(key, viewable.current, ids, nearEnd.current, skipId);
+  };
+
   const [pair] = useState(() => ({
     viewabilityConfig: { itemVisiblePercentThreshold: 1 },
-    onViewableItemsChanged: ({
-      viewableItems,
-    }: {
-      viewableItems: { index: number | null }[];
-    }) => {
-      const { key, ids, skipId } = latest.current;
-      if (!key) return;
-      const anchor = anchorFromViewable(viewableItems, ids, skipId);
-      if (anchor) saveReadingAnchor(key, anchor);
+    onViewableItemsChanged: ({ viewableItems }: { viewableItems: Viewable }) => {
+      viewable.current = viewableItems;
+      record();
     },
   }));
-  return pair;
+  const [onScroll] = useState(
+    () => (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      nearEnd.current = isNearEnd(
+        contentSize.height,
+        contentOffset.y,
+        layoutMeasurement.height,
+      );
+      record();
+    },
+  );
+  return { pair, onScroll };
 }

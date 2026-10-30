@@ -280,7 +280,7 @@ export function TimelineList({
       viewabilityConfig,
       onViewableItemsChanged: stableViewabilityHandler,
     },
-    anchorRecorder,
+    anchorRecorder.pair,
   ]);
 
   // On unmount, mark the issue's timeline as "viewed up to now" if the
@@ -417,7 +417,10 @@ export function TimelineList({
             <ActivityRow entry={item.entry} />
           );
         }}
-        onScroll={handleScroll}
+        onScroll={(e) => {
+          handleScroll(e);
+          anchorRecorder.onScroll(e);
+        }}
         // Any user-initiated scroll exits comment text-selection mode —
         // matches iMessage's behavior where scrolling implicitly commits /
         // dismisses the selection caret. Hooks both drag-start and the

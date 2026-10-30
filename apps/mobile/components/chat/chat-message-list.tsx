@@ -122,7 +122,7 @@ export function ChatMessageList({
   const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
   const messageIds = useMemo(() => messages.map((m) => m.id), [messages]);
   const anchorRecorder = useReadingAnchorRecorder(anchorKey, messageIds);
-  const [viewabilityCallbackPairs] = useState(() => [anchorRecorder]);
+  const [viewabilityCallbackPairs] = useState(() => [anchorRecorder.pair]);
   const hasMessages = messageIds.length > 0;
   const initialIndex = useMemo(
     () => (anchorKey ? restoreIndex(loadReadingAnchor(anchorKey), messageIds) : undefined),
@@ -195,6 +195,7 @@ export function ChatMessageList({
       key={sessionId ?? "new"}
       initialScrollIndex={initialIndex}
       viewabilityConfigCallbackPairs={viewabilityCallbackPairs}
+      onScroll={anchorRecorder.onScroll}
       data={messages}
       keyExtractor={(m) => m.id}
       renderItem={({ item }) => (

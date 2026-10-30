@@ -25,6 +25,21 @@ export function saveReadingAnchor(key: string, anchor: ReadingAnchor): void {
   anchors.set(key, anchor);
 }
 
+/** Pixel slack at the bottom edge that still counts as "at the live end". */
+const LIVE_END_SLACK_PX = 80;
+
+/**
+ * The reader sits at the end of the content. Row visibility is not enough: a
+ * tall last row counts as viewable while most of it is still below the fold.
+ */
+export function isNearEnd(
+  contentHeight: number,
+  offsetY: number,
+  viewportHeight: number,
+): boolean {
+  return contentHeight - (offsetY + viewportHeight) < LIVE_END_SLACK_PX;
+}
+
 export function loadReadingAnchor(key: string): ReadingAnchor | null {
   return parseReadingAnchor(anchors.get(key));
 }
@@ -40,12 +55,15 @@ export function parseReadingAnchor(value: unknown): ReadingAnchor | null {
 
 /**
  * Anchor from the currently viewable rows. `skipId` names a synthetic row
- * (the unread divider) that must never become the anchor.
+ * (the unread divider) that must never become the anchor. `nearEnd` is the
+ * scroll-distance check (`isNearEnd`); the last row being viewable alone does
+ * not make it the live end.
  */
 export function anchorFromViewable(
   viewable: { index: number | null }[],
   ids: string[],
   skipId?: string,
+  nearEnd = true,
 ): ReadingAnchor | null {
   const indexes = viewable
     .map((v) => v.index)
@@ -55,7 +73,7 @@ export function anchorFromViewable(
   if (top === undefined) return null;
   return {
     itemId: ids[top],
-    atLiveEnd: indexes[indexes.length - 1] === ids.length - 1,
+    atLiveEnd: nearEnd && indexes[indexes.length - 1] === ids.length - 1,
   };
 }
 
@@ -71,4 +89,23 @@ export function restoreIndex(
   if (!anchor || anchor.atLiveEnd) return undefined;
   const index = ids.indexOf(anchor.itemId);
   return index >= 0 ? index : undefined;
+}
+
+/**
+ * Record the reader's position under `key`. No viewable row while rows exist
+ * means the reader is above them (the issue header), so the stale anchor is
+ * dropped and the next open starts at the top. An empty `ids` is a list that
+ * is still loading: leave the saved anchor alone.
+ */
+export function recordReadingAnchor(
+  key: string,
+  viewable: { index: number | null }[],
+  ids: string[],
+  nearEnd: boolean,
+  skipId?: string,
+): void {
+  if (ids.length === 0) return;
+  const anchor = anchorFromViewable(viewable, ids, skipId, nearEnd);
+  if (anchor) anchors.set(key, anchor);
+  else anchors.delete(key);
 }
