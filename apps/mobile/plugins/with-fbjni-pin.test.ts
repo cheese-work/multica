@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import type { ConfigContext } from "expo/config";
 import { FBJNI_VERSION, pinFbjni } from "./with-fbjni-pin.js";
 
 const appGradle = `android {\n    namespace 'ai.multica.mobile.dev'\n}\n`;
@@ -32,5 +33,28 @@ describe("fbjni pin", () => {
       "utf8",
     );
     expect(catalog).toMatch(new RegExp(`^fbjni = "${FBJNI_VERSION}"$`, "m"));
+  });
+});
+
+// Behavior: the real app config must put the pin into the generated Android
+// app/build.gradle. Run the config's own Gradle mod chain on a sample file.
+describe("app config applies the fbjni pin", () => {
+  it("adds the force rule when the app build.gradle mod runs", async () => {
+    const { default: createConfig } = await import("../app.config");
+    const config = createConfig({ config: {} } as ConfigContext);
+    const mods = (config as { mods?: { android?: Record<string, (c: never) => Promise<{ modResults: { contents: string } }>> } }).mods;
+    const mod = mods?.android?.appBuildGradle;
+    expect(mod, "app config registers no appBuildGradle mod").toBeTypeOf("function");
+
+    const result = await mod!({
+      ...config,
+      modResults: { language: "groovy", contents: appGradle },
+      modRequest: { projectRoot: "", platformProjectRoot: "", modName: "appBuildGradle", platform: "android", introspect: true },
+      modRawConfig: config,
+    } as never);
+
+    expect(result.modResults.contents).toContain(
+      `force 'com.facebook.fbjni:fbjni:${FBJNI_VERSION}'`,
+    );
   });
 });
