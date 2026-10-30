@@ -168,3 +168,14 @@ SELECT 'revision'::text, id::text, state, reason,
 FROM github_webhook_revision
 WHERE state = 'unsigned' AND created_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
 ORDER BY 5 DESC;
+
+-- name: GetGitHubIntakePinForTask :one
+-- The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
+-- means the task is not an intake run; a receipt whose PR is gone still is one,
+-- with an empty pin.
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same
+FROM github_webhook_dispatch receipt
+LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
+LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
+WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
+LIMIT 1;

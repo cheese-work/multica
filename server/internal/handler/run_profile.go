@@ -136,3 +136,22 @@ func (h *Handler) SetProtectedPathPolicy(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": row.Name, "patterns": row.Patterns})
 }
+
+// intakePinForTask reports whether an intake item dispatched this task and the
+// PR head ref it is pinned to (plan 3.6). The ref is empty for a fork PR or a
+// PR with no head ref, and when the read fails: an intake run with no pin may
+// touch no ref at all, so every failure path is the closed one.
+func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgtype.UUID) (bool, string) {
+	pin, err := h.Queries.GetGitHubIntakePinForTask(ctx, db.GetGitHubIntakePinForTaskParams{WorkspaceID: workspaceID, TaskID: taskID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ""
+	}
+	if err != nil {
+		slog.Warn("intake pin read failed; pinning nothing", "task_id", uuidToString(taskID), "error", err)
+		return true, ""
+	}
+	if !pin.HeadRepoSame {
+		return true, ""
+	}
+	return true, pin.Branch
+}

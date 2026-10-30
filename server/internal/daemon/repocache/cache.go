@@ -741,6 +741,7 @@ type WorktreeParams struct {
 	RepoURL             string // remote URL to look up in the cache
 	WorkDir             string // parent directory for the worktree (e.g. task workdir)
 	Ref                 string // optional branch, tag, or commit to base the worktree on
+	Branch              string // when set, the task branch name instead of the generated one
 	AgentName           string // for branch naming
 	TaskID              string // for branch naming uniqueness
 	IssueIdentifier     string // issue key (e.g. CHE-1988) carried in the branch name so the PR links; empty for non-issue tasks
@@ -890,6 +891,9 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	}
 
 	branchName := newTaskBranchName(params.AgentName, params.IssueIdentifier, params.TaskID)
+	if params.Branch != "" {
+		branchName = params.Branch
+	}
 
 	// Derive directory name from repo URL.
 	dirName := repoNameFromURL(params.RepoURL)

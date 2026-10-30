@@ -640,6 +640,12 @@ type AgentTaskResponse struct {
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+
+	// IntakeRun and PinnedBranch are claim-only (CHE-2216 plan 3.6): a run an
+	// intake item dispatched, and the same-repository PR head ref it is pinned to.
+	// Mirror fields: internal/daemon/types.go.
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance

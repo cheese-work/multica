@@ -137,6 +137,8 @@ type activeRepoCheckoutTask struct {
 	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
 	// tasks with no issue.
 	IssueIdentifier string
+	IntakeRun       bool
+	PinnedBranch    string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -534,12 +536,25 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		if checkoutRef == "" {
 			checkoutRef = d.taskRepoDefaultRef(req.WorkspaceID, req.TaskID, req.URL)
 		}
+		// An intake run checks out its PR's head ref and nothing else, whatever
+		// the request asks for. With no valid pin it checks out nothing.
+		pinnedBranch := ""
+		if activeTask.IntakeRun {
+			if !validPinnedBranch(activeTask.PinnedBranch) {
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_unpinned", "task_id", activeTask.TaskID)
+				http.Error(w, "this run has no pull request head ref to check out", http.StatusForbidden)
+				return
+			}
+			pinnedBranch = activeTask.PinnedBranch
+			checkoutRef = pinnedBranch
+		}
 
 		params := repocache.WorktreeParams{
 			WorkspaceID:         req.WorkspaceID,
 			RepoURL:             req.URL,
 			WorkDir:             req.WorkDir,
 			Ref:                 checkoutRef,
+			Branch:              pinnedBranch,
 			AgentName:           req.AgentName,
 			TaskID:              req.TaskID,
 			IssueIdentifier:     activeTask.IssueIdentifier,

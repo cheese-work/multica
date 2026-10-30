@@ -129,6 +129,35 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 	return err
 }
 
+const getGitHubIntakePinForTask = `-- name: GetGitHubIntakePinForTask :one
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same
+FROM github_webhook_dispatch receipt
+LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
+LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
+WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
+LIMIT 1
+`
+
+type GetGitHubIntakePinForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+type GetGitHubIntakePinForTaskRow struct {
+	Branch       string `json:"branch"`
+	HeadRepoSame bool   `json:"head_repo_same"`
+}
+
+// The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
+// means the task is not an intake run; a receipt whose PR is gone still is one,
+// with an empty pin.
+func (q *Queries) GetGitHubIntakePinForTask(ctx context.Context, arg GetGitHubIntakePinForTaskParams) (GetGitHubIntakePinForTaskRow, error) {
+	row := q.db.QueryRow(ctx, getGitHubIntakePinForTask, arg.WorkspaceID, arg.TaskID)
+	var i GetGitHubIntakePinForTaskRow
+	err := row.Scan(&i.Branch, &i.HeadRepoSame)
+	return i, err
+}
+
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one
 SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override FROM issue
 JOIN issue_pull_request link ON link.issue_id=issue.id
