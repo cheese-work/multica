@@ -761,7 +761,7 @@ type WorktreeParams struct {
 	// task's base in the cache with a keep-ref (shared_objects.go). The
 	// restricted sandbox profile needs it: the cache's refs and config are not
 	// mounted. It implies IsolatedGitMetadata. A workdir that already holds a
-	// hardlinked isolated checkout keeps that checkout as it is.
+	// hard-linked isolated checkout keeps that checkout as it is.
 	SharedObjects bool
 	// Fresh discards what an existing checkout at the target path holds —
 	// uncommitted changes, untracked files, its branch position — and starts

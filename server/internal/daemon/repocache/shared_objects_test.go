@@ -165,8 +165,8 @@ func TestSharedObjectsReuseAddsKeepRefForEveryTask(t *testing.T) {
 	if !slices.Equal(keys, want) {
 		t.Fatalf("keep-ref task keys = %v, want %v", keys, want)
 	}
-	if got := CheckoutKeepRefTaskKeys(res.Path); !slices.Equal(got, want) {
-		t.Fatalf("checkout keep-ref record = %v, want %v", got, want)
+	if got, err := CheckoutKeepRefTaskKeys(res.Path); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("checkout keep-ref record = %v (err %v), want %v", got, err, want)
 	}
 }
 
@@ -231,5 +231,50 @@ func TestPruneKeepRefsReleasesOnlyDeadTasks(t *testing.T) {
 	released, remaining, err = PruneKeepRefs(context.Background(), f.barePath, nil)
 	if err != nil || released != 1 || remaining != 0 {
 		t.Fatalf("second prune released=%d remaining=%d err=%v, want 1, 0, nil", released, remaining, err)
+	}
+}
+
+func TestSharedObjectsSameTaskBaseChangeKeepsEarlierBase(t *testing.T) {
+	t.Parallel()
+	f := newSharedFixture(t)
+	res := f.checkout(t, sharedTaskA, true)
+	gitIn(t, res.Path, "commit", "--allow-empty", "-m", "task work on the first base")
+
+	// Upstream rewrites the branch: the first base is no longer in any cache ref.
+	gitIn(t, f.source, "commit", "--amend", "--allow-empty", "-m", "rewritten")
+	if err := f.cache.Sync("ws-1", []RepoInfo{{URL: f.source}}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// The same task checks out again and keeps its branch, which still sits on
+	// the first base.
+	f.checkout(t, sharedTaskA, true)
+	if got := gitRefCommit(t, f.barePath, getRemoteDefaultBranch(f.barePath)); got == f.baseCommit {
+		t.Fatal("setup: the cache still points at the first base")
+	}
+
+	dropCacheRefsAndGC(t, f.barePath)
+	if !hasObject(res.Path, f.baseCommit) {
+		t.Fatal("cache gc pruned the first base the kept task branch is built on")
+	}
+	gitIn(t, res.Path, "fsck", "--connectivity-only")
+}
+
+func TestCheckoutKeepRefTaskKeysReportsUnreadableRecord(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	record := filepath.Join(dir, ".git", keepRefRecord)
+	if err := os.MkdirAll(filepath.Dir(record), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := CheckoutKeepRefTaskKeys(dir); err != nil || keys != nil {
+		t.Fatalf("no record: keys=%v err=%v, want none", keys, err)
+	}
+	// A directory where the record belongs makes the read fail without
+	// depending on the test user's permissions.
+	if err := os.Mkdir(record, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckoutKeepRefTaskKeys(dir); err == nil {
+		t.Fatal("an unreadable record was reported as no borrower")
 	}
 }

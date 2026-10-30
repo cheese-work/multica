@@ -2,7 +2,9 @@ package repocache
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,14 +40,25 @@ func hasAlternates(checkoutPath string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// pinKeepRef points a task keep-ref in the cache at commit. The caller holds
-// the repo lock.
+// pinKeepRef points a task keep-ref in the cache at commit. A ref that already
+// pins a different commit is first kept under "<kind>-<commit>": a repeated
+// checkout can keep a branch built on the earlier base, and that base must
+// stay reachable for as long as the task has a borrower. The caller holds the
+// repo lock.
 func pinKeepRef(ctx context.Context, barePath, taskID, kind, commit string) error {
 	key := taskKey(taskID)
 	if key == "" {
 		return fmt.Errorf("pin %s keep-ref: empty task id", kind)
 	}
-	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "update-ref", keepRefName(key, kind), commit); err != nil {
+	ref := keepRefName(key, kind)
+	if out, err := runGitOutputContext(ctx, "-C", barePath, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+		if prev := strings.TrimSpace(string(out)); prev != "" && prev != commit {
+			if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "update-ref", ref+"-"+prev, prev); err != nil {
+				return fmt.Errorf("keep superseded %s keep-ref: %s: %w", kind, strings.TrimSpace(string(out)), err)
+			}
+		}
+	}
+	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "update-ref", ref, commit); err != nil {
 		return fmt.Errorf("pin %s keep-ref: %s: %w", kind, strings.TrimSpace(string(out)), err)
 	}
 	return nil
@@ -54,7 +67,10 @@ func pinKeepRef(ctx context.Context, barePath, taskID, kind, commit string) erro
 // recordKeepRef notes in the checkout that taskID's keep-refs have a borrower.
 func recordKeepRef(checkoutPath, taskID string) error {
 	key := taskKey(taskID)
-	keys := CheckoutKeepRefTaskKeys(checkoutPath)
+	keys, err := CheckoutKeepRefTaskKeys(checkoutPath)
+	if err != nil {
+		return err
+	}
 	if slices.Contains(keys, key) {
 		return nil
 	}
@@ -64,18 +80,20 @@ func recordKeepRef(checkoutPath, taskID string) error {
 	return os.WriteFile(path, []byte(strings.Join(keys, "\n")+"\n"), 0o644)
 }
 
-// CheckoutKeepRefTaskKeys returns the task keys a checkout pinned in its cache.
-func CheckoutKeepRefTaskKeys(checkoutPath string) []string {
+// CheckoutKeepRefTaskKeys returns the task keys a checkout pinned in its
+// cache. A checkout with no record has none; any other read failure is
+// returned, because an unreadable record does not prove the borrower is gone.
+func CheckoutKeepRefTaskKeys(checkoutPath string) ([]string, error) {
 	data, err := os.ReadFile(filepath.Join(checkoutPath, ".git", keepRefRecord))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read keep-ref record: %w", err)
 	}
-	var keys []string
-	for _, line := range strings.Fields(string(data)) {
-		keys = append(keys, line)
-	}
+	keys := strings.Fields(string(data))
 	slices.Sort(keys)
-	return slices.Compact(keys)
+	return slices.Compact(keys), nil
 }
 
 // keepRefs lists the cache's keep-ref names.

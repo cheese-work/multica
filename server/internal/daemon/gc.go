@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1342,35 +1343,63 @@ func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *
 }
 
 // liveKeepRefTaskKeys returns the task keys some checkout under the workspaces
-// root still records as a borrower of a repo cache (repocache keep-refs). A
-// checkout sits at <workspace>/<task env>/workdir/<repo>, or one directory
-// deeper when the repo is nested.
-func liveKeepRefTaskKeys(workspacesRoot string) map[string]struct{} {
+// root still records as a borrower of a repo cache (repocache keep-refs). The
+// repo checkout API accepts any existing directory under the workdir, so a
+// checkout can sit at any depth: the scan walks each workdir and stops at a
+// directory holding a .git, which is a checkout root. It reports every read
+// failure other than a path that vanished, because a borrower it could not see
+// must not lose its pins.
+func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
 	live := map[string]struct{}{}
-	for _, pattern := range []string{
-		"*/*/workdir/*/.git/multica-keep-refs",
-		"*/*/workdir/*/*/.git/multica-keep-refs",
-	} {
-		records, err := filepath.Glob(filepath.Join(workspacesRoot, pattern))
-		if err != nil {
-			continue
-		}
-		for _, record := range records {
-			checkout := filepath.Dir(filepath.Dir(record))
-			for _, key := range repocache.CheckoutKeepRefTaskKeys(checkout) {
+	workdirs, err := filepath.Glob(filepath.Join(workspacesRoot, "*", "*", "workdir"))
+	if err != nil {
+		return nil, err
+	}
+	for _, workdir := range workdirs {
+		err := filepath.WalkDir(workdir, func(path string, entry fs.DirEntry, err error) error {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			if _, statErr := os.Lstat(filepath.Join(path, ".git")); statErr != nil {
+				if errors.Is(statErr, fs.ErrNotExist) {
+					return nil
+				}
+				return statErr
+			}
+			keys, err := repocache.CheckoutKeepRefTaskKeys(path)
+			if err != nil {
+				return err
+			}
+			for _, key := range keys {
 				live[key] = struct{}{}
 			}
+			return filepath.SkipDir
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
-	return live
+	return live, nil
 }
 
 // releaseOrphanKeepRefsLocked drops the keep-refs whose borrowing checkout is
 // gone, so the cache's next prune can reclaim the objects they pinned. The
 // caller holds the repo lock, which also serializes it against a checkout that
-// is pinning its base. Pins stay on any failure.
+// is pinning its base. Pins stay on any failure, including a borrower scan that
+// could not read every record; the eviction guard then sees them too.
 func (d *Daemon) releaseOrphanKeepRefsLocked(ctx context.Context, barePath string) {
-	released, remaining, err := repocache.PruneKeepRefs(ctx, barePath, liveKeepRefTaskKeys(d.cfg.WorkspacesRoot))
+	live, err := liveKeepRefTaskKeys(d.cfg.WorkspacesRoot)
+	if err != nil {
+		d.logger.Warn("gc: keep-ref borrower scan failed; pins kept", "repo", barePath, "error", err)
+		return
+	}
+	released, remaining, err := repocache.PruneKeepRefs(ctx, barePath, live)
 	if err != nil {
 		if ctx.Err() == nil {
 			d.logger.Warn("gc: keep-ref release failed", "repo", barePath, "error", err)

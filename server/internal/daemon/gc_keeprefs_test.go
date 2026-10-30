@@ -28,7 +28,14 @@ func pinTestKeepRef(t *testing.T, barePath, key string) string {
 // keep-refs, at the path a real one has under the workspaces root.
 func recordTestCheckout(t *testing.T, d *Daemon, keys ...string) string {
 	t.Helper()
-	checkout := filepath.Join(d.cfg.WorkspacesRoot, "ws", "task-env", "workdir", "repo")
+	return recordTestCheckoutAt(t, d, filepath.Join("workdir", "repo"), keys...)
+}
+
+// recordTestCheckoutAt is recordTestCheckout at a path below the task env
+// directory, for checkouts the repo checkout API puts deeper than the workdir.
+func recordTestCheckoutAt(t *testing.T, d *Daemon, rel string, keys ...string) string {
+	t.Helper()
+	checkout := filepath.Join(d.cfg.WorkspacesRoot, "ws", "task-env", rel)
 	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +110,64 @@ func TestRepoCheckoutForwardsSharedMode(t *testing.T) {
 	}
 	if !cache.lastCreateParams().SharedObjects {
 		t.Fatal("shared checkout_mode was not forwarded to repo cache")
+	}
+}
+
+func TestMaintainRepoCacheKeepsPinsOfNestedCheckout(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	live := pinTestKeepRef(t, barePath, liveKeepKey)
+	recordTestCheckoutAt(t, d, filepath.Join("workdir", "one", "two", "repo"), liveKeepKey)
+
+	d.maintainRepoCache(t.Context(), barePath, &gcStats{})
+
+	if !gitRefExists(t, barePath, live) {
+		t.Errorf("keep-ref %s of a checkout three directories below the workdir was released", live)
+	}
+}
+
+func TestEvictRepoCacheKeepsRepoWhileNestedBorrowerLives(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	d.cfg.GCRepoTTL = 24 * time.Hour
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	writeLastUsed(t, barePath, time.Now().Add(-90*24*time.Hour))
+	pinTestKeepRef(t, barePath, liveKeepKey)
+	recordTestCheckoutAt(t, d, filepath.Join("workdir", "one", "two", "repo"), liveKeepKey)
+
+	if stats := runRepoGC(d); stats.repoCachesReclaimed != 0 {
+		t.Fatalf("repo_caches_reclaimed = %d, want 0 while a nested checkout borrows the cache", stats.repoCachesReclaimed)
+	}
+	if _, err := os.Stat(barePath); err != nil {
+		t.Fatalf("cache a nested checkout borrows from was evicted: %v", err)
+	}
+}
+
+func TestMaintainRepoCacheKeepsPinsWhenBorrowerRecordUnreadable(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	d.cfg.GCRepoTTL = 24 * time.Hour
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	writeLastUsed(t, barePath, time.Now().Add(-90*24*time.Hour))
+	live := pinTestKeepRef(t, barePath, liveKeepKey)
+	checkout := recordTestCheckout(t, d, liveKeepKey)
+	// A directory where the record belongs makes the read fail.
+	record := filepath.Join(checkout, ".git", "multica-keep-refs")
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(record, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if stats := runRepoGC(d); stats.repoCachesReclaimed != 0 {
+		t.Fatalf("repo_caches_reclaimed = %d, want 0 while a borrower record is unreadable", stats.repoCachesReclaimed)
+	}
+	if !gitRefExists(t, barePath, live) {
+		t.Errorf("keep-ref %s was released although its borrower's record could not be read", live)
 	}
 }
