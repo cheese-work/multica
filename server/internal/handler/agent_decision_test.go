@@ -69,7 +69,7 @@ func (f *agentDecisionFixture) propose(t *testing.T) {
 }
 
 func (f agentDecisionFixture) opinion(agent, verdict string) string {
-	return fmt.Sprintf("decision_instance: %s\ncandidate_sha256: %s\nwaived_gate: screenshot_evidence\nsigner_agent_id: %s\nproposal_sha256: %s\nevidence: [{\"url\":\"https://example.com/frozen.md\",\"sha256\":\"%s\"}]\nverdict: %s\nindependence: formed before reading any other signer's opinion\nnonce: 1234567890abcdef1234567890abcdef\n\nReasoned opinion.\n", f.instance, boundAfter, agent, testDigest(f.proposal), boundAfter, verdict)
+	return fmt.Sprintf("decision_instance: %s\ncandidate_sha256: %s\nwaived_gate: screenshot_evidence\nsigner_agent_id: %s\nproposal_sha256: %s\nevidence: [{\"url\":\"https://example.com/frozen.md\",\"sha256\":%q}]\nverdict: %s\nindependence: formed before reading any other signer's opinion\nnonce: 1234567890abcdef1234567890abcdef\n\nReasoned opinion.\n", f.instance, boundAfter, agent, testDigest(f.proposal), boundAfter, verdict)
 }
 
 func (f agentDecisionFixture) commit(t *testing.T, agent, opinion string) {
