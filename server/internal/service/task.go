@@ -1676,7 +1676,6 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	return task, nil
 }
 
-
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
 		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
