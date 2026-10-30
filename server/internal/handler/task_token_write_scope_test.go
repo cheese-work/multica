@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -222,5 +227,93 @@ func TestTaskTokenWriteScopeHonorsCrossIssueGrant(t *testing.T) {
 	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
 	if st, _ := scoped(t, "on", f.taskID, f.agentID, "PUT", "/api/issues/"+f.otherWorkspace, nil, nil); st != 403 {
 		t.Fatalf("other-workspace issue under a live grant: status %d, want 403", st)
+	}
+}
+
+// scopedRouter mounts the middleware in front of the real issue handlers, so a
+// refused request must also leave the database untouched.
+func scopedRouter(mode string) http.Handler {
+	r := chi.NewRouter()
+	r.Use(testHandler.TaskTokenWriteScope(mode))
+	r.Post("/api/issues", testHandler.CreateIssue)
+	r.Post("/api/issues/quick-create", testHandler.QuickCreateIssue)
+	r.Post("/api/issues/batch-update", testHandler.BatchUpdateIssues)
+	r.Put("/api/issues/{id}", testHandler.UpdateIssue)
+	r.Post("/api/issues/{id}/move", testHandler.MoveIssue)
+	return r
+}
+
+func serveScoped(f writeScopeFixture, method, path, rawBody string) int {
+	req := newRequest(method, path, nil)
+	req.Body = io.NopCloser(strings.NewReader(rawBody))
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-Token-Purpose", "agent_task")
+	req.Header.Set("X-Agent-ID", f.agentID)
+	req.Header.Set("X-Task-ID", f.taskID)
+	w := httptest.NewRecorder()
+	scopedRouter("on").ServeHTTP(w, req)
+	return w.Code
+}
+
+func parentOf(t *testing.T, issueID string) *string {
+	t.Helper()
+	var parent *string
+	dbfx.QueryRow(t, `SELECT parent_issue_id::text FROM issue WHERE id = $1`, issueID).Scan(&parent)
+	return parent
+}
+
+// The parent of a write is read the way the handler reads it: any key spelling
+// the handler accepts (JSON field matching ignores case), every duplicate, on
+// every route that can set a parent.
+func TestTaskTokenWriteScopeParentBypass(t *testing.T) {
+	f := newWriteScopeFixture(t)
+	q := func(v string) string { return `"` + v + `"` }
+	cases := []struct{ name, method, path, body string }{
+		{"move with a parent", "POST", "/api/issues/" + f.own + "/move", `{"parent_issue_id":` + q(f.foreign) + `}`},
+		{"quick-create with a parent", "POST", "/api/issues/quick-create", `{"prompt":"x","agent_id":` + q(f.agentID) + `,"parent_issue_id":` + q(f.foreign) + `}`},
+		{"create, upper-case key", "POST", "/api/issues", `{"title":"x","PARENT_ISSUE_ID":` + q(f.foreign) + `}`},
+		{"update, upper-case key", "PUT", "/api/issues/" + f.own, `{"PARENT_ISSUE_ID":` + q(f.foreign) + `}`},
+		{"update, allowed key first then upper-case key", "PUT", "/api/issues/" + f.own, `{"parent_issue_id":` + q(f.child) + `,"PARENT_ISSUE_ID":` + q(f.foreign) + `}`},
+		{"update, duplicate key", "PUT", "/api/issues/" + f.own, `{"parent_issue_id":` + q(f.child) + `,"parent_issue_id":` + q(f.foreign) + `}`},
+		{"batch update, upper-case key", "POST", "/api/issues/batch-update", `{"issue_ids":[` + q(f.own) + `],"updates":{"Parent_Issue_Id":` + q(f.foreign) + `}}`},
+		{"batch update, allowed key first then upper-case key", "POST", "/api/issues/batch-update", `{"issue_ids":[` + q(f.own) + `],"updates":{"parent_issue_id":` + q(f.child) + `,"PARENT_ISSUE_ID":` + q(f.foreign) + `}}`},
+		{"batch update, upper-case updates", "POST", "/api/issues/batch-update", `{"issue_ids":[` + q(f.own) + `],"UPDATES":{"parent_issue_id":` + q(f.foreign) + `}}`},
+	}
+	for _, c := range cases {
+		if st := serveScoped(f, c.method, c.path, c.body); st != 403 {
+			t.Errorf("%s: status %d, want 403", c.name, st)
+		}
+	}
+	if got := parentOf(t, f.own); got != nil {
+		t.Errorf("a refused write moved the issue under %s", *got)
+	}
+	// A parent inside the run's scope still reaches the handler.
+	if st := serveScoped(f, "POST", "/api/issues/"+f.child+"/move", `{"parent_issue_id":`+q(f.own)+`}`); st == 403 {
+		t.Errorf("move under an in-scope parent: refused")
+	}
+}
+
+// Audit mode must forward the request byte for byte, however large; enforce
+// mode refuses a body it cannot read in full.
+func TestTaskTokenWriteScopeOversizedBody(t *testing.T) {
+	f := newWriteScopeFixture(t)
+	big, _ := json.Marshal(map[string]string{"description": strings.Repeat("a", maxWriteScopeBody+100)})
+	run := func(mode string) (status int, forwarded []byte) {
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded, _ = io.ReadAll(r.Body) })
+		req := newRequest("PUT", "/api/issues/"+f.own, nil)
+		req.Body = io.NopCloser(bytes.NewReader(big))
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Task-Token-Purpose", "agent_task")
+		req.Header.Set("X-Agent-ID", f.agentID)
+		req.Header.Set("X-Task-ID", f.taskID)
+		w := httptest.NewRecorder()
+		testHandler.TaskTokenWriteScope(mode)(next).ServeHTTP(w, req.WithContext(context.Background()))
+		return w.Code, forwarded
+	}
+	if st, got := run("audit"); st != 200 || !bytes.Equal(got, big) {
+		t.Errorf("audit: status %d, forwarded %d of %d bytes", st, len(got), len(big))
+	}
+	if st, got := run("on"); st != 403 || got != nil {
+		t.Errorf("on: status %d, handler reached %v, want 403 without the handler", st, got != nil)
 	}
 }

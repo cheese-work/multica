@@ -33,9 +33,8 @@ const (
 	maxWriteScopeBody = 1 << 20
 )
 
-// writeScopeReadOnlyPOSTs are fixed /api/issues/* POST routes that only read or
-// create a new issue (a created issue is the task's own).
-var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger", "quick-create"}
+// writeScopeReadOnlyPOSTs are fixed /api/issues/* POST routes that only read.
+var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger"}
 
 // TaskTokenWriteScope returns the middleware for one enforcement mode: "on"
 // refuses, "audit" logs what it would refuse and passes, anything else is off.
@@ -79,7 +78,7 @@ func writeScopeTargets(r *http.Request) (refs []string, bad bool) {
 	}
 	rest := segs[2:]
 	switch {
-	case len(rest) == 0:
+	case len(rest) == 0 || (rest[0] == "quick-create" && r.Method == http.MethodPost):
 		return bodyParentRefs(r, false)
 	case slices.Contains(writeScopeReadOnlyPOSTs, rest[0]) && r.Method == http.MethodPost:
 		return nil, false
@@ -89,7 +88,8 @@ func writeScopeTargets(r *http.Request) (refs []string, bad bool) {
 		return nil, false
 	}
 	refs = []string{rest[0]}
-	if len(rest) == 1 && r.Method == http.MethodPut {
+	// The routes that can set a parent: update and move.
+	if (len(rest) == 1 && r.Method == http.MethodPut) || (len(rest) == 2 && rest[1] == "move") {
 		parents, bad := bodyParentRefs(r, false)
 		return append(refs, parents...), bad
 	}
@@ -103,51 +103,97 @@ func isReadOnlyIssuePOST(sub []string) bool {
 }
 
 // readBodyOnce reads a bounded request body and puts it back for the handler.
-func readBodyOnce(r *http.Request) ([]byte, bool) {
+// A body over the bound, or one that fails to read, is put back whole, so audit
+// mode forwards it unchanged; ok is false and the caller fails closed.
+func readBodyOnce(r *http.Request) (body []byte, ok bool) {
 	if r.Body == nil {
 		return nil, true
 	}
-	b, err := io.ReadAll(io.LimitReader(r.Body, maxWriteScopeBody+1))
+	orig := r.Body
+	b, err := io.ReadAll(io.LimitReader(orig, maxWriteScopeBody+1))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(b), orig), orig}
 	if err != nil || len(b) > maxWriteScopeBody {
 		return nil, false
 	}
-	r.Body = io.NopCloser(bytes.NewReader(b))
 	return b, true
 }
 
-// bodyParentRefs returns the parent_issue_id of a create or update body: a
-// parent outside the run's scope is a write to that parent. nested reads it
-// from the "updates" object of a batch update.
+// objectValues returns every value of a JSON object whose key equals name,
+// ignoring case and keeping duplicates: the handlers decode into structs, where
+// the last of several case-insensitive matches wins, so every one is checked.
+func objectValues(b []byte, name string) (values []json.RawMessage, bad bool) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	tok, err := dec.Token()
+	if err == io.EOF {
+		return nil, false
+	}
+	if err != nil {
+		return nil, true
+	}
+	if tok == nil { // a JSON null body decodes to no fields
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, true
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		key, isKey := keyTok.(string)
+		if err != nil || !isKey {
+			return nil, true
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return nil, true
+		}
+		if strings.EqualFold(key, name) {
+			values = append(values, raw)
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, true
+	}
+	return values, false
+}
+
+// parentRefsOf returns every parent_issue_id set in a create, update, move or
+// quick-create body: a parent outside the run's scope is a write to that
+// parent. nested reads it from the "updates" objects of a batch update.
+func parentRefsOf(b []byte, nested bool) (refs []string, bad bool) {
+	objects := []json.RawMessage{b}
+	if nested {
+		var bad bool
+		if objects, bad = objectValues(b, "updates"); bad {
+			return nil, true
+		}
+	}
+	for _, obj := range objects {
+		values, bad := objectValues(obj, "parent_issue_id")
+		if bad {
+			return nil, true
+		}
+		for _, raw := range values {
+			var parent *string
+			if json.Unmarshal(raw, &parent) != nil {
+				return nil, true
+			}
+			if parent != nil && *parent != "" {
+				refs = append(refs, *parent)
+			}
+		}
+	}
+	return refs, false
+}
+
 func bodyParentRefs(r *http.Request, nested bool) (refs []string, bad bool) {
 	b, ok := readBodyOnce(r)
 	if !ok {
 		return nil, true
 	}
-	if len(bytes.TrimSpace(b)) == 0 {
-		return nil, false
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(b, &fields) != nil {
-		return nil, true
-	}
-	if nested {
-		raw, ok := fields["updates"]
-		if !ok || json.Unmarshal(raw, &fields) != nil {
-			return nil, false
-		}
-	}
-	raw, ok := fields["parent_issue_id"]
-	if !ok {
-		return nil, false
-	}
-	var parent *string
-	if json.Unmarshal(raw, &parent) != nil {
-		return nil, true
-	}
-	if parent == nil || *parent == "" {
-		return nil, false
-	}
-	return []string{*parent}, false
+	return parentRefsOf(b, nested)
 }
 
 func batchTargets(r *http.Request, isUpdate bool) (refs []string, bad bool) {
@@ -163,7 +209,7 @@ func batchTargets(r *http.Request, isUpdate bool) (refs []string, bad bool) {
 	}
 	refs = req.IssueIDs
 	if isUpdate {
-		parents, bad := bodyParentRefs(r, true)
+		parents, bad := parentRefsOf(b, true)
 		return append(refs, parents...), bad
 	}
 	return refs, false
