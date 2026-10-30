@@ -393,6 +393,12 @@ deleted_run_capability_grants AS (
 deleted_protected_path_policies AS (
     DELETE FROM protected_path_policy WHERE workspace_id = $1
 ),
+deleted_task_elevations AS (
+    DELETE FROM task_elevation WHERE workspace_id = $1
+),
+deleted_elevated_ops AS (
+    DELETE FROM elevated_op WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
@@ -653,6 +659,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 // CHE-2489 run capability grants: workspace-owned leaf, no FK.
 // CHE-2490 protected-path policies: workspace-owned leaf, no FK.
+// CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
