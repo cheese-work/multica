@@ -11,10 +11,10 @@
       "content_sha256": "c8b8fbcd23a9812a07649483948d11c5bdb9c6b2c7cc015053a90bf680437555"
     }
   ],
-  "export_sha256": "952c8af74031fa22d3d15f8744f13c600ebcf9687b34d2e3a5ad7d03f2401df8",
+  "export_sha256": "17d8d1176487adc6ad4b3e6e54730d87b12efb154c80080490c32e282e89f7a1",
   "export_sha256_method": "sha256 of the two lines '<sha256>  <file>' for export_files, sorted by file name",
   "export_files": {
-    "machine-card-a-1240.png": "ff6007203783ca4a357fa47c451c66f2d283574c920225e9061d68cedd7e55ec",
+    "machine-card-a-1240.webp": "9e9cb34d211a61966baf630aa4b1b2e6477c222fcd22fb83c071eca78dde2735",
     "machine-card-a.html": "c8b8fbcd23a9812a07649483948d11c5bdb9c6b2c7cc015053a90bf680437555"
   },
   "export_transform": "none: the frame HTML is self-contained (system font stack, no external fetch); written as read from doop, without the trailing newline",

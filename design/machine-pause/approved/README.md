@@ -3,6 +3,6 @@ Direction A selected by Cheese (`01a18c04-779a-7536-884d-a358ef81bb01`, also `01
 Approved when the lock PR merges. The topic's last implementing PR deletes these reference files.
 
 - `machine-card-a.html`: the frame as read from doop, unchanged (system font stack, no external fetch). Its hash is `screens[0].content_sha256` in `LOCK.json`.
-- `machine-card-a-1240.png`: Chrome capture of that file at 1240 px.
+- `machine-card-a-1240.webp`: Chrome capture of that file at 1240 px, stored as lossless WebP (pixel-identical to the PNG capture; the PNG was 366KB, over the 300KB image budget).
 - Shows, desktop 780 and phone 390: running, reason menu, pausing, drained, offline (paused and not), loading, error, member without rights, ending soon, pause ended (live and offline).
 - Button label: the frame says "Delete runtime", the current `runtimes.json` text. Cheese chose no label. A rename to "Remove" edits the frame and needs a new UX score.
