@@ -51,16 +51,23 @@ func TestBlockedMemberCommentWakesAssignee_CHE2393(t *testing.T) {
 					if wantOther == 1 {
 						wantIDs = append(wantIDs, otherID)
 					}
-					requirePreviewAgents(t, preview, wantIDs...)
 					for i := 0; i < 2; i++ {
-						postCommentForTriggerPreviewTest(t, issueID, body)
+						replyID := postCommentForTriggerPreviewTest(t, issueID, body)
 						if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 1 {
 							t.Fatalf("assignee runs = %d after reply %d, want exactly 1", got, i+1)
+						}
+						var carriesReply bool
+						dbfx.QueryRow(t, `SELECT trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids)
+							FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`,
+							issueID, assigneeID, replyID).Scan(&carriesReply)
+						if !carriesReply {
+							t.Fatal("pending assignee run does not carry the member reply")
 						}
 						if got := countQueuedCommentTriggerTasks(t, issueID, otherID); got != wantOther {
 							t.Fatalf("thread/mention recipient runs = %d, want %d", got, wantOther)
 						}
 					}
+					requirePreviewAgents(t, preview, wantIDs...)
 				})
 			}
 		}
@@ -109,6 +116,49 @@ func TestBlockedMemberStatusChangeWakesAssignee_CHE2393(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestBlockedMemberStatusChangePreservesSuppression_CHE2393(t *testing.T) {
+	seedTestCatalog(t)
+	for _, writer := range issueWriters {
+		for _, tc := range []struct {
+			name, from, to  string
+			agent, suppress bool
+		}{
+			{name: "agent status change", from: "blocked", to: "in_progress", agent: true},
+			{name: "explicit suppress", from: "blocked", to: "in_progress", suppress: true},
+			{name: "same status", from: "blocked", to: "blocked"},
+			{name: "unrelated edit", from: "blocked"},
+			{name: "unrelated transition", from: "todo", to: "in_progress"},
+			{name: "backlog parking", from: "blocked", to: "backlog"},
+			{name: "done", from: "blocked", to: "done"},
+			{name: "cancelled", from: "blocked", to: "cancelled"},
+		} {
+			t.Run(writer.name+"/"+tc.name, func(t *testing.T) {
+				agentID := createHandlerTestAgent(t, "suppression assignee", nil)
+				issueID := dbfx.Issue(t, "blocked suppression", testutil.Cols{
+					"status": tc.from, "assignee_type": "agent", "assignee_id": agentID,
+				})
+				dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", issueID)
+				body := map[string]any{"title": "updated title"}
+				if tc.to != "" {
+					body["status"] = tc.to
+				}
+				if tc.suppress {
+					body["suppress_run"] = true
+				}
+				var headers map[string]string
+				if tc.agent {
+					taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+					headers = map[string]string{"X-Agent-ID": agentID, "X-Task-ID": taskID}
+				}
+				writer.write(t, issueID, body, headers).Want(http.StatusOK)
+				if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 0 {
+					t.Fatalf("suppressed status write queued %d assignee runs, want 0", got)
+				}
+			})
 		}
 	}
 }
