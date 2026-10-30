@@ -10,6 +10,8 @@ multica decision request --issue <issue> --for <user-id> --class <class> --ask-f
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
+multica decision feed --output json   # sweep PAT with the decisions:feed scope only
+multica decision feed ack <answer-id> --version <n>
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
