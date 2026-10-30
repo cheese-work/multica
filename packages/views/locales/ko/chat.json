@@ -306,7 +306,10 @@
   "decision": {
     "request_title": "결정 요청",
     "request_label": "결정 요청: {{state}}",
-    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨", "recorded": "기록됨", "delivered": "전달됨", "disclaimed": "철회됨" },
+    "request_state": { "open": "답변 대기", "answered": "답변 완료", "withdrawn": "철회됨", "recorded": "기록됨", "delivered": "전달됨", "picked_up": "작업 시작됨", "not_picked_up": "작업 미시작", "disclaimed": "철회됨" },
+    "picked_up_by": "{{agent}}님이 작업 시작",
+    "not_picked_up": "답변 기록 후 실행이 시작되지 않았습니다.",
+    "open_issue": "{{issue}} 열기",
     "answer_options": "선택지",
     "answer_text": "또는 답변 입력",
     "answer_send": "보내기",

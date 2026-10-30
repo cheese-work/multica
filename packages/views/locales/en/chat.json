@@ -312,7 +312,10 @@
   "decision": {
     "request_title": "Decision request",
     "request_label": "Decision request: {{state}}",
-    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "disclaimed": "Disclaimed" },
+    "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "picked_up": "Picked up", "not_picked_up": "Not picked up", "disclaimed": "Disclaimed" },
+    "picked_up_by": "Picked up by {{agent}}",
+    "not_picked_up": "No run started after the answer was recorded.",
+    "open_issue": "Open {{issue}}",
     "answer_options": "Options",
     "answer_text": "Or write an answer",
     "answer_send": "Send",

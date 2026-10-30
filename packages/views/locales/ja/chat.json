@@ -306,7 +306,10 @@
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "disclaimed": "撤回済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み" },
+    "picked_up_by": "{{agent}} が着手",
+    "not_picked_up": "回答の記録後に実行が開始されていません。",
+    "open_issue": "{{issue}} を開く",
     "answer_options": "選択肢",
     "answer_text": "または回答を入力",
     "answer_send": "送信",

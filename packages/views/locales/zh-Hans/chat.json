@@ -306,7 +306,10 @@
   "decision": {
     "request_title": "决策请求",
     "request_label": "决策请求：{{state}}",
-    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "disclaimed": "已撤销" },
+    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "picked_up": "已接手", "not_picked_up": "未接手", "disclaimed": "已撤销" },
+    "picked_up_by": "{{agent}} 已接手",
+    "not_picked_up": "答复记录后没有运行启动。",
+    "open_issue": "打开 {{issue}}",
     "answer_options": "选项",
     "answer_text": "或输入回答",
     "answer_send": "发送",
