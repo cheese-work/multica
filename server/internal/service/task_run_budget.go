@@ -78,7 +78,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}
 	if err == nil {
-		noteRunInserted(ctx, q, p.IssueID)
+		err = noteRunInserted(ctx, q, p.IssueID, task.ID)
 	}
 	return task, err
 }
@@ -137,23 +137,32 @@ func runBudgetWarnAt(max int) int64 {
 // run that reaches it. It runs after the insert, on the insert's own handle, so
 // the run count includes the new row and the transaction id is the inserting
 // transaction's: the handler follows that transaction to commit or rollback.
-// Best effort: a failed read loses the warning, never the run.
-func noteRunInserted(ctx context.Context, q *db.Queries, issueID pgtype.UUID) {
+// It first debits the run to the ledger: a failed debit is returned, so the
+// enqueue transaction rolls the run back. The warning is best effort: a failed
+// read loses the warning, never the run.
+func noteRunInserted(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) error {
+	if !issueID.Valid {
+		return nil
+	}
+	if err := debitRun(ctx, q, issueID, taskID); err != nil {
+		return fmt.Errorf("run budget: debit run: %w", err)
+	}
 	hook := onRunBudgetEvent.Load()
-	if hook == nil || !issueID.Valid {
-		return
+	if hook == nil {
+		return nil
 	}
 	issue, err := q.GetIssue(ctx, issueID)
 	if err != nil {
-		return
+		return nil
 	}
 	usage, err := loadRunBudgetUsage(ctx, q, issue)
 	if err != nil || usage == nil || usage.Runs != runBudgetWarnAt(usage.Max) {
-		return
+		return nil
 	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
 	xid, _ := q.CurrentXactID(ctx)
 	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid})
+	return nil
 }
 
 var onRunBudgetExhausted atomic.Pointer[func(context.Context, RunBudgetExhausted)]
@@ -189,22 +198,18 @@ func RunBudgetStart(ctx context.Context, q *db.Queries, issueID pgtype.UUID, def
 // is spent. An issue with no workflow, or a workflow with no stored budget
 // start (the built-in Default nobody saved), is not budgeted.
 func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) (ReviewGate, error) {
-	issue, err := q.GetIssue(ctx, issueID)
+	issue, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ReviewGate{}, nil
 		}
-		return ReviewGate{}, fmt.Errorf("run budget: load issue: %w", err)
-	}
-	usage, err := loadRunBudgetUsage(ctx, q, issue)
-	if err != nil {
-		return ReviewGate{}, err
+		return ReviewGate{}, fmt.Errorf("run budget: %w", err)
 	}
 	if usage == nil {
 		return ReviewGate{}, nil
 	}
 	runs, max := usage.Runs, usage.Max
-	spent := runs >= int64(max)
+	spent := balance < 1
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
 	if spent && isFinishedStatus(ctx, q, issue) {

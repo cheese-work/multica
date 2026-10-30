@@ -1526,7 +1526,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
-	noteRunInserted(ctx, q, issue.ID)
+	if err := noteRunInserted(ctx, q, issue.ID, task.ID); err != nil {
+		return err
+	}
 	if err := settleQueued(task.ID); err != nil {
 		return err
 	}

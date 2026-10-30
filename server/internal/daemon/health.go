@@ -480,7 +480,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "workdir is required", http.StatusBadRequest)
 			return
 		}
-		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated {
+		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated && req.CheckoutMode != repoCheckoutModeShared {
 			http.Error(w, "invalid checkout_mode", http.StatusBadRequest)
 			return
 		}
@@ -545,6 +545,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			IssueIdentifier:     activeTask.IssueIdentifier,
 			CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
 			IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+			SharedObjects:       req.CheckoutMode == repoCheckoutModeShared,
 			Fresh:               req.Fresh,
 		}
 		if req.RetryBusy {
