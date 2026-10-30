@@ -14,22 +14,49 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildCacheTests(unittest.TestCase):
-    def test_ssd2_cache_storage_is_rejected_before_any_cache_export(self):
-        filename = 'release.yml' if ROOT.name == 'multica' else 'ci.yml' if ROOT.name == 'artemis' else 'backend-ci.yml' if ROOT.name == 'sub2api' else 'run-tests.yml'
-        workflow = yaml.safe_load((ROOT / '.github/workflows' / filename).read_text())
-        steps = [step for job in workflow['jobs'].values() for step in job.get('steps', [])]
-        step = next(step for step in steps if step.get('name') == 'Use disposable build caches')
-        with tempfile.TemporaryDirectory() as directory:
-            fake_df = Path(directory, 'df')
-            fake_df.write_text('#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/nvme1n1 100 1 99 1%% /_work\\n"\n')
-            fake_df.chmod(0o755)
-            output = Path(directory, 'environment')
-            result = subprocess.run(['bash', '-euc', step['run']], capture_output=True, text=True,
-                                    env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
-                                         'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
-            self.assertNotEqual(result.returncode, 0, 'ssd2-backed runner temp must not receive build caches')
-            self.assertIn('ssd2', result.stderr)
-            self.assertFalse(output.exists(), 'no cache path is exported on the incompatible lane')
+    def test_ssd2_cache_storage_does_not_fail_jobs(self):
+        count = 0
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            workflow = yaml.safe_load(path.read_text())
+            for job in workflow.get('jobs', {}).values():
+                for step in job.get('steps', []):
+                    if step.get('name') != 'Use disposable build caches':
+                        continue
+                    count += 1
+                    with self.subTest(workflow=path.name), tempfile.TemporaryDirectory() as directory:
+                        fake_df = Path(directory, 'df')
+                        fake_df.write_text('#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/nvme1n1 100 1 99 1%% /_work\n"\n')
+                        fake_df.chmod(0o755)
+                        output = Path(directory, 'environment')
+                        result = subprocess.run(['bash', '-euc', step['run']], cwd=ROOT, capture_output=True, text=True,
+                                                env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                                                     'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output), 'GOFLAGS': '-count=1'})
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                        self.assertEqual(environment['GOCACHE'], directory + '/build-cache/go-build')
+                        self.assertEqual(environment['GOFLAGS'], '-count=1 -modcacherw')
+                        self.assertNotIn('exit 1', step['run'])
+        self.assertGreater(count, 0)
+
+    def test_checked_out_jobs_share_cache_initialization(self):
+        shared = 0
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            workflow = yaml.safe_load(path.read_text())
+            for job in workflow.get('jobs', {}).values():
+                checkout = False
+                for step in job.get('steps', []):
+                    if 'checkout@' in step.get('uses', ''):
+                        checkout = True
+                    if step.get('name') == 'Use disposable build caches' and checkout and path.name != 'pr-close-target-check.yml':
+                        shared += 1
+                        self.assertEqual(step['run'].strip(), 'bash .github/scripts/build-cache-env.sh')
+        self.assertGreater(shared, 0)
+
+    def test_maintenance_has_no_build_cache_setup(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/cache-maintenance.yml').read_text())
+        job = workflow['jobs']['cleanup']
+        self.assertFalse(any(step.get('name') == 'Use disposable build caches' for step in job['steps']))
+        self.assertEqual(job['runs-on'], 'ubuntu-24.04')
 
     def setUp(self):
         self.workflow = yaml.safe_load((ROOT / '.github/workflows/cd-qualification.yml').read_text())
@@ -71,7 +98,7 @@ class BuildCacheTests(unittest.TestCase):
                         if step.get('name') == 'Use disposable build caches')
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory, 'environment')
-                subprocess.run(['bash', '-euc', step['run']], check=True,
+                subprocess.run(['bash', '-euc', step['run']], cwd=ROOT, check=True,
                                env={**os.environ, 'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
                 environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
             for variable in ['GOCACHE', 'GOMODCACHE', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR']:

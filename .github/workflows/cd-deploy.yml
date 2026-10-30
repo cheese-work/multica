@@ -107,27 +107,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: |
-          set -euo pipefail
-          cache_filesystem=$(df -P "${RUNNER_TEMP:?}" | awk 'NR == 2 {print $1}')
-          if [[ -z "$cache_filesystem" || "$cache_filesystem" == /dev/nvme1n1* || "$RUNNER_TEMP" == /mnt/ssd2/* ]]; then
-            echo "::error::ssd2 or unknown cache filesystem: $cache_filesystem. CHE-2557 must move this runner lane to root-disk storage." >&2
-            exit 1
-          fi
-          printf '%s\n' \
-            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
-            "GOPATH=$RUNNER_TEMP/build-cache/go" \
-            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
-            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
-            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
-            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
-            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
-            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
-            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
-            "PYTHONPYCACHEPREFIX=$RUNNER_TEMP/build-cache/pycache" \
-            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
-            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
-            >> "$GITHUB_ENV"
+        run: bash .github/scripts/build-cache-env.sh
 
       - name: Setup Node
         uses: actions/setup-node@v7

@@ -1,4 +1,8 @@
+import contextlib
 import importlib.util
+import io
+import subprocess
+from unittest import mock
 from pathlib import Path
 import unittest
 
@@ -15,6 +19,31 @@ def cache(identifier, key, ref='refs/heads/main', size=100):
 
 
 class CachePolicyTests(unittest.TestCase):
+    def test_missing_cache_during_delete_does_not_stop_cleanup(self):
+        entries = [cache(1, 'first'), cache(2, 'second')]
+        missing = subprocess.CalledProcessError(1, ['gh', 'cache', 'delete'], stderr='failed to delete cache: HTTP 404: Not Found')
+        with mock.patch('sys.argv', ['cache-policy', '--repo', 'cheese-work/test']), \
+             mock.patch.object(policy, 'api', side_effect=[{'default_branch': 'main'}, {'actions_caches': entries}, {'active_caches_size_in_bytes': 0}]), \
+             mock.patch.object(policy, 'plan_deletions', return_value=[1, 2]), \
+             mock.patch.object(policy.subprocess, 'run', side_effect=[missing, subprocess.CompletedProcess([], 0)]) as delete, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            policy.main()
+        self.assertEqual(delete.call_count, 2)
+        self.assertEqual(delete.call_args_list[1].args[0][3], '2')
+
+    def test_permission_denied_during_delete_still_fails(self):
+        denied = subprocess.CalledProcessError(1, ['gh', 'cache', 'delete'], stderr='HTTP 403: Forbidden')
+        with mock.patch('sys.argv', ['cache-policy', '--repo', 'cheese-work/test']), \
+             mock.patch.object(policy, 'api', side_effect=[{'default_branch': 'main'}, {'actions_caches': [cache(1, 'first')]}]), \
+             mock.patch.object(policy, 'plan_deletions', return_value=[1]), \
+             mock.patch.object(policy.subprocess, 'run', side_effect=denied), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(subprocess.CalledProcessError):
+            policy.main()
+
+    def test_superseded_linter_generations_are_compacted(self):
+        prefix = 'golangci-lint.cache-Linux-X64-refs/heads/main-'
+        self.assertEqual(policy.plan_deletions([cache(1, prefix + 'a' * 64 + '-1'), cache(2, prefix + 'b' * 64 + '-2')]), [1])
+
     def test_superseded_generation_is_deleted_not_latest(self):
         prefix = 'turbo-build-Linux-X64-v22-refs/heads/main-'
         caches = [cache(1, prefix + 'a' * 64 + '-101-1'), cache(2, prefix + 'a' * 64 + '-102-1')]

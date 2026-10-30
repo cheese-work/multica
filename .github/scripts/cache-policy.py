@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 
 def plan_deletions(caches, default_ref='refs/heads/main', target=9_000_000_000, limit=10_000_000_000):
@@ -10,7 +11,7 @@ def plan_deletions(caches, default_ref='refs/heads/main', target=9_000_000_000, 
     deleted = []
     for cache in sorted(caches, key=lambda entry: (entry['created_at'], entry['id']), reverse=True):
         family = cache['key']
-        managed = family.startswith(('turbo-', 'go-build-race-', 'release-go-'))
+        managed = family.startswith(('turbo-', 'go-build-race-', 'release-go-', 'golangci-lint.cache-'))
         if managed:
             family = family.split('-refs/', 1)[0]
             family = re.sub(r'-(?:[a-f0-9]{40}|[a-f0-9]{64})$', '', family)
@@ -63,7 +64,13 @@ def main():
                       'projected_bytes': sum(cache['size_in_bytes'] for cache in caches) - deleted_bytes}))
     if not arguments.dry_run:
         for identifier in deletions:
-            subprocess.run(['gh', 'cache', 'delete', str(identifier), '--repo', repository], check=True)
+            try:
+                subprocess.run(['gh', 'cache', 'delete', str(identifier), '--repo', repository],
+                               check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as error:
+                if not re.search(r'\bHTTP 404\b', error.stderr or ''):
+                    raise
+                print(f'Cache {identifier} is already absent (HTTP 404); continuing.', file=sys.stderr)
         print(json.dumps(api(f'repos/{repository}/actions/cache/usage')))
 
 
