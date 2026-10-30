@@ -64,6 +64,17 @@ type AgentBuilderDraft struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AgentDecisionLiveVote struct {
+	InstanceID      pgtype.UUID `json:"instance_id"`
+	AuthorID        pgtype.UUID `json:"author_id"`
+	Verdict         pgtype.Text `json:"verdict"`
+	CommentID       pgtype.UUID `json:"comment_id"`
+	RuntimeProvider string      `json:"runtime_provider"`
+	Model           string      `json:"model"`
+	FullBody        string      `json:"full_body"`
+	SourceTaskID    pgtype.UUID `json:"source_task_id"`
+}
+
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).
 type AgentInvocationTarget struct {
 	ID         pgtype.UUID        `json:"id"`
@@ -786,6 +797,28 @@ type DecisionAction struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DecisionAgentScope struct {
+	InstanceID       pgtype.UUID        `json:"instance_id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	ProposerAgentID  pgtype.UUID        `json:"proposer_agent_id"`
+	ProposerTaskID   pgtype.UUID        `json:"proposer_task_id"`
+	ProposerProvider string             `json:"proposer_provider"`
+	ProposerModel    string             `json:"proposer_model"`
+	ProposerLab      string             `json:"proposer_lab"`
+	WorkAuthorID     pgtype.UUID        `json:"work_author_id"`
+	CandidateSha256  string             `json:"candidate_sha256"`
+	WaivedGate       string             `json:"waived_gate"`
+	Evidence         []byte             `json:"evidence"`
+	Route            string             `json:"route"`
+	Scope            []byte             `json:"scope"`
+	DelegationID     pgtype.UUID        `json:"delegation_id"`
+	AllowlistVersion int32              `json:"allowlist_version"`
+	ProposalBody     string             `json:"proposal_body"`
+	ProposalSha256   string             `json:"proposal_sha256"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type DecisionAnswer struct {
 	ID                      pgtype.UUID        `json:"id"`
 	DecisionRequestID       pgtype.UUID        `json:"decision_request_id"`
@@ -1424,15 +1457,22 @@ type GovernanceWorkspaceConfigAudit struct {
 }
 
 type GovernedVoteRecord struct {
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	CommentID       pgtype.UUID        `json:"comment_id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	AuthorType      string             `json:"author_type"`
-	AuthorID        pgtype.UUID        `json:"author_id"`
-	VoteLines       string             `json:"vote_lines"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	RuntimeProvider string             `json:"runtime_provider"`
-	Model           string             `json:"model"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	CommentID          pgtype.UUID        `json:"comment_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	AuthorType         string             `json:"author_type"`
+	AuthorID           pgtype.UUID        `json:"author_id"`
+	VoteLines          string             `json:"vote_lines"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	RuntimeProvider    string             `json:"runtime_provider"`
+	Model              string             `json:"model"`
+	FullBody           string             `json:"full_body"`
+	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
+	DecisionInstanceID pgtype.UUID        `json:"decision_instance_id"`
+	DecisionEvent      pgtype.Text        `json:"decision_event"`
+	DecisionVerdict    pgtype.Text        `json:"decision_verdict"`
+	CommitmentSha256   pgtype.Text        `json:"commitment_sha256"`
+	DecisionSequence   pgtype.Int8        `json:"decision_sequence"`
 }
 
 type InboxItem struct {

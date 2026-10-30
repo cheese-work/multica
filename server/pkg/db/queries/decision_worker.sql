@@ -87,3 +87,9 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg(
 -- transaction, before DeleteDecisionOrphanRequest.
 DELETE FROM decision_action
 WHERE decision_request_id = $1;
+
+-- name: DeleteDecisionOrphanAgentScope :exec
+-- Authority-neutral orphan cleanup, before deleting the parent request.
+DELETE FROM decision_agent_scope scope
+WHERE scope.instance_id = sqlc.arg('id') AND scope.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id);

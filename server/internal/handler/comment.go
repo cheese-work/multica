@@ -1918,6 +1918,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var cleared []db.Comment
 	var err error
 	var intentTargets []pgtype.UUID
+	var decisionAnnotation *agentDecisionAnnotation
 	// LockThreadForReplyAndClearResolution takes the thread lock and, still
 	// inside this transaction, clears any resolution held by the root or any
 	// reply in the thread — so a reply landing in a resolved thread reopens it
@@ -1930,6 +1931,30 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		qtx = h.Queries.WithTx(tx)
+		decisionAnnotation, err = prepareAgentDecision(r.Context(), tx, createParams, r.Header.Get("X-Actor-Source") == "task_token")
+		if err == nil && decisionAnnotation != nil && req.DecisionIntent {
+			err = agentDecisionRefusal("a protocol action cannot open a human decision intent")
+		}
+		if err != nil {
+			_ = tx.Rollback(r.Context())
+			writeDecisionIntentError(w, err)
+			return
+		}
+		if decisionAnnotation != nil && decisionAnnotation.event == "void" {
+			// Refuse the comment, but retain the immutable rejected-attempt audit.
+			// Do this before reopening a thread or changing any human intent.
+			err = recordAgentDecisionVoid(r.Context(), tx, createParams, decisionAnnotation)
+			if err == nil {
+				err = tx.Commit(r.Context())
+			}
+			_ = tx.Rollback(r.Context())
+			if err != nil {
+				writeDecisionIntentError(w, err)
+			} else {
+				writeDecisionIntentError(w, agentDecisionRefusal("early reveal is void; the signer cannot retry"))
+			}
+			return
+		}
 		if req.DecisionIntent {
 			_, err = qtx.LockWorkspaceForChatSessionCreate(r.Context(), issue.WorkspaceID)
 		}
@@ -1964,6 +1989,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// The issue was deleted, possibly while this waited for its row lock.
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
+	}
+	if err == nil {
+		err = annotateAgentDecision(r.Context(), tx, created.ID, decisionAnnotation)
 	}
 	if err == nil && req.DecisionIntent {
 		err = createCommentDecisionIntent(r, qtx, created.Comment(), intentTargets)

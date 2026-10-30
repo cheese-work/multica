@@ -39,6 +39,23 @@ func (q *Queries) AcquireDecisionWorkerLease(ctx context.Context, arg AcquireDec
 	return i, err
 }
 
+const deleteDecisionOrphanAgentScope = `-- name: DeleteDecisionOrphanAgentScope :exec
+DELETE FROM decision_agent_scope scope
+WHERE scope.instance_id = $1 AND scope.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentScopeParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Authority-neutral orphan cleanup, before deleting the parent request.
+func (q *Queries) DeleteDecisionOrphanAgentScope(ctx context.Context, arg DeleteDecisionOrphanAgentScopeParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentScope, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const deleteDecisionOrphanIntent = `-- name: DeleteDecisionOrphanIntent :exec
 DELETE FROM decision_intent intent
 WHERE intent.workspace_id = $1 AND intent.id = $2
