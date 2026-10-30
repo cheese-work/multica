@@ -46,6 +46,7 @@ type shutdownSequence struct {
 
 	JoinWebhookWorker  func()
 	JoinDecisionWorker func()
+	JoinPushWorker     func()
 	JoinTelegram       func()
 
 	// JoinChannelSupervisor waits for the per-installation goroutines so the
@@ -72,6 +73,7 @@ func (s shutdownSequence) run() {
 		s.StopHeartbeats,
 		s.JoinWebhookWorker,
 		s.JoinDecisionWorker,
+		s.JoinPushWorker,
 		s.JoinTelegram,
 		s.JoinChannelSupervisor,
 		s.DrainChannelRouter,
