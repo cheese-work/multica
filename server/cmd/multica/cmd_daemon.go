@@ -1141,7 +1141,7 @@ func runDaemonForeground(cmd *cobra.Command) error {
 
 	d := daemon.New(cfg, logger)
 
-	runErr := d.RunWithHealthListener(ctx, healthLn)
+	runErr := runDaemonWithHealthListener(d, ctx, healthLn)
 	if err := writeDaemonShutdownResult(profile, daemonShutdownResult{PID: os.Getpid(), CleanupConfirmed: d.ShutdownCleanupConfirmed()}); err != nil {
 		return fmt.Errorf("write daemon shutdown result: %w", err)
 	}
@@ -1441,6 +1441,11 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(os.Stderr, "Daemon stopped.")
 	return nil
 }
+
+// runDaemonWithHealthListener is the foreground daemon's run loop. Tests swap
+// it to observe what `daemon start --foreground` leaves on disk while the
+// daemon runs.
+var runDaemonWithHealthListener = (*daemon.Daemon).RunWithHealthListener
 
 // requestDaemonShutdown POSTs to the daemon's /shutdown endpoint to ask it
 // to exit gracefully. It returns nil only when the daemon accepted. Fail
