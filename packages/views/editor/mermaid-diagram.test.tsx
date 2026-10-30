@@ -42,7 +42,7 @@ vi.mock("mermaid", () => ({
 
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
-import { MermaidDiagram, getMermaidThemeVariables } from "./mermaid-diagram";
+import { MermaidDiagram } from "./mermaid-diagram";
 import { hashSource } from "./utils/source-hash";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
@@ -187,6 +187,48 @@ describe("MermaidDiagram lifecycle", () => {
     expect(source).toContain("rgb(12, 34, 56)");
   });
 
+  function lastConfig() {
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
+    return parse(frontmatter![1]!).config;
+  }
+
+  it("applies the full app theme, neo look and themeCSS by default", async () => {
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    const config = lastConfig();
+    expect(config.look).toBe("neo");
+    expect(config.themeCSS).toContain("drop-shadow");
+    // Exports carry no host page, so the CSS must hold resolved colors.
+    expect(config.themeCSS).not.toContain("var(");
+    // Wide default spacing shrinks sequence labels once fitted to a column.
+    expect(config.sequence).toMatchObject({ width: 110, actorMargin: 24, wrap: true });
+    expect(config.themeVariables).toMatchObject({
+      mainBkg: "rgb(12, 34, 56)",
+      nodeBorder: "rgb(12, 34, 56)",
+      fontSize: "15px",
+    });
+  });
+
+  it("lets author frontmatter win over the theme defaults", async () => {
+    render(
+      <MermaidDiagram
+        chart={`---\nconfig:\n  look: classic\n  themeCSS: ".mine { color: red; }"\n  themeVariables:\n    mainBkg: "#123456"\n---\n${CHART}`}
+      />,
+    );
+    await findFrame();
+    const config = lastConfig();
+    expect(config.look).toBe("classic");
+    expect(config.themeCSS).toBe(".mine { color: red; }");
+    expect(config.themeVariables.mainBkg).toBe("#123456");
+    expect(config.themeVariables.nodeBorder).toBe("rgb(12, 34, 56)");
+  });
+
+  it("merges author sequence settings over the compact defaults", async () => {
+    render(<MermaidDiagram chart={`---\nconfig:\n  sequence:\n    width: 200\n---\n${CHART}`} />);
+    await findFrame();
+    expect(lastConfig().sequence).toMatchObject({ width: 200, actorMargin: 24 });
+  });
+
   it.each([
     { name: "without frontmatter", chart: CHART, theme: "base" },
     {
@@ -205,46 +247,6 @@ describe("MermaidDiagram lifecycle", () => {
     const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
     expect(frontmatter).not.toBeNull();
     expect(parse(frontmatter![1]!).config.theme).toBe(theme);
-  });
-});
-
-describe("getMermaidThemeVariables", () => {
-  const stubColor = (rgb: [number, number, number]) =>
-    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
-      configurable: true,
-      value: () => ({
-        fillStyle: "#000",
-        fillRect: vi.fn(),
-        getImageData: () => ({ data: new Uint8ClampedArray([...rgb, 255]) }),
-      }),
-    });
-
-  it("paints chart backgrounds with the app background, so xychart-beta text stays readable in dark mode", () => {
-    stubColor([12, 12, 14]);
-    const vars = getMermaidThemeVariables(document.body);
-    expect(vars.darkMode).toBe(true);
-    expect(vars.background).toBe("rgb(12, 12, 14)");
-    expect(vars.xyChart.backgroundColor).toBe("rgb(12, 12, 14)");
-    // xychart-beta merges these onto the light default theme, so none may be left unset.
-    expect(vars.xyChart.titleColor).toBe("rgb(12, 12, 14)");
-    for (const key of ["dataLabelColor", "xAxisLabelColor", "xAxisLineColor", "yAxisTitleColor", "yAxisTickColor"]) {
-      expect(vars.xyChart).toHaveProperty(key, vars.xyChart.titleColor);
-    }
-  });
-
-  it("is not dark mode on a light app background", () => {
-    stubColor([250, 250, 250]);
-    expect(getMermaidThemeVariables(document.body).darkMode).toBe(false);
-  });
-
-  it("draws xychart series, radar grid and timeline sections from theme tokens", () => {
-    stubColor([12, 34, 56]);
-    const vars = getMermaidThemeVariables(document.body);
-    // Mermaid splits the palette on commas, so each color must be a hex, not rgb(r, g, b).
-    expect(vars.xyChart.plotColorPalette).toBe(Array(5).fill("#0c2238").join(","));
-    expect(vars.radar.graticuleColor).toBe("rgb(12, 34, 56)");
-    expect((vars as Record<string, unknown>)["cScale0"]).toBe("rgb(12, 34, 56)");
-    expect((vars as Record<string, unknown>)["cScaleLabel0"]).toBeTruthy();
   });
 });
 
@@ -801,5 +803,47 @@ describe("MermaidDiagram orientation", () => {
     await waitFor(() => {
       expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-LR");
     });
+  });
+});
+
+describe("MermaidDiagram auto top-down", () => {
+  const WIDE_SVG = '<svg viewBox="0 0 2000 500"><g><text>wide diagram</text></g></svg>';
+
+  it("redraws top-down when the column would shrink text below the minimum", async () => {
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidRenderMock.mock.calls[0]![1]).toContain("graph LR");
+    expect(mermaidRenderMock.mock.calls[1]![1]).toContain("graph TD");
+  });
+
+  it("keeps a diagram whose scaled text is exactly the minimum", async () => {
+    stubColumnWidth(800);
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the author's direction when the setting changes to author after a stack", async () => {
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    const { rerender } = render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph TD");
+    orientationSetting.value = "author";
+    rerender(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(3));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph LR");
+  });
+
+  it("keeps the author's direction when orientation is set to author", async () => {
+    orientationSetting.value = "author";
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph LR");
   });
 });

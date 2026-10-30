@@ -613,6 +613,7 @@ type ChatSession struct {
 	TitleManuallySet       bool               `json:"title_manually_set"`
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
+	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
 }
 
 type ChatWakeup struct {
@@ -627,6 +628,7 @@ type ChatWakeup struct {
 	FiredTaskID     pgtype.UUID        `json:"fired_task_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
+	Title           string             `json:"title"`
 }
 
 type ClientUsageDaily struct {
