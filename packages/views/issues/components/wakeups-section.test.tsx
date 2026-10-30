@@ -567,7 +567,7 @@ it("does not offer to enable a default-derived wakeup", () => {
   wakeup.default_rule_key = "9c2d7a4e-5b61-4f08-8d3a-1e7f6b2c0a01";
   status = "completed";
   renderWithI18n(<WakeupsSection issueId="issue" />);
-  fireEvent.click(screen.getByRole("button", { name: "Wakeup history 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
   const toggle = screen.getByRole("switch", { name: "Wakeup for Emacs" });
   expect(toggle).toHaveAttribute("aria-disabled", "true");
   fireEvent.click(toggle);
@@ -579,7 +579,7 @@ it("shows a clear message when enabling is refused, without flipping the switch"
   status = "completed";
   enable.mockRejectedValue(Object.assign(new Error("forbidden"), { status: 403 }));
   renderWithI18n(<WakeupsSection issueId="issue" />);
-  fireEvent.click(screen.getByRole("button", { name: "Wakeup history 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
   const toggle = screen.getByRole("switch", { name: "Wakeup for Emacs" });
   fireEvent.click(toggle);
   await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/manage/i)));
