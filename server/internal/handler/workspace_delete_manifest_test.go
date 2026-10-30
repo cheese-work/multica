@@ -83,6 +83,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
 	"decision_action":                    workspaceDeleteWorker,
+	"decision_agent_scope":               workspaceDeleteWorker, // immutable scope is removed before its orphan request by the decision worker.
 	"decision_answer":                    workspaceDeleteWorker,
 	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,
@@ -318,7 +319,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_action", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}
