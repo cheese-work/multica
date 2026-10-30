@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -408,6 +409,10 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
         work_author_id,candidate_sha256,waived_gate,evidence,route,scope,delegation_id,allowlist_version,proposal_body,proposal_sha256)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, line.instance, params.WorkspaceID, params.IssueID, params.AuthorID, params.SourceTaskID,
 		author.Provider, author.Model, author.Lab, line.digest, proposal.WaivedGate, evidence, proposal.Route, encoded, agentDecisionDelegation, agentDecisionAllowlistVersion, params.Content, agentDecisionDigest(params.Content))
+	var constraint *pgconn.PgError
+	if errors.As(err, &constraint) && constraint.Code == "23505" && constraint.ConstraintName == "agent_decision_scope_candidate_gate_uidx" {
+		return agentDecisionRefusal("candidate and gate already have an immutable instance; signers cannot be replaced")
+	}
 	return err
 }
 

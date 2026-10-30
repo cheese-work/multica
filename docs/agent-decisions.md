@@ -9,6 +9,9 @@ action per comment. Instance UUIDs are canonical lowercase UUIDs and are globall
 single-use. Digests are 64 lowercase hex characters. Every action is serialized
 under the instance advisory lock.
 
+Each workspace and issue permits one instance per candidate digest and gate.
+A new UUID cannot replace the original instance or its named signers.
+
 ## Proposal
 
 The proposer must be the work author. The full comment and its SHA256 are frozen,
