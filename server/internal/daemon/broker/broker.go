@@ -73,7 +73,11 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.handlePush)
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go b.srv.Serve(ln)
+	go func() {
+		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			log.Error("broker serve", "error", err)
+		}
+	}()
 	return b, nil
 }
 
