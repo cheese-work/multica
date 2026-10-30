@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -311,6 +312,10 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 	return rows == 1, nil
 }
 
+// reserveProviderFailureRecoveryAndApply runs the reservation and apply inside
+// one savepoint of the caller's transaction. A failed apply or a refused
+// duplicate effect rolls back only the savepoint, so the caller's own writes
+// and transaction stay usable; the caller decides whether to roll back.
 func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, error) {
 	if tx == nil {
 		return false, errors.New("provider failure recovery reservation requires a transaction")
@@ -318,22 +323,38 @@ func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, rese
 	if apply == nil {
 		return false, errors.New("provider failure recovery reservation requires an apply function")
 	}
-	rows, err := db.New(tx).RecordProviderFailureRecovery(ctx, reservation)
+	sp, err := tx.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("reserve provider failure recovery: %w", err)
+		return false, fmt.Errorf("begin provider failure recovery savepoint: %w", err)
+	}
+	rollback := func(cause error) error {
+		if rbErr := sp.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+			return errors.Join(cause, fmt.Errorf("rollback provider failure recovery savepoint: %w", rbErr))
+		}
+		return cause
+	}
+
+	rows, err := db.New(sp).RecordProviderFailureRecovery(ctx, reservation)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// A second re-arm or a duplicate recovery run/task/wakeup is a
+			// refusal, not a fault: no effect was reserved, apply never runs.
+			return false, rollback(nil)
+		}
+		return false, rollback(fmt.Errorf("reserve provider failure recovery: %w", err))
 	}
 	if rows == 0 {
-		return false, nil
+		return false, rollback(nil)
 	}
 	if rows != 1 {
-		return false, fmt.Errorf("reserve provider failure recovery: inserted %d rows, want at most one", rows)
+		return false, rollback(fmt.Errorf("reserve provider failure recovery: inserted %d rows, want at most one", rows))
 	}
-	if err := apply(ctx, tx); err != nil {
-		applyErr := fmt.Errorf("apply provider failure recovery reservation: %w", err)
-		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			return false, errors.Join(applyErr, fmt.Errorf("rollback provider failure recovery reservation: %w", rollbackErr))
-		}
-		return false, applyErr
+	if err := apply(ctx, sp); err != nil {
+		return false, rollback(fmt.Errorf("apply provider failure recovery reservation: %w", err))
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return false, fmt.Errorf("release provider failure recovery savepoint: %w", err)
 	}
 	return true, nil
 }

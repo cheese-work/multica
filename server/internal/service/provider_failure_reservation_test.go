@@ -245,6 +245,9 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	}); err == nil || inserted || !applied {
 		t.Fatalf("failed apply returned inserted=%t, applied=%t, err=%v", inserted, applied, err)
 	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_failure_recovery WHERE failed_task_id=$1`, reservation.failedTaskID).Scan(&count); err != nil {
 		t.Fatal(err)
