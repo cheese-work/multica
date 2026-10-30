@@ -97,9 +97,23 @@ actual="$(sha256_of "$work/multica")"
 [ "$actual" = "$digest" ] || fail "sha256 mismatch for $KEY: expected $digest, got $actual. Nothing was installed."
 
 chmod 0700 "$work/multica"
-reported="$(MULTICA_TOKEN='' "$work/multica" --version 2>/dev/null | sed -n 's/.*(commit: \([0-9a-f]*\),.*/\1/p' | head -n1)" || true
-if [ "${#reported}" -lt 7 ] || [ "${commit#"$reported"}" = "$commit" ]; then
-  fail "the downloaded binary does not run here or does not report commit ${commit:0:7} (got '${reported}'). Nothing was installed."
+# The probe must exit 0 within PROBE_TIMEOUT seconds and report the manifest's
+# commit; a candidate that prints the right commit but fails is not installed.
+# `timeout` is not on stock macOS, so a background watchdog bounds the probe.
+PROBE_TIMEOUT="${MULTICA_PROBE_TIMEOUT:-10}"
+MULTICA_TOKEN='' "$work/multica" --version >"$work/probe.out" 2>/dev/null </dev/null &
+probe_pid=$!
+{ sleep "$PROBE_TIMEOUT"; kill -9 "$probe_pid"; } >/dev/null 2>&1 &
+watchdog_pid=$!
+probe_ok=1
+wait "$probe_pid" 2>/dev/null && probe_ok=0
+kill "$watchdog_pid" >/dev/null 2>&1 || true
+reported=""
+if [ "$probe_ok" -eq 0 ]; then
+  reported="$(sed -n 's/.*(commit: \([0-9a-f]*\),.*/\1/p' "$work/probe.out" | head -n1)"
+fi
+if [ "$probe_ok" -ne 0 ] || [ "${#reported}" -lt 7 ] || [ "${commit#"$reported"}" = "$commit" ]; then
+  fail "the downloaded binary does not run here (--version must exit 0 within ${PROBE_TIMEOUT}s) or does not report commit ${commit:0:7} (got '${reported}'). Nothing was installed."
 fi
 
 mkdir -p "$INSTALL_DIR"
@@ -118,6 +132,6 @@ cat <<NEXT
 
 Next:
   multica config set server_url $SERVER_URL
-  multica login --token <YOUR_TOKEN>
+  multica login --token
   multica daemon start
 NEXT

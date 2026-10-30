@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 const (
@@ -75,7 +76,7 @@ type installRun struct {
 
 // runInstall pipes the served script into bash (as `curl | bash` does), with
 // no controlling terminal and a curl wrapper that records every argv.
-func runInstall(t *testing.T, f *installFake, token string, preinstalled string) installRun {
+func runInstall(t *testing.T, f *installFake, token string, preinstalled string, extraEnv ...string) installRun {
 	t.Helper()
 	resp, err := http.Get(f.srv.URL + "/api/daemon/install.sh")
 	if err != nil {
@@ -117,6 +118,7 @@ func runInstall(t *testing.T, f *installFake, token string, preinstalled string)
 	if token != "" {
 		cmd.Env = append(cmd.Env, "MULTICA_TOKEN="+token)
 	}
+	cmd.Env = append(cmd.Env, extraEnv...)
 	out, runErr := cmd.CombinedOutput()
 	argv, _ := os.ReadFile(argvLog)
 	return installRun{out: string(out), argv: string(argv), bin: binPath, err: runErr}
@@ -179,6 +181,58 @@ func TestInstallScriptProbeCommitMismatchAborts(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(r.bin); string(b) != "OLD" {
 		t.Fatalf("installed binary was replaced: %q", b)
+	}
+}
+
+// A candidate that prints the expected commit but exits non-zero is broken.
+func TestInstallScriptProbeNonZeroExitAborts(t *testing.T) {
+	bad := fakeBinary(installTestCommit[:7]) + "exit 1\n"
+	f := newInstallFake(t, bad, "")
+	r := runInstall(t, f, installTestToken, "OLD")
+	if r.err == nil {
+		t.Fatalf("a candidate whose --version exits 1 must fail:\n%s", r.out)
+	}
+	if b, _ := os.ReadFile(r.bin); string(b) != "OLD" {
+		t.Fatalf("installed binary was replaced: %q", b)
+	}
+}
+
+// A candidate that prints the commit and then hangs must not stall the
+// installer or replace the installed CLI.
+func TestInstallScriptProbeTimeoutAborts(t *testing.T) {
+	hang := fakeBinary(installTestCommit[:7]) + "sleep 30\n"
+	f := newInstallFake(t, hang, "")
+	start := time.Now()
+	r := runInstall(t, f, installTestToken, "OLD", "MULTICA_PROBE_TIMEOUT=1")
+	if r.err == nil {
+		t.Fatalf("a hanging --version probe must fail:\n%s", r.out)
+	}
+	if took := time.Since(start); took > 15*time.Second {
+		t.Fatalf("probe was not bounded: install took %s", took)
+	}
+	if b, _ := os.ReadFile(r.bin); string(b) != "OLD" {
+		t.Fatalf("installed binary was replaced: %q", b)
+	}
+}
+
+// The printed next step must not tell the user to put a token in argv.
+func TestInstallScriptLoginHintHasNoTokenArgument(t *testing.T) {
+	f := newInstallFake(t, fakeBinary(installTestCommit[:7]), "")
+	r := runInstall(t, f, installTestToken, "")
+	if r.err != nil {
+		t.Fatalf("install failed: %v\n%s", r.err, r.out)
+	}
+	if strings.Contains(r.out, "<YOUR_TOKEN>") || strings.Contains(r.out, installTestToken) {
+		t.Fatalf("login hint carries a token argument:\n%s", r.out)
+	}
+	var hint string
+	for _, line := range strings.Split(r.out, "\n") {
+		if strings.Contains(line, "multica login") {
+			hint = strings.TrimSpace(line)
+		}
+	}
+	if hint != "multica login --token" {
+		t.Fatalf("login hint = %q, want exactly %q (prompts, no argv token)", hint, "multica login --token")
 	}
 }
 
