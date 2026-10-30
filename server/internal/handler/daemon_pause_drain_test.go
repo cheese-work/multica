@@ -8,6 +8,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -178,5 +179,39 @@ func TestDaemonPause_WSHeartbeatCarriesPauseAndNotifies(t *testing.T) {
 	}
 	if got := countMachineDrainedItems(t); got != 1 {
 		t.Fatalf("drained items after ws heartbeat = %d, want 1", got)
+	}
+}
+
+// A heartbeat request that is cancelled after the notice is claimed must not
+// strand the claim: the inbox item is still written.
+func TestDaemonPause_DrainNoticeSurvivesCancelledRequest(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	cleanMachineDrainedItems(t)
+	const daemonID = "drain-cancel-machine"
+	runtimeID, _ := seedPausableRuntime(t, context.Background(), daemonID, "Drain cancel")
+	pauseDaemonForTest(t, daemonID)
+
+	pause, err := testHandler.Queries.GetLiveDaemonPauseByRuntime(context.Background(), db.GetLiveDaemonPauseByRuntimeParams{
+		ID:              parseUUID(runtimeID),
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()),
+		OtherSecs:       int32(otherPauseTTL.Seconds()),
+	})
+	if err != nil {
+		t.Fatalf("GetLiveDaemonPauseByRuntime: %v", err)
+	}
+	claimed, err := testHandler.Queries.ClaimDaemonPauseDrainNotice(context.Background(), db.ClaimDaemonPauseDrainNoticeParams{
+		MachineOwnerID: pause.MachineOwnerID, DaemonID: pause.DaemonID, PausedAt: pause.PausedAt,
+	})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	testHandler.deliverDrainNotice(ctx, claimed)
+	if got := countMachineDrainedItems(t); got != 1 {
+		t.Fatalf("drained items after a cancelled request = %d, want 1", got)
 	}
 }

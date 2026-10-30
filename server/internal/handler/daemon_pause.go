@@ -418,6 +418,8 @@ func (h *Handler) heartbeatPause(ctx context.Context, runtimeID string, inFlight
 	return &protocol.DaemonHeartbeatPaused{Reason: pr.Reason, PausedAt: pr.PausedAt, ExpiresAt: pr.ExpiresAt}
 }
 
+const drainNoticeTimeout = 10 * time.Second
+
 // noticeMachineDrained writes one inbox item for the machine owner. The daemon
 // reports idle, so the server count must agree before anyone is told it is safe.
 // The claim on the pause row makes the notice once per pause; a write failure
@@ -446,6 +448,17 @@ func (h *Handler) noticeMachineDrained(ctx context.Context, pause db.DaemonPause
 		slog.Warn("machine drain claim failed", "error", err, "daemon_id", pause.DaemonID)
 		return
 	}
+	h.deliverDrainNotice(ctx, claimed)
+}
+
+// deliverDrainNotice writes the inbox item for a notice this caller already
+// claimed, and releases the claim if the write fails so a later heartbeat retries.
+// It runs detached from the request: once the claim is set, a cancelled
+// heartbeat must not strand it, because a fresh heartbeat only retries after a
+// release.
+func (h *Handler) deliverDrainNotice(reqCtx context.Context, claimed db.DaemonPause) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), drainNoticeTimeout)
+	defer cancel()
 	details, _ := json.Marshal(map[string]string{
 		"daemon_id": claimed.DaemonID,
 		"reason":    claimed.Reason,
