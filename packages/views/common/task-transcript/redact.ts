@@ -1,1 +1,1 @@
-export { redactSecrets } from "@multica/core/security/redact-secrets";
+export { redactForType, redactProse, redactSecrets } from "@multica/core/security/redact-secrets";
