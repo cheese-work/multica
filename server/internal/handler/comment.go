@@ -127,8 +127,6 @@ type CommentTriggerOutcome struct {
 	ReasonCode DispatchReasonCode `json:"reason_code"`
 }
 
-var ErrJevRouted = errors.New("jev routed")
-
 func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments []AttachmentResponse) CommentResponse {
 	if reactions == nil {
 		reactions = []ReactionResponse{}
@@ -2445,9 +2443,6 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 		}
 		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
 		if err != nil {
-			if errors.Is(err, ErrJevRouted) {
-				return DispatchQueued, ReasonJevRouted
-			}
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2864,7 +2859,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 			return true
 		}
 		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
-		if err == nil || errors.Is(err, ErrJevRouted) {
+		if err == nil {
 			return true
 		}
 		if !errors.Is(err, service.ErrDuplicatePendingTask) {
@@ -2929,20 +2924,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" && !trigger.NonLeaderAgentReply {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -2964,20 +2946,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		}
 	case commentTriggerSourceMentionSquadLeader:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 					"issue_id", uuidToString(issue.ID),

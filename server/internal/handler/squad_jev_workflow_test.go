@@ -130,35 +130,3 @@ func TestJevRoutingRechecksWorkflowSwitchedMidFlight(t *testing.T) {
 
 	wantIssueStatus(t, issueID, "todo")
 }
-
-// An issue assigned to a squad is delivered to the squad's leader. When Jev
-// routes the work to a specialist instead, the leader runs nothing, so the
-// leader's event receipts for this write are the leader's only delivery and
-// must stay pending.
-func TestJevRoutedSquadAssignmentKeepsTheLeadersReceipts(t *testing.T) {
-	seedTestCatalog(t)
-	squad := jevWorkflowSquad(t)
-	squadID := uuidToString(squad.ID)
-	leaderID := uuidToString(squad.LeaderID)
-
-	for _, writer := range issueWriters {
-		t.Run(writer.name, func(t *testing.T) {
-			issueID := dbfx.Issue(t, "jev squad assignment", testutil.Cols{"status": "todo"})
-			wakeupID := subscribeToIssueEvent(t, issueID, leaderID, "issue.assignee_changed")
-
-			writer.write(t, issueID, map[string]any{"assignee_type": "squad", "assignee_id": squadID}, nil).Want(http.StatusOK)
-
-			var specialistRuns int
-			dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id <> $2 AND status IN ('queued','dispatched')`, issueID, leaderID).Scan(&specialistRuns)
-			if specialistRuns != 1 {
-				t.Fatalf("specialist runs = %d, want 1: Jev should have routed the work", specialistRuns)
-			}
-			if leaderRuns := len(pendingStepRuns(t, issueID, leaderID)); leaderRuns != 0 {
-				t.Fatalf("leader runs = %d, want 0 after routing", leaderRuns)
-			}
-			if got := pendingEventReceipts(t, wakeupID); got != 1 {
-				t.Fatalf("leader's pending receipts = %d, want 1: no leader run carries this write", got)
-			}
-		})
-	}
-}

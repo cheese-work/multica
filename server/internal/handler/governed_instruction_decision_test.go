@@ -26,8 +26,8 @@ func newDecisionWriteFixture(t *testing.T, field, before, after string) decision
 	resetDecisionLease(t)
 	fixture := newCardFixture(t)
 	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb, ask = $3 WHERE id = $1`,
-		fixture.decision.ID, options, decisiontx.BoundWriteDecision(field, before, after))
+	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, before, after))
 	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
 		t.Fatal(err)
@@ -190,8 +190,7 @@ func TestDecisionGate_ApprovalForAnotherFieldRefused(t *testing.T) {
 		if tg.name == other {
 			other = "squad.instructions"
 		}
-		dbfx.Exec(t, `UPDATE decision_request SET ask = $2 WHERE id = $1`, f.decision.ID,
-			decisiontx.BoundWriteDecision(other, testDigest(initial), testDigest(next)))
+		storeBoundWriteCard(t, f.decision.ID, decisiontx.BoundWriteDecision(other, testDigest(initial), testDigest(next)))
 		wantDenied(t, tg, id, initial, f.write(tg, id, next, testDigest(initial)))
 		if f.used(t) != 0 {
 			t.Fatal("refused write consumed the decision")

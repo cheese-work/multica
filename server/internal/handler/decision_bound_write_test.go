@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -29,14 +30,34 @@ func denyEveryAgent(context.Context, *db.Queries, pgtype.UUID, pgtype.UUID, stri
 	return true, false
 }
 
+// storeBoundWriteCard replaces the request's ask with the card the server
+// stores for a real request: ask_json is the structured Ask and ask is its
+// rendered text, which starts with "**Agent did**", not with the decision.
+func storeBoundWriteCard(test *testing.T, decisionID pgtype.UUID, decision string, mutate ...func(*decisiontx.Ask)) {
+	test.Helper()
+	ask := decisiontx.Ask{
+		ContextELI10: "context", AgentDid: "did", Decision: decision, StakesIfWrong: "stakes",
+		Options:        []decisiontx.AskOption{{Label: decisiontx.ApproveWriteLabel, WhatHappens: "apply"}, {Label: "Reject", WhatHappens: "drop"}},
+		Recommendation: decisiontx.ApproveWriteLabel, DefaultIfNoReply: "nothing", SourceIssueID: uuid.NewString(), SourceCommentID: uuid.NewString(),
+	}
+	for _, change := range mutate {
+		change(&ask)
+	}
+	askJSON, err := json.Marshal(ask)
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET ask = $2, ask_json = $3::jsonb WHERE id = $1`, decisionID, ask.Content("test"), string(askJSON))
+}
+
 // newBoundWriteFixture builds a card whose ask names boundAfter, answers it
 // with option as the workspace owner, and returns the answered request.
 func newBoundWriteFixture(test *testing.T, option string) askedRecordFixture {
 	test.Helper()
 	fixture := newCardFixture(test)
 	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb, ask = $3 WHERE id = $1`,
-		fixture.decision.ID, options, decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter))
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(test, fixture.decision.ID, decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter))
 	dbfx.Exec(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: option}); err != nil {
 		test.Fatal(err)
@@ -72,8 +93,33 @@ func TestDecisionBindingRefusals(test *testing.T) {
 		{name: "ask's before hash offered as the target", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundBefore, refusal: "ask does not name"},
 		{name: "ask's before hash differs from the write's", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
 			mutate: func(test *testing.T, fixture askedRecordFixture) {
-				dbfx.Exec(test, `UPDATE decision_request SET ask = $2 WHERE id = $1`, fixture.decision.ID,
+				storeBoundWriteCard(test, fixture.decision.ID,
 					decisiontx.BoundWriteDecision(boundField, "4444444444444444444444444444444444444444444444444444444444444444", boundAfter))
+			}},
+		{name: "hash lines planted in agent_did only", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				storeBoundWriteCard(test, fixture.decision.ID, "Apply this change?", func(ask *decisiontx.Ask) {
+					ask.AgentDid = decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter)
+				})
+			}},
+		{name: "hash lines planted in stakes only", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				storeBoundWriteCard(test, fixture.decision.ID, "Apply this change?", func(ask *decisiontx.Ask) {
+					ask.StakesIfWrong = decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter)
+				})
+			}},
+		{name: "decision names another field", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				storeBoundWriteCard(test, fixture.decision.ID, decisiontx.BoundWriteDecision("project.description", boundBefore, boundAfter))
+			}},
+		{name: "ask_json is missing", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				dbfx.Exec(test, `UPDATE decision_request SET ask_json = NULL, ask = $2 WHERE id = $1`, fixture.decision.ID,
+					decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter))
+			}},
+		{name: "ask_json has no decision", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "ask does not name",
+			mutate: func(test *testing.T, fixture askedRecordFixture) {
+				dbfx.Exec(test, `UPDATE decision_request SET ask_json = '{"agent_did":"x"}'::jsonb WHERE id = $1`, fixture.decision.ID)
 			}},
 		{name: "answer chose another option", option: "Reject", gate: allowAnyAgent, after: boundAfter, refusal: "not the approve option"},
 		{name: "decision expired", option: decisiontx.ApproveWriteLabel, gate: allowAnyAgent, after: boundAfter, refusal: "decision expired",
