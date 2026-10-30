@@ -19,9 +19,21 @@ def cache(identifier, key, ref='refs/heads/main', size=100):
 
 
 class CachePolicyTests(unittest.TestCase):
+    def test_shared_managed_families_keep_only_latest_generation(self):
+        for family in ['turbo-', 'go-build-race-', 'release-go-', 'golangci-lint.cache-', 'go-job-']:
+            with self.subTest(family=family):
+                prefix = family + 'Linux-X64-refs/heads/main-'
+                self.assertEqual(
+                    policy.plan_deletions([
+                        cache(1, prefix + 'a' * 64 + '-1'),
+                        cache(2, prefix + 'b' * 64 + '-2'),
+                    ]),
+                    [1],
+                )
+
     def test_missing_cache_during_delete_does_not_stop_cleanup(self):
         entries = [cache(1, 'first'), cache(2, 'second')]
-        missing = subprocess.CalledProcessError(1, ['gh', 'cache', 'delete'], stderr='failed to delete cache: HTTP 404: Not Found')
+        missing = subprocess.CalledProcessError(1, ['gh', 'cache', 'delete'], stderr='X Could not find a cache matching 1 in cheese-work/test')
         with mock.patch('sys.argv', ['cache-policy', '--repo', 'cheese-work/test']), \
              mock.patch.object(policy, 'api', side_effect=[{'default_branch': 'main'}, {'actions_caches': entries}, {'active_caches_size_in_bytes': 0}]), \
              mock.patch.object(policy, 'plan_deletions', return_value=[1, 2]), \
