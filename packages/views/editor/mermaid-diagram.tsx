@@ -54,6 +54,13 @@ import { useThemeVersion } from "./hooks/use-theme-version";
 import { MermaidViewer, MermaidViewerStandalone } from "./mermaid-viewer";
 import { useStandaloneMedia } from "../media/media-context";
 import { orientChart, pickOrientation, type Orientation } from "./utils/mermaid-orientation";
+import {
+  MERMAID_SEQUENCE_CONFIG,
+  MERMAID_THEME_CSS,
+  buildMermaidThemeVariables,
+  shouldStackVertically,
+  type MermaidThemeColors,
+} from "./utils/mermaid-theme";
 import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
 
@@ -86,13 +93,21 @@ function themedChart(chart: string, host: HTMLElement | null): string {
     ...metadata,
     config: {
       theme: "base",
+      look: "neo",
+      themeCSS: MERMAID_THEME_CSS,
       ...config,
+      sequence: { ...MERMAID_SEQUENCE_CONFIG, ...config.sequence },
       themeVariables: { ...getMermaidThemeVariables(host), ...config.themeVariables },
     },
   })}---\n${frontmatter ? source.slice(frontmatter[0].length) : source}`;
 }
 
-function toLegacyColor(color: string, fallback: string, ownerDocument: Document): string {
+function toLegacyColor(
+  color: string,
+  fallback: string,
+  ownerDocument: Document,
+  base?: string,
+): string {
   const canvas = ownerDocument.createElement("canvas");
   canvas.width = 1;
   canvas.height = 1;
@@ -103,6 +118,12 @@ function toLegacyColor(color: string, fallback: string, ownerDocument: Document)
   // modern CSS Color 4 values such as oklch(), then getImageData gives concrete
   // 8-bit sRGB bytes that Mermaid can consume safely.
   context.fillStyle = "#000";
+  if (base) {
+    // A translucent token (dark mode's --border) is only a color once it sits
+    // on something; read it off its backdrop instead of dropping its alpha.
+    context.fillStyle = base;
+    context.fillRect(0, 0, 1, 1);
+  }
   context.fillStyle = color || fallback;
   context.fillRect(0, 0, 1, 1);
   const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
@@ -114,6 +135,7 @@ function resolveCssColor(
   host: HTMLElement,
   variableName: string,
   fallback: string,
+  base?: string,
 ): string {
   const probe = host.ownerDocument.createElement("span");
   probe.style.color = `var(${variableName})`;
@@ -122,42 +144,61 @@ function resolveCssColor(
   const color = getComputedStyle(probe).color;
   probe.remove();
 
-  return toLegacyColor(color || fallback, fallback, host.ownerDocument);
+  return toLegacyColor(color || fallback, fallback, host.ownerDocument, base);
 }
 
 const FALLBACK_BACKGROUND = "rgb(255, 255, 255)";
 
-export function getMermaidThemeVariables(host: HTMLElement | null) {
-  if (!host) {
-    return {
-      primaryColor: "rgb(245, 245, 245)",
-      primaryBorderColor: "rgb(59, 130, 246)",
-      primaryTextColor: "rgb(17, 24, 39)",
-      lineColor: "rgb(107, 114, 128)",
-      fontFamily: "inherit",
-    };
-  }
+const FALLBACK_THEME_COLORS: MermaidThemeColors = {
+  background: "rgb(255, 255, 255)",
+  card: "rgb(255, 255, 255)",
+  muted: "rgb(245, 245, 245)",
+  border: "rgb(229, 231, 235)",
+  primary: "rgb(59, 130, 246)",
+  foreground: "rgb(17, 24, 39)",
+  mutedForeground: "rgb(107, 114, 128)",
+};
 
-  return {
-    primaryColor: resolveCssColor(host, "--muted", "rgb(245, 245, 245)"),
-    primaryBorderColor: resolveCssColor(host, "--primary", "rgb(59, 130, 246)"),
-    primaryTextColor: resolveCssColor(host, "--foreground", "rgb(17, 24, 39)"),
-    lineColor: resolveCssColor(host, "--muted-foreground", "rgb(107, 114, 128)"),
-    fontFamily: "inherit",
-  };
+function isDarkScheme(declared: string): boolean {
+  return /\bdark\b/.test(declared) && !/\blight\b/.test(declared);
+}
+
+export function getMermaidThemeVariables(host: HTMLElement | null) {
+  if (!host) return buildMermaidThemeVariables(FALLBACK_THEME_COLORS, false);
+
+  const fallback = FALLBACK_THEME_COLORS;
+  const muted = resolveCssColor(host, "--muted", fallback.muted);
+  return buildMermaidThemeVariables(
+    {
+      background: resolveCssColor(host, "--background", fallback.background),
+      card: resolveCssColor(host, "--card", fallback.card),
+      muted,
+      border: resolveCssColor(host, "--border", fallback.border, muted),
+      primary: resolveCssColor(host, "--primary", fallback.primary),
+      foreground: resolveCssColor(host, "--foreground", fallback.foreground),
+      mutedForeground: resolveCssColor(host, "--muted-foreground", fallback.mutedForeground),
+    },
+    isDarkScheme(getComputedStyle(host).colorScheme),
+  );
 }
 
 function getSandboxCssVariables(host: HTMLElement | null): string {
   const styles = host ? getComputedStyle(host) : null;
-  const variables = ["--muted", "--primary", "--foreground", "--muted-foreground"]
+  const variables = [
+    "--muted",
+    "--primary",
+    "--foreground",
+    "--muted-foreground",
+    "--success",
+    "--warning",
+  ]
     .map((name) => `${name}: ${styles?.getPropertyValue(name).trim() || "initial"};`)
     .join(" ");
   // The diagram is drawn in the app's colors, so its document declares the
   // app's scheme too. Without it a light document inside a dark page is
   // painted on an opaque white canvas, under a diagram colored for dark.
   const declared = styles?.colorScheme ?? "";
-  const scheme = /\bdark\b/.test(declared) && !/\blight\b/.test(declared) ? "dark" : "light";
-  return `${variables} color-scheme: ${scheme};`;
+  return `${variables} color-scheme: ${isDarkScheme(declared) ? "dark" : "light"};`;
 }
 
 /**
@@ -441,6 +482,11 @@ export function MermaidDiagram({
   const auto = useMermaidOrientationSetting() === "auto";
   // undefined: not measured yet, so nothing renders; null: draw as written.
   const [orientation, setOrientation] = useState<Orientation | null | undefined>(undefined);
+  // The chart redrawn top-down because its labels would scale below the
+  // minimum in this column. Keyed by chart so a different diagram starts clean.
+  // ponytail: stays stacked if the column later widens; reset by remount.
+  const [stackedFor, setStackedFor] = useState<string | null>(null);
+  const drawn = stackedFor === chart ? "vertical" : orientation;
   // The viewer's own direction, from its canvas width, and the diagram drawn in it.
   const [viewerOrientation, setViewerOrientation] = useState<Orientation | null>(null);
   const [viewerVariant, setViewerVariant] = useState<RenderedDiagram | null>(null);
@@ -498,7 +544,7 @@ export function MermaidDiagram({
   );
 
   useEffect(() => {
-    if (orientation === undefined) return;
+    if (drawn === undefined) return;
     let cancelled = false;
 
     async function renderDiagram() {
@@ -511,21 +557,21 @@ export function MermaidDiagram({
         // a flash of the loading skeleton on every theme toggle.
         // A layout cached in the other direction is the wrong height to reserve.
         const cached = readCachedLayout(chart);
-        setSkeletonLayout(cached?.orientation === (orientation ?? undefined) ? cached : null);
+        setSkeletonLayout(cached?.orientation === (drawn ?? undefined) ? cached : null);
         const mermaid = await getMermaid();
         if (cancelled) return;
-        const source = orientation ? orientChart(chart, orientation) : chart;
+        const source = drawn ? orientChart(chart, drawn) : chart;
         const { svg: renderedSvg } = await mermaid.render(diagramId, themedChart(source, containerRef.current));
         if (cancelled) return;
 
         const measured = getMermaidLayout(renderedSvg);
         const layout = measured ?? FALLBACK_LAYOUT;
         const exportStyle = getExportStyle(containerRef.current);
-        writeCachedLayout(chart, measured && { ...measured, orientation: orientation ?? undefined });
-        setSkeletonLayout(measured && { ...measured, orientation: orientation ?? undefined });
+        writeCachedLayout(chart, measured && { ...measured, orientation: drawn ?? undefined });
+        setSkeletonLayout(measured && { ...measured, orientation: drawn ?? undefined });
         setRendered({
           svg: renderedSvg,
-          orientation: orientation ?? null,
+          orientation: drawn ?? null,
           inlineDocument: buildSandboxedMermaidDocument(renderedSvg, containerRef.current),
           layout,
           exportBackground: exportStyle.background,
@@ -544,7 +590,7 @@ export function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [chart, diagramId, themeVersion, orientation]);
+  }, [chart, diagramId, themeVersion, drawn]);
 
   // The viewer's variant, drawn only while it is open and wants the other direction.
   const variantOrientation =
@@ -582,6 +628,18 @@ export function MermaidDiagram({
       cancelled = true;
     };
   }, [chart, diagramId, themeVersion, variantOrientation]);
+
+  // The column is only known once the preview mounted; judge the first draw.
+  useEffect(() => {
+    if (!auto || !rendered || rendered.orientation === "vertical") return;
+    const column = scrollRef.current?.offsetWidth ?? 0;
+    if (
+      shouldStackVertically(rendered.layout.width, column) &&
+      orientChart(chart, "vertical") !== chart
+    ) {
+      setStackedFor(chart);
+    }
+  }, [auto, chart, rendered]);
 
   // A reopened viewer measures itself afresh.
   useEffect(() => {
