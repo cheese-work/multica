@@ -2149,6 +2149,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/changes", h.ListSearchIndexChanges)
 			})
 
+			// Agent decisions: the brief feed and the owner pilot setting.
+			r.Route("/api/agent-decisions", func(r chi.Router) {
+				r.Get("/brief", h.GetAgentDecisionBrief)
+				r.Put("/setting", h.SetAgentDecisionSetting)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)

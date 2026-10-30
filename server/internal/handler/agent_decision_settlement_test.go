@@ -48,6 +48,7 @@ func settlementReveal(f agentDecisionFixture, agent, opinion string) error {
 
 func prepareSettlement(t *testing.T) agentDecisionFixture {
 	t.Helper()
+	enableAgentDecisions(t, true)
 	f := newAgentDecisionFixture(t)
 	// These tables do not exist on the red-run baseline.
 	t.Cleanup(func() {
@@ -111,19 +112,6 @@ func TestAgentDecisionSettlementInsertFailureRollsBackVote(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_settlement WHERE instance_id=$1`, f.instance); n != 0 {
 		t.Fatalf("gate has %d settlements after failure", n)
-	}
-}
-
-func TestAgentDecisionSettlementDisabled(t *testing.T) {
-	f := prepareSettlement(t)
-	for _, agent := range []string{f.leaderID, f.peerID} {
-		f.reveal(t, agent, "PASS", f.opinion(agent, "PASS"), http.StatusCreated)
-	}
-	if dbfx.Count(t, `SELECT count(*) FROM pg_class WHERE relname='decision_agent_settlement'`) == 0 {
-		t.Fatal("disabled settlement storage is missing")
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_settlement WHERE instance_id=$1`, f.instance); n != 0 {
-		t.Fatalf("disabled production path created %d settlements", n)
 	}
 }
 
