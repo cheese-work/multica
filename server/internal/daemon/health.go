@@ -89,9 +89,14 @@ type HealthResponse struct {
 	// MaintenanceHeld is true while an owner maintenance window holds update
 	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
 	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
-	MaintenanceHeld      bool              `json:"maintenance_held,omitempty"`
-	MaintenanceExpiresAt string            `json:"maintenance_expires_at,omitempty"`
-	Workspaces           []healthWorkspace `json:"workspaces"`
+	MaintenanceHeld      bool   `json:"maintenance_held,omitempty"`
+	MaintenanceExpiresAt string `json:"maintenance_expires_at,omitempty"`
+	// Paused is true while the server holds a machine pause for this daemon
+	// (CHE-2673); the daemon claims nothing until it lifts or expires.
+	Paused         bool              `json:"paused,omitempty"`
+	PauseReason    string            `json:"pause_reason,omitempty"`
+	PauseExpiresAt string            `json:"pause_expires_at,omitempty"`
+	Workspaces     []healthWorkspace `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -376,6 +381,11 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 		if held, expires := d.maintenanceStatus(); held {
 			resp.MaintenanceHeld = true
 			resp.MaintenanceExpiresAt = expires.UTC().Format(time.RFC3339)
+		}
+		if p := d.heldPauseNow(); p != nil {
+			resp.Paused = true
+			resp.PauseReason = p.reason
+			resp.PauseExpiresAt = p.expiresAt.UTC().Format(time.RFC3339)
 		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {
 			activity := reporter.Activity()
