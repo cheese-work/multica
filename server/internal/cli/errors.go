@@ -470,6 +470,7 @@ var kindMessages = map[ErrorKind][2]string{
 // hint literally and burned hours re-sending an unchanged request (GH #6264,
 // GH #5948), and the server-side wording added in MUL-4417 never reached them.
 var serverMessagePrefixes = map[ErrorKind][2]string{
+	KindForbidden:  {"Access denied: ", "访问被拒绝："},
 	KindValidation: {"Invalid request: ", "请求无效："},
 	KindConflict:   {"Request conflict: ", "请求冲突："},
 }
