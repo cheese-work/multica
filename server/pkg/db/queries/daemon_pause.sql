@@ -54,3 +54,37 @@ SELECT dp.machine_owner_id, dp.daemon_id FROM daemon_pause dp WHERE dp.workspace
 -- Pause and Resume share this row with the workspace delete's FOR UPDATE, so a
 -- pause is either in the delete's machine read or refused once the row is gone.
 SELECT id FROM workspace WHERE id = $1 FOR SHARE;
+
+-- name: ListAffectedMachines :many
+-- Machines that hold queued tasks of this workspace and are off: paused, or with
+-- no online runtime. all_projects is the workspace owner's view; otherwise only
+-- tasks of projects led by user_id count. A machine with only running tasks, or
+-- none, is not affected: nothing waits for it.
+WITH waiting AS (
+    SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id, COUNT(*)::int AS waiting_tasks
+    FROM agent_task_queue t
+    JOIN agent_runtime rt ON rt.id = t.runtime_id
+    LEFT JOIN issue i ON i.id = t.issue_id
+    LEFT JOIN project p ON p.id = i.project_id
+    WHERE t.status = 'queued'
+      AND rt.workspace_id = @workspace_id::uuid
+      AND rt.daemon_id IS NOT NULL
+      AND (@all_projects::bool OR (p.lead_type = 'member' AND p.lead_id = @user_id::uuid))
+    GROUP BY 1, 2
+)
+SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
+       dp.reason AS pause_reason, dp.paused_at AS paused_at,
+       m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
+FROM waiting w
+JOIN LATERAL (
+    SELECT COALESCE(MIN(NULLIF(o.device_info, '')), MIN(o.name)) AS device_name,
+           MAX(o.last_seen_at) AS last_seen_at,
+           COALESCE(bool_or(o.status = 'online'), false) AS any_online
+    FROM agent_runtime o
+    WHERE COALESCE(o.owner_id, o.workspace_id) = w.machine_owner_id AND o.daemon_id = w.daemon_id
+) m ON true
+LEFT JOIN daemon_pause dp
+  ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
+ AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now()
+WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
+ORDER BY w.machine_owner_id, w.daemon_id;
