@@ -62,7 +62,6 @@ const h = vi.hoisted(() => {
   return {
     store,
     queryClient,
-    archivedMutate: vi.fn(),
     markReadMutate: vi.fn(),
     // Stable across renders so tests can assert on it; lazy-creates the session
     // a new chat's first send needs.
@@ -138,7 +137,6 @@ vi.mock("@multica/core/hooks/use-file-upload", () => ({
 vi.mock("@multica/core/chat/mutations", () => ({
   useCreateChatSession: () => ({ mutateAsync: h.createSessionMutate }),
   useMarkChatSessionRead: () => ({ mutate: h.markReadMutate }),
-  useSetChatSessionArchived: () => ({ mutate: h.archivedMutate }),
   useSetChatSessionProject: () => ({
     mutate: h.setProjectMutate,
     isPending: false,
@@ -250,7 +248,6 @@ function setup(
   h.store.setActiveSession.mockClear();
   h.store.setSelectedAgentId.mockClear();
   h.store.setSelectedProjectId.mockClear();
-  h.archivedMutate.mockClear();
   return result;
 }
 
@@ -470,7 +467,6 @@ describe("useChatController.advanceSelectionAfterArchive", () => {
   beforeEach(() => {
     h.store.setActiveSession.mockClear();
     h.store.setSelectedAgentId.mockClear();
-    h.archivedMutate.mockClear();
   });
 
   it("advances to the next chat and syncs the selected agent across agents", () => {
@@ -517,15 +513,6 @@ describe("useChatController.advanceSelectionAfterArchive", () => {
 
     expect(h.store.setActiveSession).not.toHaveBeenCalled();
     expect(h.store.setSelectedAgentId).not.toHaveBeenCalled();
-  });
-});
-
-describe("useChatController.archiveSession", () => {
-  it("fires the archive mutation for the given session", () => {
-    const result = setup("sA", [sA, sB, sC], [agentA, agentB]);
-    act(() => result.current.archiveSession("sA"));
-
-    expect(h.archivedMutate).toHaveBeenCalledWith({ sessionId: "sA", archived: true });
   });
 });
 

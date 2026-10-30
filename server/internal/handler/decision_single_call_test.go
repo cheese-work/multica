@@ -151,37 +151,23 @@ func TestDecisionSingleCallLaneSelection(test *testing.T) {
 		lane(test, fixture, "unrelated")
 		var created map[string]any
 		testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&created)
-		if _, title := sessionOf(test, fixture, created); title != "Decisions: decision-intent" {
+		if _, title := sessionOf(test, fixture, created); title != "Decisions: intent issue" {
 			test.Fatalf("title = %q, want a new Decisions DM", title)
 		}
 	})
-	test.Run("latest_request_lane_on_this_issue", func(test *testing.T) {
+	test.Run("topic_dm_reused_over_legacy_lanes", func(test *testing.T) {
 		fixture := newSingleCallFixture(test)
 		first := lane(test, fixture, "first")
 		fixture.discussIn(test, first)
 		lane(test, fixture, "newer unrelated")
-		var created map[string]any
-		body := fixture.body()
-		body["session_id"] = first
-		testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
-		dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() WHERE title = 'newer unrelated' AND creator_id = $1`, fixture.humanID)
+		var one, two map[string]any
+		testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&one)
 		next := fixture.body()
 		next["ask"] = structuredDecisionAsk(fixture.issueID, fixture.sourceID, "A second question?")
-		testutil.Call(test, testHandler.RequestDecision, fixture.call(next)).Want(http.StatusCreated).JSON(&created)
-		if sessionID, _ := sessionOf(test, fixture, created); sessionID != first {
-			test.Fatalf("second ask went to %s, want the lane of the latest request %s", sessionID, first)
-		}
-	})
-	test.Run("lane_mentioning_this_issue", func(test *testing.T) {
-		fixture := newSingleCallFixture(test)
-		mentioning := lane(test, fixture, "mentions it")
-		lane(test, fixture, "newer unrelated")
-		dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": mentioning, "role": "user", "content": "see [X-1](mention://issue/" + fixture.issueID + ") please"})
-		dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() WHERE title = 'newer unrelated' AND creator_id = $1`, fixture.humanID)
-		var created map[string]any
-		testutil.Call(test, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated).JSON(&created)
-		if sessionID, _ := sessionOf(test, fixture, created); sessionID != mentioning {
-			test.Fatalf("ask went to %s, want the lane mentioning the issue %s", sessionID, mentioning)
+		testutil.Call(test, testHandler.RequestDecision, fixture.call(next)).Want(http.StatusCreated).JSON(&two)
+		firstID, title := sessionOf(test, fixture, one)
+		if secondID, _ := sessionOf(test, fixture, two); secondID != firstID || firstID == first || title != "Decisions: intent issue" {
+			test.Fatalf("asks went to %s then %s (%q), want one topic DM apart from legacy lane %s", firstID, secondID, title, first)
 		}
 	})
 	test.Run("explicit_new_dm_overrides_default", func(test *testing.T) {
@@ -191,7 +177,7 @@ func TestDecisionSingleCallLaneSelection(test *testing.T) {
 		body["new_dm"] = true
 		var created map[string]any
 		testutil.Call(test, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated).JSON(&created)
-		if _, title := sessionOf(test, fixture, created); title != "Decisions: decision-intent" {
+		if _, title := sessionOf(test, fixture, created); title != "Decisions: intent issue" {
 			test.Fatalf("title = %q, want the explicit new DM", title)
 		}
 	})

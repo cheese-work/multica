@@ -810,7 +810,11 @@ SET status = 'dispatched',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
+    chat_compaction_epoch = COALESCE(
+        chat_compaction_epoch,
+        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
+    )
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
@@ -1143,7 +1147,7 @@ WITH retired_sessions AS (
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
-        t.started_at, t.issue_snapshot, t.context_tokens,
+        t.started_at, t.completed_at, t.issue_snapshot, t.context_tokens,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1165,7 +1169,9 @@ WITH retired_sessions AS (
 -- resumed memory predates an edit that the issue is unchanged.
 -- context_tokens is that run's last prompt size, which tells a claim whether the
 -- session is too large to keep resuming (leader session compaction, CHE-1983).
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, context_tokens FROM latest_per_session
+-- completed_at (with started_at as the fallback) dates when the session last
+-- went idle, which tells a claim whether its prompt cache has expired (CHE-2567).
+SELECT session_id, work_dir, runtime_id, status, started_at, completed_at, issue_snapshot, context_tokens FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')

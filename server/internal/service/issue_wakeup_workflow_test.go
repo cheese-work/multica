@@ -30,6 +30,8 @@ func wakeupRunKeepsStep(t *testing.T, overridden bool) {
 		f.Cleanup(t, "DELETE FROM issue_workflow WHERE id=$1", workflowID)
 		f.Exec(t, "UPDATE issue SET workflow_id=$2 WHERE id=$1", issue, workflowID)
 	}
+	// The registering run is current: the issue is still at its step.
+	f.Exec(t, "UPDATE issue SET status='in_progress' WHERE id=$1", issue)
 	source := f.Task(t, agent, testutil.Cols{
 		"issue_id": issue, "status": "completed", "workflow_step": "in_progress",
 		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),
@@ -61,6 +63,35 @@ func wakeupRunKeepsStep(t *testing.T, overridden bool) {
 	f.Exec(t, "UPDATE agent_task_queue SET status='cancelled',completed_at=now() WHERE issue_id=$1 AND status='queued'", issue)
 	if got := fire(fromMember).WorkflowStep; got.String != "blocked" {
 		t.Fatalf("wakeup from a member works on %q, want the issue's blocked", got.String)
+	}
+}
+
+// A run that registers a wakeup after someone else moved the issue decides
+// from where the issue is now, so its wakeup works on that status, not on the
+// run's stale step: inheriting the stale step would refuse every status change
+// of the wakeup's run and of every wakeup that run registers in turn (CHE-2298).
+func TestWakeupFromStaleRunWorksOnTheIssuesStatus(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	ctx := context.Background()
+	f.Exec(t, "UPDATE issue SET status='in_progress' WHERE id=$1", issue)
+	source := f.Task(t, agent, testutil.Cols{
+		"issue_id": issue, "status": "completed", "workflow_step": "agent_review",
+		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),
+	})
+	w, err := s.Create(ctx, issue, parseTestUUID(t, f.UserID), parseTestUUID(t, source),
+		WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 1, Instruction: "retry the move to agent review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
+	wakeDispatch(t, s, w)
+	got, _ := f.q.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: w.ID, WorkspaceID: w.WorkspaceID})
+	task, err := f.q.GetAgentTask(ctx, got.LastTaskID)
+	if err != nil {
+		t.Fatalf("wakeup did not queue a run: %v", err)
+	}
+	if task.WorkflowStep.String != "in_progress" {
+		t.Fatalf("wakeup from a stale run works on %q, want the issue's in_progress", task.WorkflowStep.String)
 	}
 }
 
