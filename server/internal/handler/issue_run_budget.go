@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -125,4 +127,26 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": raised.Int32, "previous_max_runs": current})
+}
+
+// openRunBudgetWindowForMove opens the run-budget window a person's status move
+// started, so its token allowance is claimed when the move is recorded rather
+// than at the next admission or report. It runs after the event is published:
+// the activity listener has written the move by then, and the window begins at
+// that row. A failure is logged; the next admission or report claims the same
+// allowance.
+func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := service.OpenRunBudgetWindow(ctx, h.Queries.WithTx(tx), issue.ID); err != nil {
+		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
+	}
 }
