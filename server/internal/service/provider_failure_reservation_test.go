@@ -291,6 +291,114 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	}
 }
 
+func TestProviderFailureReservationApplyErrorKeepsCallerTransaction(t *testing.T) {
+	pool := sharedTestPool(t)
+	ctx := context.Background()
+	reservation := newProviderFailureReservation("recovery_reserved")
+	reservation.taskID = dbid.NewV7()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM provider_failure_recovery WHERE failed_task_id=$1`, reservation.failedTaskID)
+	})
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_caller_test (value text NOT NULL CHECK (value <> 'fail')) ON COMMIT DROP`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO recovery_caller_test(value) VALUES ('before')`); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO recovery_caller_test(value) VALUES ('fail')`)
+		return err
+	})
+	if err == nil || inserted {
+		t.Fatalf("failed apply returned inserted=%t, err=%v", inserted, err)
+	}
+
+	var before int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_caller_test WHERE value='before'`).Scan(&before); err != nil {
+		t.Fatalf("caller transaction unusable after failed apply: %v", err)
+	}
+	if before != 1 {
+		t.Fatalf("caller write before the seam survived %d times, want once", before)
+	}
+	var reserved int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM provider_failure_recovery WHERE failed_task_id=$1`, reservation.failedTaskID).Scan(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 0 {
+		t.Fatalf("failed apply left %d reservation rows inside the caller transaction", reserved)
+	}
+}
+
+func TestProviderFailureReservationRefusesDuplicateEffectsWithoutAbortingCaller(t *testing.T) {
+	pool := sharedTestPool(t)
+	ctx := context.Background()
+	wakeupID, runID, taskID := dbid.NewV7(), dbid.NewV7(), dbid.NewV7()
+	original := func(mutate func(*providerFailureReservation)) providerFailureReservation {
+		r := newProviderFailureReservation("recovery_reserved")
+		mutate(&r)
+		return r
+	}
+	firstWakeup := original(func(r *providerFailureReservation) {
+		r.wakeupID, r.wakeupRev = wakeupID, pgtype.Int8{Int64: 2, Valid: true}
+	})
+	firstTask := original(func(r *providerFailureReservation) { r.taskID = taskID })
+	probeAt, probeStatus := recoveryProbeEvidence()
+	firstRun := original(func(r *providerFailureReservation) {
+		r.changed, r.probeAt, r.probeStatus, r.runID = providerFailureChangedState, probeAt, probeStatus, runID
+	})
+	seeded := []providerFailureReservation{firstWakeup, firstTask, firstRun}
+	t.Cleanup(func() {
+		for _, r := range seeded {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM provider_failure_recovery WHERE failed_task_id=$1`, r.failedTaskID)
+		}
+	})
+	for _, r := range seeded {
+		if _, err := insertProviderFailureReservation(ctx, pool, r, false); err != nil {
+			t.Fatalf("seed reservation: %v", err)
+		}
+	}
+
+	cases := map[string]providerFailureReservation{
+		"second re-arm for the same wakeup": original(func(r *providerFailureReservation) {
+			r.wakeupID, r.wakeupRev = wakeupID, pgtype.Int8{Int64: 3, Valid: true}
+		}),
+		"duplicate recovery task": original(func(r *providerFailureReservation) { r.taskID = taskID }),
+		"duplicate recovery run": original(func(r *providerFailureReservation) {
+			r.changed, r.probeAt, r.probeStatus, r.runID = providerFailureChangedState, probeAt, probeStatus, runID
+		}),
+	}
+	for name, duplicate := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Cleanup(func() {
+				_, _ = pool.Exec(context.Background(), `DELETE FROM provider_failure_recovery WHERE failed_task_id=$1`, duplicate.failedTaskID)
+			})
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			applyCalled := false
+			inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(duplicate), func(context.Context, pgx.Tx) error {
+				applyCalled = true
+				return nil
+			})
+			if err != nil || inserted || applyCalled {
+				t.Fatalf("duplicate effect returned inserted=%t, applyCalled=%t, err=%v", inserted, applyCalled, err)
+			}
+			var one int
+			if err := tx.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+				t.Fatalf("caller transaction aborted by the refused reservation: %v", err)
+			}
+		})
+	}
+}
+
 var (
 	failedTaskSetPattern = regexp.MustCompile(`(?is)\bUPDATE\s+(?:ONLY\s+)?(?:public\.)?agent_task_queue\b(?:\s+(?:AS\s+)?[a-z_][a-z0-9_$]*)?\s+SET\s+(.*?)(?:\bFROM\b|\bWHERE\b|\bRETURNING\b|;|$)`)
 	failedStatusPattern  = regexp.MustCompile(`(?is)\bstatus\s*=\s*'failed'`)
