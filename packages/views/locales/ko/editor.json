@@ -203,6 +203,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "에이전트 실행",
     "focus_hint": "[focus]",
     "title_hint": "[제목]",
     "message_hint": "[메시지]",

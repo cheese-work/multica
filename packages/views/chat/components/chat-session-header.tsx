@@ -38,6 +38,7 @@ import {
   useSetChatSessionArchived,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -90,6 +91,9 @@ export function ChatSessionHeader({
   const setActiveSession = useChatStore((s) => s.setActiveSession);
 
   const isArchived = session.status === "archived";
+  const menuItems = getChatSessionMenuItems({ archived: isArchived });
+  const mainMenuItems = menuItems.filter((item) => item.section === "main");
+  const trailingMenuItems = menuItems.filter((item) => item.section === "trailing");
 
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -270,22 +274,45 @@ export function ChatSessionHeader({
           <MoreHorizontal className="h-4 w-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-auto">
-          {onOpenStatistics ? (
-            <DropdownMenuItem data-testid="chat-more-menu-statistics" onClick={onOpenStatistics}>
-              <Info className="h-4 w-4" />
-              {t(($) => $.header.statistics)}
-            </DropdownMenuItem>
-          ) : null}
-          {onTogglePin && !isArchived ? (
-            <DropdownMenuItem data-testid="chat-more-menu-pin" onClick={() => onTogglePin(session)}>
-              {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
-              {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
-            </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuItem data-testid="chat-more-menu-rename" onClick={startRename}>
-            <Pencil className="h-4 w-4" />
-            {t(($) => $.header.rename)}
-          </DropdownMenuItem>
+          {mainMenuItems.map((item) => {
+            if (item.id === "statistic") {
+              return onOpenStatistics ? (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-statistics"
+                  onClick={onOpenStatistics}
+                >
+                  <Info className="h-4 w-4" />
+                  {t(($) => $.header.statistics)}
+                </DropdownMenuItem>
+              ) : null;
+            }
+            if (item.id === "pin") {
+              return onTogglePin ? (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-pin"
+                  onClick={() => onTogglePin(session)}
+                >
+                  {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
+                  {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
+                </DropdownMenuItem>
+              ) : null;
+            }
+            if (item.id === "rename") {
+              return (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-rename"
+                  onClick={startRename}
+                >
+                  <Pencil className="h-4 w-4" />
+                  {t(($) => $.header.rename)}
+                </DropdownMenuItem>
+              );
+            }
+            return null;
+          })}
           {agent && (
             <DropdownMenuItem
               data-testid="chat-more-menu-view-profile"
@@ -306,28 +333,46 @@ export function ChatSessionHeader({
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuSeparator />
-          {isArchived ? (
-            <>
-              <DropdownMenuItem data-testid="chat-more-menu-archive" onClick={doUnarchive}>
-                <ArchiveRestore className="h-4 w-4" />
-                {t(($) => $.header.unarchive)}
-              </DropdownMenuItem>
-              {/* Hard delete is offered only once a chat is archived. */}
-              <DropdownMenuItem
-                data-testid="chat-more-menu-delete"
-                variant="destructive"
-                onClick={() => setConfirmDelete(true)}
-              >
-                <Trash2 className="h-4 w-4" />
-                {t(($) => $.header.delete)}
-              </DropdownMenuItem>
-            </>
-          ) : (
-            <DropdownMenuItem data-testid="chat-more-menu-archive" onClick={doArchive}>
-              <Archive className="h-4 w-4" />
-              {t(($) => $.header.archive)}
-            </DropdownMenuItem>
-          )}
+          {trailingMenuItems.map((item) => {
+            if (item.id === "unarchive") {
+              return (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-archive"
+                  onClick={doUnarchive}
+                >
+                  <ArchiveRestore className="h-4 w-4" />
+                  {t(($) => $.header.unarchive)}
+                </DropdownMenuItem>
+              );
+            }
+            if (item.id === "delete") {
+              return (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-delete"
+                  variant={item.destructive ? "destructive" : undefined}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t(($) => $.header.delete)}
+                </DropdownMenuItem>
+              );
+            }
+            if (item.id === "archive") {
+              return (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-archive"
+                  onClick={doArchive}
+                >
+                  <Archive className="h-4 w-4" />
+                  {t(($) => $.header.archive)}
+                </DropdownMenuItem>
+              );
+            }
+            return null;
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
 

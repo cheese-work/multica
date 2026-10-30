@@ -47,7 +47,9 @@
     "remove_project_context": "プロジェクトコンテキストを削除",
     "no_projects": "プロジェクトがまだありません",
     "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です",
-    "placeholder_archived_send": "この DM はアーカイブされています。送信するとまずアーカイブを解除します…"
+    "placeholder_archived_send": "この DM はアーカイブされています。送信するとまずアーカイブを解除します…",
+    "command_no_arguments": "/{{command}} は引数を受け取りません。単独で送信するか、先頭の / を削除してください。",
+    "command_no_attachments": "/{{command}} は添付ファイルと一緒に送信できません。/{{command}} を実行する前に添付ファイルを削除してください。"
   },
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",

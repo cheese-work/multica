@@ -15,7 +15,7 @@ import {
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
-import { parseDmClientCommand } from "../../editor/extensions/parse-dm-client-command";
+import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
 import type { ForkResult } from "./use-chat-fork";
 import {
   useCoordinatedUploads,
@@ -296,11 +296,11 @@ export function ChatInput({
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
   const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
-  const draftDmCommand = parseDmClientCommand(inputDraft);
+  const draftDmAttempt = parseDmClientCommandAttempt(inputDraft);
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
     (!!onFork && parseForkCommand(inputDraft) !== null) ||
-    (!!draftDmCommand && !!dmCommandHandlers[draftDmCommand]);
+    (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
   // But `isEmpty` is never re-derived when the composer switches draft slots
@@ -567,10 +567,19 @@ export function ChatInput({
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
       const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
-      const typedDmCommand = hasDmCommandHandler
-        ? parseDmClientCommand(editorRef.current?.getText() ?? "")
+      const dmAttempt = hasDmCommandHandler
+        ? parseDmClientCommandAttempt(editorRef.current?.getText() ?? "")
         : null;
-      const dmCommandHandler = typedDmCommand ? dmCommandHandlers[typedDmCommand] : undefined;
+      const isLegacyOrdinaryArchiveNow =
+        dmAttempt?.command === "archive" &&
+        dmAttempt.extraArgs === "now" &&
+        sessionArchived === undefined &&
+        !onStatistic &&
+        !onPin;
+      const dmCommandHandler =
+        dmAttempt && !isLegacyOrdinaryArchiveNow
+          ? dmCommandHandlers[dmAttempt.command]
+          : undefined;
       if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
         logger.debug("input.send skipped", {
           disabled,
@@ -668,13 +677,27 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
-      if (dmCommandHandler) {
+      if (dmCommandHandler && dmAttempt) {
+        if (dmAttempt.extraArgs) {
+          setForkError(t(($) => $.input.command_no_arguments, { command: dmAttempt.command }));
+          return false;
+        }
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: dmAttempt.command }));
+          return false;
+        }
+        setForkError(null);
         if ((await dmCommandHandler()) === false) return false;
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "rename" }));
+          return false;
+        }
+        setForkError(null);
         const title = command.slice("/rename".length).replace(/\s*[\r\n]+\s*/g, " ").trim();
         if (!await onRename(title)) return false;
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });

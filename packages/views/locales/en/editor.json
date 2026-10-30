@@ -156,6 +156,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "runs the agent",
     "focus_hint": "[focus]",
     "title_hint": "[title]",
     "message_hint": "[message]",

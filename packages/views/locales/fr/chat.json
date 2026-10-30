@@ -48,7 +48,9 @@
     "remove_project_context": "Retirer le contexte de projet",
     "no_projects": "Aucun projet pour l'instant",
     "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour",
-    "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…"
+    "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
+    "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
+    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}."
   },
   "queue": {
     "title_one": "{{count}} message en file d'attente",

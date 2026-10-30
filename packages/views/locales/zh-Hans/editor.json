@@ -152,6 +152,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "会运行智能体",
     "focus_hint": "[focus]",
     "title_hint": "[标题]",
     "message_hint": "[消息]",

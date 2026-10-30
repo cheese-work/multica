@@ -76,6 +76,7 @@ import {
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
@@ -1468,39 +1469,56 @@ export function SessionDropdown({
             onSelect: () => setConfirmingStopId(session.id),
           },
         ]
-      : [
-          {
-            key: "statistics",
-            icon: <Info className="size-3.5" />,
-            label: t(($) => $.header.statistics),
-            onSelect: () => {
-              setIsHistoryOpen(false);
-              onOpenStatistics(session);
-            },
-          },
-          {
-            key: "pin",
-            icon: session.pinned ? (
-              <PinOff className="size-3.5" />
-            ) : (
-              <Pin className="size-3.5 -rotate-45" />
-            ),
-            label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
-            onSelect: () => void onTogglePin(session),
-          },
-          {
-            key: "rename",
-            icon: <Pencil className="size-3.5" />,
-            label: t(($) => $.session_history.row_rename_aria),
-            onSelect: () => setRenamingId(session.id),
-          },
-          {
-            key: "archive",
-            icon: <Archive className="size-3.5" />,
-            label: t(($) => $.list.archive),
-            onSelect: () => handleArchive(session),
-          },
-        ];
+      : getChatSessionMenuItems({ archived: session.status === "archived" }).flatMap<SessionRowAction>((item) => {
+          if (item.id === "statistic") {
+            return [
+              {
+                key: "statistics",
+                icon: <Info className="size-3.5" />,
+                label: t(($) => $.header.statistics),
+                onSelect: () => {
+                  setIsHistoryOpen(false);
+                  onOpenStatistics(session);
+                },
+              },
+            ];
+          }
+          if (item.id === "pin") {
+            return [
+              {
+                key: "pin",
+                icon: session.pinned ? (
+                  <PinOff className="size-3.5" />
+                ) : (
+                  <Pin className="size-3.5 -rotate-45" />
+                ),
+                label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
+                onSelect: () => void onTogglePin(session),
+              },
+            ];
+          }
+          if (item.id === "rename") {
+            return [
+              {
+                key: "rename",
+                icon: <Pencil className="size-3.5" />,
+                label: t(($) => $.session_history.row_rename_aria),
+                onSelect: () => setRenamingId(session.id),
+              },
+            ];
+          }
+          if (item.id === "archive") {
+            return [
+              {
+                key: "archive",
+                icon: <Archive className="size-3.5" />,
+                label: t(($) => $.list.archive),
+                onSelect: () => handleArchive(session),
+              },
+            ];
+          }
+          return [];
+        });
 
     return (
       <div

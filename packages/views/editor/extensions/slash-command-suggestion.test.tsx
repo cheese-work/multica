@@ -569,14 +569,15 @@ describe("DM compact command", () => {
     }
   });
 
-  it("renders the display-only focus hint, localized description, and Multica badge", () => {
-    const { getByRole, getByText } = render(
+  it("renders the display-only focus hint and localized description, with no client badge", () => {
+    const { getByRole, getByText, queryByText } = render(
       <I18nWrapper>
         <SlashCommandList items={[compact]} query="" command={vi.fn()} />
       </I18nWrapper>,
     );
     expect(getByRole("button", { name: /\/compact \[focus\]/ })).toBeInTheDocument();
-    expect(getByText("Multica")).toBeInTheDocument();
+    expect(queryByText(enEditor.slash_command.client_command)).not.toBeInTheDocument();
+    expect(getByText(enEditor.slash_command.runs_the_agent)).toBeInTheDocument();
     expect(getByText("Summarize this DM and continue in a new one")).toBeInTheDocument();
   });
 

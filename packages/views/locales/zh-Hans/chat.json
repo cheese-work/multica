@@ -47,7 +47,9 @@
     "remove_project_context": "移除项目上下文",
     "no_projects": "还没有项目",
     "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
-    "placeholder_archived_send": "此私聊已归档。发送时会先取消归档…"
+    "placeholder_archived_send": "此私聊已归档。发送时会先取消归档…",
+    "command_no_arguments": "/{{command}} 不接受参数。请单独发送该命令，或去掉开头的 /。",
+    "command_no_attachments": "/{{command}} 不能连同附件一起发送。执行 /{{command}} 前请先移除附件。"
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
