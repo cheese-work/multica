@@ -2140,7 +2140,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		}
 	}
 	routingActorType, routingActorID := commentTriggerActor(comment, actorType, actorID)
-	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
+	triggers, targets := computeCommentTriggers(h, ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
@@ -2184,6 +2184,11 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
 	return outcomes
 }
+
+// computeCommentTriggers resolves a posted comment's triggers. Tests swap it to
+// reach trigger states no current route produces, such as a rate-limited
+// trigger without a mention target.
+var computeCommentTriggers = (*Handler).computeCommentAgentTriggers
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
 // unusable runtime, whoever authored the trigger — see noteRuntimeUnusable for
