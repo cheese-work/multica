@@ -136,10 +136,28 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		step, ok := def.Step(issue.Status)
 		stepHandsOff = ok && step.HandsOff()
 	}
+	head := h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID)
+	// A tainted writer passes its taint to the run that stands in for it.
+	// Fail closed: if the writer's taint cannot be read, nothing carries it.
+	taint, err := service.ActingTaskTaint(ctx, h.Queries)
+	if err != nil {
+		return false
+	}
+	if len(taint) > 0 {
+		n, err := h.Queries.TaintQueuedRunCarryingIssueWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
+			TaintIds:     taint,
+			IssueID:      issue.ID,
+			AgentID:      agentID,
+			HeadSha:      head,
+			StepHandsOff: stepHandsOff,
+			Step:         issue.Status,
+		})
+		return err == nil && n > 0
+	}
 	carries, err := h.Queries.HasQueuedRunCarryingIssueWrite(ctx, db.HasQueuedRunCarryingIssueWriteParams{
 		IssueID:      issue.ID,
 		AgentID:      agentID,
-		HeadSha:      h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		HeadSha:      head,
 		StepHandsOff: stepHandsOff,
 		Step:         issue.Status,
 	})

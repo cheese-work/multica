@@ -11013,6 +11013,48 @@ func (q *Queries) StartAgentTask(ctx context.Context, id pgtype.UUID) (AgentTask
 	return i, err
 }
 
+const taintQueuedRunCarryingIssueWrite = `-- name: TaintQueuedRunCarryingIssueWrite :execrows
+UPDATE agent_task_queue SET taint_ids = $3::text[]
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE($4::text, '') = ''
+    OR context->>'head_sha' = $4::text
+  )
+  AND CASE
+    WHEN $5::bool THEN workflow_step = $6::text
+    ELSE workflow_step IS NULL OR workflow_step = $6::text
+  END
+`
+
+type TaintQueuedRunCarryingIssueWriteParams struct {
+	IssueID      pgtype.UUID `json:"issue_id"`
+	AgentID      pgtype.UUID `json:"agent_id"`
+	TaintIds     []string    `json:"taint_ids"`
+	HeadSha      pgtype.Text `json:"head_sha"`
+	StepHandsOff bool        `json:"step_hands_off"`
+	Step         string      `json:"step"`
+}
+
+// HasQueuedRunCarryingIssueWrite for a write made by a tainted task: the
+// queued run that stands in for it takes the writer's taint (the task trigger
+// unions it with what the run has) and the row count says whether one exists.
+func (q *Queries) TaintQueuedRunCarryingIssueWrite(ctx context.Context, arg TaintQueuedRunCarryingIssueWriteParams) (int64, error) {
+	result, err := q.db.Exec(ctx, taintQueuedRunCarryingIssueWrite,
+		arg.IssueID,
+		arg.AgentID,
+		arg.TaintIds,
+		arg.HeadSha,
+		arg.StepHandsOff,
+		arg.Step,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateAgent = `-- name: UpdateAgent :one
 UPDATE agent SET
     name = COALESCE($2, name),

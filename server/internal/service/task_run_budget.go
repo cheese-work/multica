@@ -73,14 +73,11 @@ func (g ReviewGate) Apply(p *db.CreateAgentTaskParams) {
 // lost the head's admission to a concurrent enqueue writes no row and counts as
 // a duplicate: the winner is the review.
 func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskParams) (db.AgentTaskQueue, error) {
-	if acting := actingTask(ctx); acting.Valid {
-		// Fail closed: a task that cannot be read cannot be shown clean.
-		actor, err := q.GetAgentTask(ctx, acting)
-		if err != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("read acting task taint: %w", err)
-		}
-		p.TaintIds = append(p.TaintIds, actor.TaintIds...)
+	acting, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
 	}
+	p.TaintIds = append(p.TaintIds, acting...)
 	task, err := q.CreateAgentTask(ctx, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask

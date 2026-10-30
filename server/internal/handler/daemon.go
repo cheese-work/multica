@@ -3463,7 +3463,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.PriorSessionResumeUnavailable = true
 				}
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
-					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired {
+					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired &&
+					h.inheritSessionTaint(r.Context(), task, src.SessionID.String) {
+					applyRunProfile()
 					resp.PriorSessionID = src.SessionID.String
 					resumedRunStartedAt = src.StartedAt
 					// The deltas date from the run we actually resume, which on

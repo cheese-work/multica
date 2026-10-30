@@ -283,12 +283,19 @@ func (h *Handler) commentSourceTaskID(r *http.Request) pgtype.UUID {
 }
 
 // actingTaskContext marks ctx with the agent task making this request, so tasks
-// the request enqueues inherit its taint. A member's request marks nothing.
+// the request enqueues inherit its taint. A member's request marks nothing. A
+// header that names a task we cannot read still marks ctx, with an id no task
+// has, so the enqueue fails closed instead of dispatching untainted work.
 func (h *Handler) actingTaskContext(r *http.Request) context.Context {
-	if id := h.commentSourceTaskID(r); id.Valid {
-		return service.WithActingTask(r.Context(), id)
+	header := r.Header.Get("X-Task-ID")
+	if header == "" {
+		return r.Context()
 	}
-	return r.Context()
+	id, err := util.ParseUUID(header)
+	if err != nil {
+		id = pgtype.UUID{Valid: true}
+	}
+	return service.WithActingTask(r.Context(), id)
 }
 
 // taskFromRequestHeader resolves the agent's currently-executing task from the

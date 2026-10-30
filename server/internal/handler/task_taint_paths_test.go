@@ -91,3 +91,55 @@ func TestAgentCreatedIssueCarriesCreatingTaskTaint(t *testing.T) {
 		t.Fatalf("task for the created issue: taint = %v, want [t1]", got)
 	}
 }
+
+// A manual rerun adopts the exact source's session. A later task of the same
+// session can have taken taint the source never saw; the rerun inherits it.
+func TestRerunOfCleanTaskInTaintedSessionClaimsRestricted(t *testing.T) {
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Taint rerun runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Taint rerun agent")
+	insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+	clean := dbfx.Task(t, agentID, testutil.Cols{
+		"status": "completed", "runtime_id": runtimeID, "issue_id": issueID,
+		"session_id": "sess-shared", "started_at": testutil.Raw("now() - interval '2 minutes'"), "completed_at": testutil.Raw("now() - interval '90 seconds'"),
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"status": "completed", "runtime_id": runtimeID, "issue_id": issueID,
+		"session_id": "sess-shared", "started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+		"taint_ids": []string{"t1"},
+	})
+	dbfx.Exec(t, `INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, rerun_of_task_id, force_fresh_session)
+		VALUES ($1, $2, $3, 'queued', 0, $4, TRUE)`, agentID, runtimeID, issueID, clean)
+
+	claimRestrictedWithTaint(t, runtimeID, []string{"t1"})
+}
+
+// The assignment run already queued for the target is the one that survives
+// de-duplication, so it must take the assigner's taint.
+func TestAgentAssignmentTaintsSurvivingQueuedRun(t *testing.T) {
+	chain, targetID, runtimeID := taintedAssigner(t)
+	insertGrant(t, chain.IssueY, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+	dbfx.Task(t, targetID, testutil.Cols{"status": "queued", "runtime_id": runtimeID, "issue_id": chain.IssueY})
+
+	agentAssigns(t, chain.CoordinatorID, chain.TaskA, chain.IssueY, targetID).Want(http.StatusOK)
+
+	var got []string
+	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, chain.IssueY, targetID).Scan(&got)
+	if !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("surviving queued task taint = %v, want [t1]", got)
+	}
+	claimRestrictedWithTaint(t, runtimeID, []string{"t1"})
+}
+
+// An acting task that cannot be read must not become an untainted dispatch.
+func TestAgentAssignmentFailsClosedWhenActingTaskUnreadable(t *testing.T) {
+	chain, targetID, _ := taintedAssigner(t)
+
+	agentAssigns(t, chain.CoordinatorID, "00000000-0000-4000-8000-000000000001", chain.IssueY, targetID)
+
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, chain.IssueY, targetID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("queued tasks for the target = %d, want 0 when the acting task cannot be read", n)
+	}
+}

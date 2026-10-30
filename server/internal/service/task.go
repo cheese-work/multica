@@ -1471,6 +1471,20 @@ func actingTask(ctx context.Context) pgtype.UUID {
 	return id
 }
 
+// ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
+// names none. Fail closed: a task that cannot be read cannot be shown clean.
+func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
+	acting, _ := ctx.Value(actingTaskKey{}).(pgtype.UUID)
+	if !acting.Valid {
+		return nil, nil
+	}
+	actor, err := q.GetAgentTask(ctx, acting)
+	if err != nil {
+		return nil, fmt.Errorf("read acting task taint: %w", err)
+	}
+	return actor.TaintIds, nil
+}
+
 // issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
 // The enqueue's dedup key and the run budget's review gate both resolve the head
 // here, so a pinned replacement is admitted and stamped against one head.

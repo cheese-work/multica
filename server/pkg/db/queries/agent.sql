@@ -1958,6 +1958,23 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
     ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
   END;
 
+-- name: TaintQueuedRunCarryingIssueWrite :execrows
+-- HasQueuedRunCarryingIssueWrite for a write made by a tainted task: the
+-- queued run that stands in for it takes the writer's taint (the task trigger
+-- unions it with what the run has) and the row count says whether one exists.
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND CASE
+    WHEN sqlc.arg('step_hands_off')::bool THEN workflow_step = sqlc.arg('step')::text
+    ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
+  END;
+
 -- name: CancelStalePendingStepTask :one
 -- Cancels one run only while it is still what ListStalePendingStepTasks
 -- selected: pending, assignment-level and stamped for a step the issue has left.
