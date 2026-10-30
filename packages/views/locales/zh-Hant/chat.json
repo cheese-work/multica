@@ -47,7 +47,9 @@
     "fork_unconfirmed": "無法確認分支是否成功。重試前請先查看“已分支到”鏈接。",
     "rename_title_too_long_toast": "對話標題不能超過 200 個字符",
     "rename_session_required_toast": "開始對話後才能重命名",
-    "placeholder_archived_send": "此私訊已封存。傳送時會先取消封存…"
+    "placeholder_archived_send": "此私訊已封存。傳送時會先取消封存…",
+    "command_no_arguments": "/{{command}} 不接受參數。請單獨傳送該指令，或移除開頭的 /。",
+    "command_no_attachments": "/{{command}} 不能連同附件一起傳送。執行 /{{command}} 前請先移除附件。"
   },
   "queue": {
     "title_other": "{{count}} 條排隊訊息",
