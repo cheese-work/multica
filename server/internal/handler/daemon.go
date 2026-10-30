@@ -5835,15 +5835,22 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.WithoutCancel(r.Context()))
 	qtx := h.Queries.WithTx(tx)
-	// Take the issue lock before any usage row: settlement needs it, and two
-	// reports for one task that write their rows in different orders would
-	// otherwise each hold a row the other waits for.
+	// Take a lock before any usage row, so two reports for one task that write
+	// their rows in different orders cannot each hold a row the other waits
+	// for. Settlement needs the issue lock anyway; a task with no issue (a chat
+	// task) is serialized on its own id.
+	var lockErr error
 	if task.IssueID.Valid {
-		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("lock issue for task usage failed", "task_id", taskID, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to store usage")
-			return
+		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); !errors.Is(err, pgx.ErrNoRows) {
+			lockErr = err
 		}
+	} else {
+		lockErr = qtx.LockTaskUsageReport(r.Context(), task.ID)
+	}
+	if lockErr != nil {
+		slog.Warn("lock task usage report failed", "task_id", taskID, "error", lockErr)
+		writeError(w, http.StatusInternalServerError, "failed to store usage")
+		return
 	}
 	// Provider is lowercased on write so client-side pricing lookups tolerate
 	// case drift. An empty provider (an older daemon that omits the field) is

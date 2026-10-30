@@ -343,3 +343,9 @@ SELECT (COALESCE(SUM(input_tokens + output_tokens + cache_write_tokens), 0)
       + COALESCE(SUM(cache_read_tokens), 0) / 10)::bigint AS weighted,
       COUNT(*)::bigint AS model_rows
 FROM task_usage WHERE task_id = $1;
+
+-- name: LockTaskUsageReport :exec
+-- Serializes usage reports for one task that has no issue to lock: held to the
+-- end of the caller's transaction, taken before any usage row is written, so
+-- two reports that order their models differently cannot wait on each other.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('task_id')::uuid::text, 0));

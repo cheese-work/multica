@@ -291,3 +291,56 @@ func TestRunBudgetTokensReportLocksTheIssueBeforeWritingUsageRows(t *testing.T) 
 	}
 	<-done
 }
+
+// A task with no issue (a chat task) has no issue lock to take, so its reports
+// serialize on a task lock instead.
+func TestRunBudgetTokensReportOfATaskWithoutAnIssueLocksBeforeWritingUsageRows(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	session := newBuilderSession(t)
+	var task string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, chat_session_id, status, priority, context, runtime_id)
+		VALUES ($1, $2, 'running', 2, '{}'::jsonb, $3) RETURNING id
+	`, session.BuilderAgentID, session.SessionID, testRuntimeID).Scan(&task); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, task)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, task)
+	})
+	reportUsage(t, task, usageRow{Model: "a", In: 1}, usageRow{Model: "b", In: 1})
+	holder, err := testHandler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if err := testHandler.Queries.WithTx(holder).LockTaskUsageReport(ctx, parseUUID(task)); err != nil {
+		t.Fatal(err)
+	}
+	// Without a task lock the report would write row "b" and then wait here.
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM task_usage WHERE task_id=$1 AND model='a' FOR UPDATE`, task); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reportUsage(t, task, usageRow{Model: "b", In: 2}, usageRow{Model: "a", In: 2})
+	}()
+	time.Sleep(500 * time.Millisecond)
+	probe, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.Exec(ctx, `SELECT 1 FROM task_usage WHERE task_id=$1 AND model='b' FOR UPDATE NOWAIT`, task)
+	probe.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("a usage row is locked while the report waits for the task lock: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}

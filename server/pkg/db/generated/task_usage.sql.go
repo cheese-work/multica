@@ -769,6 +769,18 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const lockTaskUsageReport = `-- name: LockTaskUsageReport :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text, 0))
+`
+
+// Serializes usage reports for one task that has no issue to lock: held to the
+// end of the caller's transaction, taken before any usage row is written, so
+// two reports that order their models differently cannot wait on each other.
+func (q *Queries) LockTaskUsageReport(ctx context.Context, taskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTaskUsageReport, taskID)
+	return err
+}
+
 const sumTaskWeightedTokens = `-- name: SumTaskWeightedTokens :one
 SELECT (COALESCE(SUM(input_tokens + output_tokens + cache_write_tokens), 0)
       + COALESCE(SUM(cache_read_tokens), 0) / 10)::bigint AS weighted,
