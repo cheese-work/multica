@@ -92,6 +92,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | own-comment-background | 1 | C | 405 | `87dc762d3f23755f66dbc532156e9294e65d156e` |
 | dm-search-web-desktop | 3 | A | 346 | `78d53cf894f7a89beff98c0e9af7c94a7c69c905` |
 | dm-wakeup-event-row | doop `-Yr2vfvBHn` @ 2026-10-29T11:07:11.362Z | C | 581 | n/a (`design/dm-wakeup-event-row/approved/`) |
+| machine-pause | doop `AvexgrxkBp` @ 2026-10-29T15:15:52.443Z | A | PR_NUM | n/a (`design/machine-pause/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`. The merge commit is read from GitHub and is not written here.
 

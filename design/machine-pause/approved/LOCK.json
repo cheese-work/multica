@@ -1,0 +1,26 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:che-2433",
+  "screens": [
+    {
+      "screen": "machine-pause (direction A, machine card; desktop 780 and phone 390)",
+      "frame_id": "AvexgrxkBp",
+      "updatedAt": "2026-10-29T15:15:52.443Z",
+      "content_sha256": "c8b8fbcd23a9812a07649483948d11c5bdb9c6b2c7cc015053a90bf680437555"
+    }
+  ],
+  "export_sha256": "952c8af74031fa22d3d15f8744f13c600ebcf9687b34d2e3a5ad7d03f2401df8",
+  "export_sha256_method": "sha256 of the two lines '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "machine-card-a-1240.png": "ff6007203783ca4a357fa47c451c66f2d283574c920225e9061d68cedd7e55ec",
+    "machine-card-a.html": "c8b8fbcd23a9812a07649483948d11c5bdb9c6b2c7cc015053a90bf680437555"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, no external fetch); written as read from doop, without the trailing newline",
+  "exported_at": "2026-10-30 15:58 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2433",
+  "selection_id": "01a18c04-779a-7536-884d-a358ef81bb01",
+  "ux_verdict_id": "01a18841-cdbb-78ec-86bf-5380ff90e788"
+}
