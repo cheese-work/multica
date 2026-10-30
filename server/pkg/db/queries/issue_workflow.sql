@@ -58,14 +58,16 @@ WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
 -- name: CreateIssueWorkflow :one
-INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id)
+INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
 VALUES (
     sqlc.arg('workspace_id')::uuid,
     sqlc.arg('name')::text,
     sqlc.arg('description')::text,
     sqlc.arg('initial_status_key')::text,
     sqlc.arg('steps')::jsonb,
-    sqlc.arg('owner_id')::uuid
+    sqlc.arg('owner_id')::uuid,
+    NULLIF(sqlc.narg('max_runs_per_issue')::int, 0),
+    COALESCE(sqlc.narg('include_child_prs')::boolean, true)
 )
 RETURNING *;
 
@@ -75,6 +77,13 @@ UPDATE issue_workflow SET
     description = sqlc.arg('description')::text,
     initial_status_key = sqlc.arg('initial_status_key')::text,
     steps = sqlc.arg('steps')::jsonb,
+    -- A rule left out of the write keeps its value; a max of 0 clears it back
+    -- to the platform default.
+    max_runs_per_issue = CASE
+        WHEN sqlc.narg('max_runs_per_issue')::int IS NULL THEN max_runs_per_issue
+        ELSE NULLIF(sqlc.narg('max_runs_per_issue')::int, 0)
+    END,
+    include_child_prs = COALESCE(sqlc.narg('include_child_prs')::boolean, include_child_prs),
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid

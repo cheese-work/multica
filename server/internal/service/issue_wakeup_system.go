@@ -30,6 +30,11 @@ import (
 // edited by agents, and it is evaluated when sub-issues change instead of on a
 // polling schedule.
 const (
+	// SystemRuleWorkflowEdges watches one issue on a workflow step whose edges
+	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
+	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
+	// target, receipts or settings.
+	SystemRuleWorkflowEdges  = "workflow_edges"
 	SystemRuleChildDone      = "child_done"
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"
@@ -195,6 +200,14 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		return tx.Commit(ctx)
 	} else if err != nil {
 		return err
+	}
+	// The kill switch (CHE-2220) drops the event rather than queueing it. A read
+	// that fails returns the error, so the delivery fails and GitHub redelivers.
+	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
+		return err
+	} else if halted {
+		slog.Warn("github dispatch halted: pull request wakeup dropped", "issue_id", util.UUIDToString(issueID), "repo", in.RepoOwner+"/"+in.RepoName, "rule", in.Rule)
+		return tx.Commit(ctx)
 	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -402,7 +415,7 @@ func (s *IssueWakeupService) captureRunGatePR(ctx context.Context, tx pgx.Tx, q 
 			Issue: issue, Source: source, EventKey: eventKey, CandidateKey: util.UUIDToString(w.ID), Origin: RunGateOriginSystemWakeup,
 			EventTime: time.Now(), PRHeadSHA: in.HeadSHA, SystemRule: in.Rule, Wakeup: w, ReceiptID: receiptID,
 		}
-		if target, err := builtinTarget(ctx, s, sq, issue, config); err == nil && target.Agent.ID.Valid {
+		if target, err := builtinTarget(ctx, s, sq, issue, config, w); err == nil && target.Agent.ID.Valid {
 			ev.AgentID, ev.SquadID = target.Agent.ID, target.SquadID
 		}
 		return ev
@@ -916,7 +929,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil && !errors.Is(err, errWakeupConfigHeld) && !errors.Is(err, errMalformedPRWakeupSettings) {
 		return err
 	}
-	target, err := builtinTarget(ctx, s, s.Tasks.Queries, snapshot, snapshotConfig)
+	target, err := builtinTarget(ctx, s, s.Tasks.Queries, snapshot, snapshotConfig, prev)
 	if err != nil {
 		return err
 	}
@@ -1027,7 +1040,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 		return nil
 	}
-	current, err := builtinTarget(ctx, s, q, issue, config)
+	current, err := builtinTarget(ctx, s, q, issue, config, w)
 	if err != nil {
 		return err
 	}
@@ -1119,6 +1132,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		state := w.ConditionState
 		switch {
 		case met && fingerprint != state:
+			if conditionDropped(observed, state, fingerprint, false) {
+				state = fingerprint
+				break
+			}
 			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
 				return err
 			}
@@ -1158,6 +1175,12 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	receipts, holding, taken, err := takenReceipts(ctx, q, receipts)
 	if err != nil {
 		return err
+	}
+	if usesPRResolver(config, w) {
+		receipts, err = prResolverReceipts(ctx, q, issue, current, receipts)
+		if err != nil {
+			return err
+		}
 	}
 	if isPRWakeup {
 		var refused []db.IssueWakeupReceipt
@@ -1256,12 +1279,19 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if current.Refused != "" {
 			facts["outcome"] = current.Refused
 		}
-		if current.Type == "member" && !isPRWakeup {
+		if current.Type == "member" && (!isPRWakeup || usesPRResolver(config, w)) {
 			facts["outcome"] = "notified"
+			kind := "children_done"
+			var body pgtype.Text
+			if isPRWakeup {
+				kind = "agent_blocked"
+				body = pgtype.Text{String: "No resolver agent was found for the linked pull request. This is an FYI; no action is requested from you.", Valid: true}
+				facts["note"] = body.String
+			}
 			details, _ := json.Marshal(facts)
 			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
 				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
-				Type: "children_done", Severity: "info", IssueID: issue.ID, Title: issue.Title,
+				Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
 				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
 			})
 			if err != nil {
@@ -1287,6 +1317,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	taskExists := err == nil
+	if taskExists && usesPRResolver(config, w) && task.AgentID != current.Agent.ID {
+		return commitWithdrawn()
+	}
 	if taskExists && task.Status == "dispatched" {
 		// A claimed prompt is immutable; the new facts wait for the next run.
 		return commitWithdrawn()
@@ -1356,35 +1389,16 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		}
 	}
 	if isPRWakeup || deferring {
-		startedAt, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
+		_, err := q.GetRunningTaskStartForIssueAndAgent(ctx, db.GetRunningTaskStartForIssueAndAgentParams{IssueID: issue.ID, AgentID: agent.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			// A deferring rule keeps every fact for the next idle pass; a
-			// suppressing one consumes what arrived after the run started.
-			if deferring {
-				if err := deferForActiveRun(ctx, q, w, current, receipts, now, note); err != nil {
-					return err
-				}
-				return commit()
-			}
-			var suppressed []db.IssueWakeupReceipt
-			for _, receipt := range receipts {
-				if !receipt.CreatedAt.Valid || !receipt.CreatedAt.Time.Before(startedAt.Time) {
-					suppressed = append(suppressed, receipt)
-				}
-			}
-			if len(suppressed) > 0 {
-				activeFacts := systemWakeupFacts(w, suppressed)
-				activeFacts["target_type"], activeFacts["target_id"] = current.Type, util.UUIDToString(current.ID)
-				activeFacts["outcome"] = "suppressed_active_run"
-				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(suppressed)}); err != nil {
-					return err
-				}
-				if err := note(wakeupActivityTriggered, activeFacts); err != nil {
-					return err
-				}
+			// Every fact waits for the next idle pass. A PR rule that did not
+			// choose defer still keeps what it captured (CHE-2298 a3): its
+			// facts are queued, never dropped, and never expire.
+			if err := deferForActiveRun(ctx, q, w, current, receipts, now, note, !deferring); err != nil {
+				return err
 			}
 			return commit()
 		}
@@ -1440,7 +1454,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup"}); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
@@ -1461,6 +1475,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
+	noteRunInserted(ctx, q, issue.ID)
 	if err := settleQueued(task.ID); err != nil {
 		return err
 	}

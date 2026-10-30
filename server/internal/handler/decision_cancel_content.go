@@ -66,7 +66,7 @@ func decisionCancelComment(reason string, cancelled decisionCancelIssue, request
 	return "Decision request cancelled: " + cancelled.closed() + "." + line + "\nNo action needed."
 }
 
-// decisionCancelNote is the one DM message for every request that the same close ends in a session.
+// decisionCancelNote is the one DM message for unanswered requests that the same close ends in a session.
 func decisionCancelNote(reason string, cancelled decisionCancelIssue, requests []db.DecisionRequest) string {
 	if reason != "issue_closed" {
 		return decisionCancelOtherContent(reason, cancelled) + "\n- " + decisionCancelLine(requests[0])
@@ -74,12 +74,7 @@ func decisionCancelNote(reason string, cancelled decisionCancelIssue, requests [
 	var note strings.Builder
 	note.WriteString("Decision requests ended: " + cancelled.closed() + ".")
 	for _, request := range requests {
-		note.WriteString("\n- " + decisionCancelLine(request))
-		if request.Status == "answered" {
-			note.WriteString(" (answer was recorded before the close)")
-		} else {
-			note.WriteString(" (cancelled)")
-		}
+		note.WriteString("\n- " + decisionCancelLine(request) + " (cancelled)")
 	}
 	return note.String() + "\nNo action needed."
 }

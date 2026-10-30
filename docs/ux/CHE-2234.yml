@@ -1,0 +1,11 @@
+issue: CHE-2234
+design: design/dm-decision-quote-cards/rev-8/B.html @ 9ac3541dba50d3e1f06687779694b08095c21b79
+scope: "Reuse the approved receipt-card pattern. Cheese selected the two-card withdrawal shape in DM message 01a17d2d-ee00-7453-8330-837660c01a04, quoted on CHE-2234. Shared web/desktop DM only."
+pages:
+  - id: dm-withdrawn-decision
+    url: /cheese-work/chat
+    keep: [decision-request-card, decision-request-source-issue, decision-request-source-comment, decision-request-reason]
+    change:
+      - decision-request-card: "Keep the original request row when its cancellation notice is loaded."
+      - decision-withdrawal-card: "Render one compact withdrawal receipt per request, with a source link, grey Withdrawn chip and one muted reason line. Do not repeat the ask."
+    remove: []

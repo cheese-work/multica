@@ -1,57 +1,47 @@
 #!/usr/bin/env bash
-# Writes current=true|false: whether <source_sha> is still the commit to deploy.
-#
-# It is superseded by a newer main commit only if candidate-preflight would
-# admit that commit (or its required checks are still running). A newer commit
-# whose required checks have settled without passing can never deploy, so it
-# must not replace an approved candidate that can (CHE-2027). A candidate that
-# is not in main's history is never current.
-# A superseded run is skipped, never failed; an API error fails closed.
-#
-# usage: require-current.sh <source-sha>
-# env:   GITHUB_REPOSITORY, GH_TOKEN, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY
-# needs: node and PyYAML (ensure-pyyaml.sh), as record-checks.sh does
 set -euo pipefail
 
-source_sha=$1
+source_sha=${1:?candidate SHA is required}
+[[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
 
-superseded_by() {
+skip_candidate() {
   echo 'current=false' >> "$GITHUB_OUTPUT"
-  printf 'Skipped before C00 mutation: candidate `%s` is superseded by main `%s`.\n' \
-    "$source_sha" "$1" >> "$GITHUB_STEP_SUMMARY"
+  printf 'Skipped before C00 approval: candidate `%s` %s `%s`.\n' \
+    "$source_sha" "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
   exit 0
 }
 
 main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-if [ "$source_sha" = "$main_sha" ]; then
-  echo 'current=true' >> "$GITHUB_OUTPUT"
-  exit 0
+[[ "$main_sha" =~ ^[a-f0-9]{40}$ ]]
+if [ "$source_sha" != "$main_sha" ]; then
+  status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${source_sha}...${main_sha}?per_page=1" --jq '.status')"
+  case "$status" in
+    ahead) ;;
+    behind|diverged|identical) skip_candidate 'is not an ancestor of main' "$main_sha" ;;
+    *) echo "Unknown main comparison status: $status" >&2; exit 1 ;;
+  esac
 fi
 
-compare="repos/${GITHUB_REPOSITORY}/compare/${source_sha}...${main_sha}"
-status="$(gh api "${compare}?per_page=1" --jq '.status')"
-[ "$status" = "ahead" ] || superseded_by "$main_sha"
+live_version="$(curl --proto '=https' --fail --silent --show-error --max-time 15 "${C00_CONFIG_URL:?C00 config URL is required}" \
+  | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => {
+    const commit = JSON.parse(data).server_commit;
+    if (typeof commit !== "string" || !/^(?:[a-f0-9]{7}|[a-f0-9]{40})$/.test(commit)) {
+      throw new Error("C00 did not report a known commit");
+    }
+    process.stdout.write(commit);
+  });')"
+live_sha="$live_version"
+if [ "${#live_sha}" -ne 40 ]; then
+  live_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${live_version}" --jq '.sha')"
+fi
+[[ "$live_sha" =~ ^[a-f0-9]{40}$ && "$live_sha" == "$live_version"* ]]
+[ "$source_sha" != "$live_sha" ] || skip_candidate 'is already running on C00' "$live_sha"
 
-# Oldest first; the API stops at 250 commits, too far behind to trust.
-# Read into a variable first: mapfile would hide a failed or partial listing.
-history="$(gh api "${compare}?per_page=100" --paginate --jq '.commits[].sha')"
-mapfile -t newer <<< "$history"
-[ "${#newer[@]}" -lt 250 ] || superseded_by "$main_sha"
-
-work_dir="$(mktemp -d)"
-trap 'rm -rf "$work_dir"' EXIT
-
-for (( i = ${#newer[@]} - 1; i >= 0; i-- )); do
-  sha="${newer[$i]}"
-  # One read, no waiting: running checks end it as "pending", which counts.
-  CHECKS_WAIT_SECONDS=0 bash deploy/cd/record-checks.sh "$sha" "$work_dir/checks.json" > /dev/null
-  pending="$(node deploy/cd/admission.mjs pending --checks "$work_dir/checks.json")"
-  if [ -n "$pending" ] \
-    || node deploy/cd/admission.mjs checks --checks "$work_dir/checks.json" --source-sha "$sha" > /dev/null 2>&1; then
-    superseded_by "$sha"
-  fi
-  printf 'Main commit `%s` cannot deploy (required checks settled without passing); not superseding.\n' \
-    "$sha" >> "$GITHUB_STEP_SUMMARY"
-done
+status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${live_sha}...${source_sha}?per_page=1" --jq '.status')"
+case "$status" in
+  ahead) ;;
+  behind|identical|diverged) skip_candidate 'does not move forward from C00' "$live_sha" ;;
+  *) echo "Unknown C00 comparison status: $status" >&2; exit 1 ;;
+esac
 
 echo 'current=true' >> "$GITHUB_OUTPUT"

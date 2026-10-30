@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS comment_trigger_rate_limit_issue_agent_uidx;

@@ -38,6 +38,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -223,6 +224,9 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// workflowWriter overrides how workflow deliveries are stored; nil means the
+	// default transaction-per-workspace writer. Tests inject faults through it.
+	workflowWriter         workflowWriter
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
@@ -242,10 +246,16 @@ type Handler struct {
 	Entitlements entitlement.Provider
 	// SeatCapacity executes Cloud's pre-purchased human-seat protocol. Nil or
 	// disabled preserves self-hosted behavior.
-	SeatCapacity          seatcapacity.Executor
-	SeatCapacityLocker    seatcapacity.WorkspaceLocker
-	SeatCapacityWorker    *seatcapacity.Worker
-	DecisionWorker        *DecisionWorker
+	SeatCapacity       seatcapacity.Executor
+	SeatCapacityLocker seatcapacity.WorkspaceLocker
+	SeatCapacityWorker *seatcapacity.Worker
+	DecisionWorker     *DecisionWorker
+	// ApprovalVerifier proves a human approved a decision action. Nil until
+	// the passkey verifier is wired; approve then fails closed.
+	ApprovalVerifier ApprovalVerifier
+	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
+	// off (MULTICA_WEBAUTHN_* unset).
+	Passkeys              *passkey.Service
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
 	ModelListStore        ModelListStore
@@ -295,6 +305,7 @@ type Handler struct {
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
 	InvitationRateLimiters       InvitationRateLimiters
+	SearchSuggestions            *SearchSuggestions
 	WebhookDeliveryWorker        *WebhookDeliveryWorker
 	CloudRuntime                 cloudRuntimeProxy
 	// Test-only HTTP override; nil uses the default client in production.
@@ -459,7 +470,10 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
-	cfg       Config
+	// fetchPullRequestJSON overrides the REST pull request read of
+	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
+	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
+	cfg                  Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
@@ -571,6 +585,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
 	h.DecisionWorker = NewDecisionWorker(h)
+	h.usePasskeysFromEnv(queries, txStarter)
 	// The default passthrough scheduler reports sweeper-race recoveries so the
 	// daemon:register refresh fires even without the production batched wiring.
 	if passthrough, ok := h.HeartbeatScheduler.(*PassthroughHeartbeatScheduler); ok {
@@ -588,6 +603,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
+	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
 		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {

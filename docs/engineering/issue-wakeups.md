@@ -107,6 +107,7 @@ multica issue wakeup create ISSUE --until-status in_review --instruction-file ./
 multica issue wakeup create ISSUE --until-pr checks --expires-in 2h --on-timeout wake --instruction-file ./instruction.md
 multica issue wakeup create ISSUE --until-children-done --stage 1 --instruction-file ./instruction.md
 multica issue wakeup create ISSUE --until-issue MUL-123 --until-issue-state done --instruction-file ./instruction.md
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake --instruction-file ./instruction.md
 multica issue wakeup list ISSUE
 multica issue wakeup get ISSUE WAKEUP
 multica issue wakeup runs ISSUE WAKEUP
@@ -633,7 +634,7 @@ the scheduler evaluates:
 | `issue_field` | `field=property`, `property_id`, `value` | the property's stored value equals `value` |
 | `children_done` | optional `stage` | every sub-issue (or every one up to that stage) is closed |
 | `pull_request` | `event=checks_finished`, `merged` or `conflicts` | a linked PR's checks finished on its current head, it merged, or an open GitHub PR is `CONFLICTING` on its current head |
-| `other_issue` | `issue_id`, `state=done`, `ended` or `in_review` | another issue in the workspace reaches that state |
+| `other_issue` | `issue_id`, `state=done`, `ended`, `in_review` or `blocked` | another issue in the workspace reaches that state |
 
 A condition rule stays `kind=event`. Validation derives the same-issue events
 that can change the fact (for example `issue.status_changed`) as hints: the

@@ -277,11 +277,19 @@ func (b *builtinWakeup) systemInstruction(w db.IssueWakeup, settings []byte, rec
 // configuration edit lifts.
 func systemWakeupPaused(w db.IssueWakeup) bool { return w.PausedReason.Valid || w.DisabledAt.Valid }
 
-// builtinTarget resolves who the rule reaches: the issue's assignee unless the
-// configuration names an agent or a squad. A named target is checked against
+// A named target is checked against
 // the member who wrote it every time it is used, so a revoked, archived or
 // runtime-less target refuses visibly (wakeTarget.Refused) instead of running.
-func builtinTarget(ctx context.Context, svc *IssueWakeupService, q *db.Queries, issue db.Issue, b *builtinWakeup) (wakeTarget, error) {
+func builtinTarget(ctx context.Context, svc *IssueWakeupService, q *db.Queries, issue db.Issue, b *builtinWakeup, wakeup db.IssueWakeup) (wakeTarget, error) {
+	if usesPRResolver(b, wakeup) {
+		receipts, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: wakeup.ID, Revision: wakeup.Revision})
+		if err != nil {
+			return wakeTarget{}, err
+		}
+		if len(receipts) > 0 {
+			return prResolverTarget(ctx, q, issue, receipts[0])
+		}
+	}
 	if b == nil || !b.Eff.Config.Target.Set || b.target.Type == "assignee" {
 		return resolveWakeTarget(ctx, q, issue)
 	}

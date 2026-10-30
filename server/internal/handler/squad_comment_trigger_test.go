@@ -223,12 +223,7 @@ func TestShouldEnqueueSquadLeaderOnComment_SkipsWhenMemberMentionsAnyone(t *test
 	}
 }
 
-// TestShouldEnqueueSquadLeaderOnComment_AgentAuthoredWorkerCommentsWakeLeader
-// pins the MUL-3879 restored behavior in the new MUL-3794 cascade: an
-// agent-authored worker-result comment on a squad-assigned issue wakes the
-// assigned squad leader so the leader→worker→leader coordination loop stays
-// closed, while the leader's own self-trigger loop stays suppressed.
-func TestShouldEnqueueSquadLeaderOnComment_AgentAuthoredWorkerCommentsWakeLeader(t *testing.T) {
+func TestShouldEnqueueSquadLeaderOnComment_AgentAuthoredCommentsNeedExplicitMentions(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -263,12 +258,11 @@ func TestShouldEnqueueSquadLeaderOnComment_AgentAuthoredWorkerCommentsWakeLeader
 		}
 	}
 
-	// Case 1: a worker agent (not the leader) posts a result comment on the
-	// squad-assigned issue — the assigned leader must wake to coordinate.
-	t.Run("worker agent comment wakes squad leader", func(t *testing.T) {
+	setAgentCommentWakePolicyForTest(t, true)
+	t.Run("worker agent comment does not wake squad leader implicitly", func(t *testing.T) {
 		clearTasks()
-		if got := shouldEnqueueSquadLeaderOnCommentForTest(ctx, fx.Issue, "pushed the fix, PR is up", "agent", fx.OtherID); !got {
-			t.Fatalf("worker agent comment: expected leader to wake, got skip")
+		if got := shouldEnqueueSquadLeaderOnCommentForTest(ctx, fx.Issue, "pushed the fix, PR is up", "agent", fx.OtherID); got {
+			t.Fatalf("worker agent comment: expected implicit leader route to be suppressed")
 		}
 	})
 
@@ -302,6 +296,51 @@ func TestShouldEnqueueSquadLeaderOnComment_AgentAuthoredWorkerCommentsWakeLeader
 			t.Fatalf("explicit mention: expected no assigned-leader fallback, got wake")
 		}
 	})
+}
+
+func TestAgentCommentImplicitSquadWakeIsRecordedAsSuppressed(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	fx := newSquadCommentTriggerFixture(t)
+	triggers, targets := testHandler.computeCommentAgentTriggers(
+		context.Background(), fx.Issue, "worker finished", nil, "agent", fx.OtherID, commentTriggerComputeOptions{},
+	)
+	if len(triggers) != 0 {
+		t.Fatalf("agent-authored implicit triggers = %+v, want none", triggers)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("suppressed targets = %+v, want the assigned leader", targets)
+	}
+	if target := targets[0]; target.TargetType != "agent" || target.TargetID != fx.LeaderID || target.Status != DispatchBlocked || string(target.ReasonCode) != "agent_comment_implicit_route_suppressed" {
+		t.Fatalf("suppressed target = %+v, want assigned leader blocked with suppression reason", target)
+	}
+	outcomes := commentTriggerOutcomes(targets, nil)
+	if len(outcomes) != 1 || outcomes[0].Status != DispatchBlocked || string(outcomes[0].ReasonCode) != "agent_comment_implicit_route_suppressed" {
+		t.Fatalf("trigger_outcomes = %+v, want recorded suppression", outcomes)
+	}
+}
+
+func TestAgentCommentSquadMentionDoesNotWakeLeader(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	fx := newSquadCommentTriggerFixture(t)
+	content := "[@Squad](mention://squad/" + fx.SquadID + ") please review"
+	triggers, targets := testHandler.computeCommentAgentTriggers(
+		context.Background(), fx.Issue, content, nil, "agent", fx.OtherID, commentTriggerComputeOptions{},
+	)
+	if len(triggers) != 0 {
+		t.Fatalf("agent-authored squad mention triggers = %+v, want none", triggers)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("suppressed squad targets = %+v, want the mentioned squad", targets)
+	}
+	if target := targets[0]; target.TargetType != "squad" || target.TargetID != fx.SquadID || target.Status != DispatchBlocked || string(target.ReasonCode) != "agent_comment_requires_agent_mention" {
+		t.Fatalf("suppressed squad target = %+v, want blocked with agent-mention-only reason", target)
+	}
 }
 
 // TestCreateComment_SquadPlainReplyToMemberParentKeepsRootMentionOwner drives the
@@ -370,6 +409,9 @@ func TestCreateComment_SquadPlainReplyToMemberParentKeepsRootMentionOwner(t *tes
 		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 	`, issueID, fx.OtherID); err != nil {
 		t.Fatalf("complete OtherAgent parent task: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE comment_trigger_rate_limit SET triggered_at = now() - interval '11 minutes' WHERE issue_id = $1 AND agent_id = $2`, issueID, fx.OtherID); err != nil {
+		t.Fatalf("expire parent comment trigger window: %v", err)
 	}
 
 	// 3. Member posts a reply in the same thread with NO mentions.

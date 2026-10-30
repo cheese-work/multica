@@ -1,0 +1,17 @@
+issue: CHE-2124
+design: design/plan-revision-viewer/rev-2/A.html @ aa8306b19818658407f6eefcc495859b026b5a8a
+decision: 01a17b74-7f95-703c-977d-9f0cbb1e8cbf
+pages:
+  - id: plan-revision-viewer
+    url: /:workspace/attachments/:attachmentId/preview
+    keep: [revision-document, revision-download, revision-close]
+    change:
+      - revision-toolbar: One compact row with a visibly pressed Split/Unify mode. Below 700 px keep Diff and change navigation visible; secondary controls use one overflow menu.
+      - revision-content: Render current Markdown with Diff off; show literal unified or aligned split source with collapsed context and an opaque active-change outline when enabled. Change navigation scrolls only the content pane, below the sticky Base/Current header.
+      - revision-base: Earlier same-issue revisions, explicit duplicate choice, ICT time and uploader.
+    remove: []
+verification:
+  before: docs/ux/CHE-2124/web-{1440,390}-before.png at 84afc806a3e4bf8ae474f788defafa3afaf68a43
+  after: docs/ux/CHE-2124/f3/; real web and Electron captures at ea08b88a682d3a27cbfccd5c5dccdbea73c6d3be
+  preview: not available
+  visual_diff: NOT-RUN

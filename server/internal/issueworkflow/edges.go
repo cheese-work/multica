@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ const (
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
+	GuardPRReviewChanges  = "pr.review_changes_requested"
+	GuardPRReviewApproved = "pr.review_approved"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
 )
@@ -47,7 +50,7 @@ type Guard struct {
 
 var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
-	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 }
 
 // ParseGuard parses "kind" or "kind(arg, ...)".
@@ -85,6 +88,12 @@ func ParseGuard(s string) (Guard, error) {
 // needsTimeout reports whether a guard waits on an outside fact.
 func (g Guard) needsTimeout() bool {
 	return strings.HasPrefix(g.Kind, "pr.")
+}
+
+// readsFacts reports whether stored facts decide the guard; the agent guards
+// are decided by the agent's own status write.
+func (g Guard) readsFacts() bool {
+	return g.Kind != GuardAgentDone && g.Kind != GuardAgentVerdict
 }
 
 // EdgesOf returns a step's exits: its own edges, or else the ones its legacy
@@ -166,6 +175,11 @@ type PRFact struct {
 	State        string
 	ChecksRollup string
 	HeadFresh    bool
+	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
+	HeadSHA string
+	// Review is the latest human review decision on the PR's current head:
+	// approved, changes_requested, or empty.
+	Review string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -203,6 +217,12 @@ func (f Facts) holds(g Guard) bool {
 		return f.anyPR(func(p PRFact) bool { return p.State == "merged" }) && !f.anyPR(PRFact.open)
 	case GuardPRClosedUnmerged:
 		return f.anyPR(func(p PRFact) bool { return p.State == "closed" }) && !f.anyPR(func(p PRFact) bool { return p.open() || p.State == "merged" })
+	case GuardPRReviewChanges:
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
+	case GuardPRReviewApproved:
+		// One PR asking for changes outweighs another PR's approval.
+		return f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "approved" }) &&
+			!f.anyPR(func(p PRFact) bool { return p.open() && p.Review == "changes_requested" })
 	case GuardChildrenDone:
 		return f.ChildrenDone
 	case GuardIssueStatus:
@@ -220,4 +240,156 @@ func (f Facts) anyPR(pred func(PRFact) bool) bool {
 		}
 	}
 	return false
+}
+
+// EdgePollInterval is how often a watched step re-reads its facts: PR and
+// children facts change in other tables, so the watch polls between deadlines.
+const EdgePollInterval = time.Minute
+
+// Why the engine moves an issue.
+const (
+	ReasonEdge           = "edge"
+	ReasonTimeout        = "timeout"
+	ReasonClosedUnmerged = "closed_unmerged"
+)
+
+// Decision is what the engine does for an issue sitting on a step. Guard is
+// the guard of the edge that decided it.
+type Decision struct {
+	To, Reason, Guard string
+}
+
+// FactEdges returns the edges the engine watches: those whose guard reads
+// stored facts. Agent guards are decided by the agent's own status write.
+func FactEdges(edges []Edge) []Edge {
+	var out []Edge
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.readsFacts() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// HasFactEdges reports whether any edge reads stored facts.
+func HasFactEdges(edges []Edge) bool {
+	return len(FactEdges(edges)) > 0
+}
+
+// Decide checks a step's edges against the stored facts for an issue that
+// entered the step at entered. It moves the issue to the first edge, in list
+// order, whose guard holds; else to blocked when a closed PR would otherwise
+// strand an issue whose edges never mention it; else to the on_timeout of the
+// edge with the earliest deadline that has passed (ties by list order).
+//
+// When nothing moves, nextCheck is when to look again: the earliest future
+// deadline, at most EdgePollInterval away. It is zero when no edge reads facts.
+func Decide(edges []Edge, f Facts, entered, now time.Time, hasBlocked bool) (d Decision, move bool, nextCheck time.Time) {
+	watched := FactEdges(edges)
+	if len(watched) == 0 {
+		return Decision{}, false, time.Time{}
+	}
+	if e, ok := FirstMatch(watched, f); ok {
+		return Decision{To: e.To, Reason: ReasonEdge, Guard: e.Guard}, true, time.Time{}
+	}
+	// A PR closed without merging would strand an issue whose edges only wait
+	// for a merge or green checks, so it parks the issue unless an edge of
+	// the step already names that case.
+	if hasBlocked && hasPREdge(watched) && !hasGuard(watched, GuardPRClosedUnmerged) && f.holds(Guard{Kind: GuardPRClosedUnmerged}) {
+		return Decision{To: issuestatus.Blocked, Reason: ReasonClosedUnmerged, Guard: GuardPRClosedUnmerged}, true, time.Time{}
+	}
+	var first *Edge
+	var firstAt time.Time
+	nextCheck = now.Add(EdgePollInterval)
+	for i, e := range watched {
+		timeout, err := time.ParseDuration(e.Timeout)
+		if err != nil || timeout <= 0 {
+			continue
+		}
+		deadline := entered.Add(timeout)
+		if deadline.After(now) {
+			if deadline.Before(nextCheck) {
+				nextCheck = deadline
+			}
+			continue
+		}
+		if first == nil || deadline.Before(firstAt) {
+			first, firstAt = &watched[i], deadline
+		}
+	}
+	if first != nil {
+		to := first.OnTimeout
+		if to == "" && hasBlocked {
+			to = issuestatus.Blocked
+		}
+		if to != "" {
+			return Decision{To: to, Reason: ReasonTimeout, Guard: first.Guard}, true, time.Time{}
+		}
+	}
+	return Decision{}, false, nextCheck
+}
+
+func hasPREdge(edges []Edge) bool {
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.needsTimeout() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGuard(edges []Edge, kind string) bool {
+	for _, e := range edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// HasGuard reports whether any edge of the step uses a guard of this kind.
+func (s Step) HasGuard(kind string) bool { return hasGuard(s.Edges, kind) }
+
+// MoveNotAllowedError refuses an agent's status write the current step has no
+// exit for. Its message lists the allowed moves because agents read it verbatim.
+type MoveNotAllowedError struct {
+	From, To string
+	Allowed  []string
+}
+
+func (e *MoveNotAllowedError) Error() string {
+	if len(e.Allowed) == 0 {
+		return fmt.Sprintf("status %q is not an allowed move from %q; this step has no agent exit, the workflow moves the issue", e.To, e.From)
+	}
+	return fmt.Sprintf("status %q is not an allowed move from %q; use one of: %s",
+		e.To, e.From, strings.Join(e.Allowed, ", "))
+}
+
+// AgentMoves lists the statuses an agent may move an issue to from a step: the
+// targets of its agent_done and agent_verdict exits, in list order.
+func (d Definition) AgentMoves(key string) []string {
+	var moves []string
+	for _, e := range d.EdgesOf(key) {
+		g, err := ParseGuard(e.Guard)
+		if err != nil || g.readsFacts() || slices.Contains(moves, e.To) {
+			continue
+		}
+		moves = append(moves, e.To)
+	}
+	return moves
+}
+
+// CheckAgentMove refuses an agent's move off a step to a status the step has
+// no agent exit for, including every move off a step whose exits all wait on
+// facts. A step with no exits at all restricts nothing, and cancelling stays
+// open so an agent can still close a duplicate.
+func CheckAgentMove(def Definition, from, to string) error {
+	if len(def.EdgesOf(from)) == 0 || to == issuestatus.Cancelled {
+		return nil
+	}
+	moves := def.AgentMoves(from)
+	if slices.Contains(moves, to) {
+		return nil
+	}
+	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
 }

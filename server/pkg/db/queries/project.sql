@@ -27,6 +27,9 @@ WHERE i.id=$1 FOR SHARE OF p;
 -- name: ListProjectWakeups :many
 SELECT w.* FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
 WHERE i.project_id=$1 AND i.workspace_id=$2
+-- The workflow_edges watch is the platform's own, not a rule to settle: it
+-- stays and waits out an inactive project in its evaluator.
+AND w.system_rule IS DISTINCT FROM 'workflow_edges'
 ORDER BY w.id FOR UPDATE OF w;
 
 -- name: BumpProjectWakeupRevisions :exec

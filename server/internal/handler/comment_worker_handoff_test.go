@@ -41,6 +41,7 @@ func TestWorkerReplyDelivery(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	for _, state := range []string{"queued", "dispatched", "running"} {
 		for _, explicit := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/explicit=%t", state, explicit), func(t *testing.T) {
@@ -170,6 +171,7 @@ func TestWorkerReplyReconcileBoundaries(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
+	setAgentCommentWakePolicyForTest(t, false)
 	for _, mode := range []string{"accepted", "unplanned", "suppressed", "leader_reply", "note", "archived_leader", "reassigned", "registration_failure", "completed_before_registration"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
@@ -293,6 +295,57 @@ func TestWorkerReplyReconcileBoundaries(t *testing.T) {
 				t.Fatal("delivered worker reply replayed again")
 			}
 		})
+	}
+}
+
+func TestWorkerReplyCompletionDoesNotReplayImplicitReplyUnderStrictPolicy(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	setAgentCommentWakePolicyForTest(t, true)
+
+	ctx := context.Background()
+	leaderRuntimeID := dbfx.Runtime(t, "Strict worker reply leader runtime")
+	leaderID := dbfx.Agent(t, "Strict worker reply leader", leaderRuntimeID)
+	workerRuntimeID := dbfx.Runtime(t, "Strict worker reply worker runtime")
+	workerID := dbfx.Agent(t, "Strict worker reply worker", workerRuntimeID)
+	squadID := dbfx.Squad(t, "Strict worker reply squad", leaderID)
+	dbfx.SquadMember(t, squadID, "agent", workerID)
+	issueID := dbfx.Issue(t, "Strict worker reply completion", testutil.Cols{
+		"status": "in_progress", "assignee_type": "squad", "assignee_id": squadID,
+	})
+	rootID := dbfx.Comment(t, issueID, "Coordinate this work", nil)
+	leaderTaskID := dbfx.Task(t, leaderID, testutil.Cols{
+		"runtime_id": leaderRuntimeID, "issue_id": issueID, "status": "queued",
+		"trigger_comment_id": rootID, "is_leader_task": true, "squad_id": squadID,
+		"originator_user_id": testUserID, "accountable_user_id": testUserID,
+	})
+	workerTaskID := dbfx.Task(t, workerID, testutil.Cols{
+		"runtime_id": workerRuntimeID, "issue_id": issueID, "status": "running",
+		"trigger_comment_id": rootID, "squad_id": squadID,
+		"originator_user_id": testUserID, "accountable_user_id": testUserID,
+	})
+	claimed := claimWorkerReplyRun(t, leaderRuntimeID)
+	if claimed == nil || claimed.ID != leaderTaskID {
+		t.Fatal("leader run was not claimed")
+	}
+	if _, err := testHandler.TaskService.StartTask(ctx, parseUUID(leaderTaskID)); err != nil {
+		t.Fatal(err)
+	}
+	req := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "The worker finished without an explicit agent mention", "parent_id": rootID,
+	}), "id", issueID)
+	req.Header.Set("X-Agent-ID", workerID)
+	req.Header.Set("X-Task-ID", workerTaskID)
+	var response CommentResponse
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&response)
+	if len(response.TriggerOutcomes) != 1 || response.TriggerOutcomes[0].ReasonCode != ReasonAgentCommentImplicitRouteSuppressed {
+		t.Fatalf("worker reply outcomes = %+v, want implicit-route suppression", response.TriggerOutcomes)
+	}
+	completeWorkerReplyRun(t, leaderTaskID)
+	queued := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status='queued'`, issueID, leaderID)
+	if queued != 0 {
+		t.Fatalf("strict completion replay queued %d leader runs for an unmentioned agent reply, want none", queued)
 	}
 }
 

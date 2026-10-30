@@ -88,6 +88,32 @@ function scrollRangeIntoView(container: HTMLElement | null, range: Range): void 
   container.scrollTop = Math.max(0, target);
 }
 
+const SETTLE_FRAMES = 60;
+
+// A reveal or table layout below the first scroll can push the match back out
+// of view, because the scroll runs once against the layout of that moment. For
+// about a second, re-scroll each frame while the match is outside the band;
+// any user input on the container ends it. Returns the cancel function.
+function keepRangeInView(container: HTMLElement | null, range: Range): () => void {
+  if (!container) return () => {};
+  let frames = 0;
+  let raf = 0;
+  const stop = () => {
+    cancelAnimationFrame(raf);
+    for (const type of USER_SCROLL_EVENTS) container.removeEventListener(type, stop);
+  };
+  const tick = () => {
+    if (!range.startContainer.isConnected || ++frames > SETTLE_FRAMES) return stop();
+    scrollRangeIntoView(container, range);
+    raf = requestAnimationFrame(tick);
+  };
+  for (const type of USER_SCROLL_EVENTS) container.addEventListener(type, stop, { once: true, passive: true });
+  raf = requestAnimationFrame(tick);
+  return stop;
+}
+
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
 export interface UseInPageFindResult {
   open: boolean;
   query: string;
@@ -163,15 +189,25 @@ export function useInPageFind(options: {
     });
   }, [documents, query, open]);
   const activeSourceMatch = sourceMatches[Math.max(0, Math.min(activeIndex, sourceMatches.length - 1))];
+  const activeSourceId = activeSourceMatch?.id;
+  const activeSourceOccurrence = activeSourceMatch?.occurrence;
   const revealDocumentRef = useRef(revealDocument);
   revealDocumentRef.current = revealDocument;
   const pendingSourceScroll = useRef(false);
+  // The settle re-scroll belongs to one active match. Cancel it whenever that
+  // match ends: find closes, the query changes or clears, or no match is left.
+  const stopSettleRef = useRef<(() => void) | null>(null);
+  const stopSettle = useCallback(() => {
+    stopSettleRef.current?.();
+    stopSettleRef.current = null;
+  }, []);
+  useEffect(() => stopSettle, [stopSettle]);
   const navigationCountRef = useRef(0);
   useEffect(() => {
-    if (!documents || !open || !activeSourceMatch) return;
+    if (!open || !activeSourceId) return;
     pendingSourceScroll.current = true;
-    revealDocumentRef.current?.(activeSourceMatch.id);
-  }, [documents, open, activeSourceMatch]);
+    revealDocumentRef.current?.(activeSourceId);
+  }, [open, query, activeSourceId, activeSourceOccurrence, activeIndex]);
 
   const clearHighlights = useCallback(() => {
     if (!supported) return;
@@ -200,9 +236,14 @@ export function useInPageFind(options: {
           CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
         }
       }
-      if (range && scroll) scrollRangeIntoView(containerRef.current, range);
+      if (!range) stopSettle();
+      if (range && scroll) {
+        stopSettle();
+        scrollRangeIntoView(containerRef.current, range);
+        stopSettleRef.current = keepRangeInView(containerRef.current, range);
+      }
     },
-    [supported],
+    [supported, stopSettle],
   );
 
   // Rebuild the match set from the live DOM. `resetActive` starts navigation
@@ -220,6 +261,7 @@ export function useInPageFind(options: {
     (resetActive: boolean) => {
       const root = containerRef.current;
       if (!open || !root || query.trim().length === 0) {
+        stopSettle();
         rangesRef.current = [];
         clearHighlights();
         setMatchCount(0);
@@ -291,7 +333,7 @@ export function useInPageFind(options: {
       // while content mutates underneath a fixed active match.
       applyActive(ranges, nextActive, resetActive);
     },
-    [open, query, supported, clearHighlights, applyActive, documents, sourceMatches],
+    [open, query, supported, clearHighlights, applyActive, stopSettle, documents, sourceMatches],
   );
 
   const recomputeRef = useRef(recompute);
@@ -411,11 +453,15 @@ export function useInPageFind(options: {
   useEffect(() => clearHighlights, [clearHighlights]);
 
   const setQuery = useCallback((value: string) => {
+    stopSettle();
     setActiveIndex(0);
     setQueryState(value);
-  }, []);
+  }, [stopSettle]);
   const openFind = useCallback(() => setOpen(true), []);
-  const closeFind = useCallback(() => setOpen(false), []);
+  const closeFind = useCallback(() => {
+    stopSettle();
+    setOpen(false);
+  }, [stopSettle]);
 
   const goNext = useCallback(() => {
     setActiveIndex((prev) => {

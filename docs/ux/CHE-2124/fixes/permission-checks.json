@@ -1,0 +1,30 @@
+[
+  {
+    "endpoint": "/api/issues/01a17c8c-686a-7709-8228-8e7eb4eed45e/attachments",
+    "sameWorkspace": 200,
+    "noAuth": 401,
+    "foreignWorkspace": 404,
+    "notMember": 404
+  },
+  {
+    "endpoint": "/api/attachments/01a17c8c-688f-7a6c-98d6-0073f4d4fa7b",
+    "sameWorkspace": 200,
+    "noAuth": 401,
+    "foreignWorkspace": 404,
+    "notMember": 404
+  },
+  {
+    "endpoint": "/api/attachments/01a17c8c-688f-7a6c-98d6-0073f4d4fa7b/content",
+    "sameWorkspace": 200,
+    "noAuth": 401,
+    "foreignWorkspace": 404,
+    "notMember": 404
+  },
+  {
+    "endpoint": "/api/attachments/01a17c8c-6883-7b8e-b8d8-cfb4d971a2f1/content",
+    "sameWorkspace": 200,
+    "noAuth": 401,
+    "foreignWorkspace": 404,
+    "notMember": 404
+  }
+]

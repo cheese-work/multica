@@ -65,13 +65,17 @@ export interface CreateIssueStatusRequest {
 }
 
 /**
- * `key` and `category` are absent by design — both are immutable. Changing a
- * category would regroup every issue already on that status; changing a key
- * would strand them.
+ * `key` is absent by design: it is immutable, and changing it would strand
+ * every issue on the status. A custom status may change `category`, which
+ * regroups every issue on it, so the server refuses (409
+ * `category_change_requires_confirmation`, with `issue_count`) until the
+ * request repeats with `confirm_category_change`.
  */
 export interface UpdateIssueStatusRequest {
   name?: string;
   description?: string;
+  category?: IssueStatusCategory;
+  confirm_category_change?: boolean;
   color?: string;
   /** Omit to preserve; empty string resets to the default. */
   icon?: IssueStatusIcon | "";

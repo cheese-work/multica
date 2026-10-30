@@ -43,6 +43,21 @@ func (tx *prConditionTx) Query(_ context.Context, sql string, args ...any) (pgx.
 	return &sliceRows{rows: tx.prs}, tx.queryErr
 }
 
+// QueryRow answers the kill-switch read: no repository is halted.
+func (tx *prConditionTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	if !strings.Contains(sql, "github_dispatch_halt") {
+		return errRow{fmt.Errorf("unexpected row query: %s", sql)}
+	}
+	return &sliceRowsOne{sliceRows{rows: [][]any{{false}}}}
+}
+
+type sliceRowsOne struct{ sliceRows }
+
+func (r *sliceRowsOne) Scan(dest ...any) error {
+	r.Next()
+	return r.sliceRows.Scan(dest...)
+}
+
 func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	switch {
 	case strings.Contains(sql, "NoteWakeupFailure"):
@@ -57,11 +72,13 @@ func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgcon
 }
 
 func TestWakeupConditionPREvaluation(t *testing.T) {
-	row := func(state, head, checks string) []any { return []any{int32(1), state, head, checks, head, "", "p1"} }
+	row := func(state, head, checks string) []any {
+		return []any{int32(1), state, head, checks, head, "", "p1", "acme", "widget"}
+	}
 	// conflictRow describes a PR whose snapshot was fetched for snapshotHead
 	// while the PR's current head is "head".
 	conflictRow := func(state, snapshotHead, mergeable string) []any {
-		return []any{int32(1), state, snapshotHead, "", "head", mergeable, "p1"}
+		return []any{int32(1), state, snapshotHead, "", "head", mergeable, "p1", "acme", "widget"}
 	}
 	for _, tc := range []struct {
 		name, event string
@@ -142,7 +159,7 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 	tx := &prConditionTx{issue: w.IssueID}
 	q := db.New(tx)
 	snapshot := func(head, mergeable string) [][]any {
-		return [][]any{{int32(1), "open", head, "", head, mergeable, "p1"}}
+		return [][]any{{int32(1), "open", head, "", head, mergeable, "p1", "acme", "widget"}}
 	}
 	for _, step := range []struct {
 		name, previous string
@@ -189,8 +206,8 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 		want error
 	}{
 		{nil, errPRNotLinked},
-		{[][]any{{int32(1), "open", "", "", "head", "", "p1"}}, errPRSnapshotPending},
-		{[][]any{{int32(1), "open", "head", "PENDING", "head", "MERGEABLE", "p1"}}, nil},
+		{[][]any{{int32(1), "open", "", "", "head", "", "p1", "acme", "widget"}}, errPRSnapshotPending},
+		{[][]any{{int32(1), "open", "head", "PENDING", "head", "MERGEABLE", "p1", "acme", "widget"}}, nil},
 	} {
 		tx.prs = step.prs
 		w.LastError = tx.lastError

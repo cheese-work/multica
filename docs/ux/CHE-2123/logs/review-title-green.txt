@@ -1,0 +1,12 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media/media-context.test.tsx -t 'readable title'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed | 6 skipped (11)
+   Start at  20:34:12
+   Duration  8.12s (transform 2.38s, setup 209ms, import 3.82s, tests 516ms, environment 2.44s)

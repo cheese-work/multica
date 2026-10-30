@@ -244,15 +244,3 @@ export function distanceBetween(a: Point, b: Point): number {
 export function midpointOf(a: Point, b: Point): Point {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
-
-/**
- * Converts a wheel notch into a zoom factor. `deltaMode` matters: mice report
- * lines (1) or pages (2) while trackpads report pixels (0), so a raw `deltaY`
- * comparison would make one of the two unusable.
- */
-export function wheelZoomFactor(deltaY: number, deltaMode: number): number {
-  const pixels = deltaMode === 1 ? deltaY * 16 : deltaMode === 2 ? deltaY * 100 : deltaY;
-  // Exponential mapping keeps zooming symmetric: equal and opposite scrolls
-  // return to the original scale. The 400 divisor tunes trackpad sensitivity.
-  return Math.exp(-pixels / 400);
-}

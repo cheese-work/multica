@@ -210,6 +210,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	orphans, err := handler.Queries.ListDecisionActionsAwaitingPostCommit(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, action := range orphans {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.completeDecisionActionPostCommit(ctx, action)
+		}))
+	}
 	wakes, err := handler.Queries.ListDecisionWakeCandidates(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -235,6 +244,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 	for _, request := range reasks {
 		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
+		}))
+	}
+	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, recipient := range recipients {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
 	return failures
@@ -275,6 +293,12 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 		return err
 	}
 	for _, requestID := range requests {
+		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
 		if err := queries.DeleteDecisionOrphanRequest(ctx, db.DeleteDecisionOrphanRequestParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}

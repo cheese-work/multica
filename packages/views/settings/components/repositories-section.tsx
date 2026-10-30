@@ -414,6 +414,15 @@ export function RepositoriesSection() {
                   ) : null}
                 </span>
               </DropdownMenuItem>
+              {githubInstallations.length > 0 && githubData?.can_manage === true ? (
+                <DropdownMenuItem
+                  disabled={connectingGitHub || !githubConnectConfigured}
+                  onClick={() => void connectGitHub()}
+                >
+                  <Plus />
+                  {t(($) => $.repositories.github_add_account_or_organization)}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem
                 onClick={() => setDraft({ index: null, url: "", description: "" })}
               >
@@ -637,6 +646,18 @@ export function RepositoriesSection() {
                   {githubInstallations[0].account_login}
                 </span>
               </p>
+            ) : null}
+
+            {githubData?.can_manage === true ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void connectGitHub()}
+                disabled={connectingGitHub || !githubConnectConfigured}
+                aria-busy={connectingGitHub || undefined}
+              >
+                {t(($) => $.repositories.github_add_account_or_organization)}
+              </Button>
             ) : null}
 
             <div className="relative">

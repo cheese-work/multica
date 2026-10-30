@@ -62,19 +62,39 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	}
 	// Another writer moving the issue first (revision) wins; the claim is given
 	// back so the next snapshot of this head can try the issue where it is.
-	moved := false
-	defer func() {
-		if !moved {
-			if err := h.Queries.ReleaseIssueCIAdvance(ctx, db.ReleaseIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA}); err != nil {
-				slog.Warn("ci advance: release claim failed", "err", err, "issue_id", uuidToString(issueID))
-			}
+	// The kill switch (CHE-2220) finds this run by the mark: nothing else on it
+	// says a GitHub snapshot started it. The mark goes on the row this move's
+	// own enqueue creates, never on a later run of the issue.
+	markCtx := service.WithEnqueuedTaskHook(ctx, func(task db.AgentTaskQueue) {
+		if task.IssueID != issue.ID {
+			return
 		}
-	}()
+		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green"}); err != nil {
+			slog.Warn("ci advance: mark run failed", "err", err, "issue_id", uuidToString(issueID))
+		}
+	})
+	moved, ranHandler := h.moveIssueOnEdge(markCtx, issue, next, "ci_green_advance", map[string]any{"head_sha": headSHA}, true)
+	if !moved {
+		if err := h.Queries.ReleaseIssueCIAdvance(ctx, db.ReleaseIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA}); err != nil {
+			slog.Warn("ci advance: release claim failed", "err", err, "issue_id", uuidToString(issueID))
+		}
+	}
+	return ranHandler
+}
 
+// moveIssueOnEdge writes the status change a workflow edge stands for and
+// publishes it as the platform. issue is the row the caller decided on: a
+// concurrent writer that changed it first (revision) wins and nothing moves.
+// source names the cause in the event payload and extra adds its details.
+// startHandler false leaves the target step's handler unrun, for a move whose
+// cause is that nothing more should run. It reports whether the status moved
+// and whether the move started a run for the next step's handler, so the caller
+// does not wake the same owner twice.
+func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool) {
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
 		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
-		Status:           pgtype.Text{String: next, Valid: true},
+		Status:           pgtype.Text{String: to, Valid: true},
 		AssigneeType:     issue.AssigneeType,
 		AssigneeID:       issue.AssigneeID,
 		StartDate:        issue.StartDate,
@@ -83,25 +103,24 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		ProjectID:        issue.ProjectID,
 		Stage:            issue.Stage,
 	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, nil)
+	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
 	if err != nil {
-		slog.Warn("ci advance: workflow refused the move", "err", err, "issue_id", uuidToString(issueID), "to", next)
-		return false
+		slog.Warn("workflow edge: workflow refused the move", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
+		return false, false
 	}
-	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, next, params, write)
+	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("ci advance: status write failed", "err", err, "issue_id", uuidToString(issueID), "to", next)
+			slog.Warn("workflow edge: status write failed", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 		}
-		return false
+		return false, false
 	}
-	moved = true
 
 	assigneeChanged := handoff != nil &&
 		(issue.AssigneeType.String != updated.AssigneeType.String || uuidToString(issue.AssigneeID) != uuidToString(updated.AssigneeID))
 	var willRun bool
 	var trigger service.IssueRunTrigger
-	if handoff != nil {
+	if handoff != nil && startHandler {
 		trigger, willRun = h.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
 			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
 		}, service.IssueTriggerProbe{})
@@ -113,8 +132,10 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		"prev_status":      issue.Status,
 		"creator_type":     issue.CreatorType,
 		"creator_id":       uuidToString(issue.CreatorID),
-		"source":           "ci_green_advance",
-		"head_sha":         headSHA,
+		"source":           source,
+	}
+	for k, v := range extra {
+		payload[k] = v
 	}
 	if assigneeChanged {
 		payload["prev_assignee_type"] = textToPtr(issue.AssigneeType)
@@ -131,7 +152,7 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	if updated.ParentIssueID.Valid || issue.ParentIssueID.Valid {
 		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
 	}
-	return ranHandler
+	return true, ranHandler
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.

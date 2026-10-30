@@ -5837,6 +5837,10 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		taskLog.Info("discarding rejected start claim", "error", err)
 		return
 	}
+	if result.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() && err != nil {
+		result.Comment += "; " + err.Error()
+		err = nil // Cleanup uncertainty must outrank worktree-finalization errors.
+	}
 
 	// Report usage before any early return — the agent accumulates tokens
 	// whether the task completes, errors, or is cancelled mid-run by the poll
@@ -5867,12 +5871,8 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// RetiredSessionID rides along too: a resumed session the run never
 		// got a single message out of must not stay this issue's resume
 		// pointer (MUL-8188).
-		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, RetiredSessionID: result.RetiredSessionID}
-		var preserved *worktreePreservedError
-		if errors.As(err, &preserved) {
-			ack.ErrorMessage = preserved.Error()
-			ack.FailureReason = "local_directory_error"
-		}
+		ack := taskCancelAcknowledgement(result, err, provider)
+		ack.CancelAckProof = task.CancelAckProof
 		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
@@ -5923,7 +5923,9 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// completed/failed rows the complete/fail callback is the
 		// authoritative channel and a stale run's late ack must not touch
 		// them.
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, RetiredSessionID: result.RetiredSessionID}); ackErr != nil {
+		ack := taskCancelAcknowledgement(result, nil, provider)
+		ack.CancelAckProof = task.CancelAckProof
+		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
 		return
@@ -5996,6 +5998,27 @@ func (e *environmentSetupError) Unwrap() error { return e.err }
 // failure. The message is untouched, so the wrapper is invisible to everything
 // except taskRunFailureReason.
 func asEnvironmentSetupFailure(err error) error { return &environmentSetupError{err: err} }
+
+func taskCancelAcknowledgement(result TaskResult, runErr error, provider string) TaskCancelAck {
+	ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, RetiredSessionID: result.RetiredSessionID}
+	var preserved *worktreePreservedError
+	if errors.As(runErr, &preserved) {
+		ack.ErrorMessage = preserved.Error()
+		ack.FailureReason = "local_directory_error"
+	}
+	confirmed := result.FailureReason != taskfailure.ReasonProcessCleanupUnconfirmed.String()
+	if provider == "pi" || provider == "omp" {
+		ack.ProcessCleanupConfirmed = &confirmed
+	}
+	if !confirmed {
+		ack.ErrorMessage = result.Comment
+		if preserved != nil {
+			ack.ErrorMessage += "; " + preserved.Error()
+		}
+		ack.FailureReason = result.FailureReason
+	}
+	return ack
+}
 
 func taskRunFailureReason(err error) string {
 	if errors.Is(err, errInvalidTaskIdentity) {
@@ -8068,8 +8091,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// task dispatch.
 	var openclawMode string
 	var openclawGateway execenv.OpenclawGatewayPin
+	var openclawModelOverride string
 	if task.Agent != nil && provider == "openclaw" {
 		openclawMode, openclawGateway = decodeOpenclawRuntimeConfig(task.Agent.RuntimeConfig, d.logger)
+		// Use the server's claim-time snapshot of the agent's persistent model
+		// override throughout preparation and execution.
+		openclawModelOverride = strings.TrimSpace(task.ModelOverride)
 	}
 	var agentEnvOverrides map[string]string
 	var agentCustomArgs []string
@@ -8437,6 +8464,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// in place, leave them behind in the user's tree.
 	if env.LocalDirectory || env.LocalWorktree != nil {
 		defer func() {
+			if taskResult.FailureReason == taskfailure.ReasonProcessCleanupUnconfirmed.String() {
+				return // Preserve files that an unconfirmed process may still use.
+			}
 			var cleanupErr error
 			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
 				cleanupErr = cerr
@@ -8504,20 +8534,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// "start task failed: <…>" string and the same failure_reason
 	// taxonomy as before — see MUL-2946 for the classifier contract.
 	var taskCapabilities []string
+	if provider == "pi" || provider == "omp" {
+		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityPiProcessCleanupV1)
+	}
 	var cursorHookCommand []string
 	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != ""
 	if supplementSupported && provider == "cursor" {
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityTaskSupplementV1)
+		taskCapabilities = append(taskCapabilities,
+			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
 	}
-	taskSupplementNegotiated, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
+	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
 	}
-	if taskSupplementNegotiated {
+	if negotiation.Supplement || negotiation.PREvent {
 		// Register before provider launch so a hint cannot arrive in the gap
 		// between the committed server transition and turn/started. The row is
 		// durable, so a coalesced hint is sufficient; the five-second fallback
@@ -8810,7 +8844,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{
-		EnableTaskSupplement:       taskSupplementNegotiated,
+		// PR events ride the same injection channel, so they need its hooks too.
+		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
 		Cwd:                        env.WorkDir,
 		Model:                      model,
@@ -8843,6 +8878,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ThinkingLevel:          thinkingLevel,
 		ServiceTier:            serviceTier,
 		OpenclawMode:           openclawMode,
+		OpenclawModelOverride:  openclawModelOverride,
 		ClaudeSettingsPath:     env.ClaudeSettingsPath,
 		QwenpawWorkspace:       env.QwenpawWorkspace,
 	}
@@ -8921,9 +8957,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
 	outputObserver := &taskOutputObserver{}
 	ctx = withTaskOutputObserver(ctx, outputObserver)
+	ctx = withTaskPREvents(ctx, negotiation.PREvent)
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
+	}
+	if result.Status == "cleanup_unconfirmed" {
+		if env.LocalWorktree != nil {
+			env.LocalWorktree.AbortWithReason(errors.New(result.Error))
+		}
 	}
 
 	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
@@ -9070,6 +9112,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}()
 
 	switch result.Status {
+	case "cleanup_unconfirmed":
+		return TaskResult{
+			Status: "blocked", Comment: result.Error, SessionID: result.SessionID,
+			WorkDir: env.WorkDir, EnvRoot: env.RootDir, Usage: usageEntries,
+			FailureReason: taskfailure.ReasonProcessCleanupUnconfirmed.String(),
+		}, nil
 	case "completed":
 		if result.Output == "" {
 			// The agent completed successfully but produced no text output.
@@ -9999,15 +10047,24 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			return agent.Result{}, false, false
 		}
 	}
+	cleanupUnconfirmed := func() (agent.Result, int32, error) {
+		return agent.Result{
+			Status: "cleanup_unconfirmed",
+			Error:  "Runtime did not confirm process cleanup; background processes may still be running. Check them before manually rerunning this task.",
+		}, toolCount.Load(), nil
+	}
 
 	select {
-	case result := <-session.Result:
+	case result, ok := <-session.Result:
 		stopWatchdog()
 		waitForDrain()
+		if !ok && session.CleanupRequired {
+			return cleanupUnconfirmed()
+		}
 		// terminalObserved outranks a watchdog that fired anyway: if the backend
 		// had already read its authoritative result, this is the real outcome and
 		// re-tagging it would report a completed run as a hang.
-		if idleWatchdogFired.Load() && !terminalObserved() {
+		if idleWatchdogFired.Load() && !terminalObserved() && result.Status != "cleanup_unconfirmed" {
 			// The backend's wait goroutine (e.g. claude.go) translates the
 			// SIGKILL we delivered via agentCancel into Status="aborted".
 			// Re-tag it as "idle_watchdog" so runTask routes the
@@ -10047,6 +10104,9 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// this is the real outcome, not a hang.
 				return result, toolCount.Load(), nil
 			} else if delivered {
+				if result.Status == "cleanup_unconfirmed" {
+					return result, toolCount.Load(), nil
+				}
 				// The backend's wait goroutine (e.g. claude.go) translates the
 				// SIGKILL we delivered via agentCancel into Status="aborted".
 				// Re-tag it so runTask routes the disposition through the
@@ -10056,6 +10116,9 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
 				}
 				return result, toolCount.Load(), nil
+			}
+			if session.CleanupRequired {
+				return cleanupUnconfirmed()
 			}
 			return agent.Result{
 				Status: "idle_watchdog",
@@ -10068,13 +10131,22 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// upstream runCtx fired runCancel(); context.DeadlineExceeded is the
 		// drain deadline expiring on its own.
 		if errors.Is(drainCtx.Err(), context.Canceled) {
-			if result, _, authoritative := awaitTerminalResult("upstream_context"); authoritative {
+			if result, delivered, authoritative := awaitTerminalResult("upstream_context"); authoritative || (delivered && result.Status == "cleanup_unconfirmed") {
 				return result, toolCount.Load(), nil
+			} else if session.CleanupRequired && !delivered {
+				return cleanupUnconfirmed()
 			}
 			return agent.Result{
 				Status: "cancelled",
 				Error:  "task cancelled by upstream context (server cancel or daemon shutdown)",
 			}, toolCount.Load(), nil
+		}
+		if session.CleanupRequired {
+			agentCancel()
+			if result, delivered, _ := awaitTerminalResult("drain_timeout"); delivered {
+				return result, toolCount.Load(), nil
+			}
+			return cleanupUnconfirmed()
 		}
 		return agent.Result{
 			Status: "timeout",

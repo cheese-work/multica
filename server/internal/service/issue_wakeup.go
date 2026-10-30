@@ -104,7 +104,11 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 	return pgtype.Timestamptz{Time: at, Valid: true}, pgtype.Int8{}, nil
 }
 
-type IssueWakeupService struct{ Tasks *TaskService }
+type IssueWakeupService struct {
+	Tasks *TaskService
+	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
+	prEvents prEventCursor
+}
 
 func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Timestamptz, error) {
 	bad := func(msg string) (pgtype.Timestamptz, error) {
@@ -720,6 +724,9 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
 	var errs []error
+	if err := s.queueNextTurnPREvents(ctx, workspaceIDs); err != nil {
+		errs = append(errs, fmt.Errorf("queue next-turn PR events: %w", err))
+	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
 	}
@@ -823,6 +830,9 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	dispatch := s.dispatch
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
+	}
+	if w.SystemRule.String == SystemRuleWorkflowEdges {
+		dispatch = s.dispatchWorkflowEdges
 	}
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
@@ -1359,7 +1369,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed); err != nil {
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginNamed, RunTarget{}); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1431,6 +1441,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
 		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		if err == nil {
+			noteRunInserted(ctx, q, w.IssueID)
+		}
 	}
 	if err != nil {
 		return err
@@ -1625,7 +1638,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		}
 		if config != nil && config.Eff.Config.Target.Set {
 			// A named target is asked again whether its writer may use it.
-			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 			if err != nil {
 				return err
 			}
@@ -1730,7 +1743,7 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
-		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 		if err != nil {
 			return err
 		}
@@ -1747,4 +1760,14 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		return s.checkJoinedFireCap(ctx, task, entry, limit)
 	}
 	return nil
+}
+
+// dispatchWorkflowEdges hands a due workflow_edges watch to the handler's
+// evaluator. It starts no run itself: a move goes through the same status write
+// a person makes, which dispatches the next step's handler.
+func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.WorkflowEdges == nil {
+		return nil
+	}
+	return s.Tasks.WorkflowEdges(ctx, w)
 }

@@ -413,3 +413,47 @@ The ask comment is inserted directly and does not run `triggerTasksForComment`,
 so handoff lines in `footer` dispatch no agent; continuation stays with
 wakeups. One call asks one person, so each ask owns its intent and the shared
 `group_woken_at` group wake does not apply. Both are accepted limits.
+
+## Stale asks and expiry digests
+
+The existing decision worker expires unanswered `asked` requests after 168
+elapsed hours, inclusive at the boundary. Seven days is the implementation
+default proposed for CHE-2089, not a previously observed workspace policy.
+Lifecycle cancellation uses `cancel_reason = expired`; the request card shows
+the original ask as withdrawn with the expiry explanation. Expiry is not an
+answer or permission to execute, does not evaluate the ask's proposed default,
+and does not create a decision answer, re-ask or execution wake.
+
+Expiry takes the same locks as other lifecycle cancellations and rechecks the
+request inside the transaction. An answer or withdrawal that wins those locks
+is preserved. If expiry wins, a subsequent answer or withdrawal is refused.
+Issue closure, member removal and asking-agent archival retain their existing
+precedence over expiry.
+
+There is no individual expiry DM. One inbox digest per workspace and recipient
+per ICT day groups up to 100 expired asks, with their source issue/comment
+references. The inbox body remains plain text on existing clients. The worker
+uses the existing `mentioned` inbox type and notification path; this adds no
+new outbound notification channel or preference. The recipient must still be
+a workspace member. Digests never aggregate private asks into another agent's
+DM lane.
+
+The daily receipt, inbox item and request associations commit together.
+`Asia/Bangkok` defines the date, independently of the server or database session
+timezone. Worker restarts, retries and deletion of an inbox item cannot resend
+a receipted digest. Asks that expire after that day's digest, or exceed its
+100-request bound, stay pending until a later ICT day. These are implementation
+defaults, not permission to change a person's notification preferences.
+
+## Decision-bound writes
+
+A governed write by an agent is approved by a card whose ask is built with
+`BoundWriteDecision(field, before_sha256, after_sha256)` and whose options
+include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server
+(`verifyDecisionBinding`) accepts only a live answer, by a workspace owner,
+that is exactly that label, after its veto window and within 7 days, for an ask
+whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
+locks the request, then the answer, in the same order as a withdrawal.
+Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
+Orphan cleanup deletes a request's `decision_bound_write` row before the request,
+because the table has no foreign key to cascade from.

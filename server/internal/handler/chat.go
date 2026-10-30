@@ -404,6 +404,10 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "exactly one of title or project_id is required")
 		return
 	}
+	if hasTitle {
+		h.renameChatSession(w, r, userID, *req.Title)
+		return
+	}
 
 	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
 	if !ok {
@@ -414,71 +418,53 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		updated db.ChatSession
 		err     error
 	)
-	var projectIDChanged bool
-	if hasTitle {
-		title := strings.TrimSpace(*req.Title)
-		if title == "" {
-			writeError(w, http.StatusBadRequest, "title is required")
+	projectID := pgtype.UUID{Valid: false}
+	if string(req.ProjectID) != "null" {
+		var rawProjectID string
+		if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		if len([]rune(title)) > chatSessionTitleMaxLen {
-			writeError(w, http.StatusBadRequest, "title is too long")
+		rawProjectID = strings.TrimSpace(rawProjectID)
+		if rawProjectID == "" {
+			writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
 			return
 		}
-		updated, err = h.Queries.UpdateChatSessionTitle(r.Context(), db.UpdateChatSessionTitleParams{
-			ID:    session.ID,
-			Title: title,
-		})
-	} else {
-		projectID := pgtype.UUID{Valid: false}
-		if string(req.ProjectID) != "null" {
-			var rawProjectID string
-			if err := json.Unmarshal(req.ProjectID, &rawProjectID); err != nil {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			rawProjectID = strings.TrimSpace(rawProjectID)
-			if rawProjectID == "" {
-				writeError(w, http.StatusBadRequest, "project_id must be a UUID or null")
-				return
-			}
-			projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
-			if !ok {
-				return
-			}
-		}
-
-		tx, txErr := h.TxStarter.Begin(r.Context())
-		if txErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		projectID, ok = parseUUIDOrBadRequest(w, rawProjectID, "project_id")
+		if !ok {
 			return
 		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
+	}
 
-		if projectID.Valid {
-			if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
-				ID:          projectID,
-				WorkspaceID: session.WorkspaceID,
-			}); lockErr != nil {
-				if errors.Is(lockErr, pgx.ErrNoRows) {
-					writeError(w, http.StatusNotFound, "project not found")
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "failed to lock project")
-				return
-			}
-		}
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
 
-		updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
-			ID:          session.ID,
+	if projectID.Valid {
+		if _, lockErr := qtx.LockProjectForChatSessionCreate(r.Context(), db.LockProjectForChatSessionCreateParams{
+			ID:          projectID,
 			WorkspaceID: session.WorkspaceID,
-			ProjectID:   projectID,
-		})
-		if err == nil {
-			err = tx.Commit(r.Context())
+		}); lockErr != nil {
+			if errors.Is(lockErr, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to lock project")
+			return
 		}
-		projectIDChanged = true
+	}
+
+	updated, err = qtx.UpdateChatSessionProject(r.Context(), db.UpdateChatSessionProjectParams{
+		ID:          session.ID,
+		WorkspaceID: session.WorkspaceID,
+		ProjectID:   projectID,
+	})
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update chat session")
@@ -491,10 +477,8 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		Title:         updated.Title,
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	}
-	if projectIDChanged {
-		projectID := uuidToPtr(updated.ProjectID)
-		payload.ProjectID = &projectID
-	}
+	projectIDValue := uuidToPtr(updated.ProjectID)
+	payload.ProjectID = &projectIDValue
 	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, payload)
 
 	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
@@ -890,8 +874,9 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // Chat Messages
 
 type SendChatMessageRequest struct {
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
+	Content           string   `json:"content"`
+	AttachmentIDs     []string `json:"attachment_ids"`
+	DecisionRequestID string   `json:"decision_request_id"`
 }
 
 type SendChatMessageResponse struct {
@@ -941,6 +926,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
 		return
+	}
+	var decisionRequestID pgtype.UUID
+	if req.DecisionRequestID != "" {
+		decisionRequestID, ok = parseUUIDOrBadRequest(w, req.DecisionRequestID, "decision_request_id")
+		if !ok {
+			return
+		}
 	}
 
 	// Load chat session and re-check the private-agent gate on every send.
@@ -997,8 +989,19 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator and the run's originator —
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+	var sent *service.DirectChatSendResult
+	var err error
+	if decisionRequestID.Valid {
+		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs)
+	} else {
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+	}
 	if err != nil {
+		var refusal decisionIntentRefusal
+		if errors.As(err, &refusal) {
+			writeDecisionError(w, err, "decision reply")
+			return
+		}
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")
@@ -1313,9 +1316,12 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	quotes, refs := h.decisionCardsForMessages(ctx, workspaceID, messages)
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
+	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
+
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
+		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1332,6 +1338,42 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 		}
 	}
 	return resp
+}
+
+// scheduledWakeupsForMessages maps message id to the fired wakeup that sent it,
+// in one query. A user message matches when its task is the wakeup's fired task
+// in the same session.
+func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db.ChatMessage) map[string]*ScheduledWakeupResponse {
+	var taskIDs []pgtype.UUID
+	for _, m := range messages {
+		if m.Role == "user" && m.TaskID.Valid {
+			taskIDs = append(taskIDs, m.TaskID)
+		}
+	}
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	rows, err := h.Queries.ListChatWakeupsByFiredTasks(ctx, taskIDs)
+	if err != nil {
+		slog.Warn("list scheduled wakeups for chat messages failed", "error", err)
+		return nil
+	}
+	byTask := make(map[string]db.ChatWakeup, len(rows))
+	for _, w := range rows {
+		byTask[uuidToString(w.FiredTaskID)] = w
+	}
+	out := make(map[string]*ScheduledWakeupResponse)
+	for _, m := range messages {
+		w, ok := byTask[uuidToString(m.TaskID)]
+		if !ok || m.Role != "user" || w.ChatSessionID != m.ChatSessionID {
+			continue
+		}
+		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
+			ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), Title: w.Title, Instruction: w.Instruction,
+			FireAt: timestampToString(w.FireAt), CreatedAt: timestampToString(w.CreatedAt),
+		}
+	}
+	return out
 }
 
 func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
@@ -2215,6 +2257,18 @@ type ChatMessageResponse struct {
 	DecisionRef      *DecisionCard         `json:"decision_ref,omitempty"`
 	DecisionRequest  *DecisionRequestCard  `json:"decision_request,omitempty"`
 	DecisionRequests []DecisionRequestCard `json:"decision_requests,omitempty"`
+	// ScheduledWakeup is set on the user message a fired DM wakeup sent, so
+	// clients can render it as an event row. content stays the model-facing text.
+	ScheduledWakeup *ScheduledWakeupResponse `json:"scheduled_wakeup,omitempty"`
+}
+
+type ScheduledWakeupResponse struct {
+	ID          string `json:"id"`
+	AgentID     string `json:"agent_id"`
+	Title       string `json:"title"`
+	Instruction string `json:"instruction"`
+	FireAt      string `json:"fire_at"`
+	CreatedAt   string `json:"created_at"`
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {

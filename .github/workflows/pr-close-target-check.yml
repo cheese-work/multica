@@ -14,7 +14,7 @@ concurrency:
 jobs:
   close-target:
     if: github.event.pull_request.state != 'closed'
-    runs-on: [self-hosted, Linux, X64, cheese-x99]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
@@ -30,7 +30,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Validate intended issue close target

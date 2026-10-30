@@ -190,8 +190,8 @@ func TestRunGateCaptureFailureDoesNotChangeTheLeaderPath(t *testing.T) {
 	}
 }
 
-// A worker's reply is routed back to the leader; capture keeps who wrote it.
-func TestRunGateCapturesWorkerReplyToLeader(t *testing.T) {
+// An agent's unmentioned reply is suppressed before leader-fallback capture.
+func TestRunGateDoesNotCaptureSuppressedWorkerReply(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -212,8 +212,10 @@ func TestRunGateCapturesWorkerReplyToLeader(t *testing.T) {
 	var reply CommentResponse
 	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&reply)
 
-	e := readGateEvent(t, reply.ID)
-	if e.authorType != "agent" || !e.nonLeaderReply || e.origin != "issue_assignee" || e.agentID != g.leaderID {
-		t.Fatalf("worker reply event = %+v", e)
+	if len(reply.TriggerOutcomes) != 1 || reply.TriggerOutcomes[0].Status != DispatchBlocked || reply.TriggerOutcomes[0].ReasonCode != ReasonAgentCommentImplicitRouteSuppressed {
+		t.Fatalf("worker reply outcomes = %+v, want implicit route suppression", reply.TriggerOutcomes)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM run_gate_event WHERE issue_id = $1 AND trigger_comment_id = $2`, g.issueID, reply.ID); n != 0 {
+		t.Fatalf("suppressed worker reply wrote %d run-gate events", n)
 	}
 }

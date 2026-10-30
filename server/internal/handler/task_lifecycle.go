@@ -228,6 +228,15 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
 	}
+	if errors.Is(err, service.ErrRunBudgetExhausted) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
+		return
+	}
+	var notConfirmed *service.StopNotConfirmedError
+	if errors.As(err, &notConfirmed) {
+		writeError(w, http.StatusConflict, notConfirmed.Error())
+		return
+	}
 	// Not a dispatch refusal: the issue may well be runnable, and only the named
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".

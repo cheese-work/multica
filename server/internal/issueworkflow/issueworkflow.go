@@ -24,11 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -177,6 +179,17 @@ type Step struct {
 	// Edges are the step's exits, each taken when its guard holds. Without
 	// them the exits derive from the fields above (see EdgesOf).
 	Edges []Edge `json:"edges,omitempty"`
+	// SubWorkflow makes the step a sub-workflow node (CHE-2031): entering it
+	// creates a child issue that follows another workflow, and a children_done
+	// edge joins when every child of the stage is done.
+	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
+}
+
+// SubWorkflow names the workflow a sub-workflow step starts and the stage its
+// child issues join on.
+type SubWorkflow struct {
+	WorkflowID string `json:"workflow_id"`
+	Stage      int    `json:"stage,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -185,6 +198,15 @@ type Definition struct {
 	Name      string
 	IsDefault bool
 	Steps     []Step
+	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
+	// (see EffectiveMaxRuns).
+	MaxRunsPerIssue int
+	// IncludeChildPRs makes the PRs of an issue's direct children count as
+	// its own for edge guards.
+	IncludeChildPRs bool
+	// RunBudgetSince is when the budget starts counting: runs before it are
+	// free, so issues in flight when the budget shipped start fresh.
+	RunBudgetSince time.Time
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
@@ -199,13 +221,14 @@ func (s Step) HandsOff() bool {
 // storedStep is a step as the workflow row stores it; a step without a
 // handoff is just its status key.
 type storedStep struct {
-	StatusKey     string   `json:"status_key"`
-	Handler       *Handler `json:"handler,omitempty"`
-	Instructions  string   `json:"instructions,omitempty"`
-	NextStatusKey string   `json:"next_status_key,omitempty"`
-	BackStatusKey string   `json:"back_status_key,omitempty"`
-	AdvanceOnCI   bool     `json:"advance_on_ci_green,omitempty"`
-	Edges         []Edge   `json:"edges,omitempty"`
+	StatusKey     string       `json:"status_key"`
+	Handler       *Handler     `json:"handler,omitempty"`
+	Instructions  string       `json:"instructions,omitempty"`
+	NextStatusKey string       `json:"next_status_key,omitempty"`
+	BackStatusKey string       `json:"back_status_key,omitempty"`
+	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge       `json:"edges,omitempty"`
+	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -214,7 +237,14 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	return Definition{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps}, nil
+	def := Definition{
+		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
+		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+	}
+	if row.RunBudgetSince.Valid {
+		def.RunBudgetSince = row.RunBudgetSince.Time
+	}
+	return def, nil
 }
 
 // DecodeSteps parses a stored steps array, normalizing a missing handler to
@@ -238,6 +268,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 
 			AdvanceOnCIGreen: s.AdvanceOnCI,
 			Edges:            s.Edges,
+			SubWorkflow:      s.SubWorkflow,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -259,7 +290,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -313,12 +344,18 @@ func (d Definition) HandsOffAnywhere() bool {
 	return false
 }
 
-// NextStatus is where a step's handler moves the issue when done: the step's
-// own choice, or else the next status on the board that is not blocked.
+// NextStatus is where a step's handler moves the issue when done: the target
+// of the step's first agent_done exit, else the step's own choice, else the
+// next status on the board that is not blocked.
 func (d Definition) NextStatus(key string) string {
 	step, ok := d.Step(key)
 	if !ok {
 		return ""
+	}
+	for _, e := range step.Edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentDone {
+			return e.To
+		}
 	}
 	if step.NextStatusKey != "" {
 		return step.NextStatusKey
@@ -426,6 +463,9 @@ func NormalizeHandoff(s Step) Step {
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
 	s.Edges = normalizeEdges(s.Edges)
+	if s.SubWorkflow != nil {
+		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
+	}
 	return s
 }
 
@@ -468,6 +508,9 @@ func ValidateHandoff(s Step, def Definition) error {
 	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
+	if err := validateSubWorkflow(s); err != nil {
+		return err
+	}
 	return validateEdges(s, def)
 }
 
@@ -484,7 +527,7 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, nil
+			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys()), IncludeChildPRs: true}, nil
 		}
 		return Definition{}, err
 	}
@@ -655,6 +698,21 @@ func (e *StepMovedError) Error() string {
 		e.IssueIdentifier, statusLabel(e.StepName, e.Step), mover, statusLabel(e.CurrentName, e.Current))
 }
 
+// StaleVerdictError refuses a status change from a review run that was
+// superseded by a newer head: its verdict is for a commit that is no longer the
+// head of the pull request.
+type StaleVerdictError struct {
+	IssueIdentifier string
+	// ReviewedSHA is the head the superseded run reviewed.
+	ReviewedSHA string
+}
+
+func (e *StaleVerdictError) Error() string {
+	return fmt.Sprintf("%s: verdict for %s is stale: a newer head superseded this review, so this status change was not applied. "+
+		"Do not change the status again in this run; the replacement review covers the new head.",
+		e.IssueIdentifier, e.ReviewedSHA)
+}
+
 // statusLabel names a status for an agent: its display name with the key the
 // CLI takes, or the bare key when the two are the same.
 func statusLabel(name, key string) string {
@@ -806,4 +864,27 @@ func briefText(s string) string {
 		return r
 	}, s)
 	return strings.TrimSpace(s)
+}
+
+// MaxSubWorkflowStage bounds the stage a sub-workflow step joins on.
+const MaxSubWorkflowStage = 100
+
+// validateSubWorkflow checks a sub-workflow step. The join is the step's
+// children_done edge: without one the parent would wait for ever. That the
+// target workflow exists in the workspace is the caller's check.
+func validateSubWorkflow(s Step) error {
+	sub := s.SubWorkflow
+	if sub == nil {
+		return nil
+	}
+	if _, err := util.ParseUUID(sub.WorkflowID); err != nil {
+		return invalid("sub-workflow needs a valid workflow id")
+	}
+	if sub.Stage < 0 || sub.Stage > MaxSubWorkflowStage {
+		return invalid("sub-workflow stage must be between 0 and %d", MaxSubWorkflowStage)
+	}
+	if !hasGuard(s.Edges, GuardChildrenDone) {
+		return invalid("a sub-workflow step needs a children_done edge to join on")
+	}
+	return nil
 }

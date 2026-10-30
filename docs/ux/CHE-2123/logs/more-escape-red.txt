@@ -1,0 +1,75 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media/media-context.test.tsx -t 'nested action consumes Escape'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ❯ media/media-context.test.tsx (6 tests | 1 failed | 5 skipped) 299ms
+     × restores More focus even when a nested action consumes Escape 294ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > restores More focus even when a nested action consumes Escape
+Error: expect(element).toHaveFocus()
+
+Expected element with focus:
+  <summary
+  aria-label="More"
+  class="flex size-10 cursor-pointer list-none items-center justify-center rounded-md hover:bg-secondary"
+>
+  <svg
+    aria-hidden="true"
+    class="lucide lucide-ellipsis size-5"
+    fill="none"
+    height="24"
+    stroke="currentColor"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    width="24"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <circle
+      cx="12"
+      cy="12"
+      r="1"
+    />
+    <circle
+      cx="19"
+      cy="12"
+      r="1"
+    />
+    <circle
+      cx="5"
+      cy="12"
+      r="1"
+    />
+  </svg>
+</summary>
+Received element with focus:
+  <button
+  type="button"
+>
+  Show source
+</button>
+ ❯ media/media-context.test.tsx:84:21
+     82|     button.focus();
+     83|     fireEvent.keyDown(button, { key: "Escape" });
+     84|     expect(summary).toHaveFocus();
+       |                     ^
+     85|     expect(summary.closest("details")).not.toHaveAttribute("open");
+     86|     view.unmount();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 5 skipped (6)
+   Start at  18:35:38
+   Duration  16.10s (transform 5.22s, setup 5.78s, import 8.89s, tests 299ms, environment 888ms)
+
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @multica/views@0.0.0 test: `vitest run media/media-context.test.tsx -t 'nested action consumes Escape'`
+Exit status 1

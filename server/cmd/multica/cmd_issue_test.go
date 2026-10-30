@@ -561,6 +561,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringSlice("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
+	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }

@@ -11,7 +11,11 @@ import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
+import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import {
@@ -53,6 +57,7 @@ import {
 import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
+import { StatusSummary, statusSummaryOf } from "./status-summary";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -103,6 +108,7 @@ import { IssuePropertyPills } from "./issue-property-pills";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
+import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
 import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { SourceContextBadge } from "./source-context-viewer";
@@ -111,7 +117,12 @@ import { CommentInput } from "./comment-input";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
-import { ThreadMinimap, type ThreadMinimapThread } from "./thread-minimap";
+import {
+  ThreadMinimap,
+  createRowRangeSource,
+  type MountedRows,
+  type ThreadMinimapThread,
+} from "./thread-minimap";
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
@@ -135,6 +146,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { IssueRelationsButton } from "./issue-relations-button";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useModalStore } from "@multica/core/modals";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
@@ -442,6 +454,9 @@ function formatActivity(
           return t(($) => $.activity.squad_leader_evaluated);
       }
     }
+    case "stop_not_confirmed":
+      // A review run was refused while a superseded run's stop is unconfirmed.
+      return t(($) => $.activity.stop_not_confirmed, { taskId: details.task_id ?? "" });
     default:
       return entry.action ?? "";
   }
@@ -586,8 +601,9 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
 // into one activity-group row) but project it into a discriminated union
 // the itemContent dispatcher can switch on.
 type TimelineItem =
-  | { kind: "run"; id: string; run: CommentRun; entry?: TimelineEntry }
-  | { kind: "comment"; id: string; entry: TimelineEntry }
+  | { kind: "run"; id: string; run: CommentRun; entry?: TimelineEntry; row?: CommentThreadRow }
+  | { kind: "comment"; id: string; entry: TimelineEntry; row?: CommentThreadRow }
+  | { kind: "thread-row"; id: string; entry: TimelineEntry; row: CommentThreadRow }
   | { kind: "resolved-bar"; id: string; entry: TimelineEntry }
   | { kind: "activity-group"; id: string; entries: TimelineEntry[] };
 
@@ -1891,7 +1907,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // changes (timeline events) or effectiveExpandedResolved flips (user
   // toggles a resolved thread, or find opens/closes). Kept in a useMemo so
   // Virtuoso's data identity is stable across unrelated re-renders.
-  const items = useMemo<TimelineItem[]>(
+  const rootItems = useMemo<TimelineItem[]>(
     () => flattenGroups(timelineView.groups, effectiveExpandedResolved),
     [timelineView.groups, effectiveExpandedResolved],
   );
@@ -1917,7 +1933,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     issueId: id,
     revealAll,
     revealKey,
-    contentKey: `${items.length}:${effectiveExpandedResolved.size}`,
+    contentKey: `${rootItems.length}:${effectiveExpandedResolved.size}`,
   });
   const isDisclosureRevealCommitted = disclosureReveal.isCommitted;
   // Find's own readiness: while find is closed there is nothing to gate (the
@@ -2042,16 +2058,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       // thread, which would wrongly let Show less hide the anchored text.
       const selAnchor = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.anchorNode : null;
       const ids = new Set<string>();
-      for (const rootId of threadReplies.keys()) {
-        const root = document.getElementById(`comment-${rootId}`);
-        if (!root) continue;
-        if (active && active !== document.body && root.contains(active)) {
-          ids.add(rootId);
-          continue;
-        }
-        if (selAnchor && root.contains(selAnchor)) {
-          ids.add(rootId);
-        }
+      for (const node of [active, selAnchor]) {
+        const element = node instanceof Element ? node : node?.parentElement;
+        const rootId = element?.closest<HTMLElement>("[data-thread-root]")?.dataset.threadRoot;
+        if (rootId) ids.add(rootId);
       }
       setRootIdsWithActiveFocusOrSelection((prev) => {
         if (prev.size === ids.size && [...prev].every((id) => ids.has(id))) return prev;
@@ -2133,6 +2143,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     return false;
   }, [findRootId, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+
+  const collapsedThreadIds = useCommentCollapseStore(state => state.collapsedByIssue[id]);
+  const items = useMemo<TimelineItem[]>(() => rootItems.flatMap((item): TimelineItem[] => {
+    if (item.kind !== "comment" && item.kind !== "run") return [item];
+    const entry = item.entry;
+    if (!entry || (entry.resolved_at && !effectiveExpandedResolved.has(entry.id))) return [item];
+    const { rows } = projectCommentThread(entry, timelineView.threadReplies.get(entry.id) ?? EMPTY_REPLIES,
+      commentRuns.get(entry.id) ?? EMPTY_COMMENT_RUNS,
+      expandedThreadLengths.has(entry.id) || forceThreadLengthExpand(entry.id),
+      effectiveExpandedResolved.has(entry.id),
+      !collapsedThreadIds?.includes(entry.id) || forceThreadOpen(entry.id));
+    return [{ ...item, row: rows[0] }, ...rows.slice(1).map((row): TimelineItem => ({
+      kind: "thread-row", id: row.id, entry, row,
+    }))];
+  }), [rootItems, effectiveExpandedResolved, timelineView.threadReplies, commentRuns,
+    expandedThreadLengths, forceThreadLengthExpand, collapsedThreadIds, forceThreadOpen]);
 
   // Latch: 01-DESIGN line 56 ("New reply / edit / active run") and line 57
   // ("Target reveal / notification replay") both require that when their
@@ -2261,12 +2287,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // a direct findIndex hit; for reply ids we look up the enclosing root.
   const targetIdx = useMemo(() => {
     if (!highlightCommentId) return -1;
-    const direct = items.findIndex((it) => it.id === highlightCommentId);
+    const rootId = replyToRoot.get(highlightCommentId) ?? highlightCommentId;
+    const landingId = commentLandingTarget(highlightCommentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES);
+    const direct = items.findIndex((it) => it.id === landingId);
     if (direct >= 0) return direct;
-    const rootId = replyToRoot.get(highlightCommentId);
-    if (!rootId) return -1;
     return items.findIndex((it) => it.id === rootId);
-  }, [items, highlightCommentId, replyToRoot]);
+  }, [items, highlightCommentId, replyToRoot, timelineView.threadReplies]);
 
   // One entry per comment thread (folded resolved bars included), activity
   // groups skipped. Derived from the same flat `items` array Virtuoso renders
@@ -2279,7 +2305,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const minimapThreads = useMemo<ThreadMinimapThread[]>(
     () =>
       items.flatMap((it) => {
-        if (it.kind === "activity-group" || !it.entry) return [];
+        if (it.kind === "activity-group" || it.kind === "thread-row" || !it.entry) return [];
         const replies = timelineView.threadReplies.get(it.id) ?? EMPTY_REPLIES;
         const resolution = deriveThreadResolution(it.entry, replies);
         return [
@@ -2298,6 +2324,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Which rows Virtuoso has mounted, for the thread rail. A store rather than
+  // state: a scroll must not re-render this page. A new issue remounts
+  // Virtuoso, which reports its range afresh.
+  const [rowRange] = useState(createRowRangeSource);
+  const onRowRangeChanged = useCallback(
+    ({ startIndex, endIndex }: { startIndex: number; endIndex: number }) =>
+      rowRange.set({ start: startIndex, end: endIndex }),
+    [rowRange],
+  );
+  const mountedRows = useMemo<MountedRows>(
+    () => ({ rowIds: items.map((item) => item.id), range: rowRange }),
+    [items, rowRange],
+  );
+  // Per timeline row, whether it mentions the viewer: the root row its own
+  // content, each reply row that reply's. Controls, footers and runs never do.
+  const mentionsViewerText = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () =>
+      items.map((item) => {
+        if (item.kind === "comment" || item.kind === "resolved-bar") return mentionsViewerText(item.entry.content);
+        if (item.kind !== "thread-row" || item.row.kind !== "reply") return false;
+        const reply = timelineView.threadReplies.get(item.entry.id)?.find((r) => r.id === item.row.id);
+        return mentionsViewerText(reply?.content);
+      }),
+    [items, timelineView.threadReplies, mentionsViewerText],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
+  );
   revealFindDocumentRef.current = (documentId) => {
     if (!documentId.startsWith("comment-")) {
       const element = document.getElementById(documentId);
@@ -2308,7 +2364,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     const commentId = documentId.slice(8);
     const rootId = replyToRoot.get(commentId) ?? commentId;
-    const index = items.findIndex((item) => item.id === rootId);
+    const directIndex = items.findIndex((item) => item.id === commentId);
+    const index = directIndex >= 0 ? directIndex : items.findIndex((item) => item.id === rootId);
     if (index >= 0) virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
   };
 
@@ -2485,7 +2542,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   useEffect(() => {
     if (!pendingPostedCommentId) return;
     const rootId = replyToRoot.get(pendingPostedCommentId) ?? pendingPostedCommentId;
-    const index = items.findIndex((item) => item.id === rootId);
+    const directIndex = items.findIndex((item) => item.id === pendingPostedCommentId);
+    const index = directIndex >= 0 ? directIndex : items.findIndex((item) => item.id === rootId);
     if (index < 0) return;
     let timer: number | undefined;
     const scrollEnd = () => {
@@ -2522,18 +2580,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Jump to a mounted comment: any row in flat mode, or a reply inside a
   // rendered thread. Drive the container's scrollTop directly — never native
   // scrollIntoView, which also scrolls the desktop shell (#3929).
-  const jumpToComment = useCallback(
-    (commentId: string) => {
-      const el = document.getElementById(`comment-${commentId}`);
-      const container = scrollContainerEl;
-      if (!el || !container) return;
-      const c = container.getBoundingClientRect();
-      const e = el.getBoundingClientRect();
-      container.scrollTop = Math.max(0, container.scrollTop + (e.top - c.top) - 16);
-      flashJumpTarget(commentId);
-    },
-    [scrollContainerEl, flashJumpTarget],
-  );
   const jumpToThread = useCallback(
     (threadId: string) => {
       // Flat mode mounts every row, so the anchor is always in the DOM.
@@ -2559,6 +2605,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const rootItem = items[index];
       const root = rootItem && rootItem.kind !== "activity-group" ? rootItem.entry : undefined;
       if (!rootId || !root) return;
+      setThreadExpanded(id, rootId, true);
       const collapse = useCommentCollapseStore.getState();
       if (collapse.isCollapsed(id, rootId)) collapse.toggle(id, rootId);
       if (!expandedResolved.has(rootId)) {
@@ -2570,7 +2617,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
       setPendingReplyJump({ replyId, rootId });
     },
-    [id, items, replyToRoot, expandedResolved, timelineView.threadReplies, toggleResolvedExpand],
+    [id, items, replyToRoot, expandedResolved, timelineView.threadReplies, toggleResolvedExpand, setThreadExpanded],
   );
   // Land the pending reply once its row is in the DOM. The expansion commits
   // on the next render and Virtuoso mounts the thread a frame or two later, so
@@ -2582,6 +2629,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const container = scrollContainerEl;
     if (!pendingReplyJump || !container) return;
     const { replyId, rootId } = pendingReplyJump;
+    const index = items.findIndex(item => item.id === replyId);
+    if (index < 0) return;
+    virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
     let rafId = 0;
     let frames = 0;
     let last = -1;
@@ -2612,12 +2662,37 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     };
     rafId = requestAnimationFrame(align);
     return () => cancelAnimationFrame(rafId);
-  }, [pendingReplyJump, scrollContainerEl, flashJumpTarget]);
+  }, [pendingReplyJump, scrollContainerEl, flashJumpTarget, items]);
   const jumpToMinimapTarget = useCallback(
     (commentId: string) =>
       replyToRoot.has(commentId) ? jumpToReply(commentId) : jumpToThread(commentId),
     [replyToRoot, jumpToReply, jumpToThread],
   );
+  const jumpToComment = useCallback((commentId: string) => {
+    const element = document.getElementById(`comment-${commentId}`);
+    const container = scrollContainerEl;
+    if (!element || !container) {
+      jumpToMinimapTarget(commentId);
+      return;
+    }
+    container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
+    flashJumpTarget(commentId);
+  }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
+  const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
+    rootId: string; sourceCommentId: string; annotationId: string;
+  } | null>(null);
+  useEffect(() => { setPendingAnnotationEdit(null); }, [id]);
+  const revealAnnotation = useCallback((rootId: string, annotation: ReplyAnnotation) => {
+    const sourceCommentId = annotation.sourceCommentId;
+    if (sourceCommentId !== rootId && replyToRoot.get(sourceCommentId) !== rootId) return false;
+    if (!findDocuments.some(document => document.id === `comment-${sourceCommentId}`)) return false;
+    setPendingAnnotationEdit({ rootId, sourceCommentId, annotationId: annotation.id });
+    jumpToComment(sourceCommentId);
+    return true;
+  }, [replyToRoot, findDocuments, jumpToComment]);
+  const completeAnnotationEdit = useCallback((annotationId: string) => {
+    setPendingAnnotationEdit(current => current?.annotationId === annotationId ? null : current);
+  }, []);
   // Header chip jump to a run's block. A run is either its own top-level row
   // or a slot inside the thread it answers, so find that row, undo whatever
   // folds the thread, scroll the row into place, then let the effect below
@@ -2641,6 +2716,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const root = rootItem.kind !== "activity-group" ? rootItem.entry : undefined;
       const headsThread = run.hasReply && run.commentId === rootItem.id;
       if (root && !headsThread) {
+        setThreadExpanded(id, root.id, true);
         const collapse = useCommentCollapseStore.getState();
         if (collapse.isCollapsed(id, root.id)) collapse.toggle(id, root.id);
       }
@@ -2653,7 +2729,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
       setPendingRunJump({ taskId, rootId: rootItem.id, flashId: run.hasReply && run.commentId ? run.commentId : taskId });
     },
-    [id, items, commentRuns, expandedResolved, timelineView.threadReplies, toggleResolvedExpand],
+    [id, items, commentRuns, expandedResolved, timelineView.threadReplies, toggleResolvedExpand, setThreadExpanded],
   );
   // Same frame-by-frame landing as a reply jump. A run that has replied may
   // only show as a log button in its comment's header, so align that comment.
@@ -2661,6 +2737,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const container = scrollContainerEl;
     if (!pendingRunJump || !container) return;
     const { taskId, rootId, flashId } = pendingRunJump;
+    const index = items.findIndex(item => item.id === flashId || (item.kind === "thread-row" && item.row.key === taskId));
+    if (index >= 0) virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
     let rafId = 0;
     let frames = 0;
     let last = -1;
@@ -2692,7 +2770,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     };
     rafId = requestAnimationFrame(align);
     return () => cancelAnimationFrame(rafId);
-  }, [pendingRunJump, scrollContainerEl, flashJumpTarget]);
+  }, [pendingRunJump, scrollContainerEl, flashJumpTarget, items]);
 
   const {
     reactions: issueReactions,
@@ -2912,7 +2990,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     let rafId = 0;
     let frames = 0;
     let last = -1;
-    let fade: number | undefined;
     let landed = false;
     const center = () => {
       const el = document.getElementById(`comment-${landingId}`);
@@ -2925,7 +3002,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         didHighlightRef.current = highlightCommentId;
         writeViewState(issueHighlightMementoKey(id), highlightCommentId);
         setHighlightedId(landingId);
-        fade = window.setTimeout(() => setHighlightedId(null), 2500);
+        if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
+        jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
       }
       const c = container.getBoundingClientRect();
       const e = el.getBoundingClientRect();
@@ -2945,7 +3023,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
     return () => {
       cancelAnimationFrame(rafId);
-      if (fade !== undefined) clearTimeout(fade);
     };
   }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
@@ -3547,7 +3624,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     (text-caption, muted icons) and each option leads with the
                     icon the resulting picker uses, so the dropdown reads
                     as a preview of what will show up below. */}
-                <PopoverContent align="start" className="w-44 p-1">
+                <PopoverContent
+                  align="start"
+                  data-testid="add-property-popover"
+                  className="max-h-(--available-height) w-max min-w-44 max-w-[min(388px,var(--available-width))] overflow-y-auto overscroll-contain p-1"
+                >
                   {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k) && (k !== "stage" || issue.parent_issue_id != null)).map((k) => (
                     <button
                       key={k}
@@ -3622,6 +3703,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
+      <IssueRelationsButton key={issue.id} issueId={issue.id} />
       <WakeupsSection
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
@@ -3782,12 +3864,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const renderItem = (_i: number, item: TimelineItem): React.ReactElement => {
     if (item.kind === "run") {
       const reply = item.entry;
-      return <div className="pb-3" id={reply ? `comment-${reply.id}` : undefined}>
+      return <div className={!item.row || item.row.last ? "pb-3" : undefined} id={reply ? `comment-${reply.id}` : undefined}>
         {reply?.resolved_at && !effectiveExpandedResolved.has(reply.id) ? <ResolvedThreadBar
           entry={reply} replies={timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES}
           onExpand={() => toggleResolvedExpand(reply.id, true)} /> : <AgentRunComment run={item.run} entering={enteringRunIds.has(item.run.task.id)} standalone
           highlightedId={highlightedId}
           commentProps={reply ? {
+            virtualRow: item.row,
+            onRevealAnnotation: revealAnnotation,
+            pendingAnnotationId: pendingAnnotationEdit?.rootId === reply.id && pendingAnnotationEdit.sourceCommentId === (item.row?.id ?? reply.id)
+              ? pendingAnnotationEdit.annotationId : undefined,
+            onAnnotationEditComplete: completeAnnotationEdit,
             issueId: id, entry: reply, replies: timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES,
             currentUserId: user?.id, canModerate: canModerateComments, onReply: submitReply,
             onReplyAccepted: scrollToTimelineBottom, onEdit: editComment, onDelete: deleteComment,
@@ -3818,16 +3905,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
       );
     }
-    if (item.kind === "comment") {
+    if (item.kind === "comment" || item.kind === "thread-row") {
+      const rootId = item.entry.id;
       const isResolved = !!item.entry.resolved_at;
       return (
-        <div className="pb-3" id={`comment-${item.id}`}>
+        <div className={item.row?.last ? "pb-3" : undefined} id={item.kind === "comment" ? `comment-${item.id}` : undefined}>
           <CommentCard
+            virtualRow={item.row}
+            onRevealAnnotation={revealAnnotation}
+            pendingAnnotationId={pendingAnnotationEdit?.rootId === rootId && pendingAnnotationEdit.sourceCommentId === (item.row?.id ?? item.id)
+              ? pendingAnnotationEdit.annotationId : undefined}
+            onAnnotationEditComplete={completeAnnotationEdit}
             issueId={id}
-            runs={commentRuns.get(item.id) ?? EMPTY_COMMENT_RUNS}
+            runs={commentRuns.get(rootId) ?? EMPTY_COMMENT_RUNS}
             enteringRunIds={enteringRunIds}
             entry={item.entry}
-            replies={timelineView.threadReplies.get(item.id) ?? EMPTY_REPLIES}
+            replies={timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES}
             currentUserId={user?.id}
             canModerate={canModerateComments}
             onReply={submitReply}
@@ -3839,15 +3932,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onResolveToggle={handleResolveToggle}
             onCopyLink={actions.copyCommentLink}
             onJumpToComment={jumpToComment}
-            onCollapseResolved={isResolved ? () => toggleResolvedExpand(item.id, false) : undefined}
+            onCollapseResolved={isResolved ? () => toggleResolvedExpand(rootId, false) : undefined}
             expandedResolvedIds={effectiveExpandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
-            threadLengthExpanded={expandedThreadLengths.has(item.id)}
+            threadLengthExpanded={expandedThreadLengths.has(rootId)}
             onThreadLengthExpandChange={toggleThreadLengthExpand}
-            forceThreadExpanded={forceThreadOpen(item.id)}
-            forceThreadLengthExpanded={forceThreadLengthExpand(item.id)}
-            findManualCollapseDisabled={findRootId === item.id}
+            forceThreadExpanded={forceThreadOpen(rootId)}
+            forceThreadLengthExpanded={forceThreadLengthExpand(rootId)}
+            findManualCollapseDisabled={findRootId === rootId}
             findManualCollapseDisabledReason={findCollapseDisabledReason}
           />
         </div>
@@ -4035,6 +4128,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             centered column reads 32px left vs 43px right (MUL-4404). Mirroring
             the gutter restores symmetry; overlay-scrollbar platforms reserve
             nothing and render unchanged. */}
+        <RichContentScrollRootProvider scrollRoot={scrollContainerEl}>
         <div
           ref={attachScrollContainer}
           data-tab-scroll-root={isPeek ? undefined : scrollContainerKey}
@@ -4233,6 +4327,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             />
           )}
 
+          <StatusSummary summary={statusSummaryOf(issue.metadata)} />
+
           <div
             id={`find-description-${id}`}
             {...descDropZoneProps}
@@ -4293,6 +4389,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   ref={descEditorRef}
                   key={id}
                   value={issue.description ?? ""}
+                  persistedMediaMarkdown={issue.description ?? ""}
                   placeholder={t(($) => $.detail.desc_placeholder)}
                   onUpdate={(md, baseMarkdown) => {
                     // Bind any pending uploads still referenced in the markdown
@@ -4598,7 +4695,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </div>
 
-            <LocalDirectoryHint projectId={issue?.project_id} />
+            <LocalDirectoryHint
+              projectId={issue?.project_id}
+              assignedAgent={issue?.assignee_type === "agent"
+                ? agents.find((agent) => agent.id === issue.assignee_id) ?? null
+                : undefined}
+            />
 
             {/* The "agent is working" live signal now lives in the header
                 (IssueAgentHeaderChip) so it stays in one fixed place and
@@ -4633,13 +4735,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       data={items}
                       initialScrollTop={restoredScrollTop}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
-                      computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.id}`}
+                      computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.kind === "thread-row" ? item.row.key ?? item.id : item.id}`}
                       skipAnimationFrameInResizeObserver
                       // followOutput intentionally NOT set. Virtuoso treats
                       // it as a sticky "is at bottom" flag and resets
                       // scrollTop to maxScrollTop on every height-change
                       // tick — issue-detail is document-shaped, not chat.
                       itemContent={renderItem}
+                      rangeChanged={onRowRangeChanged}
                     />
                   </div>
                 )
@@ -4684,6 +4787,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
         </div>
 
+        </RichContentScrollRootProvider>
+
         {/* Thread quick-jump rail — rides the scroll container's right edge,
             next to the scrollbar, where the pointer already is while
             scrolling (MUL-4522). right-3 is the inset that works in both
@@ -4694,11 +4799,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             the resize handle's 4px drag strip at the panel edge. Hover
             previews a comment, click jumps to it. Hidden on mobile: no
             hover, and the gutter is too tight. */}
+        <NextSelfMention scrollEl={scrollContainerEl} flags={selfMentionFlags} onJump={jumpToSelfMention} />
         {!isMobile && !isPeek && (
           <ThreadMinimap
             threads={minimapThreads}
             scrollContainerEl={scrollContainerEl}
             onJump={jumpToMinimapTarget}
+            mountedRows={mountedRows}
             className="absolute bottom-0 right-3 top-12"
           />
         )}
@@ -4712,6 +4819,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // open into one sequence. The versions provider lets each comment's file
   // cards mark a re-uploaded file `v2`.
   const withPreview = (layout: ReactNode) => (
+    <MediaSourceProvider source={{ type: "issues", id: issue.id }}>
     <PreviewSequenceProvider
       items={previewSequence}
       describeItem={describeDeliverable}
@@ -4728,6 +4836,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         onLocate={locateOrigin}
       />
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 
   // The peek has no room for the properties sidebar: its core properties are

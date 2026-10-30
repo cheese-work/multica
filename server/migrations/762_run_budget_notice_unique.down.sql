@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_one_run_budget_notice_per_window;

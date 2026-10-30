@@ -1096,6 +1096,7 @@ func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
 		{"reasonix", "AGENTS.md"},
 		{"dsh", "AGENTS.md"},
 		{"dim", "AGENTS.md"},
+		{"devin", "AGENTS.md"},
 		{"zeroclaw", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
@@ -1159,6 +1160,17 @@ func TestRuntimeConfigPathDistinguishesCodebuddyFromClaude(t *testing.T) {
 	}
 	if claudePath == codebuddyPath {
 		t.Fatal("claude and codebuddy must not share a runtime config path")
+	}
+}
+
+func TestRuntimeConfigPathDevinUsesAgentsMd(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	got := runtimeConfigPath(dir, "devin")
+	want := filepath.Join(dir, "AGENTS.md")
+	if got != want {
+		t.Fatalf("devin runtime config path = %q, want %q", got, want)
 	}
 }
 
@@ -1477,6 +1489,7 @@ func TestCleanupRuntimeConfigByProvider(t *testing.T) {
 		{"reasonix", "AGENTS.md"},
 		{"dsh", "AGENTS.md"},
 		{"dim", "AGENTS.md"},
+		{"devin", "AGENTS.md"},
 		{"zeroclaw", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
@@ -2591,6 +2604,23 @@ func TestEveryBriefThatTeachesJSONOutputAlsoWarnsAgainstMergingStderr(t *testing
 		}
 		if !strings.Contains(brief, wantWhy) {
 			t.Errorf("%s brief states %q without %q; a rule with no reason is the first one dropped under pressure", name, wantRule, wantWhy)
+		}
+	}
+}
+
+// CHE-2070: the brief points agents at the Status summary first and tells them
+// to rewrite it at each handoff.
+func TestWorkflowBriefTeachesStatusSummary(t *testing.T) {
+	var b strings.Builder
+	writeWorkflowIssue(&b, TaskContextForEnv{})
+	got := b.String()
+	for _, want := range []string{
+		"`metadata.status_summary`",
+		"before the comment history",
+		"multica issue metadata set <issue-id> --key status_summary",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("workflow brief missing %q", want)
 		}
 	}
 }

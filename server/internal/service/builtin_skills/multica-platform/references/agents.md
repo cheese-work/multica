@@ -209,10 +209,17 @@ to clear. `agent copy` still carries the source value and has no override flag.
 
 `model` is a first-class persisted column the daemon reads directly.
 `custom_args` are normally raw provider CLI args. The CLI help notes that some
-providers (codex app-server, openclaw) reject `--model` inside `custom_args` —
-but that is documented CLI guidance, not a server-enforced invariant; nothing
-on the create path inspects `custom_args` for a model flag. Provider
-backends may consume protocol selectors before launch:
+providers reject `--model` inside `custom_args`; provider backends filter flags
+they manage directly. For OpenClaw, `model` selects the registered OpenClaw
+agent ID (for example `main`). The optional `runtime_config.model_override` is
+a persistent agent-level setting: it selects the underlying model for every
+run claimed by this agent until the setting is changed or cleared. It does not
+create another OpenClaw agent or split its identity, workspace, sessions, or
+memory. Clear the setting to use the model bound to the selected OpenClaw agent.
+Each claim snapshots the current setting; changing it does not affect runs
+already claimed. The daemon emits native `--agent <model>` and
+`--model <model_override>` flags separately.
+Provider backends may also consume other protocol selectors before launch:
 
 - Pi filters `--thinking` because the first-class `thinking_level` field owns
   that flag and must be its only source.
@@ -387,3 +394,48 @@ State-changing (require an explicit instruction — do not run speculatively):
   unknown provider-level literal is — model-specific gaps fail at run time.
 - "`set` and `add` are interchangeable for skills." `set` replaces all
   bindings; using it when you meant `add` silently removes capabilities.
+
+## Lifecycle, runs and local overrides
+
+```bash
+multica agent archive <id>      # take it out of service
+multica agent restore <id>      # bring an archived agent back
+multica agent avatar <id> --file ./avatar.png
+multica agent tasks <id> --limit 50 --output json   # runs, newest first
+multica agent tasks <id> --before <cursor>          # next page
+multica agent mcp list <agent-id>                   # workspace MCP servers assigned to it
+multica agent mcp enable <agent-id> <server-id>     # undo a `disable`
+```
+
+`agent tasks` pages with `--before`, the cursor from the previous page
+(1-200 per page, default 200). Archive and restore change the agent's
+availability: read `agent get` before and after, and check for open issues
+assigned to the agent before you archive it.
+
+**Run control on an issue.**
+
+```bash
+multica issue cancel-task <run-id> [--issue <issue-id>]   # stop one run
+multica issue rerun <issue-id> --reason "why"             # fresh run for the current assignee
+```
+
+`cancel-task` takes the short run id shown by `issue runs`; pass `--issue` when
+a short prefix is ambiguous. It interrupts the in-flight agent so it stops
+emitting tool calls. `rerun` re-enqueues the issue's current agent assignment as
+a new run and starts real work. `--reason` goes to the server audit log only;
+it is not stored on the run.
+
+**Runtime-local skills.** `multica agent skills runtime-set <agent-id>` turns one
+skill that lives on the runtime off or back on:
+
+```bash
+multica agent skills runtime-set <agent-id> --runtime-id <runtime-id> \
+  --root provider --key <skill-key> --name <skill-name> --enabled=false
+```
+
+`--root` is `provider`, `universal` or `plugin` (`--plugin` is required for
+`plugin`). `--enabled=false` disables the skill; `--enabled=true` removes the
+override. `--runtime-id` must be the agent's current runtime. The skill need not
+be discovered on that runtime. Copy `root`, `key`, `name` and `plugin` from a
+`disabled_runtime_skills` entry in `multica agent get <id> --output json`. The
+command prints the resulting `disabled_runtime_skills`.

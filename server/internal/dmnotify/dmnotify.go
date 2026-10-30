@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -51,6 +52,10 @@ func Reply(ctx context.Context, q *db.Queries, sessionID pgtype.UUID, message db
 	}
 	switches, err := q.GetDMChannelSwitches(ctx, db.GetDMChannelSwitchesParams{WorkspaceID: session.WorkspaceID, UserID: session.CreatorID})
 	if err != nil || (!switches.InApp && !switches.Push) {
+		return nil, err
+	}
+	allowed, err := inbox.AllowsDelivery(ctx, q, session.WorkspaceID, session.CreatorID, pgtype.UUID{}, false)
+	if err != nil || !allowed {
 		return nil, err
 	}
 	item, err := q.UpsertDMReplyInboxItem(ctx, db.UpsertDMReplyInboxItemParams{

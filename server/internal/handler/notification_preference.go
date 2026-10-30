@@ -18,6 +18,7 @@ import (
 // preferences map so a single endpoint covers all user notification
 // preferences.
 var validNotifGroups = map[string]bool{
+	"unassigned_activity":  true,
 	"assignments":          true,
 	"status_changes":       true,
 	"comments":             true,

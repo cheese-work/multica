@@ -62,8 +62,8 @@ func fireTimedPRWebhook(t *testing.T, inst int64, identifier, state, timestamp s
 	raw, err := json.Marshal(map[string]any{
 		"action":       "edited",
 		"installation": map[string]any{"id": inst},
-		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
-		"pull_request": map[string]any{"number": 1, "html_url": "https://github.com/acme/widget/pull/1", "title": "Closes " + identifier, "state": state, "merged": state == "closed", "merged_at": mergedAt, "created_at": "2026-09-22T00:00:00Z", "updated_at": timestamp, "head": map[string]any{"ref": "fix/a"}},
+		"repository":   githubRepositoryForTest("acme", "widget"),
+		"pull_request": map[string]any{"number": 1, "html_url": "https://github.com/acme/widget/pull/1", "title": "Closes " + identifier, "state": state, "merged": state == "closed", "merged_at": mergedAt, "created_at": "2026-09-22T00:00:00Z", "updated_at": timestamp, "head": map[string]any{"ref": "fix/a", "repo": githubRepositoryForTest("acme", "widget")}},
 	})
 	if err != nil {
 		t.Fatal(err)

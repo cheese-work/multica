@@ -38,6 +38,13 @@ export interface IssueWorkflowStep {
   advance_on_ci_green?: boolean;
   /** Guarded exits; the first whose guard holds is taken. */
   edges?: IssueWorkflowEdge[];
+  /** Entering the step starts a child issue on another workflow; a `children_done` edge joins. */
+  sub_workflow?: IssueWorkflowSubWorkflow;
+}
+
+export interface IssueWorkflowSubWorkflow {
+  workflow_id: string;
+  stage?: number;
 }
 
 /** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
@@ -58,6 +65,13 @@ export interface IssueWorkflow {
   /** The member who owns the workflow and may edit it; null for Default. */
   owner_id: string | null;
   steps: IssueWorkflowStep[];
+  /**
+   * Most runs one issue may start before the workflow blocks it. Null when the
+   * workflow keeps the platform default (15).
+   */
+  max_runs_per_issue?: number | null;
+  /** Whether a child issue's PRs count for the parent's PR edges. Default true. */
+  include_child_prs?: boolean;
   /** Projects currently using this workflow. */
   project_ids: string[];
   created_at: string;
@@ -91,6 +105,9 @@ export interface IssueWorkflowWriteRequest {
    * only when included.
    */
   steps?: IssueWorkflowStepInput[];
+  /** 1 to 1000 sets the run budget, 0 restores the default; omit to keep it. */
+  max_runs_per_issue?: number;
+  include_child_prs?: boolean;
   /** Destination for issues on statuses an edit removes, keyed by removed status. */
   status_mapping?: Record<string, string>;
   dry_run?: boolean;
