@@ -35,6 +35,16 @@ const (
 	runBudgetKindCap    = "cap"
 )
 
+type readOnlyRunBudgetKey struct{}
+
+// readOnlyRunBudget marks a guard that runs on the pool, before the admission
+// transaction. It reads the budget without the issue lock and writes no ledger
+// entry: a write outside the lock can land between a locked admission's cap
+// read and its balance read. The locked guard in the transaction decides.
+func readOnlyRunBudget(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readOnlyRunBudgetKey{}, true)
+}
+
 func runBudgetWindowID(since time.Time) string {
 	return since.UTC().Format(time.RFC3339Nano)
 }
@@ -54,8 +64,11 @@ func recordRunBudgetEntry(ctx context.Context, q *db.Queries, issue db.Issue, wi
 // does not count it (zero UUID: none). usage is nil for an issue that is not
 // budgeted; a missing issue returns pgx.ErrNoRows.
 func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtype.UUID) (db.Issue, *runBudgetUsage, int64, error) {
-	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
-		return db.Issue{}, nil, 0, err
+	readOnly, _ := ctx.Value(readOnlyRunBudgetKey{}).(bool)
+	if !readOnly {
+		if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
+			return db.Issue{}, nil, 0, err
+		}
 	}
 	issue, err := q.GetIssue(ctx, issueID)
 	if err != nil {
@@ -71,6 +84,10 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 	})
 	if err != nil {
 		return issue, nil, 0, fmt.Errorf("run budget: count runs: %w", err)
+	}
+	if readOnly {
+		balance, err := peekRunBudgetBalance(ctx, q, issue, usage, windowID, int(counted))
+		return issue, usage, balance, err
 	}
 	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindWindow, runBudgetKindWindow+":"+windowID, usage.Max-int(counted), usage.Max); err != nil {
 		return issue, nil, 0, fmt.Errorf("run budget: open window: %w", err)
@@ -91,6 +108,28 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 		return issue, nil, 0, fmt.Errorf("run budget: balance: %w", err)
 	}
 	return issue, usage, balance, nil
+}
+
+// peekRunBudgetBalance is the balance openRunBudget would return, computed
+// without writing: the window's entries plus the cap difference a write would
+// credit. An unopened window holds the cap minus the runs counted.
+func peekRunBudgetBalance(ctx context.Context, q *db.Queries, issue db.Issue, usage *runBudgetUsage, windowID string, counted int) (int64, error) {
+	opened, err := q.HasIssueRunBudgetWindow(ctx, db.HasIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
+	if err != nil {
+		return 0, fmt.Errorf("run budget: window: %w", err)
+	}
+	if !opened {
+		return int64(usage.Max - counted), nil
+	}
+	sum, err := q.SumIssueRunBudgetWindow(ctx, db.SumIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
+	if err != nil {
+		return 0, fmt.Errorf("run budget: balance: %w", err)
+	}
+	held, err := q.SumIssueRunBudgetCap(ctx, db.SumIssueRunBudgetCapParams{IssueID: issue.ID, WindowID: windowID})
+	if err != nil {
+		return 0, fmt.Errorf("run budget: held cap: %w", err)
+	}
+	return sum + int64(usage.Max) - held, nil
 }
 
 // OpenRunBudgetWindow is openRunBudget for a caller outside the service that

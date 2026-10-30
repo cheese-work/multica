@@ -24,3 +24,9 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id'
 -- The cap the window's ledger holds: credited by the window, raises and cap edits.
 SELECT COALESCE(SUM(cap_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text;
+
+-- name: HasIssueRunBudgetWindow :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_run_budget_entry
+  WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = 'window'
+);

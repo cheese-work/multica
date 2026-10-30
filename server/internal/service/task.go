@@ -1307,7 +1307,7 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 	if issueAssignee && issue.AssigneeID != agentID {
 		return nil, fmt.Errorf("comment trigger agent does not match issue assignee")
 	}
-	if err := guardIssueRunAllowed(ctx, s.Queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: "comment", ReviewRun: true}); err != nil {
+	if err := guardIssueRunAllowed(readOnlyRunBudget(ctx), s.Queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: "comment", ReviewRun: true}); err != nil {
 		return nil, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
@@ -1490,7 +1490,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	// The prepare reads go through the pool, so they run before the
 	// transaction: it holds one connection, from the budget lock to the debit,
 	// and concurrent admissions at a balance of 1 admit exactly one.
-	params, attr, err := s.prepareIssueTaskWithQueriesAndOverlay(ctx, s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, nil)
+	params, attr, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, nil)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1698,7 +1698,7 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 }
 
 func (s *TaskService) PrepareTaskForMention(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, triggerCommentID, actorUserID pgtype.UUID, origin RunOrigin) (db.CreateAgentTaskParams, error) {
-	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, origin)
+	params, _, err := s.prepareMentionTaskWithQueries(readOnlyRunBudget(ctx), queries, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, origin)
 	return params, err
 }
 
@@ -1773,7 +1773,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
 	// The helpers prepare calls read through the pool, so they run before the
 	// transaction: it holds one connection, from the budget lock to the debit.
-	params, attr, err := s.prepareMentionTaskWithQueries(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
+	params, attr, err := s.prepareMentionTaskWithQueries(readOnlyRunBudget(ctx), s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}

@@ -32,6 +32,25 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 	return column_1, err
 }
 
+const hasIssueRunBudgetWindow = `-- name: HasIssueRunBudgetWindow :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_run_budget_entry
+  WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = 'window'
+)
+`
+
+type HasIssueRunBudgetWindowParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+func (q *Queries) HasIssueRunBudgetWindow(ctx context.Context, arg HasIssueRunBudgetWindowParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueRunBudgetWindow, arg.IssueID, arg.WindowID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertIssueRunBudgetEntry = `-- name: InsertIssueRunBudgetEntry :exec
 INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

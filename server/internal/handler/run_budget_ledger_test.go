@@ -343,3 +343,41 @@ func TestRunBudgetWorkflowCapEditsGovernTheOpenWindow(t *testing.T) {
 		t.Fatalf("balance = %d, want 7 (cap 10, 3 runs)", got)
 	}
 }
+
+// Preparation runs on the pool, outside the admission transaction. It must
+// neither wait for the issue lock nor write the ledger: a write there can
+// land between a locked admission's cap read and its balance read.
+func TestRunBudgetPreparationTakesNoLockAndWritesNoLedgerEntry(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	c, _ := budgetedAt(t, 40, 2)
+	if _, err := service.OpenRunBudgetWindow(ctx, testHandler.Queries, parseUUID(c.issueID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue_workflow SET max_runs_per_issue=5 WHERE id=$1`, c.workflowID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := dbfx.Count(t, `SELECT count(*) FROM issue_run_budget_entry WHERE issue_id=$1`, c.issueID)
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT id FROM issue WHERE id=$1 FOR NO KEY UPDATE`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	prep, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, err := testHandler.TaskService.PrepareTaskForMention(prep, testHandler.Queries, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived); err != nil {
+		t.Fatalf("preparation while another transaction holds the issue lock = %v, want it to read and return", err)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue_run_budget_entry WHERE issue_id=$1`, c.issueID); got != entries {
+		t.Fatalf("preparation wrote %d ledger entries, want 0", got-entries)
+	}
+}
