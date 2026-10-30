@@ -543,8 +543,16 @@ async function resolveCliBinary(): Promise<string | null> {
     }
 
     try {
+      // The managed CLI comes from the server this app talks to; its update
+      // endpoints need the profile's token when one has been synced.
+      const active = await ensureActiveProfile();
+      const profileToken = active
+        ? (await readProfileConfig(active.name)).token
+        : undefined;
       const installed = await ensureManagedCli({
         forceInstall: existsSync(managed),
+        serverUrl: targetApiBaseUrl,
+        token: typeof profileToken === "string" ? profileToken : undefined,
       });
       const version = await probeCliBinary(installed, "managed");
       if (version) {
