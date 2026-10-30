@@ -145,9 +145,9 @@ func relay(client net.Conn, sock string) {
 	wg.Add(2)
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src)
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 	}
 	go pipe(up, client)
@@ -173,9 +173,9 @@ func runAgent(argv []string) int {
 	}
 	go func() {
 		for sig := range sigs {
-			cmd.Process.Signal(sig)
+			_ = cmd.Process.Signal(sig)
 		}
 	}()
-	cmd.Wait()
+	_ = cmd.Wait() // the exit status is read from ProcessState
 	return exitCode(cmd.ProcessState)
 }
