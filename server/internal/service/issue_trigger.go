@@ -154,7 +154,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		source = RunSourceStatus
-	case in.StatusChanged && (prevStatus == "blocked" || currentStatus == "blocked") &&
+	case in.StatusChanged && prevStatus == "blocked" &&
 		currentStatus != "backlog" && currentStatus != "done" && currentStatus != "cancelled" &&
 		probe.CanResumeBlockedIssue != nil:
 		source = RunSourceStatus

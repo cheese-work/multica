@@ -78,7 +78,7 @@ func TestBlockedMemberStatusChangeWakesAssignee_CHE2393(t *testing.T) {
 	seedTestCatalog(t)
 	for _, writer := range issueWriters {
 		for _, assigneeType := range []string{"agent", "squad"} {
-			for _, transition := range [][2]string{{"blocked", "in_progress"}, {"in_progress", "blocked"}} {
+			for _, transition := range [][2]string{{"blocked", "in_progress"}, {"blocked", "todo"}} {
 				for _, pending := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/%s/%s-to-%s/pending=%t", writer.name, assigneeType, transition[0], transition[1], pending), func(t *testing.T) {
 						agentID := createHandlerTestAgent(t, "status assignee", nil)
@@ -130,6 +130,7 @@ func TestBlockedMemberStatusChangePreservesSuppression_CHE2393(t *testing.T) {
 			{name: "agent status change", from: "blocked", to: "in_progress", agent: true},
 			{name: "explicit suppress", from: "blocked", to: "in_progress", suppress: true},
 			{name: "same status", from: "blocked", to: "blocked"},
+			{name: "entering blocked", from: "in_progress", to: "blocked"},
 			{name: "unrelated edit", from: "blocked"},
 			{name: "unrelated transition", from: "todo", to: "in_progress"},
 			{name: "backlog parking", from: "blocked", to: "backlog"},
