@@ -2487,7 +2487,8 @@ export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),
-  task_id: z.string().min(1),
+  // Empty when the send started no task (a decision reply for another agent's ask).
+  task_id: z.string(),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),
