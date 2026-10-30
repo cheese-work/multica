@@ -447,12 +447,31 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 	} else if n == 0 {
 		return ErrWakeupConflict
 	}
+	if err := reopenBroaderSweepsOfPendingOverride(ctx, q, row); err != nil {
+		return err
+	}
 	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeIssue {
 		if err := retireLegacyIssueOverride(ctx, tx, q, ref, ruleKey); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// reopenBroaderSweepsOfPendingOverride keeps activation from being lost when an
+// override is deleted before its own sweep ran. The broader sweeps left the
+// issues it covered to that sweep and moved on, so they walk again to reach them
+// under the inherited rule.
+func reopenBroaderSweepsOfPendingOverride(ctx context.Context, q *db.Queries, deleted db.IssueWakeupDefinition) error {
+	if deleted.Root || deleted.SweepDone && deleted.SweepRevision == deleted.Revision {
+		return nil
+	}
+	broader := []string{string(WakeupScopeWorkspace)}
+	if WakeupScope(deleted.ScopeKind) == WakeupScopeIssue {
+		broader = append(broader, string(WakeupScopeProject))
+	}
+	_, err := q.ReopenBroaderWakeupSweeps(ctx, db.ReopenBroaderWakeupSweepsParams{WorkspaceID: deleted.WorkspaceID, RuleKey: deleted.RuleKey, ScopeKinds: broader})
+	return err
 }
 
 // retireLegacyIssueOverride resets an issue's customized legacy row to

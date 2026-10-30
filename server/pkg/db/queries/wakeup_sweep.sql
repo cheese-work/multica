@@ -61,3 +61,14 @@ ORDER BY updated_at,id LIMIT @batch_size;
 -- waits for capacity: dropping the reason takes it out of the retry list for good.
 UPDATE issue_wakeup SET capacity_reason=NULL
 WHERE id= @id AND capacity_reason IS NOT NULL AND NOT enabled AND (disabled_at IS NOT NULL OR paused_reason IS NOT NULL OR timed_out_at IS NOT NULL);
+
+-- name: ReopenBroaderWakeupSweeps :execrows
+-- Walks again the sweeps of a rule's broader scopes (workspace for a project
+-- override, workspace and project for an issue override). A broader sweep leaves
+-- an issue to a pending narrower override; when that override is deleted its
+-- sweep is gone, so the broader one is the only walk left to reach the issue.
+-- The revision and baseline stay as claimed; an issue already activated is
+-- found again and left alone.
+UPDATE issue_wakeup_definition SET sweep_done=false,sweep_cursor=NULL,sweep_retry_at=NULL,sweep_attempts=0,sweep_error=NULL
+WHERE workspace_id= @workspace_id AND rule_key= @rule_key AND sweep_done AND sweep_revision=revision
+ AND scope_kind= ANY(@scope_kinds::text[]);

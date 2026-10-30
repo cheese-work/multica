@@ -222,6 +222,33 @@ func TestCustomSweepDoesNotActivateAnOverrideCreatedAfterTheRootClaim(t *testing
 	}
 }
 
+func TestCustomSweepReachesAnIssueWhoseDeferringOverrideIsDeleted(t *testing.T) {
+	k := newCustomEnv(t)
+	ctx := context.Background()
+	root := k.mustSave(t, WakeupScopeWorkspace, "", k.conditionRule(statusIsTodo))
+	// An override the issue does not satisfy is pending, so the root's pass leaves the issue to it.
+	k.mustSave(t, WakeupScopeIssue, root.RuleKey, k.conditionRule(`{"type":"issue_field","field":"status","value":"in_review"}`))
+	if outcome, err := k.s.sweepOne(ctx, []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}); err != nil || outcome != sweepWalked {
+		t.Fatalf("root pass = %v, %v, want one walked batch", outcome, err)
+	}
+	if got := k.customInstances(t, root.RuleKey); len(got) != 0 {
+		t.Fatalf("the root's pass activated %+v under the pending override, want nothing", got)
+	}
+	// The override goes away before its own sweep ran; the inherited condition applies again.
+	ref := k.scopeRef(t, WakeupScopeIssue)
+	row, err := k.f.q.GetWakeupDefinition(ctx, wakeupDefinitionParams(ref, root.RuleKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.s.DeleteWakeupDefinition(ctx, ref, root.RuleKey, row.Revision); err != nil {
+		t.Fatal(err)
+	}
+	k.sweepAll(t)
+	if got := k.customInstances(t, root.RuleKey); len(got) != 1 || got[0].State != "" {
+		t.Fatalf("instances = %+v, want one activated by the root's revision-1 rule without baseline", got)
+	}
+}
+
 func TestCustomSweepStopsWhenTheDefinitionIsDisabledOrDeleted(t *testing.T) {
 	k := newCustomEnv(t)
 	k.bulkIssues(t, 119, k.project, "todo")

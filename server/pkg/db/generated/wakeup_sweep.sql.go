@@ -262,3 +262,29 @@ func (q *Queries) ListSweepWorkspaceIssues(ctx context.Context, arg ListSweepWor
 	}
 	return items, nil
 }
+
+const reopenBroaderWakeupSweeps = `-- name: ReopenBroaderWakeupSweeps :execrows
+UPDATE issue_wakeup_definition SET sweep_done=false,sweep_cursor=NULL,sweep_retry_at=NULL,sweep_attempts=0,sweep_error=NULL
+WHERE workspace_id= $1 AND rule_key= $2 AND sweep_done AND sweep_revision=revision
+ AND scope_kind= ANY($3::text[])
+`
+
+type ReopenBroaderWakeupSweepsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RuleKey     string      `json:"rule_key"`
+	ScopeKinds  []string    `json:"scope_kinds"`
+}
+
+// Walks again the sweeps of a rule's broader scopes (workspace for a project
+// override, workspace and project for an issue override). A broader sweep leaves
+// an issue to a pending narrower override; when that override is deleted its
+// sweep is gone, so the broader one is the only walk left to reach the issue.
+// The revision and baseline stay as claimed; an issue already activated is
+// found again and left alone.
+func (q *Queries) ReopenBroaderWakeupSweeps(ctx context.Context, arg ReopenBroaderWakeupSweepsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reopenBroaderWakeupSweeps, arg.WorkspaceID, arg.RuleKey, arg.ScopeKinds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
