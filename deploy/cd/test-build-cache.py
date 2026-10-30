@@ -14,6 +14,23 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildCacheTests(unittest.TestCase):
+    def test_ssd2_cache_storage_is_rejected_before_any_cache_export(self):
+        filename = 'release.yml' if ROOT.name == 'multica' else 'ci.yml' if ROOT.name == 'artemis' else 'backend-ci.yml' if ROOT.name == 'sub2api' else 'run-tests.yml'
+        workflow = yaml.safe_load((ROOT / '.github/workflows' / filename).read_text())
+        steps = [step for job in workflow['jobs'].values() for step in job.get('steps', [])]
+        step = next(step for step in steps if step.get('name') == 'Use disposable build caches')
+        with tempfile.TemporaryDirectory() as directory:
+            fake_df = Path(directory, 'df')
+            fake_df.write_text('#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/nvme1n1 100 1 99 1%% /_work\\n"\n')
+            fake_df.chmod(0o755)
+            output = Path(directory, 'environment')
+            result = subprocess.run(['bash', '-euc', step['run']], capture_output=True, text=True,
+                                    env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                                         'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
+            self.assertNotEqual(result.returncode, 0, 'ssd2-backed runner temp must not receive build caches')
+            self.assertIn('ssd2', result.stderr)
+            self.assertFalse(output.exists(), 'no cache path is exported on the incompatible lane')
+
     def setUp(self):
         self.workflow = yaml.safe_load((ROOT / '.github/workflows/cd-qualification.yml').read_text())
 
