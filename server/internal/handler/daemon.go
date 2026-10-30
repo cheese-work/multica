@@ -5813,6 +5813,15 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A negative counter would turn into a token credit at settlement. Reject
+	// the whole report before anything is written.
+	for _, u := range req.Usage {
+		if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+			writeError(w, http.StatusBadRequest, "token counts must not be negative")
+			return
+		}
+	}
+
 	// The rows and their run-budget charge commit together (CHE-2297 L2b).
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -5822,6 +5831,16 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.WithoutCancel(r.Context()))
 	qtx := h.Queries.WithTx(tx)
+	// Take the issue lock before any usage row: settlement needs it, and two
+	// reports for one task that write their rows in different orders would
+	// otherwise each hold a row the other waits for.
+	if task.IssueID.Valid {
+		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("lock issue for task usage failed", "task_id", taskID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store usage")
+			return
+		}
+	}
 	// Provider is lowercased on write so client-side pricing lookups tolerate
 	// case drift. An empty provider (an older daemon that omits the field) is
 	// stamped from the task's runtime, so generic model ids like `auto` still

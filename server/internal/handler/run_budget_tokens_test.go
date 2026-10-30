@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -228,4 +227,67 @@ func TestRunBudgetTokensOffWritesNothing(t *testing.T) {
 	}
 }
 
-var _ pgtype.UUID
+func TestRunBudgetTokensNegativeCounterIsRejectedAndWritesNothing(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	for _, bad := range []usageRow{{Model: "m1", In: -500}, {Model: "m1", Out: -1}, {Model: "m1", CacheRead: -10}, {Model: "m1", CacheWrite: -1}} {
+		c, _ := budgetedAt(t, 40, 1)
+		withTokenAccounting(t, 1000)
+		task := admitRun(t, c)
+		// A good row ahead of the bad one must not survive either.
+		usage := []map[string]any{
+			{"provider": "anthropic", "model": "ok", "input_tokens": 10},
+			{"provider": "anthropic", "model": bad.Model, "input_tokens": bad.In, "output_tokens": bad.Out, "cache_read_tokens": bad.CacheRead, "cache_write_tokens": bad.CacheWrite},
+		}
+		req := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+task+"/usage", map[string]any{"usage": usage}), "taskId", task)
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusBadRequest)
+		if got := tokenSum(t, c.issueID); got != -1000 {
+			t.Fatalf("tokens after a rejected report %+v = %d, want -1000 (the reservation only)", bad, got)
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM task_usage WHERE task_id=$1`, task); n != 0 {
+			t.Fatalf("%d usage rows stored by a rejected report, want none", n)
+		}
+	}
+}
+
+// A report takes the issue lock before it writes any usage row, so two
+// reports for one task cannot each hold a row the other needs.
+func TestRunBudgetTokensReportLocksTheIssueBeforeWritingUsageRows(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 1)
+	withTokenAccounting(t, 1000)
+	task := admitRun(t, c)
+	reportUsage(t, task, usageRow{Model: "a", In: 1}, usageRow{Model: "b", In: 1})
+	ctx := context.Background()
+	holder, err := testHandler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := testHandler.Queries.WithTx(holder).LockIssueRunBudget(ctx, parseUUID(c.issueID)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reportUsage(t, task, usageRow{Model: "b", In: 2}, usageRow{Model: "a", In: 2})
+	}()
+	time.Sleep(500 * time.Millisecond)
+	// The report waits on the issue lock; it has not touched a usage row yet.
+	probe, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.Exec(ctx, `SELECT 1 FROM task_usage WHERE task_id=$1 FOR UPDATE NOWAIT`, task)
+	probe.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("a usage row is locked while the report waits for the issue lock: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}
