@@ -617,13 +617,10 @@ func runAutopilotTrigger(cmd *cobra.Command, args []string) error {
 // autopilotTriggerRequestError turns a failed trigger request into what the
 // user should read.
 //
-// FormatError deliberately collapses every 403 into generic "no access" copy so
-// a refusal cannot confirm that a resource exists. For a manual trigger that
-// hides the one refusal a workspace can actually act on — the calling run having
-// no originating human — which is exactly the silence #8078 was about. These two
-// refusals opt out by carrying a stable server code; the branch is on that code,
-// never on the English sentence, which changes with copy edits and disappears
-// under translation.
+// FormatError surfaces the server's 403 message. These two stable codes add
+// guidance about the originating human for a manual trigger (#8078). Branch
+// on the code rather than the English sentence, which changes with copy edits
+// and disappears under translation.
 func autopilotTriggerRequestError(err error) error {
 	switch cli.ServerErrorCode(err) {
 	case "autopilot_trigger_no_originator":
@@ -638,8 +635,8 @@ func autopilotTriggerRequestError(err error) error {
 // should read, for the same reason autopilotTriggerRequestError exists: an
 // autopilot write is authorized as the human who asked for it, so when YOU are
 // the one running this, "no access" is about them and not about you — and
-// FormatError's generic 403 copy cannot say which (MUL-7108). The branch is on
-// the server's stable code, never on the English sentence.
+// these stable-code branches add that context beyond FormatError's server
+// message (MUL-7108). The branch is never on the English sentence.
 func autopilotWriteRequestError(action string, err error) error {
 	switch cli.ServerErrorCode(err) {
 	case "autopilot_no_originator":
