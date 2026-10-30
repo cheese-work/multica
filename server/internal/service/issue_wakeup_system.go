@@ -335,6 +335,20 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		announceWithdrawn()
 		return nil
 	}
+	baseSHA, covered, err := s.prEventCarries(ctx, q, issue.ID, in)
+	if err != nil {
+		return err
+	}
+	if covered {
+		// The pr.event fallback already carries this cause (CHE-2540); its
+		// identity is spent here so a later snapshot never wakes it again.
+		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		announceWithdrawn()
+		return nil
+	}
 	if !config.matchesPR(in) {
 		// The event's identity is spent: a redelivery never fires once the
 		// filter changes. The refusal is visible on the timeline.
@@ -373,6 +387,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		if in.MergeState != "" {
 			payload["merge_state"] = in.MergeState
 		}
+		if baseSHA != "" {
+			payload["base_sha"] = baseSHA
+		}
 		if in.EventAt != "" {
 			payload["converted_at"] = in.EventAt
 		}
@@ -398,6 +415,34 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	announceWithdrawn()
 	return s.dispatchSystem(ctx, w)
+}
+
+// prEventCarries reports whether the pr.event fallback already carries the
+// cause of a legacy checks-failed or conflict input, and returns the base commit
+// a conflict was captured on (empty when none was, e.g. capture is off). The
+// legacy receipt records that base so the fallback can tell a new conflict on
+// the same head from the one this wake carries (CHE-2540).
+func (s *IssueWakeupService) prEventCarries(ctx context.Context, q *db.Queries, issueID pgtype.UUID, in PullRequestWakeupInput) (string, bool, error) {
+	var kind, baseSHA string
+	switch {
+	case in.Rule == SystemRulePRChecksFailed:
+		kind = "checks_failed"
+	case in.Rule == SystemRulePRAttention && in.Reason == PRAttentionMergeability && in.MergeState == "DIRTY":
+		kind = "conflict"
+		base, err := q.LatestPRConflictBase(ctx, db.LatestPRConflictBaseParams{
+			IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, HeadSha: in.HeadSHA,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", false, err
+		}
+		baseSHA = base
+	default:
+		return "", false, nil
+	}
+	covered, err := q.PREventCarriesLegacyWake(ctx, db.PREventCarriesLegacyWakeParams{
+		IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, Kind: kind, HeadSha: in.HeadSHA, BaseSha: baseSHA,
+	})
+	return baseSHA, covered, err
 }
 
 // captureRunGatePR writes the shadow ledger row for a pr_merged or

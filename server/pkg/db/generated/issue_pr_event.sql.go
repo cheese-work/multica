@@ -108,6 +108,41 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 	return result.RowsAffected(), nil
 }
 
+const latestPRConflictBase = `-- name: LatestPRConflictBase :one
+SELECT e.base_sha
+FROM issue_pr_event e
+JOIN github_pull_request pr ON pr.id = e.pull_request_id
+WHERE e.issue_id = $1
+  AND pr.repo_owner = $2 AND pr.repo_name = $3 AND pr.pr_number = $4
+  AND e.kind = 'conflict' AND e.head_sha = $5
+ORDER BY e.observed_at DESC, e.id DESC
+LIMIT 1
+`
+
+type LatestPRConflictBaseParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	RepoOwner string      `json:"repo_owner"`
+	RepoName  string      `json:"repo_name"`
+	PrNumber  int32       `json:"pr_number"`
+	HeadSha   string      `json:"head_sha"`
+}
+
+// The base commit of the newest conflict the snapshot pipeline captured for a
+// head: the legacy mergeability wake records it, so a conflict on a new base of
+// the same head is not taken for the cause that wake carried (CHE-2540).
+func (q *Queries) LatestPRConflictBase(ctx context.Context, arg LatestPRConflictBaseParams) (string, error) {
+	row := q.db.QueryRow(ctx, latestPRConflictBase,
+		arg.IssueID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+		arg.HeadSha,
+	)
+	var base_sha string
+	err := row.Scan(&base_sha)
+	return base_sha, err
+}
+
 const listIssueIDsForPR = `-- name: ListIssueIDsForPR :many
 SELECT issue_id FROM issue_pull_request WHERE pull_request_id = $1
 `
@@ -166,7 +201,7 @@ WHERE e.kind NOT IN ('draft', 'ready')
         AND lr.payload->>'pr_number' = pr.pr_number::text
         AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
              OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
-                 AND lr.payload->>'merge_state' = 'DIRTY'))
+                 AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
         AND (lr.processed_at IS NULL OR lt.status IN ('queued', 'dispatched') OR lt.started_at IS NOT NULL))
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
   AND ($2::timestamptz IS NULL
@@ -328,7 +363,7 @@ WHERE pr.id = e.pull_request_id
         AND lr.payload->>'pr_number' = pr.pr_number::text
         AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
              OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
-                 AND lr.payload->>'merge_state' = 'DIRTY'))
+                 AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
         AND lt.started_at IS NOT NULL))
 `
 
@@ -340,6 +375,57 @@ func (q *Queries) MarkStartedPREventsDelivered(ctx context.Context, workspaceIds
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const pREventCarriesLegacyWake = `-- name: PREventCarriesLegacyWake :one
+SELECT EXISTS (
+    SELECT 1
+    FROM issue_pr_event e
+    JOIN github_pull_request pr ON pr.id = e.pull_request_id
+    WHERE e.issue_id = $1
+      AND pr.repo_owner = $2 AND pr.repo_name = $3 AND pr.pr_number = $4
+      AND e.kind = $5 AND e.head_sha = $6
+      AND (e.kind <> 'conflict' OR e.base_sha = $7::text)
+      AND (e.status = 'delivered'
+           OR EXISTS (
+               SELECT 1
+               FROM issue_wakeup w
+               JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
+               LEFT JOIN agent_task_queue t ON t.id = r.task_id
+               WHERE w.issue_id = e.issue_id
+                 AND w.system_rule = 'pr_needs_attention'
+                 AND r.event_type = 'pr.event'
+                 AND r.payload->>'event_id' = e.id::text
+                 AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))))::boolean
+`
+
+type PREventCarriesLegacyWakeParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	RepoOwner string      `json:"repo_owner"`
+	RepoName  string      `json:"repo_name"`
+	PrNumber  int32       `json:"pr_number"`
+	Kind      string      `json:"kind"`
+	HeadSha   string      `json:"head_sha"`
+	BaseSha   string      `json:"base_sha"`
+}
+
+// A pr.event wake already carries the cause the legacy PR rule is about to
+// queue: the event was delivered, or a receipt for it is in flight (pending, or
+// on a run that is queued, dispatched or has started). A conflict is matched on
+// its base commit too. The legacy side of the CHE-2540 coalescing.
+func (q *Queries) PREventCarriesLegacyWake(ctx context.Context, arg PREventCarriesLegacyWakeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pREventCarriesLegacyWake,
+		arg.IssueID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+		arg.Kind,
+		arg.HeadSha,
+		arg.BaseSha,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const pREventKindEnabled = `-- name: PREventKindEnabled :one

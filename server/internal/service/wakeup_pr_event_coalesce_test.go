@@ -30,10 +30,31 @@ func newCoalesceEnv(t *testing.T) coalesceEnv {
 // captured stores the event the snapshot pipeline raises for the PR.
 func (e coalesceEnv) captured(t *testing.T, kind string) string {
 	t.Helper()
+	return e.capturedOn(t, kind, "base-1")
+}
+
+// capturedOn stores the event as raised on the given base commit; a conflict is
+// deduped per head and base, so a new base is a new event.
+func (e coalesceEnv) capturedOn(t *testing.T, kind, base string) string {
+	t.Helper()
+	dedupe := kind + "|h1"
+	if kind == "conflict" {
+		dedupe += "|" + base
+	}
 	var id string
 	e.f.QueryRow(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key)
-		VALUES ($1, $2, $3, $4, 'h1', 'base-1', now(), $4 || '|h1') RETURNING id`, e.f.WorkspaceID, e.issue, e.pr, kind).Scan(&id)
+		VALUES ($1, $2, $3, $4, 'h1', $5, now(), $6) RETURNING id`, e.f.WorkspaceID, e.issue, e.pr, kind, base, dedupe).Scan(&id)
 	return id
+}
+
+// tick runs one pass: bridge captured events, then let the runs it queued start
+// and end.
+func (e coalesceEnv) tick(t *testing.T) {
+	t.Helper()
+	if err := e.s.TickWorkspaces(context.Background(), parseTestUUID(t, e.f.WorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	e.finishTasks(t)
 }
 
 func (e coalesceEnv) conflicting(t *testing.T) {
@@ -92,6 +113,48 @@ func TestConflictWakesOnceWhenLegacyRuleAndPREventBothCarryIt(t *testing.T) {
 	e.sweep(t)
 	if got := e.runs(t); got != 1 {
 		t.Fatalf("conflict started %d runs, want 1", got)
+	}
+}
+
+// The fallback ran first: the legacy callback of the same snapshot arrives
+// after the event is already carried.
+func TestChecksFailedWakesOnceWhenFallbackRunsBeforeLegacyRule(t *testing.T) {
+	e := newCoalesceEnv(t)
+	event := e.captured(t, "checks_failed")
+	e.tick(t)
+	e.failedChecks(t, "h1", "FAILURE")
+	e.sweep(t)
+	if got := e.runs(t); got != 1 {
+		t.Fatalf("checks_failed started %d runs, want 1", got)
+	}
+	if got := e.status(t, event); got != "delivered" {
+		t.Fatalf("event is %q, want delivered", got)
+	}
+}
+
+func TestConflictWakesOnceWhenFallbackRunsBeforeLegacyRule(t *testing.T) {
+	e := newCoalesceEnv(t)
+	e.captured(t, "conflict")
+	e.tick(t)
+	e.conflicting(t)
+	e.sweep(t)
+	if got := e.runs(t); got != 1 {
+		t.Fatalf("conflict started %d runs, want 1", got)
+	}
+}
+
+// The same head conflicts again on a new base commit: a new event the legacy
+// pair key (head and base branch) never sees, so it wakes once more.
+func TestConflictOnNewBaseOfSameHeadStillWakes(t *testing.T) {
+	e := newCoalesceEnv(t)
+	e.captured(t, "conflict")
+	e.conflicting(t)
+	e.finishTasks(t)
+	e.capturedOn(t, "conflict", "base-2")
+	e.conflicting(t) // same head and branch: the pair key keeps this one silent
+	e.sweep(t)
+	if got := e.runs(t); got != 2 {
+		t.Fatalf("conflict on a new base started %d runs, want 2", got)
 	}
 }
 
