@@ -184,6 +184,7 @@ export type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatUsageModel,
   ChatUsageTokens,
   ChatForkResponse,
