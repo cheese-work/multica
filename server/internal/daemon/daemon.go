@@ -8950,6 +8950,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentName:       task.Agent.Name,
 		WorkDir:         env.WorkDir,
 		IssueIdentifier: task.IssueIdentifier,
+		IntakeRun:       task.IntakeRun,
+		PinnedBranch:    task.PinnedBranch,
+		PinnedRepo:      task.PinnedRepo,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
