@@ -122,7 +122,7 @@ export function runBudget() {
     return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
   }
   const currentJobs = jobs(current).map(collect)
-  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint"])
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard"])
   const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
   const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
   const baselineJobs = []
