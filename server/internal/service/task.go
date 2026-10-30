@@ -5393,7 +5393,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					} else {
 						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
 						// must never reach the issue thread, even as a clipped excerpt.
-						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+						content := truncateFallbackCommentBody(redact.Prose(body), maxSynthesizedFallbackCommentRunes)
 						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
 					}
 				}
@@ -5546,7 +5546,7 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	}
 	switch {
 	case !isEmpty:
-		params.Content = redact.Text(body)
+		params.Content = redact.Prose(body)
 		// message_kind left NULL → COALESCE defaults to 'message'.
 		//
 		// The one exception is now a deploy-window case. The server writes the
