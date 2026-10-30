@@ -150,7 +150,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var failures error
+	failures := handler.processMissingDecisionRequests(ctx)
 	for _, scope := range scopes {
 		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
 			return handler.cleanupDecisionOrphans(ctx, scope.WorkspaceID, scope.IssueID)

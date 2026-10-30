@@ -1643,6 +1643,13 @@ func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 	return task, err
 }
 
+// EnqueueSquadAlertInTx preserves the system alert's resolved human and squad
+// role while its comment and notification are committed together.
+func (s *TaskService) EnqueueSquadAlertInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID, commentID, actorUserID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, leaderID, commentID, []pgtype.UUID{commentID}, true, squadID, false, handoff, actorUserID, pgtype.UUID{}, OriginDerived)
+	return task, err
+}
+
 func (s *TaskService) PublishTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)

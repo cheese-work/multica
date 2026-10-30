@@ -862,6 +862,21 @@ type DecisionIntentTarget struct {
 	ConsumedByRequestID pgtype.UUID        `json:"consumed_by_request_id"`
 }
 
+type DecisionMissingCandidate struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+type DecisionMissingWait struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	CheckedAt   pgtype.Timestamptz `json:"checked_at"`
+	CommentID   pgtype.UUID        `json:"comment_id"`
+	AlertedAt   pgtype.Timestamptz `json:"alerted_at"`
+}
+
 type DecisionRequest struct {
 	ID                    pgtype.UUID        `json:"id"`
 	WorkspaceID           pgtype.UUID        `json:"workspace_id"`

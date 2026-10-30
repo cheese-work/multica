@@ -16,6 +16,24 @@ import (
 
 var decisionCmd = &cobra.Command{Use: "decision", Short: "Request and read issue decisions"}
 
+var decisionMissingCmd = &cobra.Command{
+	Use: "missing", Short: "List human waits over ten minutes without an open decision request", Args: cobra.NoArgs,
+	RunE: func(command *cobra.Command, _ []string) error {
+		client, err := newAPIClient(command)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		project, _ := command.Flags().GetString("project")
+		var rows []map[string]any
+		if err := client.GetJSON(ctx, "/api/decisions/missing?"+url.Values{"project_id": {project}}.Encode(), &rows); err != nil {
+			return fmt.Errorf("list missing decisions: %w", err)
+		}
+		return cli.PrintJSON(command.OutOrStdout(), rows)
+	},
+}
+
 var decisionRequestCmd = &cobra.Command{
 	Use: "request", Short: "Ask a named person with one issue comment and one DM message", Args: cobra.NoArgs, RunE: runDecisionRequest,
 }
@@ -33,6 +51,9 @@ var decisionWithdrawCmd = &cobra.Command{
 }
 
 func init() {
+	decisionMissingCmd.Flags().String("project", "", "Project UUID (default: current workspace)")
+	decisionMissingCmd.Flags().String("output", "json", "Output format: json")
+	decisionCmd.AddCommand(decisionMissingCmd)
 	for _, command := range []*cobra.Command{decisionRequestCmd, decisionListCmd} {
 		command.Flags().String("issue", "", "Issue UUID or identifier")
 		_ = command.MarkFlagRequired("issue")

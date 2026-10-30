@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,42 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestDecisionMissingCommand(test *testing.T) {
+	const project = "11111111-1111-4111-8111-111111111111"
+	status := http.StatusOK
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/decisions/missing" || request.URL.Query().Get("project_id") != project {
+			test.Errorf("wrong missing-request query: %s %s", request.Method, request.URL)
+		}
+		writer.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = writer.Write([]byte(`[{"issue_id":"waiting","ownership":"unresolved"}]`))
+		} else {
+			_, _ = writer.Write([]byte(`{"error":"guard unavailable"}`))
+		}
+	}))
+	defer server.Close()
+	test.Setenv("MULTICA_SERVER_URL", server.URL)
+	test.Setenv("MULTICA_TOKEN", "mat_test-token")
+	test.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	command, _, err := rootCmd.Find([]string{"decision", "missing"})
+	if err != nil || command.Name() != "missing" {
+		test.Fatal("decision missing unavailable")
+	}
+	var output bytes.Buffer
+	command.SetOut(&output)
+	test.Cleanup(func() { command.SetOut(nil); _ = command.Flags().Set("project", "") })
+	_ = command.Flags().Set("project", project)
+	if err := command.RunE(command, nil); err != nil || !strings.Contains(output.String(), `"ownership": "unresolved"`) {
+		test.Fatalf("output=%q err=%v", output.String(), err)
+	}
+	status = http.StatusNotFound
+	output.Reset()
+	if err := command.RunE(command, nil); err == nil || output.Len() != 0 {
+		test.Fatalf("unavailable guard became a success: output=%q err=%v", output.String(), err)
+	}
+}
 
 func TestDecisionCommandsRoundTrip(test *testing.T) {
 	const issueID = "11111111-1111-4111-8111-111111111111"
