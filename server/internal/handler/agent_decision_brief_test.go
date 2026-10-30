@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -275,5 +276,24 @@ func TestAgentDecisionSettingIsOwnerOnly(t *testing.T) {
 	}
 	if code := set("00000000-0000-0000-0000-000000000000", false); code == http.StatusOK {
 		t.Fatal("non-member changed the setting")
+	}
+}
+
+// RequireHumanActor refuses both machine stamps before the handler runs. The
+// cloud-node PAT verifier needs a fleet service, so its stamp is set directly.
+func TestAgentDecisionSettingGuardRefusesMachineStamps(t *testing.T) {
+	enableAgentDecisions(t, false)
+	guarded := RequireHumanActor(http.HandlerFunc(testHandler.SetAgentDecisionSetting))
+	for _, source := range []string{"task_token", "cloud_pat"} {
+		req := newRequest(http.MethodPut, "/api/agent-decisions/setting", map[string]any{"enabled": true})
+		req.Header.Set("X-Actor-Source", source)
+		w := httptest.NewRecorder()
+		guarded.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s status=%d, want 403", source, w.Code)
+		}
+	}
+	if on, err := agentDecisionsEnabled(context.Background(), testPool, parseUUID(testWorkspaceID)); err != nil || on {
+		t.Fatalf("a refused request enabled the pilot (on=%v err=%v)", on, err)
 	}
 }
