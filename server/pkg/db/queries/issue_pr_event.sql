@@ -66,6 +66,8 @@ FOR UPDATE;
 -- between the sweep and this read never makes the event eligible twice. The
 -- after_* pair is the caller's cursor: a batch full of causes the rule cannot
 -- take now must not hold every later batch back.
+-- Action-required kinds of a merged or closed PR are never selected: the
+-- lifecycle stop already ran, and a reopen raises its own events.
 SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
        pr.pr_number, pr.repo_owner, pr.repo_name,
        COALESCE(NULLIF(e.previous_head_sha, ''), (
@@ -91,6 +93,7 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready')
+  AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
        OR (e.status = 'accepted'
            AND NOT EXISTS (

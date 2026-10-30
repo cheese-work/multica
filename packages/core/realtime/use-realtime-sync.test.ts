@@ -28,6 +28,7 @@ import {
   applyChatQuickActionsToCache,
   applyChatSessionUpdatedToCache,
   applyDecisionAnswerUpdated,
+  applyIssueRunStarted,
   applyWorkspaceUpdatedToCache,
   handleInboxNew,
   invalidateChatMessageQueries,
@@ -1346,6 +1347,17 @@ describe("applyDecisionAnswerUpdated", () => {
     applyDecisionAnswerUpdated(qc, { answer_id: "answer", issue_id: "issue-1", state: "disclaimed" });
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toContainEqual(issueKeys.timeline("issue-1"));
+    expect(keys).toContainEqual(chatKeys.messagesAll());
+    expect(keys).toContainEqual(chatKeys.messagesPageAll());
+  });
+});
+
+describe("applyIssueRunStarted", () => {
+  it("refreshes every DM message list so a decision card sees the run that just started", () => {
+    const qc = createQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyIssueRunStarted(qc);
+    const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toContainEqual(chatKeys.messagesAll());
     expect(keys).toContainEqual(chatKeys.messagesPageAll());
   });

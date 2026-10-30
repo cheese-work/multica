@@ -1041,7 +1041,8 @@ const DecisionRequestCardSchema = z.object({
   reason: z.string().optional().catch(undefined),
   record_comment_id: z.string().nullish().catch(undefined),
   answer: z.object({
-    state: z.enum(["recorded", "delivered", "disclaimed"]).catch("recorded"),
+    state: z.enum(["recorded", "delivered", "picked_up", "disclaimed"]).catch("recorded"),
+    run: z.object({ id: z.string(), agent_name: z.string().default("") }).loose().optional().catch(undefined),
     chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),

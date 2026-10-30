@@ -1,6 +1,6 @@
 import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -27,6 +27,8 @@ const card = {
 };
 
 describe("DecisionRequestCard accessibility", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("makes only an open ask annotatable, with the agent reply label and marker slot", () => {
     const view = (state: "open" | "answered" | "withdrawn") => (
       <ChatAnnotationContext.Provider value={{ enabled: true, agentName: "Terra" }}>
@@ -68,6 +70,7 @@ describe("DecisionRequestCard accessibility", () => {
   });
 
   it("shows Recorded, Delivered and Disclaimed in place from the answer receipt", () => {
+    vi.useFakeTimers({ now: new Date("2026-10-26T23:31:30Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     const answered = { ...card, state: "answered" as const, record_comment_id: "record" };
     const answer = (state: "recorded" | "delivered" | "disclaimed") => ({
       ...answered, state: state === "disclaimed" ? ("open" as const) : answered.state,
@@ -79,6 +82,57 @@ describe("DecisionRequestCard accessibility", () => {
       expect(screen.getByRole("region", { name: `Decision request: ${label}` })).toBeInTheDocument();
       view.unmount();
     }
+  });
+
+  describe("pickup after the record", () => {
+    const answered = (answer: Partial<NonNullable<RequestCard["answer"]>> = {}) => ({
+      ...card, state: "answered" as const, record_comment_id: "record",
+      answer: { state: "delivered" as const, answered_at: "2026-10-26T23:31:00Z", ...answer },
+    });
+    const view = (next: RequestCard) => renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={next} /></WorkspaceSlugProvider></QueryClientProvider>);
+    const at = (iso: string) => vi.useFakeTimers({ now: new Date(iso), toFake: ["Date", "setTimeout", "clearTimeout"] });
+
+    it("shows Picked up with the agent and a link to that run once a run exists", () => {
+      at("2026-10-26T23:31:30Z");
+      view(answered({ state: "picked_up", run: { id: "task-1", agent_name: "Sol" } }));
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "picked_up");
+      expect(screen.getByRole("region", { name: "Decision request: Picked up" })).toBeInTheDocument();
+      const link = screen.getByTestId("decision-request-run");
+      expect(link).toHaveTextContent("Picked up by Sol");
+      expect(link).toHaveAttribute("href", expect.stringMatching(/\/issue\?run=task-1$/));
+    });
+
+    it("moves from Recorded to Not picked up once 2 minutes pass with no run", () => {
+      at("2026-10-26T23:32:00Z");
+      view(answered());
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "delivered");
+      expect(screen.queryByTestId("decision-request-not-picked-up")).toBeNull();
+      act(() => { vi.advanceTimersByTime(59_000); });
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "delivered");
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(screen.getByRole("region", { name: "Decision request: Not picked up" })).toBeInTheDocument();
+      expect(screen.getByTestId("decision-request-not-picked-up")).toHaveAttribute("href", expect.stringMatching(/\/issue$/));
+    });
+
+    it("shows Not picked up at once for an old answer with no run, but never for a disclaimed one", () => {
+      at("2026-10-27T00:00:00Z");
+      const { unmount } = view(answered({ state: "recorded" }));
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "not_picked_up");
+      unmount();
+      view({ ...answered({ state: "disclaimed" }), state: "open" });
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "disclaimed");
+      expect(screen.queryByTestId("decision-request-not-picked-up")).toBeNull();
+    });
+
+    it("shows Not picked up when an old answered receipt arrives on an already-mounted card", () => {
+      at("2026-10-26T23:31:00Z");
+      const client = new QueryClient();
+      const tree = (next: RequestCard) => <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={next} /></WorkspaceSlugProvider></QueryClientProvider>;
+      const { rerender } = renderWithI18n(tree(card));
+      act(() => { vi.advanceTimersByTime(3 * 60_000); });
+      rerender(tree(answered()));
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "not_picked_up");
+    });
   });
 
   it("shows no record link on an open card or an answered card without a record", () => {
