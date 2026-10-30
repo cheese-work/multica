@@ -109,3 +109,32 @@ export function recordReadingAnchor(
   if (anchor) anchors.set(key, anchor);
   else anchors.delete(key);
 }
+
+/**
+ * Per-list recording state. FlashList reports viewability ~250ms after a list
+ * mounts, and the state outlives a session switch, so every cached value is
+ * stamped with the key it was measured for. Until the current key has its own
+ * viewability report, `record` does nothing: a saved anchor must survive a
+ * scroll that lands before the first report, and one session's rows must never
+ * be written under another's key.
+ */
+export function createAnchorTracker() {
+  let viewKey: string | null = null;
+  let viewable: { index: number | null }[] = [];
+  let scrollKey: string | null = null;
+  let nearEnd = true;
+  return {
+    onViewable(key: string, rows: { index: number | null }[]) {
+      viewKey = key;
+      viewable = rows;
+    },
+    onScroll(key: string, near: boolean) {
+      scrollKey = key;
+      nearEnd = near;
+    },
+    record(key: string, ids: string[], skipId?: string) {
+      if (viewKey !== key) return;
+      recordReadingAnchor(key, viewable, ids, scrollKey === key ? nearEnd : true, skipId);
+    },
+  };
+}

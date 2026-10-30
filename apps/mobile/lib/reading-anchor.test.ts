@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   anchorFromViewable,
   chatAnchorKey,
+  createAnchorTracker,
   isNearEnd,
   issueAnchorKey,
   loadReadingAnchor,
@@ -115,5 +116,57 @@ describe("recordReadingAnchor", () => {
     recordReadingAnchor(key, [{ index: 1 }], ids, false);
     recordReadingAnchor(key, [], [], false);
     expect(loadReadingAnchor(key)).toEqual({ itemId: "b", atLiveEnd: false });
+  });
+});
+
+describe("createAnchorTracker", () => {
+  it("keeps the saved anchor when a scroll lands before the first viewability report", () => {
+    const key = chatAnchorKey("tracker-first");
+    saveReadingAnchor(key, { itemId: "b", atLiveEnd: false });
+    const t = createAnchorTracker();
+    t.onScroll(key, false);
+    t.record(key, ids);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "b", atLiveEnd: false });
+  });
+
+  it("does not write the previous session's rows under the new session", () => {
+    const a = chatAnchorKey("tracker-a");
+    const b = chatAnchorKey("tracker-b");
+    saveReadingAnchor(b, { itemId: "b", atLiveEnd: false });
+    const t = createAnchorTracker();
+    t.onViewable(a, [{ index: 0 }]);
+    t.record(a, ids);
+    t.onScroll(b, false);
+    t.record(b, ids);
+    expect(loadReadingAnchor(a)).toEqual({ itemId: "a", atLiveEnd: false });
+    expect(loadReadingAnchor(b)).toEqual({ itemId: "b", atLiveEnd: false });
+  });
+
+  it("records once the current key has a viewability report", () => {
+    const key = chatAnchorKey("tracker-ok");
+    const t = createAnchorTracker();
+    t.onViewable(key, [{ index: 2 }, { index: 3 }]);
+    t.onScroll(key, false);
+    t.record(key, ids);
+    expect(loadReadingAnchor(key)).toEqual({ itemId: "c", atLiveEnd: false });
+  });
+
+  it("clears the anchor for a measured, empty viewable set (header)", () => {
+    const key = chatAnchorKey("tracker-header");
+    saveReadingAnchor(key, { itemId: "c", atLiveEnd: false });
+    const t = createAnchorTracker();
+    t.onViewable(key, []);
+    t.record(key, ids);
+    expect(loadReadingAnchor(key)).toBeNull();
+  });
+
+  it("ignores a scroll's stale near-end flag from another key", () => {
+    const a = chatAnchorKey("tracker-ne-a");
+    const b = chatAnchorKey("tracker-ne-b");
+    const t = createAnchorTracker();
+    t.onScroll(a, false);
+    t.onViewable(b, [{ index: 3 }, { index: 4 }]);
+    t.record(b, ids);
+    expect(loadReadingAnchor(b)).toEqual({ itemId: "d", atLiveEnd: true });
   });
 });

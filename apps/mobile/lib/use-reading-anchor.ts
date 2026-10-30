@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
-import { isNearEnd, recordReadingAnchor } from "@/lib/reading-anchor";
+import { createAnchorTracker, isNearEnd } from "@/lib/reading-anchor";
 
 type Viewable = { index: number | null }[];
 
@@ -21,30 +21,27 @@ export function useReadingAnchorRecorder(
   useEffect(() => {
     latest.current = { key, ids, skipId };
   });
-  const viewable = useRef<Viewable>([]);
-  const nearEnd = useRef(true);
-
-  const record = () => {
-    const { key, ids, skipId } = latest.current;
-    if (key) recordReadingAnchor(key, viewable.current, ids, nearEnd.current, skipId);
-  };
+  const [tracker] = useState(createAnchorTracker);
 
   const [pair] = useState(() => ({
     viewabilityConfig: { itemVisiblePercentThreshold: 1 },
     onViewableItemsChanged: ({ viewableItems }: { viewableItems: Viewable }) => {
-      viewable.current = viewableItems;
-      record();
+      const { key, ids, skipId } = latest.current;
+      if (!key) return;
+      tracker.onViewable(key, viewableItems);
+      tracker.record(key, ids, skipId);
     },
   }));
   const [onScroll] = useState(
     () => (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-      nearEnd.current = isNearEnd(
-        contentSize.height,
-        contentOffset.y,
-        layoutMeasurement.height,
+      const { key, ids, skipId } = latest.current;
+      if (!key) return;
+      tracker.onScroll(
+        key,
+        isNearEnd(contentSize.height, contentOffset.y, layoutMeasurement.height),
       );
-      record();
+      tracker.record(key, ids, skipId);
     },
   );
   return { pair, onScroll };
