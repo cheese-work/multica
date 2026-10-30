@@ -569,14 +569,15 @@ describe("DM compact command", () => {
     }
   });
 
-  it("renders the display-only focus hint, localized description, and Multica badge", () => {
-    const { getByRole, getByText } = render(
+  it("renders the display-only focus hint and localized description, with no client badge", () => {
+    const { getByRole, getByText, queryByText } = render(
       <I18nWrapper>
         <SlashCommandList items={[compact]} query="" command={vi.fn()} />
       </I18nWrapper>,
     );
     expect(getByRole("button", { name: /\/compact \[focus\]/ })).toBeInTheDocument();
-    expect(getByText("Multica")).toBeInTheDocument();
+    expect(queryByText(enEditor.slash_command.client_command)).not.toBeInTheDocument();
+    expect(getByText(enEditor.slash_command.runs_the_agent)).toBeInTheDocument();
     expect(getByText("Summarize this DM and continue in a new one")).toBeInTheDocument();
   });
 
@@ -949,5 +950,101 @@ describe("builtin `/` menu — async quick action rendering", () => {
     });
 
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("DM statistic, archive, pin and unarchive commands", () => {
+  type Name = "statistic" | "archive" | "pin" | "unarchive";
+  const ACTIVE: Name[] = ["statistic", "archive", "pin"];
+
+  function offered(enabled: Name[], query = "", canCompact = true): string[] {
+    const config = createSlashCommandSuggestion(
+      fakeQc({}),
+      () => false,
+      () => false,
+      (command) => enabled.includes(command),
+      () => canCompact,
+    );
+    const editor = new Editor({
+      extensions: [StarterKit],
+      content: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `/${query}` }] }] },
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    try {
+      return (config.items!({ query, editor, signal: new AbortController().signal }) as SlashCommandItem[]).map(
+        (item) => item.id,
+      );
+    } finally {
+      editor.destroy();
+    }
+  }
+
+  it("offers nothing extra until a surface enables a command", () => {
+    expect(offered([])).toEqual(["compact"]);
+  });
+
+  it("offers an active DM statistic, archive and pin ahead of compact", () => {
+    expect(offered(ACTIVE)).toEqual(["statistic", "archive", "pin", "compact"]);
+  });
+
+  it("offers only unarchive on an archived DM, with compact turned off", () => {
+    expect(offered(["unarchive"], "", false)).toEqual(["unarchive"]);
+  });
+
+  it("never offers unarchive together with archive or pin on the same DM", () => {
+    expect(offered(ACTIVE)).not.toContain("unarchive");
+    expect(offered(["unarchive"], "", false)).not.toContain("archive");
+    expect(offered(["unarchive"], "", false)).not.toContain("pin");
+  });
+
+  it.each([
+    ["s", "statistic"],
+    ["ar", "archive"],
+    ["P", "pin"],
+  ])("matches the label prefix %j", (query, id) => {
+    expect(offered(ACTIVE, query)).toEqual([id]);
+  });
+
+  it("matches unarchive by prefix on an archived DM", () => {
+    expect(offered(["unarchive"], "un", false)).toEqual(["unarchive"]);
+  });
+
+  it.each(["statistic", "archive", "pin", "unarchive"] as const)(
+    "renders /%s as a Multica command with a localized description and no argument hint",
+    (name) => {
+      const item: SlashCommandItem = { id: name, label: name, descriptionKey: name };
+      const { getByRole, getByText } = render(
+        <I18nWrapper><SlashCommandList items={[item]} query="" command={vi.fn()} /></I18nWrapper>,
+      );
+      const row = getByRole("button", { name: new RegExp(`^/${name}`) });
+      expect(row).toHaveTextContent(enEditor.slash_command.commands[name]);
+      expect(row).not.toHaveTextContent("[");
+      expect(getByText("Multica")).toBeInTheDocument();
+    },
+  );
+
+  it("inserts plain command text without a skill node", () => {
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({ element, extensions: [StarterKit, Markdown, SlashCommandExtension], content: "<p>/ar</p>" });
+    editor.commands.setTextSelection(4);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({
+        editor,
+        range: { from: 1, to: 4 },
+        props: { id: "archive", label: "archive", descriptionKey: "archive" },
+      });
+      expect(editor.getMarkdown()).toBe("/archive ");
+      expect(editor.getJSON().content?.[0]?.content?.[0]?.type).toBe("text");
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("localizes every command in every locale", (locale) => {
+    for (const name of ["statistic", "archive", "pin", "unarchive"]) {
+      expect(locale.slash_command.commands).toHaveProperty(name, expect.any(String));
+    }
   });
 });

@@ -156,6 +156,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "lance l’agent",
     "focus_hint": "[focus]",
     "title_hint": "[titre]",
     "message_hint": "[message]",
@@ -165,7 +166,11 @@
       "note": "Ajouter une note — ne déclenchera aucun agent",
       "compact": "Résumer cette conversation et continuer dans une nouvelle",
       "rename": "Renommer cette conversation sans lancer l’agent",
-      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé"
+      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé",
+      "statistic": "Afficher l’utilisation et le coût de cette conversation",
+      "archive": "Archiver cette conversation sans lancer l’agent",
+      "pin": "Épingler ou détacher cette conversation",
+      "unarchive": "Désarchiver cette conversation. Rien n’est envoyé à l’agent."
     }
   },
   "code_block": {
