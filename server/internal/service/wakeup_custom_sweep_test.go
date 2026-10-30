@@ -249,6 +249,80 @@ func TestCustomSweepReachesAnIssueWhoseDeferringOverrideIsDeleted(t *testing.T) 
 	}
 }
 
+// deleteOverride removes the issue-scope override of a rule through the service.
+func (k customEnv) deleteOverride(t *testing.T, rule string) {
+	t.Helper()
+	ref := k.scopeRef(t, WakeupScopeIssue)
+	row, err := k.f.q.GetWakeupDefinition(context.Background(), wakeupDefinitionParams(ref, rule))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.s.DeleteWakeupDefinition(context.Background(), ref, rule, row.Revision); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// laterIssues adds n todo issues whose ids sort after every generated id, so the
+// kit's issue is inside the first batch of a workspace sweep.
+func (k customEnv) laterIssues(t *testing.T, n int) {
+	t.Helper()
+	k.f.Exec(t, `INSERT INTO issue(id,workspace_id,title,status,priority,creator_type,creator_id,position,number,project_id)
+ SELECT ('ffffffff-ffff-4fff-8fff-'||lpad(to_hex(g),12,'0'))::uuid,$1,'later '||g,'todo','none','member',$2,0,(SELECT COALESCE(MAX(number),0) FROM issue WHERE workspace_id=$1)+g,$3 FROM generate_series(1,$4) g`,
+		k.f.WorkspaceID, k.f.UserID, k.project, n)
+}
+
+func TestCustomSweepReachesAnIssueWhoseDeferringOverrideIsDeletedBehindAnUnfinishedRoot(t *testing.T) {
+	k := newCustomEnv(t)
+	ctx := context.Background()
+	k.laterIssues(t, wakeupSweepBatch+10) // the root needs a second batch
+	root := k.mustSave(t, WakeupScopeWorkspace, "", k.conditionRule(statusIsTodo))
+	k.mustSave(t, WakeupScopeIssue, root.RuleKey, k.conditionRule(`{"type":"issue_field","field":"status","value":"in_review"}`))
+	if outcome, err := k.s.sweepOne(ctx, []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}); err != nil || outcome != sweepWalked {
+		t.Fatalf("root pass = %v, %v, want one walked batch", outcome, err)
+	}
+	if k.f.Count(t, `SELECT count(*) FROM issue_wakeup_definition WHERE workspace_id=$1 AND rule_key=$2 AND scope_kind='workspace' AND NOT sweep_done AND sweep_cursor IS NOT NULL`, k.f.WorkspaceID, root.RuleKey) != 1 {
+		t.Fatal("the root's first pass should leave a cursor and a pending sweep")
+	}
+	k.deleteOverride(t, root.RuleKey)
+	k.sweepAll(t)
+	if n, want := len(k.customInstances(t, root.RuleKey)), wakeupSweepBatch+10+1; n != want {
+		t.Fatalf("%d instances, want %d: the issue the root passed over was never recovered", n, want)
+	}
+}
+
+func TestCustomSweepIgnoresAnAdvanceFromAPassRewoundByAnOverrideDelete(t *testing.T) {
+	k := newCustomEnv(t)
+	ctx := context.Background()
+	k.laterIssues(t, wakeupSweepBatch+10)
+	root := k.mustSave(t, WakeupScopeWorkspace, "", k.conditionRule(statusIsTodo))
+	k.mustSave(t, WakeupScopeIssue, root.RuleKey, k.conditionRule(`{"type":"issue_field","field":"status","value":"in_review"}`))
+	// A pass claims the root and reads its batch; the override is deleted before it writes its cursor.
+	now := time.Now()
+	lease := pgtype.Timestamptz{Time: now.Add(wakeupSweepLease), Valid: true}
+	d, err := k.f.q.ClaimWakeupDefinitionSweep(ctx, db.ClaimWakeupDefinitionSweepParams{
+		Now: pgtype.Timestamptz{Time: now, Valid: true}, WorkspaceIds: []pgtype.UUID{parseTestUUID(t, k.f.WorkspaceID)}, LeaseUntil: lease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.deleteOverride(t, root.RuleKey)
+	n, err := k.f.q.AdvanceWakeupDefinitionSweep(ctx, db.AdvanceWakeupDefinitionSweepParams{
+		WorkspaceID: d.WorkspaceID, ScopeKind: d.ScopeKind, ScopeID: d.ScopeID, RuleKey: d.RuleKey, Revision: d.Revision,
+		LeaseUntil: d.SweepRetryAt, Cursor: parseTestUUID(t, "ffffffff-ffff-4fff-8fff-000000000032"), Done: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor *string
+	var done bool
+	if err := k.f.Pool.QueryRow(ctx, `SELECT sweep_cursor::text,sweep_done FROM issue_wakeup_definition WHERE workspace_id=$1 AND rule_key=$2 AND scope_kind='workspace'`, k.f.WorkspaceID, root.RuleKey).Scan(&cursor, &done); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || cursor != nil || done {
+		t.Fatalf("advance rows=%d cursor=%v done=%v, want the rewound sweep untouched by the stale pass", n, cursor, done)
+	}
+}
+
 func TestCustomSweepStopsWhenTheDefinitionIsDisabledOrDeleted(t *testing.T) {
 	k := newCustomEnv(t)
 	k.bulkIssues(t, 119, k.project, "todo")

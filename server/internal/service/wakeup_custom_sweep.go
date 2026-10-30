@@ -100,13 +100,13 @@ func (s *IssueWakeupService) sweepOne(ctx context.Context, workspaceIDs []pgtype
 		retry := now.Add(wakeupSweepRetryBase << min(d.SweepAttempts, 6))
 		_, failErr := s.Tasks.Queries.FailWakeupDefinitionSweep(ctx, db.FailWakeupDefinitionSweepParams{
 			WorkspaceID: d.WorkspaceID, ScopeKind: d.ScopeKind, ScopeID: d.ScopeID, RuleKey: d.RuleKey, Revision: d.Revision,
-			Error: truncateForSummary(err.Error(), 500), RetryAt: pgtype.Timestamptz{Time: retry, Valid: true}, MaxAttempts: wakeupSweepMaxAttempts,
+			LeaseUntil: d.SweepRetryAt, Error: truncateForSummary(err.Error(), 500), RetryAt: pgtype.Timestamptz{Time: retry, Valid: true}, MaxAttempts: wakeupSweepMaxAttempts,
 		})
 		return sweepWalked, errors.Join(fmt.Errorf("sweep wakeup definition %s: %w", d.RuleKey, err), failErr)
 	}
 	_, err = s.Tasks.Queries.AdvanceWakeupDefinitionSweep(ctx, db.AdvanceWakeupDefinitionSweepParams{
 		WorkspaceID: d.WorkspaceID, ScopeKind: d.ScopeKind, ScopeID: d.ScopeID, RuleKey: d.RuleKey, Revision: d.Revision,
-		Cursor: last, Done: finished,
+		LeaseUntil: d.SweepRetryAt, Cursor: last, Done: finished,
 	})
 	if err == nil && !sweepsRule(d) {
 		return sweepSettled, nil

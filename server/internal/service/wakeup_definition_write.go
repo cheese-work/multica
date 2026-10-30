@@ -460,8 +460,8 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 
 // reopenBroaderSweepsOfPendingOverride keeps activation from being lost when an
 // override is deleted before its own sweep ran. The broader sweeps left the
-// issues it covered to that sweep and moved on, so they walk again to reach them
-// under the inherited rule.
+// issues it covered to that sweep and moved on, finished or not, so they restart
+// from the beginning of their scope to reach those issues under the inherited rule.
 func reopenBroaderSweepsOfPendingOverride(ctx context.Context, q *db.Queries, deleted db.IssueWakeupDefinition) error {
 	if deleted.Root || deleted.SweepDone && deleted.SweepRevision == deleted.Revision {
 		return nil

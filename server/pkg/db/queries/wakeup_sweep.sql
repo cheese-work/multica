@@ -26,19 +26,22 @@ RETURNING d.*;
 -- Moves the cursor past a batch and ends the lease; done when the scope has no
 -- more issues. A definition revised since the claim is not touched: its sweep is
 -- pending again under the new revision and the stale cursor is never written back.
+-- The write also needs the lease its pass claimed under: a rewind clears the lease,
+-- so a pass that read its batch before the rewind cannot write its cursor over it.
 UPDATE issue_wakeup_definition SET sweep_cursor= sqlc.narg(cursor)::uuid,sweep_done= @done::bool,sweep_retry_at=NULL,sweep_attempts=0,sweep_error=NULL
 WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @scope_id AND rule_key= @rule_key
- AND revision= @revision AND sweep_revision= @revision;
+ AND revision= @revision AND sweep_revision= @revision AND sweep_retry_at= @lease_until::timestamptz;
 
 -- name: FailWakeupDefinitionSweep :execrows
 -- A pass that hit a real database error is retried after a delay; once it has
 -- failed max_attempts times in a row it is parked with the error visible, done
--- for this revision, so a broken definition cannot be retried forever.
+-- for this revision, so a broken definition cannot be retried forever. Like the
+-- advance, it needs the lease its pass claimed under.
 UPDATE issue_wakeup_definition SET sweep_attempts=sweep_attempts+1,sweep_error= @error::text,
  sweep_retry_at=CASE WHEN sweep_attempts+1 >= @max_attempts::int THEN NULL ELSE @retry_at::timestamptz END,
  sweep_done=(sweep_attempts+1 >= @max_attempts::int)
 WHERE workspace_id= @workspace_id AND scope_kind= @scope_kind AND scope_id= @scope_id AND rule_key= @rule_key
- AND revision= @revision AND sweep_revision= @revision;
+ AND revision= @revision AND sweep_revision= @revision AND sweep_retry_at= @lease_until::timestamptz;
 
 -- name: ListSweepWorkspaceIssues :many
 -- The next batch of a workspace-wide sweep, in keyset order on (workspace_id, id).
@@ -63,12 +66,13 @@ UPDATE issue_wakeup SET capacity_reason=NULL
 WHERE id= @id AND capacity_reason IS NOT NULL AND NOT enabled AND (disabled_at IS NOT NULL OR paused_reason IS NOT NULL OR timed_out_at IS NOT NULL);
 
 -- name: ReopenBroaderWakeupSweeps :execrows
--- Walks again the sweeps of a rule's broader scopes (workspace for a project
--- override, workspace and project for an issue override). A broader sweep leaves
--- an issue to a pending narrower override; when that override is deleted its
--- sweep is gone, so the broader one is the only walk left to reach the issue.
+-- Rewinds the sweeps of a rule's broader scopes (workspace for a project
+-- override, workspace and project for an issue override) to the start of their
+-- scope, whether they are finished, mid-walk or leased to a running pass. A
+-- broader sweep leaves an issue to a pending narrower override; when that
+-- override is deleted its sweep is gone, and the broader one may already be past
+-- the issue. Clearing the lease fences a running pass out of its cursor write.
 -- The revision and baseline stay as claimed; an issue already activated is
 -- found again and left alone.
 UPDATE issue_wakeup_definition SET sweep_done=false,sweep_cursor=NULL,sweep_retry_at=NULL,sweep_attempts=0,sweep_error=NULL
-WHERE workspace_id= @workspace_id AND rule_key= @rule_key AND sweep_done AND sweep_revision=revision
- AND scope_kind= ANY(@scope_kinds::text[]);
+WHERE workspace_id= @workspace_id AND rule_key= @rule_key AND scope_kind= ANY(@scope_kinds::text[]);
