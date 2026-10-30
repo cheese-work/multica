@@ -95,13 +95,16 @@ effective agent settlements only while its agent decisions setting is on
 
 ```bash
 multica decision brief
+multica decision brief --format markdown
 multica decision agent-setting --enabled=true
 ```
 
 `brief` reads the feed for the daily brief section "Agents decided — veto?":
 each record with its link, veto line and 24 hour review target (a target, not
 an expiry; a veto still works later), notice delivery failures, and pilot
-metrics. `agent-setting` turns the workspace setting on or off; only a
+metrics. `--format markdown` prints that section ready to paste into the brief,
+outside Needs you, with times in ICT. Each veto line already names the reading
+owner as undo owner. `agent-setting` turns the workspace setting on or off; only a
 workspace owner can. One excluded-category decision turns it off by itself and
 `brief` shows the stop reason. Existing records stay vetoable.
 

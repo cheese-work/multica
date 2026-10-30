@@ -194,7 +194,9 @@ author's own earlier instance for the same issue and gate. The reason recorded i
 ## Pilot and brief (C4)
 
 Setting: `workspace.settings.agent_decisions_enabled`, default off, owner-only
-(`PUT /api/agent-decisions/setting`, `multica decision agent-setting`). With it
+and human-only (`PUT /api/agent-decisions/setting`, `multica decision
+agent-setting`). A task token or cloud PAT gets 403, even for the workspace
+owner's user. Enabling it on C00 is a separate step. With it
 off, the vote path never inserts a settlement. Turning it on clears an earlier
 stop.
 
@@ -213,16 +215,35 @@ Brief feed: `GET /api/agent-decisions/brief` (workspace member). Fields:
 It is not an expiry: a veto works at any time. Agent records never enter Needs
 you; they only appear in this feed.
 
-Brief producer: the daily brief is a Multica autopilot owned by agent
-x99-claude-opus. It prints the section "Agents decided — veto?" from
-`multica decision brief`. Editing that autopilot prompt is a separate workspace
-instruction change, not part of this code.
+Brief output: `multica decision brief --format markdown` prints the section
+"Agents decided — veto?" as standalone markdown, outside Needs you, with review
+targets in ICT. Each record lists the issue, gate, state, the record link and the
+veto line. A revoked record shows its reason. Notice delivery failures and the
+stop reason follow. `link` opens the instance's frozen proposal comment, not only
+the issue. `veto_line` already ends in `member:<reader's user uuid>`, so the
+reader is the undo owner when they paste it.
+
+Not done in this code: the daily brief is a Multica autopilot (6f676b71, "Cheese
+evening brief", agent x99-claude-opus), and its prompt does not call the command
+yet. Until a workspace instruction change adds the step "run
+`multica decision brief --format markdown` and add its output as a section after
+`## Cần anh`", the section is not printed by itself.
 
 Notice: a settlement writes one `decision_agent_notice` row in its own
-transaction. The decision worker delivers it after commit as an
-`agent_decision_notice` inbox item to every workspace owner, with the issue link
-and the veto line. A failed delivery stores `attempts` and `last_error`, retries
-with backoff (30 s doubling to 1 hour) and shows in `notice_failures`.
+transaction. The decision worker delivers it after commit, in one transaction,
+to every workspace owner:
+
+- an `agent_decision_notice` inbox item with the record link and that owner's
+  veto line. It carries `decision_request_id`, so it ignores the
+  `unassigned_activity=muted` preference like any decision;
+- a copy in the owner's decision thread for the issue's topic (CHE-2407), created
+  when missing, as message kind `agent_decision`. A thread the owner cannot use is
+  skipped; the inbox item is the reliable channel.
+
+The notice counts as delivered only when every owner's inbox item was inserted.
+Otherwise the transaction rolls back, `attempts` and `last_error` are stored, the
+notice retries with backoff (30 s doubling to 1 hour) and shows in
+`notice_failures`.
 
 Pilot metrics:
 
