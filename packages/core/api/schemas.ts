@@ -1061,6 +1061,7 @@ export const DecisionArtifactListSchema = z.object({
     sha256: z.string().catch(""),
     supersedes_attachment_id: z.string().optional().catch(undefined),
     signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
+    supersedes_signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
     attachment: z.object({
       id: z.string(),
       filename: z.string().catch(""),

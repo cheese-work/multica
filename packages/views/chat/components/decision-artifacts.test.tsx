@@ -13,6 +13,9 @@ vi.mock("@multica/core/api", async (importActual) => ({
   api: { listDecisionArtifacts, getAttachmentTextContent },
 }));
 
+const downloadAttachment = vi.hoisted(() => vi.fn());
+vi.mock("../../editor/use-download-attachment", () => ({ useDownloadAttachment: () => downloadAttachment }));
+
 const sha = "3f9a2c1".padEnd(64, "0");
 const artifact = (over: Partial<DecisionArtifact> = {}): DecisionArtifact => ({
   attachment_id: "att-5",
@@ -20,9 +23,11 @@ const artifact = (over: Partial<DecisionArtifact> = {}): DecisionArtifact => ({
   sha256: sha,
   supersedes_attachment_id: "att-4",
   signed_by: { reviewer: "Sol", comment_id: "c1" },
+  supersedes_signed_by: { reviewer: "Terra", comment_id: "c0" },
+  // The artifacts endpoint returns the relative, authenticated path outside CloudFront mode.
   attachment: {
     id: "att-5", filename: "design-rev5.md", content_type: "text/markdown",
-    size_bytes: 18_800, download_url: "https://files.test/att-5", attachment_download_url: "https://files.test/att-5?dl=1",
+    size_bytes: 18_800, download_url: "/api/attachments/att-5/download",
   },
   diff: {
     previous_filename: "design-rev4.md",
@@ -48,6 +53,7 @@ describe("DecisionArtifacts", () => {
   beforeEach(() => {
     listDecisionArtifacts.mockReset();
     getAttachmentTextContent.mockReset();
+    downloadAttachment.mockReset();
   });
 
   it("renders nothing for an ask without files", async () => {
@@ -56,14 +62,30 @@ describe("DecisionArtifacts", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows each file as a card with name, size, short SHA and a download link", async () => {
+  it("shows each file as a card with name, size, short SHA and a download button", async () => {
     renderArtifacts([artifact()]);
     const section = await screen.findByRole("region", { name: "You are approving" });
     expect(within(section).getByText("Design revision 5")).toBeInTheDocument();
     expect(within(section).getByText(/design-rev5\.md/)).toHaveTextContent("18 KB");
     expect(within(section).getByText("3f9a2c1")).toBeInTheDocument();
     expect(within(section).getByText("Hash verified")).toBeInTheDocument();
-    expect(within(section).getByRole("link", { name: "Download design-rev5.md" })).toHaveAttribute("href", "https://files.test/att-5?dl=1");
+    expect(within(section).queryByRole("link", { name: /Download/ })).toBeNull();
+    expect(within(section).getByRole("button", { name: "Download design-rev5.md" })).toBeInTheDocument();
+  });
+
+  it("carries the element ids the admit sheet names", async () => {
+    renderArtifacts([artifact()]);
+    const section = await screen.findByTestId("decision-request-artifacts");
+    for (const id of ["decision-artifact-file", "decision-artifact-signature", "decision-artifact-download", "decision-artifact-viewer"]) {
+      expect(within(section).getByTestId(id)).toBeInTheDocument();
+    }
+  });
+
+  it("downloads through the shared attachment downloader, not a bare link", async () => {
+    renderArtifacts([artifact()]);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Download design-rev5.md" }));
+    expect(downloadAttachment).toHaveBeenCalledWith("att-5");
   });
 
   it("calls an answered card 'You approved'", async () => {
@@ -117,7 +139,8 @@ describe("DecisionArtifacts", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
     const panel = screen.getByRole("tabpanel");
-    expect(within(panel).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+    expect(within(panel).getByText("design-rev4.md signed by Terra")).toBeInTheDocument();
+    expect(within(panel).queryByText(/signed by Sol/)).toBeNull();
     expect(within(panel).getByText("3 lines added, 2 removed.")).toBeInTheDocument();
     const region = within(panel).getByRole("region", { name: "Text changes since design-rev4.md, changed hunks only" });
     expect(region).toHaveAttribute("tabindex", "0");
@@ -128,11 +151,37 @@ describe("DecisionArtifacts", () => {
     expect(within(region).getByText("Unchanged lines hidden: 43")).toBeInTheDocument();
   });
 
-  it("marks an unsigned revision", async () => {
+  it("marks the current revision on the collapsed file card, signed or not", async () => {
+    const signed = renderArtifacts([artifact()]);
+    const card = await screen.findByRole("region", { name: "You are approving" });
+    expect(screen.queryByRole("tabpanel")).toBeNull();
+    expect(within(card).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+    signed.unmount();
+    renderArtifacts([artifact({ signed_by: undefined })]);
+    expect(await screen.findByText("Design revision 5 is not signed yet")).toBeInTheDocument();
+  });
+
+  it("shows the reviewer of a signed first revision that has no Changes tab", async () => {
+    renderArtifacts([artifact({ supersedes_attachment_id: undefined, supersedes_signed_by: undefined, diff: undefined })]);
+    expect(await screen.findByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Changes since/ })).toBeNull();
+  });
+
+  it("keeps the previous and the current signature apart: rev 4 signed, rev 5 not yet", async () => {
     renderArtifacts([artifact({ signed_by: undefined })]);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
+    const panel = screen.getByRole("tabpanel");
+    expect(within(panel).getByText("design-rev4.md signed by Terra")).toBeInTheDocument();
     expect(screen.getByText("Design revision 5 is not signed yet")).toBeInTheDocument();
+    expect(within(panel).queryByText(/Design revision 5/)).toBeNull();
+  });
+
+  it("says so when the previous revision has no recorded signature", async () => {
+    renderArtifacts([artifact({ supersedes_signed_by: undefined })]);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
+    expect(within(screen.getByRole("tabpanel")).getByText("No signature recorded for design-rev4.md")).toBeInTheDocument();
   });
 
   it("offers only Preview for a first revision", async () => {
@@ -191,7 +240,7 @@ describe("DecisionArtifacts", () => {
   it("names a file that was deleted after the ask was sent", async () => {
     renderArtifacts([artifact({ attachment: undefined, diff: undefined })]);
     expect(await screen.findByText("This file was deleted after the ask was sent.")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Download/ })).toBeNull();
   });
 
   it("tells the reader when the file list cannot load", async () => {

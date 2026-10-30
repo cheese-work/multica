@@ -57,6 +57,27 @@ func TestDecodeAskArtifacts(test *testing.T) {
 			a["signed_by"] = map[string]any{"reviewer": "sol", "comment_id": "x"}
 			ask["artifacts"] = []any{a}
 		}, want: "ask.artifacts[0].signed_by.comment_id must be a UUID"},
+		{name: "supersedes_signed_by", mutate: func(ask map[string]any) {
+			a := artifactMap()
+			a["supersedes_signed_by"] = map[string]any{"reviewer": "x99-codex-sol", "comment_id": testCommentID}
+			ask["artifacts"] = []any{a}
+		}},
+		{name: "supersedes_signed_by needs reviewer", mutate: func(ask map[string]any) {
+			a := artifactMap()
+			a["supersedes_signed_by"] = map[string]any{"comment_id": testCommentID}
+			ask["artifacts"] = []any{a}
+		}, want: "ask.artifacts[0].supersedes_signed_by.reviewer is required"},
+		{name: "supersedes_signed_by bad comment", mutate: func(ask map[string]any) {
+			a := artifactMap()
+			a["supersedes_signed_by"] = map[string]any{"reviewer": "sol", "comment_id": "x"}
+			ask["artifacts"] = []any{a}
+		}, want: "ask.artifacts[0].supersedes_signed_by.comment_id must be a UUID"},
+		{name: "supersedes_signed_by without supersedes", mutate: func(ask map[string]any) {
+			a := artifactMap()
+			delete(a, "supersedes_attachment_id")
+			a["supersedes_signed_by"] = map[string]any{"reviewer": "sol", "comment_id": testCommentID}
+			ask["artifacts"] = []any{a}
+		}, want: "ask.artifacts[0].supersedes_signed_by requires supersedes_attachment_id"},
 		{name: "duplicate attachment", mutate: func(ask map[string]any) { ask["artifacts"] = []any{artifactMap(), artifactMap()} }, want: "ask.artifacts[1].attachment_id must differ from the other artifacts"},
 	}
 	for _, tc := range cases {
@@ -173,5 +194,21 @@ func TestContentNamesArtifactsSoReasksCompareByFile(test *testing.T) {
 	}
 	if !strings.HasSuffix(first, "#comment-"+validAskMap()["source_comment_id"].(string)+")") {
 		test.Fatalf("source link must stay last: %s", first)
+	}
+}
+
+func TestSupersedesSignatureIsStored(test *testing.T) {
+	ask := validAskMap()
+	artifact := artifactMap()
+	artifact["supersedes_signed_by"] = map[string]any{"reviewer": "x99-codex-sol", "comment_id": testCommentID}
+	ask["artifacts"] = []any{artifact}
+	raw, _ := json.Marshal(ask)
+	decoded, err := DecodeAsk(raw)
+	if err != nil {
+		test.Fatal(err)
+	}
+	stored, _ := json.Marshal(decoded)
+	if !strings.Contains(string(stored), `"supersedes_signed_by":{"reviewer":"x99-codex-sol"`) {
+		test.Fatalf("previous signature is not stored: %s", stored)
 	}
 }

@@ -6,6 +6,7 @@ import { countDiffLines, useDecisionArtifacts } from "@multica/core/issues/decis
 import type { DecisionArtifact, DecisionArtifactDiff } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { formatBytes } from "../../common/format-bytes";
+import { useDownloadAttachment } from "../../editor/use-download-attachment";
 import { useT } from "../../i18n";
 import { RichContent } from "../../rich-content";
 
@@ -29,19 +30,27 @@ function RetryBanner({ message, onRetry }: { message: string; onRetry: () => voi
   );
 }
 
+function SignatureTag({ signed, testId, children }: { signed: boolean; testId?: string; children: string }) {
+  return (
+    <span data-testid={testId} className={cn("inline-flex items-center gap-1 rounded-full px-2 text-micro font-semibold", signed ? "bg-success/10 text-success" : "bg-warning/10 text-warning")}>
+      {signed && <Check className="size-3" aria-hidden />}
+      {children}
+    </span>
+  );
+}
+
 function DiffView({ artifact, diff }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff }) {
   const { t } = useT("chat");
   const { added, removed } = countDiffLines(diff.hunks);
-  const signed = artifact.signed_by;
+  const previous = artifact.supersedes_signed_by;
   return (
     <div className="grid gap-2">
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-caption">
-        <span className={cn("inline-flex items-center gap-1 rounded-full px-2 text-micro font-semibold", signed ? "bg-success/10 text-success" : "bg-warning/10 text-warning")}>
-          {signed && <Check className="size-3" aria-hidden />}
-          {signed
-            ? t(($) => $.decision.artifacts.signed_by, { label: artifact.label, reviewer: signed.reviewer })
-            : t(($) => $.decision.artifacts.not_signed, { label: artifact.label })}
-        </span>
+        <SignatureTag signed={!!previous}>
+          {previous
+            ? t(($) => $.decision.artifacts.previous_signed_by, { previous: diff.previous_filename, reviewer: previous.reviewer })
+            : t(($) => $.decision.artifacts.previous_not_signed, { previous: diff.previous_filename })}
+        </SignatureTag>
         <span>{t(($) => $.decision.artifacts.changes_summary, { added, removed })}</span>
       </p>
       {diff.hunks.length === 0 ? (
@@ -170,7 +179,7 @@ function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifa
   const panelId = (key: TabKey) => `${id}-panel-${key}`;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-surface-border bg-surface">
+    <div data-testid="decision-artifact-viewer" className="overflow-hidden rounded-lg border border-surface-border bg-surface">
       <div role="tablist" aria-label={t(($) => $.decision.artifacts.viewer_label)} className="flex gap-0.5 overflow-x-auto border-b border-surface-border px-1">
         {tabs.map((key) => (
           <button
@@ -216,8 +225,10 @@ function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifa
 function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact; onRetryChanges: () => void }) {
   const { t } = useT("chat");
   const { attachment } = artifact;
+  const download = useDownloadAttachment();
+  const signed = artifact.signed_by;
   return (
-    <div className="grid gap-2">
+    <div data-testid="decision-artifact-file" className="grid gap-2">
       <div className="flex flex-wrap items-start gap-2.5">
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
           <FileText className="size-[18px]" aria-hidden />
@@ -234,21 +245,27 @@ function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact
                   {t(($) => $.decision.artifacts.hash_verified)}
                 </em>
               </span>
+              <SignatureTag signed={!!signed} testId="decision-artifact-signature">
+                {signed
+                  ? t(($) => $.decision.artifacts.signed_by, { label: artifact.label, reviewer: signed.reviewer })
+                  : t(($) => $.decision.artifacts.not_signed, { label: artifact.label })}
+              </SignatureTag>
             </>
           ) : (
             <span className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.file_missing)}</span>
           )}
         </div>
         {attachment && (
-          <a
-            href={attachment.attachment_download_url || attachment.download_url}
-            download={attachment.filename}
+          <button
+            type="button"
+            data-testid="decision-artifact-download"
+            onClick={() => void download(attachment.id)}
             aria-label={t(($) => $.decision.artifacts.download_label, { name: attachment.filename })}
             className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-surface-border bg-surface px-3.5 text-label font-semibold hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
           >
             <Download className="size-4" aria-hidden />
             {t(($) => $.decision.artifacts.download)}
-          </a>
+          </button>
         )}
       </div>
       <ArtifactViewer artifact={artifact} onRetryChanges={onRetryChanges} />

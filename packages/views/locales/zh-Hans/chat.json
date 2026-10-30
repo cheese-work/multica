@@ -407,6 +407,8 @@
       "tab_preview": "预览",
       "signed_by": "{{label}} 已由 {{reviewer}} 签署",
       "not_signed": "{{label}} 尚未签署",
+      "previous_signed_by": "{{previous}} 已由 {{reviewer}} 签署",
+      "previous_not_signed": "未记录 {{previous}} 的签署",
       "changes_summary": "新增 {{added}} 行，删除 {{removed}} 行。",
       "diff_region": "自 {{previous}} 以来的文本变更，仅显示变更片段",
       "lines_hidden": "已隐藏的未变更行数：{{count}}",

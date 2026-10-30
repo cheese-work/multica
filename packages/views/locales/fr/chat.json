@@ -415,6 +415,8 @@
       "tab_preview": "Aperçu",
       "signed_by": "{{label}} signé par {{reviewer}}",
       "not_signed": "{{label}} n'est pas encore signé",
+      "previous_signed_by": "{{previous}} signé par {{reviewer}}",
+      "previous_not_signed": "Aucune signature enregistrée pour {{previous}}",
       "changes_summary": "{{added}} lignes ajoutées, {{removed}} supprimées.",
       "diff_region": "Changements du texte depuis {{previous}}, blocs modifiés uniquement",
       "lines_hidden": "Lignes inchangées masquées : {{count}}",

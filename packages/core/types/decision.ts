@@ -144,6 +144,8 @@ export interface DecisionArtifact {
   sha256: string;
   supersedes_attachment_id?: string;
   signed_by?: DecisionArtifactSignature;
+  /** Signature of the superseded revision; the diff is measured against that file. */
+  supersedes_signed_by?: DecisionArtifactSignature;
   /** Absent when the file was deleted after the ask was sent. */
   attachment?: {
     id: string;

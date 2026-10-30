@@ -372,6 +372,8 @@
       "tab_preview": "預覽",
       "signed_by": "{{label}} 已由 {{reviewer}} 簽署",
       "not_signed": "{{label}} 尚未簽署",
+      "previous_signed_by": "{{previous}} 已由 {{reviewer}} 簽署",
+      "previous_not_signed": "未記錄 {{previous}} 的簽署",
       "changes_summary": "新增 {{added}} 行，刪除 {{removed}} 行。",
       "diff_region": "自 {{previous}} 以來的文字變更，僅顯示變更片段",
       "lines_hidden": "已隱藏的未變更行數：{{count}}",

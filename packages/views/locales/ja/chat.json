@@ -407,6 +407,8 @@
       "tab_preview": "プレビュー",
       "signed_by": "{{label}} は {{reviewer}} が署名済み",
       "not_signed": "{{label}} は未署名",
+      "previous_signed_by": "{{previous}} は {{reviewer}} が署名済み",
+      "previous_not_signed": "{{previous}} の署名は記録されていません",
       "changes_summary": "{{added}} 行追加、{{removed}} 行削除。",
       "diff_region": "{{previous}} からのテキスト変更（変更箇所のみ）",
       "lines_hidden": "変更なしの非表示行: {{count}}",

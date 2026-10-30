@@ -407,6 +407,8 @@
       "tab_preview": "미리보기",
       "signed_by": "{{label}}: {{reviewer}} 서명 완료",
       "not_signed": "{{label}}: 아직 서명되지 않음",
+      "previous_signed_by": "{{previous}}: {{reviewer}} 서명 완료",
+      "previous_not_signed": "{{previous}}: 기록된 서명 없음",
       "changes_summary": "{{added}}줄 추가, {{removed}}줄 삭제.",
       "diff_region": "{{previous}} 이후 텍스트 변경 사항(변경된 부분만)",
       "lines_hidden": "변경 없는 숨긴 줄: {{count}}",
