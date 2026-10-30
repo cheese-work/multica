@@ -73,6 +73,39 @@ func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPausePa
 	return result.RowsAffected(), nil
 }
 
+const listDaemonPausesSetFromWorkspace = `-- name: ListDaemonPausesSetFromWorkspace :many
+SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at FROM daemon_pause WHERE workspace_id = $1
+`
+
+// Machines held by a pause that this workspace set. Deleting the workspace
+// removes these rows, which lifts the pause for the owner's other workspaces.
+func (q *Queries) ListDaemonPausesSetFromWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]DaemonPause, error) {
+	rows, err := q.db.Query(ctx, listDaemonPausesSetFromWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DaemonPause{}
+	for rows.Next() {
+		var i DaemonPause
+		if err := rows.Scan(
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.WorkspaceID,
+			&i.Reason,
+			&i.PausedBy,
+			&i.PausedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
 SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at FROM daemon_pause
 WHERE machine_owner_id = ANY($1::uuid[])

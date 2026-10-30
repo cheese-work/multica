@@ -38,3 +38,8 @@ GROUP BY COALESCE(rt.owner_id, rt.workspace_id), rt.daemon_id;
 -- resume or drain change.
 SELECT DISTINCT workspace_id FROM agent_runtime
 WHERE COALESCE(owner_id, workspace_id) = $1 AND daemon_id = $2;
+
+-- name: ListDaemonPausesSetFromWorkspace :many
+-- Machines held by a pause that this workspace set. Deleting the workspace
+-- removes these rows, which lifts the pause for the owner's other workspaces.
+SELECT * FROM daemon_pause WHERE workspace_id = $1;

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"sync"
 	"testing"
@@ -297,4 +298,53 @@ func TestRefreshMachineOfTask_DrainChangeReachesTheMachinesOtherWorkspaces(t *te
 	if got := rec.actions(intruderWS); len(got) != 0 {
 		t.Fatalf("another owner's workspace was refreshed: %v", got)
 	}
+}
+
+// A pause belongs to the workspace that set it, so deleting that workspace
+// lifts it for the whole machine. The surviving workspaces must hear that, or
+// the one that shows "Safe to shut down" keeps saying so while the machine
+// takes work again.
+func TestDaemonPause_WorkspaceDeleteRefreshesTheSurvivingWorkspaces(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const daemonID = "pause-delete-refresh-machine"
+	cleanupPausesFor(t, daemonID)
+	runtimeA, _ := seedPausableRuntime(t, ctx, daemonID, "Pause delete A")
+	wsB, runtimeB, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-delete-b")
+	wsC, runtimeC, _ := seedSecondWorkspaceRuntime(t, ctx, daemonID, "pause-delete-c")
+	_, intruderWS, _, _ := seedForeignOwnerRuntime(t, daemonID, "pause-delete-intruder")
+
+	if w := putPause(t, testUserID, runtimeB, map[string]any{"reason": "maintenance"}); w.Code != http.StatusOK {
+		t.Fatalf("pause = %d: %s", w.Code, w.Body.String())
+	}
+	if p := listRuntimesAs(t, testUserID, testWorkspaceID)[runtimeA].Pause; p == nil {
+		t.Fatal("the pause is not visible from the owner's first workspace")
+	}
+	rec := recordRuntimeRefreshes(t)
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsB, nil), "id", wsB)
+	testHandler.DeleteWorkspace(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d: %s", w.Code, w.Body.String())
+	}
+
+	for name, ws := range map[string]string{"first": testWorkspaceID, "third": wsC} {
+		if got := rec.actions(ws); len(got) != 1 || got[0] != "resume" {
+			t.Fatalf("surviving %s workspace refresh after the pausing workspace was deleted = %v, want [resume]", name, got)
+		}
+	}
+	if got := rec.actions(wsB); len(got) != 0 {
+		t.Fatalf("the deleted workspace was refreshed: %v", got)
+	}
+	if got := rec.actions(intruderWS); len(got) != 0 {
+		t.Fatalf("another owner's workspace was refreshed: %v", got)
+	}
+	// What the refetch after that event shows: the machine takes work again.
+	if p := listRuntimesAs(t, testUserID, testWorkspaceID)[runtimeA].Pause; p != nil {
+		t.Fatalf("pause still listed after its workspace was deleted: %+v", p)
+	}
+	_ = runtimeC
 }
