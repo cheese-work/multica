@@ -60,7 +60,7 @@ func LinkReferences(content string, resolve func(kind, reference string) string)
 func referenceEdits(content string) []referenceEdit {
 	inlines := parser.DefaultInlineParsers()
 	for i := range inlines {
-		inlines[i].Value = referenceSourceParser{inlines[i].Value.(parser.InlineParser)}
+		inlines[i].Value = referenceSourceParser{inlines[i].Value.(parser.InlineParser)} //nolint:errcheck // every default inline parser is a parser.InlineParser
 	}
 	p := parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...), parser.WithInlineParsers(inlines...), parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...))
 	source := []byte(content)
@@ -186,12 +186,11 @@ func (p referenceSourceParser) Parse(parent ast.Node, reader text.Reader, pc par
 	case *ast.Link, *ast.Image, *ast.CodeSpan, *ast.AutoLink, *ast.RawHTML:
 		endLine, end := reader.Position()
 		start := before.Start
-		switch n.(type) {
+		switch n := n.(type) {
 		case *ast.Link:
 			n.SetAttributeString("reference_label_end", before.Start)
 			start = n.Pos()
-			link := n.(*ast.Link)
-			if link.Reference == nil {
+			if n.Reference == nil {
 				// Reuse the block reader's container-aware whitespace handling;
 				// raw source scanning would stop at a continuation line's '>'.
 				reader.SetPosition(beforeLine, before)
@@ -203,8 +202,8 @@ func (p referenceSourceParser) Parse(parent ast.Node, reader text.Reader, pc par
 						reader.Advance(1)
 					}
 					_, destination := reader.Position()
-					stop := destination.Start + len(link.Destination)
-					if destination.Start >= 0 && stop <= end.Start && bytes.HasPrefix(reader.Source()[destination.Start:], link.Destination) {
+					stop := destination.Start + len(n.Destination)
+					if destination.Start >= 0 && stop <= end.Start && bytes.HasPrefix(reader.Source()[destination.Start:], n.Destination) {
 						n.SetAttributeString("reference_destination_start", destination.Start)
 						n.SetAttributeString("reference_destination_end", stop)
 					}

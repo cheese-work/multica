@@ -208,10 +208,10 @@ func NewBlackholeHTTP2Server(t TB, handler http.Handler) (*httptest.Server, <-ch
 func TrustHTTP2Server(t TB, client *http.Client, server *httptest.Server) {
 	t.Helper()
 	if client.Transport == nil {
-		client.Transport = http.DefaultTransport.(*http.Transport).Clone()
+		client.Transport = http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck // DefaultTransport is an *http.Transport
 	}
-	transport := client.Transport.(*http.Transport)
-	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	transport := client.Transport.(*http.Transport)                                                 //nolint:errcheck // test helper: the caller passes an *http.Transport client
+	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone() //nolint:errcheck // httptest clients use an *http.Transport
 	if transport.HTTP2 != nil {
 		transport.HTTP2.SendPingTimeout /= 100
 		transport.HTTP2.PingTimeout /= 100
