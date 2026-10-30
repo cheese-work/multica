@@ -118,7 +118,11 @@ func runChatContinue(cmd *cobra.Command, _ []string) error {
 	}
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
-		fmt.Fprintln(cmd.OutOrStdout(), strVal(response, "url"))
+		link := strVal(response, "web_url")
+		if link == "" {
+			link = strVal(response, "url")
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), link)
 		return nil
 	}
 	return cli.PrintJSON(cmd.OutOrStdout(), response)

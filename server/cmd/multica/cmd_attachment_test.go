@@ -193,6 +193,42 @@ func TestRunAttachmentUploadSendsTaskIDAndPrintsContract(t *testing.T) {
 	}
 }
 
+func TestRunAttachmentUploadPrintsWebURLOnlyWhenServerSendsIt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		webURL string
+		want   bool
+	}{"present": {"https://app.test/ws/attachments/att-1/preview", true}, "absent": {"", false}} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := map[string]any{"id": "att-1", "content_type": "image/png", "markdown_url": "https://public.example/att-1"}
+				if tc.webURL != "" {
+					body["web_url"] = tc.webURL
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			defer srv.Close()
+			setCLITestServerEnv(t, srv.URL)
+			t.Setenv("MULTICA_TOKEN", "mat_test-token")
+			imgPath := filepath.Join(t.TempDir(), "chart.png")
+			if err := os.WriteFile(imgPath, []byte("\x89PNG\r\n\x1a\nbytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := newAttachmentUploadTestCmd()
+			_ = cmd.Flags().Set("task", "task-abc")
+			out, err := captureStdout(t, func() error { return runAttachmentUpload(cmd, []string{imgPath}) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(out, `"web_url": "`+tc.webURL+`"`); tc.want != got {
+				t.Fatalf("web_url in stdout = %v, want %v: %q", got, tc.want, out)
+			}
+			if !tc.want && strings.Contains(out, "web_url") {
+				t.Fatalf("web_url must be omitted: %q", out)
+			}
+		})
+	}
+}
+
 // TestRunAttachmentUploadNonImageUsesFileCardMarkdown covers the content-type
 // branch: a non-image file emits the block-level `!file[...]( )` card snippet,
 // not image `![...]` markdown.
