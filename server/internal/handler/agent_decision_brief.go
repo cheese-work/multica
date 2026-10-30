@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/weblink"
@@ -106,7 +107,8 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(workspaceID), "workspace not found"); !ok {
+	member, ok := h.requireWorkspaceMember(w, r, uuidToString(workspaceID), "workspace not found")
+	if !ok {
 		return
 	}
 	ctx := r.Context()
@@ -131,7 +133,8 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 
 	// Every live record, and revoked ones from the last week.
 	rows, err := h.DB.Query(ctx, `SELECT s.instance_id::text,s.issue_id::text,w.issue_prefix || '-' || i.number,sc.waived_gate,sc.candidate_sha256,
-        s.effective_at,s.revoked_at,s.revoke_reason
+        s.effective_at,s.revoked_at,s.revoke_reason,
+        (SELECT v.comment_id::text FROM governed_vote_record v WHERE v.workspace_id=s.workspace_id AND v.decision_instance_id=s.instance_id AND v.decision_event='proposal' LIMIT 1)
         FROM decision_agent_settlement s
         JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
         JOIN issue i ON i.id=s.issue_id AND i.workspace_id=s.workspace_id
@@ -148,8 +151,8 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		var sha string
 		var effective time.Time
 		var revoked *time.Time
-		var reason *string
-		if err := rows.Scan(&rec.InstanceID, &rec.IssueID, &rec.Identifier, &rec.Gate, &sha, &effective, &revoked, &reason); err != nil {
+		var reason, proposal *string
+		if err := rows.Scan(&rec.InstanceID, &rec.IssueID, &rec.Identifier, &rec.Gate, &sha, &effective, &revoked, &reason, &proposal); err != nil {
 			rows.Close()
 			fail(err)
 			return
@@ -164,8 +167,8 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 				rec.RevokeReason = *reason
 			}
 		}
-		rec.Link = h.agentDecisionLink(slug, rec.Identifier)
-		rec.VetoLine = agentDecisionVetoLine(rec.InstanceID, sha)
+		rec.Link = h.agentDecisionLink(slug, rec.Identifier, proposal)
+		rec.VetoLine = agentDecisionVetoLine(rec.InstanceID, sha, uuidToString(member.UserID))
 		records = append(records, rec)
 	}
 	rows.Close()
@@ -234,12 +237,17 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func agentDecisionVetoLine(instance, candidateSHA string) string {
-	return "Veto: decision:" + instance + " " + candidateSHA
+// The line names the reader as undo owner, so pasting it needs no edit.
+func agentDecisionVetoLine(instance, candidateSHA, memberUserID string) string {
+	return "Veto: decision:" + instance + " " + candidateSHA + " member:" + memberUserID
 }
 
-func (h *Handler) agentDecisionLink(slug, identifier string) string {
+// The link opens this instance's frozen proposal comment, not only the issue.
+func (h *Handler) agentDecisionLink(slug, identifier string, proposalCommentID *string) string {
 	path := weblink.Issue(slug, identifier)
+	if proposalCommentID != nil {
+		path = weblink.Comment(slug, identifier, *proposalCommentID)
+	}
 	if link := weblink.Build(h.cfg.AppURL, path); link != "" {
 		return link
 	}
@@ -274,10 +282,14 @@ func (h *Handler) deliverAgentDecisionNotices(ctx context.Context) error {
 	}
 	var failures error
 	for _, p := range due {
-		items, err := h.sendAgentDecisionNotice(ctx, p.workspace, p.issue, p.instance, p.sha, p.gate)
+		items, messages, err := h.sendAgentDecisionNotice(ctx, p.workspace, p.issue, p.instance, p.sha, p.gate)
 		if err == nil {
+			workspace := uuidToString(p.workspace)
 			for _, item := range items {
-				h.publish(protocol.EventInboxNew, uuidToString(p.workspace), "system", "", map[string]any{"item": inboxToResponse(item)})
+				h.publish(protocol.EventInboxNew, workspace, "system", "", map[string]any{"item": inboxToResponse(item)})
+			}
+			for _, message := range messages {
+				h.publishChat(protocol.EventChatMessage, workspace, "system", "", uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 			}
 			continue
 		}
@@ -290,45 +302,61 @@ func (h *Handler) deliverAgentDecisionNotices(ctx context.Context) error {
 	return failures
 }
 
-func (h *Handler) sendAgentDecisionNotice(ctx context.Context, workspaceID, issueID pgtype.UUID, instance, sha, gate string) ([]db.InboxItem, error) {
+// One transaction: an owner item per owner plus, where the owner has a usable
+// topic thread (CHE-2407), a copy there. The notice counts as delivered only
+// when every owner item was inserted; otherwise it rolls back and retries.
+func (h *Handler) sendAgentDecisionNotice(ctx context.Context, workspaceID, issueID pgtype.UUID, instance, sha, gate string) ([]db.InboxItem, []db.ChatMessage, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 	var slug, identifier, title string
-	if err := tx.QueryRow(ctx, `SELECT w.slug,w.issue_prefix || '-' || i.number,i.title FROM issue i JOIN workspace w ON w.id=i.workspace_id WHERE i.id=$1 AND i.workspace_id=$2`, issueID, workspaceID).Scan(&slug, &identifier, &title); err != nil {
-		return nil, fmt.Errorf("issue for decision notice: %w", err)
+	var proposal *string
+	var proposer pgtype.UUID
+	if err := tx.QueryRow(ctx, `SELECT w.slug,w.issue_prefix || '-' || i.number,i.title,sc.proposer_agent_id,
+        (SELECT v.comment_id::text FROM governed_vote_record v WHERE v.workspace_id=sc.workspace_id AND v.decision_instance_id=sc.instance_id AND v.decision_event='proposal' LIMIT 1)
+        FROM decision_agent_scope sc JOIN issue i ON i.id=$1 AND i.workspace_id=sc.workspace_id JOIN workspace w ON w.id=sc.workspace_id
+        WHERE sc.instance_id=$3 AND sc.workspace_id=$2`, issueID, workspaceID, instance).Scan(&slug, &identifier, &title, &proposer, &proposal); err != nil {
+		return nil, nil, fmt.Errorf("issue for decision notice: %w", err)
 	}
 	orows, err := tx.Query(ctx, `SELECT user_id FROM member WHERE workspace_id=$1 AND role='owner'`, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var owners []pgtype.UUID
 	for orows.Next() {
 		var id pgtype.UUID
 		if err := orows.Scan(&id); err != nil {
 			orows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		owners = append(owners, id)
 	}
 	orows.Close()
 	if err := orows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(owners) == 0 {
-		return nil, errors.New("no workspace owner to notify")
+		return nil, nil, errors.New("no workspace owner to notify")
 	}
-	body := fmt.Sprintf("Agents decided %s on %s (%s).\nRecord: %s\nReview within %d hours; a later veto still works.\nTo veto, comment on the issue:\n%s\n\nfollowed by your reason.",
-		gate, identifier, title, h.agentDecisionLink(slug, identifier), int(agentDecisionReviewTarget/time.Hour), agentDecisionVetoLine(instance, sha))
-	details, err := json.Marshal(map[string]string{"decision_instance": instance})
+	// The instance id marks this as a decision item, so it ignores the
+	// unassigned-activity preference like any other decision.
+	details, err := json.Marshal(map[string]string{"decision_instance": instance, "decision_request_id": instance})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	link := h.agentDecisionLink(slug, identifier, proposal)
 	queries := h.Queries.WithTx(tx)
+	issue, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{WorkspaceID: workspaceID, ID: issueID})
+	if err != nil {
+		return nil, nil, err
+	}
 	var items []db.InboxItem
+	var messages []db.ChatMessage
 	for _, owner := range owners {
+		body := fmt.Sprintf("Agents decided %s on %s (%s).\nRecord: %s\nReview within %d hours; a later veto still works.\nTo veto, comment on the issue:\n%s\n\nfollowed by your reason.",
+			gate, identifier, title, link, int(agentDecisionReviewTarget/time.Hour), agentDecisionVetoLine(instance, sha, uuidToString(owner)))
 		item, inserted, err := inbox.CreateIfEligible(ctx, queries, db.CreateInboxItemParams{
 			ID: dbid.NewV7(), WorkspaceID: workspaceID, RecipientType: "member", RecipientID: owner,
 			Type: "agent_decision_notice", Severity: "info", IssueID: issueID,
@@ -336,14 +364,65 @@ func (h *Handler) sendAgentDecisionNotice(ctx context.Context, workspaceID, issu
 			ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if inserted {
-			items = append(items, item)
+		if !inserted {
+			return nil, nil, fmt.Errorf("owner %s did not receive the notice item", uuidToString(owner))
+		}
+		items = append(items, item)
+		message, err := h.copyNoticeToTopicThread(ctx, queries, issue, proposer, owner, body)
+		if err != nil {
+			return nil, nil, err
+		}
+		if message.ID.Valid {
+			messages = append(messages, message)
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE decision_agent_notice SET delivered_at=clock_timestamp(),last_error='' WHERE instance_id=$1 AND workspace_id=$2 AND delivered_at IS NULL`, instance, workspaceID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return items, tx.Commit(ctx)
+	return items, messages, tx.Commit(ctx)
+}
+
+// copyNoticeToTopicThread posts the notice in the owner's decision DM for the
+// issue's topic, creating the DM when none exists. The inbox item is the
+// reliable channel, so a thread the owner cannot use is skipped, not an error.
+func (h *Handler) copyNoticeToTopicThread(ctx context.Context, queries *db.Queries, issue db.Issue, proposer, owner pgtype.UUID, body string) (db.ChatMessage, error) {
+	asker, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: proposer})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatMessage{}, nil
+	}
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	steward, err := h.decisionSteward(ctx, queries, topic, asker, owner)
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	if steward.ArchivedAt.Valid || !h.canInvokeAgent(ctx, steward, "member", uuidToString(owner), "", uuidToString(issue.WorkspaceID)) {
+		return db.ChatMessage{}, nil
+	}
+	lane, found, err := topicLane(ctx, queries, issue, topic, owner, steward.ID)
+	var refusal decisionIntentRefusal
+	if errors.As(err, &refusal) {
+		return db.ChatMessage{}, nil
+	}
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	if !found {
+		lane, err = createDecisionDM(ctx, queries, issue, db.ChatSession{AgentID: steward.ID, CreatorID: owner, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID})
+		if err != nil {
+			return db.ChatMessage{}, err
+		}
+	}
+	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: lane.ID, Role: "assistant", Content: body, MessageKind: pgtype.Text{String: "agent_decision", Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	return message, queries.TouchChatSession(ctx, lane.ID)
 }

@@ -121,8 +121,11 @@ func TestAgentDecisionBriefListsRecordNotNeedsYou(t *testing.T) {
 		if d.State != "effective" || d.Gate != "screenshot_evidence" {
 			t.Fatalf("record: %+v", d)
 		}
-		if !strings.Contains(d.VetoLine, "Veto: decision:"+f.instance+" "+boundAfter) {
+		if !strings.Contains(d.VetoLine, "Veto: decision:"+f.instance+" "+boundAfter+" member:"+testUserID) {
 			t.Fatalf("veto line: %q", d.VetoLine)
+		}
+		if !strings.HasSuffix(d.Link, "#comment-"+proposalCommentID(t, f)) {
+			t.Fatalf("link must point at this instance's frozen proposal, got %q", d.Link)
 		}
 		target, err := time.Parse(time.RFC3339, d.ReviewTargetAt)
 		if err != nil || time.Until(target) < 23*time.Hour || time.Until(target) > 25*time.Hour {
@@ -173,7 +176,7 @@ func TestAgentDecisionNoticeDeliveredWithLinkAndVetoAction(t *testing.T) {
 	}
 	var body string
 	dbfx.QueryRow(t, `SELECT body FROM inbox_item WHERE issue_id=$1 AND type='agent_decision_notice' AND recipient_type='member' LIMIT 1`, f.issueID).Scan(&body)
-	if !strings.Contains(body, "Veto: decision:"+f.instance+" "+boundAfter) || !strings.Contains(body, "/issues/") {
+	if !strings.Contains(body, "Veto: decision:"+f.instance+" "+boundAfter+" member:"+testUserID) || !strings.Contains(body, "#comment-"+proposalCommentID(t, f)) {
 		t.Fatalf("notice body lacks veto action or record link: %q", body)
 	}
 	// Delivered once: a second pass adds nothing.
@@ -295,5 +298,58 @@ func TestAgentDecisionSettingGuardRefusesMachineStamps(t *testing.T) {
 	}
 	if on, err := agentDecisionsEnabled(context.Background(), testPool, parseUUID(testWorkspaceID)); err != nil || on {
 		t.Fatalf("a refused request enabled the pilot (on=%v err=%v)", on, err)
+	}
+}
+
+func proposalCommentID(t *testing.T, f agentDecisionFixture) string {
+	t.Helper()
+	var id string
+	dbfx.QueryRow(t, `SELECT comment_id::text FROM governed_vote_record WHERE decision_instance_id=$1 AND decision_event='proposal'`, f.instance).Scan(&id)
+	if id == "" {
+		t.Fatal("no proposal comment recorded")
+	}
+	return id
+}
+
+// A muted owner still hears about a decision made for them: decision items
+// bypass the unassigned-activity preference, and delivery is never recorded
+// for an item that was not inserted.
+func TestAgentDecisionNoticeReachesAMutedOwner(t *testing.T) {
+	f := prepareBrief(t)
+	dbfx.Exec(t, `INSERT INTO notification_preference(workspace_id,user_id,preferences) VALUES($1,$2,'{"unassigned_activity":"muted"}'::jsonb)
+        ON CONFLICT(workspace_id,user_id) DO UPDATE SET preferences='{"unassigned_activity":"muted"}'::jsonb`, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM notification_preference WHERE workspace_id=$1 AND user_id=$2`, testWorkspaceID, testUserID)
+	})
+	effective(t, f)
+	if err := testHandler.deliverAgentDecisionNotices(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE issue_id=$1 AND type='agent_decision_notice' AND recipient_type='member' AND recipient_id=$2
+        AND details->>'decision_request_id'=$3`, f.issueID, testUserID, f.instance); n != 1 {
+		t.Fatalf("muted owner notices=%d, want 1 carrying decision_request_id", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_notice WHERE instance_id=$1 AND delivered_at IS NOT NULL`, f.instance); n != 1 {
+		t.Fatal("notice not delivered")
+	}
+}
+
+// CHE-2407: the owner's topic thread carries the same record, link and veto line.
+func TestAgentDecisionNoticeIsCopiedToTheTopicThread(t *testing.T) {
+	f := prepareBrief(t)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM chat_message WHERE chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id=$1 AND creator_id=$2 AND decision_topic_id IS NOT NULL AND title LIKE 'Decisions: %')`, testWorkspaceID, testUserID)
+		dbfx.Exec(t, `DELETE FROM chat_session WHERE workspace_id=$1 AND creator_id=$2 AND decision_topic_id IS NOT NULL AND title LIKE 'Decisions: %'`, testWorkspaceID, testUserID)
+	})
+	effective(t, f)
+	if err := testHandler.deliverAgentDecisionNotices(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var content string
+	var sessions int
+	dbfx.QueryRow(t, `SELECT count(DISTINCT s.id), coalesce(max(m.content),'') FROM chat_session s JOIN chat_message m ON m.chat_session_id=s.id
+        WHERE s.workspace_id=$1 AND s.creator_id=$2 AND s.decision_topic_id IS NOT NULL AND m.message_kind='agent_decision'`, testWorkspaceID, testUserID).Scan(&sessions, &content)
+	if sessions != 1 || !strings.Contains(content, "Veto: decision:"+f.instance+" "+boundAfter+" member:"+testUserID) || !strings.Contains(content, "#comment-"+proposalCommentID(t, f)) {
+		t.Fatalf("topic thread copy: sessions=%d content=%q", sessions, content)
 	}
 }
