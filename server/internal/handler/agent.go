@@ -633,6 +633,13 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+
+	// Profile, Scopes, Epoch and TaintIDs are claim-only (CHE-2216 plan 3.1): a
+	// launch hint, re-checked per operation. Mirror fields: internal/daemon/types.go.
+	Profile  string   `json:"profile,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Epoch    int64    `json:"epoch,omitempty"`
+	TaintIDs []string `json:"taint_ids,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
