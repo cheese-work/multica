@@ -71,9 +71,23 @@ describe("ScheduledWakeupsChip", () => {
     mocks.list.mockResolvedValue([wakeup("w1", "Check the deploy", "2026-10-29T10:00:00Z")]);
     renderChip("Asia/Ho_Chi_Minh");
     fireEvent.click(await screen.findByRole("button", { name: "Scheduled 1" }));
-    expect(await screen.findByText("17:00 ICT")).toBeInTheDocument();
+    expect(await screen.findByText(/^Oct 29, 2026, 17:00 ICT$/)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Cancel scheduled follow-up at 17:00 ICT" }),
+      screen.getByRole("button", { name: "Cancel scheduled follow-up at Oct 29, 2026, 17:00 ICT" }),
+    ).toBeInTheDocument();
+  });
+
+  it("tells apart two wakeups with the same time and instruction on different days", async () => {
+    mocks.list.mockResolvedValue([
+      wakeup("w1", "Check the deploy", "2026-10-30T10:00:00Z"),
+      wakeup("w2", "Check the deploy", "2026-10-31T10:00:00Z"),
+    ]);
+    renderChip("Asia/Ho_Chi_Minh");
+    fireEvent.click(await screen.findByRole("button", { name: "Scheduled 2" }));
+    expect(await screen.findByText(/^Oct 30, 2026, 17:00 ICT$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Oct 31, 2026, 17:00 ICT$/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Cancel scheduled follow-up at Oct 31, 2026, 17:00 ICT" }),
     ).toBeInTheDocument();
   });
 

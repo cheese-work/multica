@@ -8,14 +8,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/
 import { chatWakeupsOptions } from "@multica/core/chat/queries";
 import { useCancelChatWakeup } from "@multica/core/chat/mutations";
 import { useT } from "../../i18n";
-import { formatTimeWithZone } from "./message-time";
+import { formatDateTimeWithZone } from "./message-time";
 
 const firstLine = (text: string) => text.trim().split("\n", 1)[0] ?? "";
 
 /**
  * "Scheduled N" in the DM header: the one-shot follow-ups the agent set with
  * `multica chat wakeup`, each cancellable. Hidden while nothing is pending.
- * Times use the fired row's `HH:MM ZONE` format in the viewer's timezone;
+ * Times show the viewer-local date plus the fired row's `HH:MM ZONE`;
  * `timeZone` exists so tests can pin it.
  */
 export function ScheduledWakeupsChip({
@@ -70,7 +70,7 @@ export function ScheduledWakeupsChip({
         </div>
         <ul className="flex flex-col gap-2">
           {wakeups.map((wakeup) => {
-            const time = formatTimeWithZone(wakeup.fire_at, undefined, timeZone);
+            const time = formatDateTimeWithZone(wakeup.fire_at, undefined, timeZone);
             return (
               <li key={wakeup.id} className="flex items-start gap-2" data-testid="scheduled-row">
                 <div className="min-w-0 flex-1">
