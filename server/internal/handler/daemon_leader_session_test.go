@@ -61,3 +61,55 @@ func TestClaimTaskByRuntime_LeaderSessionCompaction(t *testing.T) {
 		})
 	}
 }
+
+// TestClaimTaskByRuntime_StaleClaudeSession: a Claude prior that ended at or
+// past the prompt-cache TTL starts a fresh session in the same workdir (the
+// resume would re-write the whole transcript at the cache-write price); a
+// fresher Claude prior and every other provider resume unchanged.
+func TestClaimTaskByRuntime_StaleClaudeSession(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	cases := []struct {
+		name        string
+		env         string
+		provider    string
+		idle        string // postgres interval since the prior run ended
+		wantResumed bool
+	}{
+		{name: "claude idle past threshold starts fresh", provider: "claude", idle: "56 minutes", wantResumed: false},
+		{name: "claude idle just under threshold resumes", provider: "claude", idle: "50 minutes", wantResumed: true},
+		{name: "other provider idle past threshold resumes", provider: "codex", idle: "3 hours", wantResumed: true},
+		{name: "env raises the threshold", provider: "claude", env: "120", idle: "90 minutes", wantResumed: true},
+		{name: "env lowers the threshold", provider: "claude", env: "10", idle: "15 minutes", wantResumed: false},
+		{name: "invalid env falls back to default", provider: "claude", env: "soon", idle: "56 minutes", wantResumed: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.env != "" {
+				t.Setenv(staleSessionMinutesEnv, tc.env)
+			}
+			fx := newSquadBriefingClaimFixture(t, ctx, "Stale session")
+			testPool.Exec(ctx, `UPDATE agent_runtime SET provider = $1 WHERE id = $2`, tc.provider, fx.RuntimeID)
+			dbfx.Task(t, fx.AgentID, testutil.Cols{
+				"runtime_id":   fx.RuntimeID,
+				"issue_id":     fx.IssueID,
+				"status":       "completed",
+				"session_id":   "stale-session",
+				"work_dir":     "/tmp/stale-session-workdir",
+				"started_at":   testutil.Raw("now() - interval '" + tc.idle + "' - interval '5 minutes'"),
+				"completed_at": testutil.Raw("now() - interval '" + tc.idle + "'"),
+			})
+			enqueueClaimTask(t, ctx, fx, false, false)
+
+			resp := claimCommentTask(t, fx.RuntimeID, "stale-session-claim")
+			if resumed := resp.Task.PriorSessionID == "stale-session"; resumed != tc.wantResumed {
+				t.Fatalf("prior_session_id = %q, resumed = %v, want resumed = %v", resp.Task.PriorSessionID, resumed, tc.wantResumed)
+			}
+			if resp.Task.PriorWorkDir != "/tmp/stale-session-workdir" {
+				t.Errorf("prior_work_dir = %q — a fresh session must keep the workdir", resp.Task.PriorWorkDir)
+			}
+		})
+	}
+}
