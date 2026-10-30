@@ -20,7 +20,7 @@ type Launcher struct {
 	Mode       Mode
 	BwrapPath  string   // default: "bwrap" from PATH
 	CgroupRoot string   // default: the daemon's own cgroup
-	Deny       []string // see DefaultDeny
+	Deny       []string // extra never-mounted paths, on top of DefaultDeny (always enforced)
 	Logger     *slog.Logger
 
 	mu      sync.Mutex
@@ -32,6 +32,7 @@ type Launcher struct {
 type Run struct {
 	Cmd   *exec.Cmd
 	scope *scope
+	pins  []*os.File // validated mount sources, held open until Start returns
 	log   *slog.Logger
 	began time.Time
 }
@@ -80,23 +81,31 @@ func (l *Launcher) audit(ctx context.Context, spec Spec) {
 }
 
 func (l *Launcher) build(ctx context.Context, spec Spec) (*Run, error) {
-	args, err := l.Args(spec)
-	if err != nil {
-		return nil, err
-	}
 	path, err := exec.LookPath(l.bwrap())
 	if err != nil {
 		return nil, err
 	}
 	began := time.Now()
+	args, pins, err := l.pinned(spec)
+	if err != nil {
+		return nil, err
+	}
 	sc, err := newScope(l.CgroupRoot)
 	if err != nil {
+		closeFiles(pins)
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = spec.environ()
+	cmd.ExtraFiles = pins
 	sc.attach(cmd)
-	return &Run{Cmd: cmd, scope: sc, log: l.logger(), began: began}, nil
+	return &Run{Cmd: cmd, scope: sc, pins: pins, log: l.logger(), began: began}, nil
+}
+
+func closeFiles(fs []*os.File) {
+	for _, f := range fs {
+		f.Close()
+	}
 }
 
 // SelfCheck proves this host can start a sandbox: user, pid, net, ipc, uts
@@ -140,6 +149,8 @@ func (s Spec) mkdirs() Spec {
 // Start starts the command and logs how long the launcher took.
 func (r *Run) Start() error {
 	err := r.Cmd.Start()
+	closeFiles(r.pins)
+	r.pins = nil
 	if r.scope != nil {
 		r.scope.releaseFD()
 	}
@@ -160,6 +171,8 @@ func (r *Run) Kill() error {
 
 // Close removes the run's cgroup after killing leftovers. Call it after Wait.
 func (r *Run) Close() error {
+	closeFiles(r.pins)
+	r.pins = nil
 	if r.scope == nil {
 		return nil
 	}

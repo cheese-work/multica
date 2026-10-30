@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -47,13 +48,36 @@ func DefaultDeny() []string {
 	return deny
 }
 
+// bind is one host directory mounted at its own path.
+type bind struct {
+	path string
+	ro   bool
+}
+
+// binds lists the spec's mounts in argument order.
+func (s Spec) binds() []bind {
+	bs := []bind{{path: s.WorkDir}, {path: s.Home}, {path: s.TempDir}}
+	for _, p := range s.ReadOnly {
+		bs = append(bs, bind{path: p, ro: true})
+	}
+	return bs
+}
+
 // Args returns the bwrap argument vector for spec, ending with "-- argv...".
 // Environment values never appear in it: they travel in the process
 // environment (see environ), not on a world-readable command line.
+// Mounts name their sources by path; a launched run uses pinned descriptors
+// instead (see pinned).
 func (l *Launcher) Args(spec Spec) ([]string, error) {
 	if err := l.validate(spec); err != nil {
 		return nil, err
 	}
+	return spec.args(nil), nil
+}
+
+// args builds the argument vector. With pins, mount i names descriptor 3+i
+// (exec.Cmd.ExtraFiles order) instead of a host path.
+func (s Spec) args(pins []*os.File) []string {
 	args := []string{
 		"--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
 		"--die-with-parent", "--new-session",
@@ -63,14 +87,18 @@ func (l *Launcher) Args(spec Spec) ([]string, error) {
 		args = append(args, "--ro-bind-try", p, p)
 	}
 	args = append(args, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp")
-	for _, p := range []string{spec.WorkDir, spec.Home, spec.TempDir} {
-		args = append(args, "--bind", p, p)
+	for i, b := range s.binds() {
+		flag, src := "--bind", b.path
+		if b.ro {
+			flag = "--ro-bind"
+		}
+		if pins != nil {
+			flag, src = flag+"-fd", strconv.Itoa(3+i)
+		}
+		args = append(args, flag, src, b.path)
 	}
-	for _, p := range spec.ReadOnly {
-		args = append(args, "--ro-bind", p, p)
-	}
-	args = append(args, "--chdir", spec.WorkDir, "--")
-	return append(args, spec.Argv...), nil
+	args = append(args, "--chdir", s.WorkDir, "--")
+	return append(args, s.Argv...)
 }
 
 // environ is the exact environment handed to bwrap and, through it, to the
@@ -91,7 +119,8 @@ func (l *Launcher) validate(spec Spec) error {
 		}
 	}
 	writable := []string{spec.WorkDir, spec.Home, spec.TempDir}
-	for _, p := range append(append([]string{}, writable...), spec.ReadOnly...) {
+	for _, b := range spec.binds() {
+		p := b.path
 		if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 			return fmt.Errorf("sandbox: path %q is not absolute and clean", p)
 		}
@@ -109,11 +138,11 @@ func (l *Launcher) validate(spec Spec) error {
 	return nil
 }
 
-// denied returns the deny entry that p equals, sits inside or contains,
+// denied returns the DefaultDeny or l.Deny entry that p equals, sits inside or contains,
 // judged on both the literal and the symlink-resolved path.
 func (l *Launcher) denied(p string) string {
 	for _, cand := range []string{p, resolve(p)} {
-		for _, d := range l.Deny {
+		for _, d := range append(DefaultDeny(), l.Deny...) {
 			for _, dd := range []string{d, resolve(d)} {
 				if within(cand, dd) || within(dd, cand) {
 					return d
@@ -140,4 +169,28 @@ func resolve(p string) string {
 func envNameOnly(kv string) string {
 	name, _, _ := strings.Cut(kv, "=")
 	return name
+}
+
+// pinned validates spec, then opens every mount source once and returns the
+// argument vector that mounts those descriptors. A path swapped after this
+// point cannot change what is mounted. The caller owns the returned files.
+func (l *Launcher) pinned(spec Spec) ([]string, []*os.File, error) {
+	if err := l.validate(spec); err != nil {
+		return nil, nil, err
+	}
+	var pins []*os.File
+	closeAll := func() { closeFiles(pins) }
+	for _, b := range spec.binds() {
+		f, real, err := pin(b.path)
+		if err != nil {
+			closeAll()
+			return nil, nil, fmt.Errorf("sandbox: pin %s: %w", b.path, err)
+		}
+		pins = append(pins, f)
+		if bad := l.denied(real); bad != "" {
+			closeAll()
+			return nil, nil, fmt.Errorf("sandbox: %s resolves to %s, which overlaps never-mounted path %s", b.path, real, bad)
+		}
+	}
+	return spec.args(pins), pins, nil
 }

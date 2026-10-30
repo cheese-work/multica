@@ -371,3 +371,68 @@ func TestM1StartLatency(t *testing.T) {
 		t.Errorf("M1 p95 %v exceeds 100ms", p95)
 	}
 }
+
+// A launcher built without Deny must still refuse protected host paths.
+func TestUnsetDenyStillProtectsDefaultPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ly := newLayout(t)
+	spec := ly.spec("true")
+	spec.ReadOnly = []string{ssh}
+	l := &Launcher{Mode: ModeOn, Logger: quiet()}
+	if _, err := l.Args(spec); err == nil {
+		t.Fatalf("Args accepted %s with no Deny configured", ssh)
+	}
+}
+
+// Swapping a validated mount source between Command and Start must not change
+// what the sandbox mounts: the validated directory is pinned by descriptor.
+func TestMountSourceSwapAfterValidationIsHarmless(t *testing.T) {
+	ly := newLayout(t)
+	denied := filepath.Join(ly.root, "denied")
+	safe := filepath.Join(ly.root, "safe")
+	for dir, body := range map[string]string{denied: "denied-secret", safe: "safe-data"} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(dir, "file"), body)
+	}
+	link := filepath.Join(ly.root, "mount-src")
+	if err := os.Symlink(safe, link); err != nil {
+		t.Fatal(err)
+	}
+	l := &Launcher{Mode: ModeOn, Logger: quiet(), Deny: append(DefaultDeny(), denied)}
+	requireSandbox(t, l)
+	spec := ly.spec(`cat "` + link + `/file" 2>&1`)
+	spec.ReadOnly = []string{link}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	run, err := l.Command(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.Close()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(denied, link); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	run.Cmd.Stdout, run.Cmd.Stderr = &out, &out
+	if err := run.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = run.Cmd.Wait()
+	if strings.Contains(out.String(), "denied-secret") {
+		t.Errorf("sandbox mounted the swapped, denied source:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "safe-data") {
+		t.Errorf("sandbox did not mount the validated source:\n%s", out.String())
+	}
+}
