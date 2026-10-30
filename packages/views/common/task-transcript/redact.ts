@@ -81,10 +81,21 @@ function redactGenericCredentials(text: string): string {
   return parts.join("");
 }
 
-export function redactSecrets(text: string): string {
+/** Provider-token rules only: for agent prose, where a keyword rule would mangle ordinary sentences. */
+export function redactProse(text: string): string {
   let result = text;
   for (const { re, replacement } of patterns) {
     result = result.replace(re, replacement);
   }
-  return redactGenericCredentials(result);
+  return result;
+}
+
+/** Provider-token rules plus the keyword rule: for machine output (tool input, output, errors). */
+export function redactSecrets(text: string): string {
+  return redactGenericCredentials(redactProse(text));
+}
+
+/** Pick the rule set by transcript item type; only `text` and `thinking` are agent prose. */
+export function redactForType(type: string, text: string): string {
+  return type === "text" || type === "thinking" ? redactProse(text) : redactSecrets(text);
 }
