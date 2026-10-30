@@ -63,7 +63,8 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     record.issue_comment_id AS record_comment_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
-    last_answer.chosen_option_index AS answer_chosen_option_index
+    last_answer.chosen_option_index AS answer_chosen_option_index,
+    pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -74,10 +75,22 @@ LEFT JOIN comment source ON source.id = request.source_comment_id
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
     AND record.disclaimed_at IS NULL
 LEFT JOIN LATERAL (
-    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index
+    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.issue_comment_id
     FROM decision_answer answer WHERE answer.decision_request_id = request.id
     ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
 ) last_answer ON true
+LEFT JOIN LATERAL (
+    SELECT task.id, agent.name AS agent_name
+    FROM agent_task_queue task
+    JOIN agent ON agent.id = task.agent_id AND agent.workspace_id = request.workspace_id
+    WHERE task.issue_id = request.issue_id AND last_answer.id IS NOT NULL AND task.started_at IS NOT NULL
+        AND (task.trigger_comment_id = last_answer.issue_comment_id
+            OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)
+            OR task.created_at >= last_answer.created_at)
+    ORDER BY (task.trigger_comment_id = last_answer.issue_comment_id OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)) DESC NULLS LAST,
+        task.created_at, task.id
+    LIMIT 1
+) pickup ON true
 WHERE request.workspace_id = $1
     AND message.id = ANY($2::uuid[])
 ORDER BY message.id, request.created_at, request.id
@@ -109,8 +122,11 @@ type ListDecisionRequestCardsRow struct {
 	AnswerWakeOutcome       pgtype.Text        `json:"answer_wake_outcome"`
 	AnswerDisclaimedAt      pgtype.Timestamptz `json:"answer_disclaimed_at"`
 	AnswerChosenOptionIndex pgtype.Int4        `json:"answer_chosen_option_index"`
+	PickupTaskID            pgtype.UUID        `json:"pickup_task_id"`
+	PickupAgentName         string             `json:"pickup_agent_name"`
 }
 
+// The run that resumed the issue: one that started and carries the record, else the first started run on the issue after it.
 func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecisionRequestCardsParams) ([]ListDecisionRequestCardsRow, error) {
 	rows, err := q.db.Query(ctx, listDecisionRequestCards, arg.WorkspaceID, arg.MessageIds)
 	if err != nil {
@@ -141,6 +157,8 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.AnswerWakeOutcome,
 			&i.AnswerDisclaimedAt,
 			&i.AnswerChosenOptionIndex,
+			&i.PickupTaskID,
+			&i.PickupAgentName,
 		); err != nil {
 			return nil, err
 		}

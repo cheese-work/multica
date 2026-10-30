@@ -294,6 +294,15 @@
     "pin": "置頂對話",
     "unpin": "取消置頂對話"
   },
+  "scheduled": {
+    "chip": "已排程 {{count}}",
+    "title": "{{name}} 的排程",
+    "title_unknown_agent": "已排程的跟進",
+    "cancel": "取消",
+    "cancel_label": "取消 {{time}} 的排程跟進",
+    "cancel_failed": "無法取消該跟進",
+    "load_failed": "無法載入已排程的跟進。重試"
+  },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",
     "source_label": "{{name}} 的消息",
@@ -323,9 +332,12 @@
       "answered": "已答復",
       "withdrawn": "已撤回",
       "recorded": "已記錄",
-      "delivered": "已送達",
+      "delivered": "已送達", "picked_up": "已接手", "not_picked_up": "未接手",
       "disclaimed": "已撤銷"
     },
+    "picked_up_by": "{{agent}} 已接手",
+    "not_picked_up": "答復記錄後沒有執行啟動。",
+    "open_issue": "開啟 {{issue}}",
     "answer_options": "選項",
     "answer_text": "或輸入回答",
     "answer_send": "傳送",

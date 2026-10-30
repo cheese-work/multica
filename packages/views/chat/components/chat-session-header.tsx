@@ -45,6 +45,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
+import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
 /**
@@ -252,6 +253,10 @@ export function ChatSessionHeader({
           </div>
         )}
       </div>
+
+      {isArchived ? null : (
+        <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
+      )}
 
       {isArchived ? null : (
         <ChatContextMeter

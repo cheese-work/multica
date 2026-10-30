@@ -26,6 +26,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -39,6 +40,7 @@ type CommentResponse struct {
 	Content             string  `json:"content"`
 	Type                string  `json:"type"`
 	ParentID            *string `json:"parent_id"`
+	WebURL              string  `json:"web_url,omitempty"`
 	CreatedAt           string  `json:"created_at"`
 	UpdatedAt           string  `json:"updated_at"`
 	Revision            int64   `json:"revision"`
@@ -1447,6 +1449,7 @@ type CreateCommentRequest struct {
 	DecisionVeto     bool     `json:"decision_veto"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
+	Excerpts         []string `json:"excerpts"`
 	SourceCommentID  string   `json:"source_comment_id"`
 	EscalationClass  string   `json:"escalation_class"`
 	Type             string   `json:"type"`
@@ -1734,8 +1737,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		h.createDecisionRecordComment(w, r, issue, req)
 		return
 	}
-	if len(req.MessageIDs) != 0 || req.ContextMessageID != "" || req.SourceCommentID != "" || req.EscalationClass != "" {
-		writeError(w, http.StatusBadRequest, "message_ids, context_message_id and escalation_class require decision_record")
+	if len(req.MessageIDs) != 0 || len(req.Excerpts) != 0 || req.ContextMessageID != "" || req.SourceCommentID != "" || req.EscalationClass != "" {
+		writeError(w, http.StatusBadRequest, "message_ids, excerpts, context_message_id and escalation_class require decision_record")
 		return
 	}
 
@@ -2036,6 +2039,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (TaskService.createAgentComment) — both reply paths use the same
 	// publisher.
 	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
+
+	// Set after the websocket publish: web_url is for CLI callers, not the event.
+	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string {
+		return weblink.Comment(ws.Slug, issuePrefixForWorkspace(ws)+"-"+strconv.Itoa(int(issue.Number)), resp.ID)
+	})
 
 	// A comment whose content is EXACTLY one of the five reserved status-query
 	// phrases (CHE-487 Unit D1) skips agent admission entirely and gets a

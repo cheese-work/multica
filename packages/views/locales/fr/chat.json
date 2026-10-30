@@ -299,6 +299,15 @@
     "pin": "Épingler la discussion",
     "unpin": "Détacher la discussion"
   },
+  "scheduled": {
+    "chip": "Planifié {{count}}",
+    "title": "Planifié par {{name}}",
+    "title_unknown_agent": "Relances planifiées",
+    "cancel": "Annuler",
+    "cancel_label": "Annuler la relance prévue à {{time}}",
+    "cancel_failed": "Impossible d'annuler la relance",
+    "load_failed": "Impossible de charger les suivis planifiés. Réessayer"
+  },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
@@ -368,7 +377,10 @@
   "decision": {
     "request_title": "Demande de décision",
     "request_label": "Demande de décision : {{state}}",
-    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "disclaimed": "Désavouée" },
+    "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "picked_up": "Prise en charge", "not_picked_up": "Non prise en charge", "disclaimed": "Désavouée" },
+    "picked_up_by": "Prise en charge par {{agent}}",
+    "not_picked_up": "Aucune exécution n'a démarré après l'enregistrement de la réponse.",
+    "open_issue": "Ouvrir {{issue}}",
     "answer_options": "Options",
     "answer_text": "Ou écrivez une réponse",
     "answer_send": "Envoyer",
