@@ -1801,19 +1801,21 @@ type IssueWakeupReceipt struct {
 }
 
 type IssueWorkflow struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	InitialStatusKey string             `json:"initial_status_key"`
-	Steps            []byte             `json:"steps"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsDefault        bool               `json:"is_default"`
-	OwnerID          pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs  bool               `json:"include_child_prs"`
-	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	Name                    string             `json:"name"`
+	Description             string             `json:"description"`
+	InitialStatusKey        string             `json:"initial_status_key"`
+	Steps                   []byte             `json:"steps"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	IsDefault               bool               `json:"is_default"`
+	OwnerID                 pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue         pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs         bool               `json:"include_child_prs"`
+	RunBudgetSince          pgtype.Timestamptz `json:"run_budget_since"`
+	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
+	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 }
 
 type LarkBindingToken struct {

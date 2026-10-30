@@ -137,6 +137,40 @@ func (q *Queries) InsertIssueRunBudgetTokenEntry(ctx context.Context, arg Insert
 	return err
 }
 
+const listIssueTaskIDsWithUsageSince = `-- name: ListIssueTaskIDsWithUsageSince :many
+SELECT t.id FROM agent_task_queue t
+WHERE t.issue_id = $1::uuid AND t.created_at >= $2::timestamptz
+  AND EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id)
+ORDER BY t.created_at, t.id
+`
+
+type ListIssueTaskIDsWithUsageSinceParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Since   pgtype.Timestamptz `json:"since"`
+}
+
+// The tasks of an issue created at or after a time that already reported
+// usage: what token activation settles.
+func (q *Queries) ListIssueTaskIDsWithUsageSince(ctx context.Context, arg ListIssueTaskIDsWithUsageSinceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueTaskIDsWithUsageSince, arg.IssueID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockIssueRunBudget = `-- name: LockIssueRunBudget :one
 SELECT id FROM issue WHERE id = $1::uuid FOR NO KEY UPDATE
 `
@@ -192,6 +226,19 @@ func (q *Queries) SumIssueRunBudgetTaskTokens(ctx context.Context, arg SumIssueR
 	return i, err
 }
 
+const sumIssueRunBudgetTokens = `-- name: SumIssueRunBudgetTokens :one
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid
+`
+
+// The issue's token balance: every token entry, in any window.
+func (q *Queries) SumIssueRunBudgetTokens(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetTokens, issueID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sumIssueRunBudgetWindow = `-- name: SumIssueRunBudgetWindow :one
 SELECT COALESCE(SUM(runs_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = $1::uuid AND window_id = $2::text
@@ -204,6 +251,25 @@ type SumIssueRunBudgetWindowParams struct {
 
 func (q *Queries) SumIssueRunBudgetWindow(ctx context.Context, arg SumIssueRunBudgetWindowParams) (int64, error) {
 	row := q.db.QueryRow(ctx, sumIssueRunBudgetWindow, arg.IssueID, arg.WindowID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const sumIssueRunBudgetWindowAllowance = `-- name: SumIssueRunBudgetWindowAllowance :one
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = 'allowance'
+`
+
+type SumIssueRunBudgetWindowAllowanceParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// The token allowance a window holds (credited once, by activation or by the
+// window's opening).
+func (q *Queries) SumIssueRunBudgetWindowAllowance(ctx context.Context, arg SumIssueRunBudgetWindowAllowanceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetWindowAllowance, arg.IssueID, arg.WindowID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
