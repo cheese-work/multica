@@ -30,3 +30,20 @@ SELECT EXISTS (
   SELECT 1 FROM issue_run_budget_entry
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = 'window'
 );
+
+-- name: InsertIssueRunBudgetTokenEntry :exec
+-- Token side of the ledger (L2b): reservations, releases and usage charges. A
+-- replayed event (same issue, kind, key) is a no-op.
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, tokens_delta)
+VALUES (sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('window_id'), sqlc.arg('kind'), sqlc.arg('event_key'), sqlc.arg('tokens_delta'))
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
+
+-- name: GetIssueRunBudgetEntry :one
+SELECT window_id, tokens_delta FROM issue_run_budget_entry
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND kind = sqlc.arg('kind')::text AND event_key = sqlc.arg('event_key')::text;
+
+-- name: SumIssueRunBudgetTaskTokens :one
+-- What a task's usage charges already hold: their sum and count.
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint AS charged, COUNT(*)::bigint AS entries
+FROM issue_run_budget_entry
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND kind = 'tokens' AND event_key LIKE sqlc.arg('key_prefix')::text || '%';
