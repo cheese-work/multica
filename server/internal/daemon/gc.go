@@ -1345,13 +1345,14 @@ func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *
 // liveKeepRefTaskKeys returns the task keys some checkout under the workspaces
 // root still records as a borrower of a repo cache (repocache keep-refs). The
 // repo checkout API accepts any existing directory under the workdir, so a
-// checkout can sit at any depth: the scan walks each workdir and stops at a
-// directory holding a .git, which is a checkout root. It reports every read
-// failure other than a path that vanished, because a borrower it could not see
-// must not lose its pins.
+// checkout can sit at any depth, even inside another checkout's working tree:
+// the scan walks every workdir completely and reads the record of each
+// directory that holds a .git directory. A .git file is a linked worktree and
+// records nothing. It reports every read failure other than a path that
+// vanished, because a borrower it could not see must not lose its pins.
 func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
 	live := map[string]struct{}{}
-	workdirs, err := filepath.Glob(filepath.Join(workspacesRoot, "*", "*", "workdir"))
+	workdirs, err := taskWorkdirs(workspacesRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -1363,16 +1364,10 @@ func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
 			if err != nil {
 				return err
 			}
-			if !entry.IsDir() {
+			if !entry.IsDir() || entry.Name() != ".git" {
 				return nil
 			}
-			if _, statErr := os.Lstat(filepath.Join(path, ".git")); statErr != nil {
-				if errors.Is(statErr, fs.ErrNotExist) {
-					return nil
-				}
-				return statErr
-			}
-			keys, err := repocache.CheckoutKeepRefTaskKeys(path)
+			keys, err := repocache.CheckoutKeepRefTaskKeys(filepath.Dir(path))
 			if err != nil {
 				return err
 			}
@@ -1386,6 +1381,47 @@ func liveKeepRefTaskKeys(workspacesRoot string) (map[string]struct{}, error) {
 		}
 	}
 	return live, nil
+}
+
+// taskWorkdirs lists <workspace>/<task env>/workdir under the workspaces root
+// with reads that report errors (filepath.Glob would drop a directory it
+// cannot list, and its workdir with it). A directory that does not exist, or a
+// plain file where a directory would be, is skipped; anything else fails.
+func taskWorkdirs(workspacesRoot string) ([]string, error) {
+	var workdirs []string
+	workspaces, err := os.ReadDir(workspacesRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, workspace := range workspaces {
+		if !workspace.IsDir() || workspace.Name() == reposDirName {
+			continue
+		}
+		tasks, err := os.ReadDir(filepath.Join(workspacesRoot, workspace.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, task := range tasks {
+			if !task.IsDir() {
+				continue
+			}
+			workdir := filepath.Join(workspacesRoot, workspace.Name(), task.Name(), "workdir")
+			if _, err := os.Lstat(workdir); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			workdirs = append(workdirs, workdir)
+		}
+	}
+	return workdirs, nil
 }
 
 // releaseOrphanKeepRefsLocked drops the keep-refs whose borrowing checkout is

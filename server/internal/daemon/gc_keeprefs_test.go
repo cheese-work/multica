@@ -171,3 +171,73 @@ func TestMaintainRepoCacheKeepsPinsWhenBorrowerRecordUnreadable(t *testing.T) {
 		t.Errorf("keep-ref %s was released although its borrower's record could not be read", live)
 	}
 }
+
+func TestMaintainRepoCacheKeepsPinsOfCheckoutBelowOrdinaryCheckout(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	live := pinTestKeepRef(t, barePath, liveKeepKey)
+	// An ordinary isolated checkout has a standalone .git and records nothing.
+	outer := recordTestCheckoutAt(t, d, filepath.Join("workdir", "outer"))
+	if err := os.Remove(filepath.Join(outer, ".git", "multica-keep-refs")); err != nil {
+		t.Fatal(err)
+	}
+	recordTestCheckoutAt(t, d, filepath.Join("workdir", "outer", "vendor", "repo"), liveKeepKey)
+
+	d.maintainRepoCache(t.Context(), barePath, &gcStats{})
+
+	if !gitRefExists(t, barePath, live) {
+		t.Errorf("keep-ref %s of a checkout below an ordinary checkout was released", live)
+	}
+}
+
+func TestMaintainRepoCacheKeepsPinsWhenTaskDirectoryUnreadable(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	live := pinTestKeepRef(t, barePath, liveKeepKey)
+	checkout := recordTestCheckout(t, d, liveKeepKey)
+	taskEnv := filepath.Dir(filepath.Dir(checkout))
+	if err := os.Chmod(taskEnv, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(taskEnv, 0o755) })
+	if _, err := os.Lstat(filepath.Join(taskEnv, "workdir")); err == nil {
+		t.Skip("directory permissions are not enforced for this user")
+	}
+
+	d.maintainRepoCache(t.Context(), barePath, &gcStats{})
+
+	if !gitRefExists(t, barePath, live) {
+		t.Errorf("keep-ref %s was released although its task directory could not be listed", live)
+	}
+}
+
+func TestMaintainRepoCacheReleasesOrphanPinsAmongLinkedWorktrees(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	barePath := newEvictTestRepo(t, d, "11111111-1111-1111-1111-111111111111", testRepoURL)
+	live := pinTestKeepRef(t, barePath, liveKeepKey)
+	dead := pinTestKeepRef(t, barePath, deadKeepKey)
+	recordTestCheckout(t, d, liveKeepKey)
+	// A linked worktree's .git is a file, not a directory.
+	linked := filepath.Join(d.cfg.WorkspacesRoot, "ws", "task-env", "workdir", "linked")
+	if err := os.MkdirAll(linked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: /cache/worktrees/linked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d.maintainRepoCache(t.Context(), barePath, &gcStats{})
+
+	if !gitRefExists(t, barePath, live) {
+		t.Errorf("keep-ref %s of a live checkout was released", live)
+	}
+	if gitRefExists(t, barePath, dead) {
+		t.Errorf("orphan keep-ref %s was kept because a linked worktree sits beside the live checkout", dead)
+	}
+}
