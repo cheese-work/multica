@@ -183,9 +183,10 @@ func decisionAskContent(input decisionRequestInput) string {
 	return input.Ask + "\n\n" + input.Footer
 }
 
-// lockDecisionLane locks an existing DM and proves it is one of the agent's
-// listed decision lanes.
-func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+// lockDecisionLane locks an existing DM and proves it is a listed decision lane
+// of the agent or of the topic.
+func lockDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, topic decisionTopic, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+	workspaceID := issue.WorkspaceID
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: sessionID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -197,10 +198,10 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 	if err != nil {
 		return db.ChatSession{}, err
 	}
-	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+	if !session.DecisionTopicID.Valid && session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return db.ChatSession{}, deny
 	}
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID, SessionID: session.ID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, TopicID: topic.ID, CreatorID: session.CreatorID, SessionID: session.ID})
 	if err != nil {
 		return db.ChatSession{}, err
 	}
@@ -213,39 +214,6 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 		return db.ChatSession{}, err
 	}
 	return session, nil
-}
-
-// defaultDecisionLane picks, among the agent's listed lanes with the person,
-// the lane of the latest request on this issue, else the newest lane that
-// mentions this issue. The zero value means: open a new Decisions DM.
-func defaultDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID) (pgtype.UUID, error) {
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, IssueID: issue.ID})
-	if err != nil || len(lanes) == 0 {
-		return pgtype.UUID{}, err
-	}
-	latest, err := queries.LatestDecisionRequestLane(ctx, db.LatestDecisionRequestLaneParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return pgtype.UUID{}, err
-	}
-	ids := make([]pgtype.UUID, 0, len(lanes))
-	for _, lane := range lanes {
-		if err == nil && lane.ID == latest {
-			return lane.ID, nil
-		}
-		ids = append(ids, lane.ID)
-	}
-	mentions, err := queries.ListDecisionLaneMentions(ctx, db.ListDecisionLaneMentionsParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, SessionIds: ids})
-	if err != nil {
-		return pgtype.UUID{}, err
-	}
-	for _, lane := range lanes {
-		for _, mention := range mentions {
-			if mention.ChatSessionID == lane.ID && mention.IssueID == issue.ID {
-				return lane.ID, nil
-			}
-		}
-	}
-	return pgtype.UUID{}, nil
 }
 
 func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.Issue, input decisionRequestInput, located db.DecisionIntent) (decisionRequestResult, error) {
@@ -269,21 +237,36 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}
-	if input.NewDM {
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return empty, err
+	}
+	newDM := input.NewDM
+	if newDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
 			return empty, err
 		}
-		session = db.ChatSession{AgentID: agent.ID, CreatorID: targetID, Title: "Decisions: " + agent.Name}
+		var found bool
+		if session, found, err = topicLane(ctx, queries, issue, topic, targetID, located.AgentID); err != nil {
+			return empty, err
+		}
+		if newDM = !found; newDM {
+			steward, err := handler.decisionSteward(ctx, queries, topic, agent, targetID)
+			if err != nil {
+				return empty, err
+			}
+			session = db.ChatSession{AgentID: steward.ID, CreatorID: targetID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		}
 	} else {
-		session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, input.SessionID, located.AgentID)
+		session, err = lockDecisionLane(ctx, queries, issue, topic, input.SessionID, located.AgentID)
 		if err != nil {
 			return empty, err
 		}
 		if input.HumanUserID.Valid && session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
-		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
 	}
@@ -361,7 +344,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if input.NewDM {
+	if newDM {
 		session, err = createDecisionDM(ctx, queries, issue, session)
 		if err != nil {
 			return empty, err
@@ -381,7 +364,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 }
 
 func createDecisionDM(ctx context.Context, queries *db.Queries, issue db.Issue, lane db.ChatSession) (db.ChatSession, error) {
-	session, err := queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: lane.AgentID, CreatorID: lane.CreatorID, Title: lane.Title})
+	session, err := queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: lane.AgentID, CreatorID: lane.CreatorID, Title: lane.Title, DecisionTopicID: lane.DecisionTopicID})
 	if err != nil {
 		return session, err
 	}
@@ -495,23 +478,24 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		}
 		return empty, err
 	}
-	sessionID := input.SessionID
-	if !sessionID.Valid && !input.NewDM {
-		if sessionID, err = defaultDecisionLane(ctx, queries, issue, agentID, input.HumanUserID); err != nil {
-			return empty, err
-		}
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return empty, err
 	}
 	var session db.ChatSession
-	if sessionID.Valid {
-		if session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, sessionID, agentID); err != nil {
+	reuse := input.SessionID.Valid
+	if reuse {
+		if session, err = lockDecisionLane(ctx, queries, issue, topic, input.SessionID, agentID); err != nil {
 			return empty, err
 		}
 		if session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
-		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
+	} else if session, reuse, err = topicLane(ctx, queries, issue, topic, input.HumanUserID, agentID); err != nil {
+		return empty, err
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && root != nil && root.IssueID != issue.ID {
@@ -543,8 +527,12 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	var createdSession *db.ChatSession
-	if !sessionID.Valid {
-		lane := db.ChatSession{AgentID: agent.ID, CreatorID: input.HumanUserID, Title: "Decisions: " + agent.Name}
+	if !reuse {
+		steward, err := handler.decisionSteward(ctx, queries, topic, agent, input.HumanUserID)
+		if err != nil {
+			return empty, err
+		}
+		lane := db.ChatSession{AgentID: steward.ID, CreatorID: input.HumanUserID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
 		if session, err = createDecisionDM(ctx, queries, issue, lane); err != nil {
 			return empty, err
 		}

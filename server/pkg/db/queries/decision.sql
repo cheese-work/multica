@@ -203,8 +203,9 @@ ORDER BY target.human_user_id;
 -- name: ListDecisionLanes :many
 -- With issue_id, lanes that name the issue (a message mention or a decision
 -- request on it) rank first, newest reference first, before the limit applies.
--- session_id narrows the result to one lane for an eligibility check.
-SELECT session.id, session.title, session.updated_at, ref.referenced_at::timestamptz AS referenced_at
+-- session_id narrows the result to one lane for an eligibility check. A lane
+-- of topic_id is listed whichever agent stewards it.
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -221,13 +222,36 @@ LEFT JOIN LATERAL (
           AND request.chat_session_id = session.id
     ) refs
 ) ref ON sqlc.narg('issue_id')::uuid IS NOT NULL
-WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.agent_id = sqlc.arg('agent_id')
+WHERE session.workspace_id = sqlc.arg('workspace_id')
+  AND (session.agent_id = sqlc.arg('agent_id') OR session.decision_topic_id = sqlc.narg('topic_id')::uuid)
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
   AND (sqlc.narg('session_id')::uuid IS NULL OR session.id = sqlc.narg('session_id')::uuid)
 ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10;
+
+-- name: GetDecisionTopicLane :one
+-- The one DM a person has for a decision topic.
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = sqlc.arg('creator_id')
+  AND session.decision_topic_id = sqlc.arg('topic_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.created_at, session.id
+LIMIT 1;
+
+-- name: LockDecisionTopicLane :exec
+-- Serializes the find-or-create of a person's DM for one topic.
+SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || sqlc.arg('workspace_id')::uuid::text || ':' || sqlc.arg('creator_id')::uuid::text || ':' || sqlc.arg('topic_id')::uuid::text, 0));
+
+-- name: ListDecisionTopicSessions :many
+SELECT chat_session.id, chat_session.creator_id FROM chat_session
+WHERE chat_session.workspace_id = sqlc.arg('workspace_id') AND chat_session.decision_topic_id = sqlc.arg('topic_id') AND chat_session.status = 'active' AND chat_session.agent_id <> sqlc.arg('agent_id');
+
+-- name: MoveDecisionSessionSteward :execrows
+UPDATE chat_session SET agent_id = sqlc.arg('agent_id'), runtime_id = (SELECT runtime_id FROM agent WHERE id = sqlc.arg('agent_id'))
+WHERE chat_session.workspace_id = sqlc.arg('workspace_id') AND chat_session.id = sqlc.arg('id') AND chat_session.status = 'active';
 
 -- name: OpenDecisionAsksSince :many
 SELECT ask, created_at FROM decision_request
@@ -457,13 +481,6 @@ LIMIT sqlc.arg('row_limit');
 SELECT id FROM chat_message
 WHERE chat_session_id = sqlc.arg('session_id') AND role = 'assistant' AND message_kind = 'message'
   AND created_at < sqlc.arg('before')
-ORDER BY created_at DESC, id DESC
-LIMIT 1;
-
--- name: LatestDecisionRequestLane :one
-SELECT chat_session_id FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
-  AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
