@@ -3401,6 +3401,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     issueId: id,
     scrollContainerEl,
     ready: !!issue && !loading && !timelineLoading,
+    disabled: isPeek,
     keyAt: (index) => (items[index] ? timelineItemKey(items[index]) : undefined),
   });
   const scrollAnchorIndex = scrollAnchor ? items.findIndex((item) => timelineItemKey(item) === scrollAnchor.key) : -1;

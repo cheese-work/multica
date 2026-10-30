@@ -60,11 +60,14 @@ export function useIssueDetailScrollAnchor({
   issueId,
   scrollContainerEl,
   ready,
+  disabled = false,
   keyAt,
 }: {
   issueId: string;
   scrollContainerEl: HTMLElement | null;
   ready: boolean;
+  /** A peek always opens at the top: it neither records nor restores. */
+  disabled?: boolean;
   keyAt: (index: number) => string | undefined;
 }): ScrollAnchor | null {
   const mementoKey = issueScrollAnchorMementoKey(issueId);
@@ -72,14 +75,14 @@ export function useIssueDetailScrollAnchor({
   const write = useViewStateWriter();
   const initial = useRef<{ issueId: string; anchor: ScrollAnchor | null } | null>(null);
   if (initial.current?.issueId !== issueId) {
-    initial.current = { issueId, anchor: parseScrollAnchor(saved) };
+    initial.current = { issueId, anchor: disabled ? null : parseScrollAnchor(saved) };
   }
 
   const keyAtRef = useRef(keyAt);
   keyAtRef.current = keyAt;
 
   useEffect(() => {
-    if (!scrollContainerEl || !ready) return;
+    if (!scrollContainerEl || !ready || disabled) return;
     let frame = 0;
     const save = () => {
       frame = 0;
@@ -94,7 +97,7 @@ export function useIssueDetailScrollAnchor({
       scrollContainerEl.removeEventListener("scroll", onScroll);
       cancelAnimationFrame(frame);
     };
-  }, [scrollContainerEl, ready, write, mementoKey]);
+  }, [scrollContainerEl, ready, disabled, write, mementoKey]);
 
   return initial.current.anchor;
 }
