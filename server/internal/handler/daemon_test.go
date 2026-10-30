@@ -5017,3 +5017,46 @@ func TestClaimTaskByRuntime_EmbedsTriggerThreadContext(t *testing.T) {
 		}
 	}
 }
+
+// CHE-2070: a thread longer than the history query's row cap must still show
+// its root and the newest earlier replies, not the oldest slice.
+func TestClaimTaskByRuntime_TriggerThreadContextKeepsNewestRepliesOnLongThread(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Long thread runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Long thread agent")
+	rootID := dbfx.Comment(t, issueID, "long root question", testutil.Cols{"created_at": testutil.Raw("now() - interval '2 days'")})
+	dbfx.Exec(t, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, created_at)
+		SELECT $1, $2, 'member', $3, 'filler reply ' || n, 'comment', $4,
+		       now() - interval '1 day' + n * interval '1 second'
+		FROM generate_series(1, 1100) AS n`,
+		issueID, testWorkspaceID, testUserID, rootID)
+	triggerID := dbfx.Comment(t, issueID, "mention trigger text", testutil.Cols{"parent_id": rootID})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":         runtimeID,
+		"issue_id":           issueID,
+		"trigger_comment_id": triggerID,
+	})
+
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
+	req = withURLParam(req, "runtimeId", runtimeID)
+	var resp struct {
+		Task *AgentTaskResponse `json:"task"`
+	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
+	if resp.Task == nil || resp.Task.ID != taskID {
+		t.Fatalf("expected claimed task %s, got %+v", taskID, resp.Task)
+	}
+	got := resp.Task.TriggerThreadContext
+	for _, want := range []string{"long root question", "filler reply 1100", "filler reply 1096"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("thread context missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "filler reply 2:") || strings.Contains(got, "filler reply 1095") {
+		t.Fatalf("thread context holds replies outside the newest five: %q", got)
+	}
+}

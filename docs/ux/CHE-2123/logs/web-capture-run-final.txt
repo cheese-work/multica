@@ -1,0 +1,26 @@
+WEB mermaid /capture/media/issues/issue-1/mermaid/4760b6bc582df6738182af0a1382d079706059d187ac5f56fa7e4c0d8c73bec8
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB table /capture/media/issues/issue-1/table/7afd8e2ff9ce83ddc0f943c1f8359533f8978f3e3a3c23aa338b1a8cc8f25ced
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB image /capture/media/issues/issue-1/image/3134a356a795e463e099b5c177e8bd3d7b2ff3b845c6ceafb48b77f691ad4b82
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB html /capture/media/issues/issue-1/html/105a9151ab1d85de0199b81e59fb652f7b7c1de46a626a5dab8618b8b4c606cb
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console Failed to load resource: the server responded with a status of 404 (Not Found)
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB console WebSocket connection to 'ws://127.0.0.1:31954/ws?workspace_slug=capture&client_platform=web&client_version=0.7.0&client_os=linux' failed: Error during WebSocket handshake: Unexpected response code: 200
+WEB PASS: four kinds; reload; copy link; phone keyboard; denied route zero media requests

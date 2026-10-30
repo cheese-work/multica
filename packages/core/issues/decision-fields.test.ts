@@ -17,6 +17,13 @@ describe("pickDecisionFields", () => {
   });
 });
 
+describe("receipt fields", () => {
+  it("survive a comment snapshot mapping", () => {
+    const comment = { decision_receipt_answer_id: "answer", decision_delivered: true, decision_chosen_option_index: 0, decision_option_label: "Hold", decision_issue_id: "issue", decision_issue_identifier: "CHE-1" };
+    expect(pickDecisionFields(comment)).toEqual(comment);
+  });
+});
+
 const entry = (fields: Partial<TimelineEntry>): TimelineEntry => ({
   type: "comment",
   id: "c",
@@ -32,6 +39,8 @@ describe("keepDecisionFields", () => {
     decision_state: "pending" as const,
     decision_source_session_id: "session",
     decision_source_message_id: "message",
+    decision_request_session_id: "ask-session",
+    decision_request_message_id: "ask-message",
   };
 
   it("keeps the fields a sparse snapshot lacks, including the owner-only DM pointers", () => {

@@ -271,6 +271,70 @@ describe("RepositoriesSection", () => {
     expect(item).toHaveTextContent("GITHUB_APP_ID");
   });
 
+  it("starts another GitHub install from the add menu without needing repository browsing", async () => {
+    githubRef.current = {
+      ...githubRef.current,
+      installations: [{ id: "installation-row-1", account_login: "multica-ai" }],
+      repository_browse_configured: false,
+    };
+    mockGetGitHubConnectURL.mockResolvedValue({ configured: true, url: "https://github.com/apps/x" });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const user = userEvent.setup();
+    render(<RepositoriesSection />, { wrapper: Wrapper });
+
+    await openAddMenu(user);
+    await user.click(await screen.findByRole("menuitem", { name: "Add account or organization" }));
+
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith("https://github.com/apps/x", "_blank", "noopener"),
+    );
+    expect(mockGetGitHubConnectURL).toHaveBeenCalledWith("workspace-1", "repositories");
+    open.mockRestore();
+  });
+
+  it.each([1, 2])("adds another GitHub account from the picker with %s installations", async (count) => {
+    githubRef.current = {
+      ...githubRef.current,
+      installations: [
+        { id: "installation-row-1", account_login: "multica-ai" },
+        { id: "installation-row-2", account_login: "other-org" },
+      ].slice(0, count),
+    };
+    mockGetGitHubConnectURL.mockResolvedValue({ configured: true, url: "https://github.com/apps/x" });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const user = userEvent.setup();
+    render(<RepositoriesSection />, { wrapper: Wrapper });
+
+    await openAddMenu(user);
+    await user.click(await screen.findByRole("menuitem", { name: /Choose from GitHub/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose GitHub repositories" });
+    await user.click(within(dialog).getByRole("button", { name: "Add account or organization" }));
+
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith("https://github.com/apps/x", "_blank", "noopener"),
+    );
+    expect(mockGetGitHubConnectURL).toHaveBeenCalledWith("workspace-1", "repositories");
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it("disables adding another GitHub account when installation is not configured", async () => {
+    githubRef.current = {
+      ...githubRef.current,
+      installations: [{ id: "installation-row-1", account_login: "multica-ai" }],
+      configured: false,
+    };
+    const user = userEvent.setup();
+    render(<RepositoriesSection />, { wrapper: Wrapper });
+
+    await openAddMenu(user);
+    expect(await screen.findByRole("menuitem", { name: "Add account or organization" }))
+      .toHaveAttribute("aria-disabled", "true");
+    await user.click(screen.getByRole("menuitem", { name: /Choose from GitHub/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose GitHub repositories" });
+    expect(within(dialog).getByRole("button", { name: "Add account or organization" })).toBeDisabled();
+  });
+
   it("imports selected GitHub repositories and deduplicates HTTPS against SSH", async () => {
     workspaceRef.current = {
       ...workspaceRef.current,

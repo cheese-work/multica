@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -36,12 +37,13 @@ func init() {
 		command.Flags().String("issue", "", "Issue UUID or identifier")
 		_ = command.MarkFlagRequired("issue")
 	}
-	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue")
-	decisionRequestCmd.Flags().Bool("new-dm", false, "Explicitly create a Decisions DM instead of selecting a listed lane")
+	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue; must be eligible (it discussed this issue)")
+	decisionRequestCmd.Flags().Bool("new-dm", false, "Create a DM for this issue only, when no listed lane discussed it")
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: agent_did, decision, options, recommendation, default_if_no_reply, source_issue_id, source_comment_id")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id")
+	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -81,6 +83,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	class, _ := command.Flags().GetString("class")
 	askPath, _ := command.Flags().GetString("ask-file")
 	footerPath, _ := command.Flags().GetString("footer-file")
+	actionPath, _ := command.Flags().GetString("action-file")
 	parentID, _ := command.Flags().GetString("parent")
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
@@ -92,13 +95,19 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ask, err := decisiontx.ParseAsk(askText)
+	ask, err := decisiontx.DecodeAsk([]byte(askText))
 	if err != nil {
 		return err
 	}
 	footer := ""
 	if footerPath != "" {
 		if footer, err = readDecisionText(footerPath, "footer"); err != nil {
+			return err
+		}
+	}
+	var action json.RawMessage
+	if actionPath != "" {
+		if action, err = readDecisionAction(actionPath); err != nil {
 			return err
 		}
 	}
@@ -115,13 +124,65 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if !strings.EqualFold(ask.SourceIssueID, issue.ID) {
 		return fmt.Errorf("ask.source_issue_id must match --issue")
 	}
-	var result map[string]any
-	if err := client.PostJSON(ctx, "/api/decisions", map[string]any{
+	body := map[string]any{
 		"issue_id": issue.ID, "session_id": sessionID, "new_dm": newDM, "for": humanID, "ask": ask, "footer": footer, "parent_id": parentID, "escalation_class": class,
-	}, &result); err != nil {
+	}
+	if action != nil {
+		body["action"] = action
+	}
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}
+	printAskHints(command, decisiontx.LintAsk(ask), result)
 	return printDecisions(command, []map[string]any{result}, false)
+}
+
+// printAskHints writes each distinct advisory hint once on stderr and drops the
+// server copy so JSON stdout keeps the stored request shape.
+func printAskHints(command *cobra.Command, local []string, result map[string]any) {
+	seen := make(map[string]bool)
+	hints := local
+	if server, ok := result["hints"].([]any); ok {
+		for _, hint := range server {
+			if text, ok := hint.(string); ok {
+				hints = append(hints, text)
+			}
+		}
+	}
+	delete(result, "hints")
+	for _, hint := range hints {
+		if !seen[hint] {
+			seen[hint] = true
+			fmt.Fprintln(command.ErrOrStderr(), "hint: "+hint)
+		}
+	}
+}
+
+// readDecisionAction loads --action-file. It checks only the envelope the
+// server's wire type accepts, so a typo such as "secrets" fails here instead
+// of being dropped; the allowlist and params are the server's to validate.
+func readDecisionAction(path string) (json.RawMessage, error) {
+	text, err := readDecisionText(path, "action")
+	if err != nil {
+		return nil, err
+	}
+	var action struct {
+		Type             string          `json:"type"`
+		Version          int             `json:"version"`
+		Params           json.RawMessage `json:"params,omitempty"`
+		SecretSlots      json.RawMessage `json:"secret_slots,omitempty"`
+		ExpiresInSeconds int64           `json:"expires_in_seconds,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&action); err != nil || decoder.More() {
+		return nil, fmt.Errorf("action file must contain exactly one JSON object with only type, version, params, secret_slots and expires_in_seconds")
+	}
+	if action.Type == "" || action.Version < 1 {
+		return nil, fmt.Errorf("action file needs a type and a version of 1 or more")
+	}
+	return json.Marshal(action)
 }
 
 func readDecisionText(path, label string) (string, error) {
@@ -132,8 +193,8 @@ func readDecisionText(path, label string) (string, error) {
 	if !utf8.Valid(text) {
 		return "", fmt.Errorf("%s file must contain valid UTF-8", label)
 	}
-	if label == "ask" && strings.TrimSpace(string(text)) == "" {
-		return "", fmt.Errorf("ask file must not be empty")
+	if (label == "ask" || label == "action") && strings.TrimSpace(string(text)) == "" {
+		return "", fmt.Errorf("%s file must not be empty", label)
 	}
 	return string(text), nil
 }

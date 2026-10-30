@@ -55,6 +55,9 @@ vi.mock("react-virtuoso", () => ({
   },
 }));
 
+vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => <span data-testid="agent-avatar" /> }));
+vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Terra" }) }));
+
 import { ChatMessageList } from "./chat-message-list";
 
 const TEST_RESOURCES = { en: { chat: enChat } };

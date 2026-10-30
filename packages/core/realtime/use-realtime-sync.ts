@@ -12,6 +12,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
+import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -70,6 +71,7 @@ import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
+import { isWakeupHeaderContent } from "../chat/wakeup";
 import {
   promotePendingChatTask,
   removePendingChatTask,
@@ -82,6 +84,7 @@ import type {
   WorkspaceDeletedPayload,
   WorkspaceUpdatedPayload,
   MemberRemovedPayload,
+  IssueStatusChangedPayload,
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
@@ -180,6 +183,7 @@ export function applyDecisionAnswerUpdated(
   payload: DecisionAnswerUpdatedPayload,
 ) {
   qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
 }
@@ -210,7 +214,14 @@ export function applyChatMessageToCache(
   payload: ChatMessageEventPayload,
 ) {
   const sessionId = payload.chat_session_id;
-  if (payload.role === "user" && payload.message_id) {
+  // A fired wakeup renders as an event row, which needs `scheduled_wakeup` that
+  // this payload lacks; writing it here would flash a user bubble. Leave it to
+  // the invalidate below, which refetches the row with its wakeup data.
+  if (
+    payload.role === "user" &&
+    payload.message_id &&
+    !isWakeupHeaderContent(payload.content ?? "")
+  ) {
     upsertChatMessageToCaches(qc, sessionId, {
       id: payload.message_id,
       chat_session_id: sessionId,
@@ -1097,6 +1108,16 @@ export function useRealtimeSync(
       }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
+      // A category move is the one catalog edit that does reach issue caches:
+      // rows carry the server-resolved status_category, and groups, facets and
+      // category-scoped lists are bucketed by it. Presentation-only edits keep
+      // the catalog-only path above.
+      if (msg.type === "issue_status:changed" && (msg.payload as IssueStatusChangedPayload | undefined)?.category_changed) {
+        debouncedRefresh("issue_status:category", () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        });
+      }
     });
 
     // --- Specific event handlers (granular cache updates) ---
@@ -1234,6 +1255,9 @@ export function useRealtimeSync(
       // updated_at, so the other comment events below deliberately do not.
       const wsId = getCurrentWsId();
       if (wsId) {
+        if (comment.decision_request_id || comment.decision_answer_id) {
+          qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
         // A comment carries only the aggregate owner revision, not a full
@@ -1249,6 +1273,8 @@ export function useRealtimeSync(
 
     const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
       applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
+      const wsId = getCurrentWsId();
+      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1581,6 +1607,10 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const invalidateOpenDecisions = () => {
+      const id = getCurrentWsId();
+      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+    };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as ChatMessageEventPayload;
@@ -1591,7 +1621,10 @@ export function useRealtimeSync(
       // Write the user turn before invalidating so the prompt does not depend
       // on the refetch surviving (MUL-5711) — same shape as chat:done.
       applyChatMessageToCache(qc, payload);
-      if (payload.role !== "user") invalidateSessionLists();
+      if (payload.role !== "user") {
+        invalidateOpenDecisions();
+        if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
+      }
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
@@ -1622,7 +1655,8 @@ export function useRealtimeSync(
       // chat:done no longer invalidates it, so a chatty session doesn't refetch
       // the aggregate on every turn (MUL-4159).
       // Assistant message just landed → has_unread may have flipped to true.
-      invalidateSessionLists();
+      invalidateOpenDecisions();
+      if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
     });
 
     // Late quick-actions supplement from the daemon's background suggestion

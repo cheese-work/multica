@@ -73,6 +73,14 @@ func TestAskedDecisionRecordRoundTrip(test *testing.T) {
 	if result.Message.MessageKind != "decision_reference" || result.Message.ChatSessionID != fixture.decision.ChatSessionID {
 		test.Fatalf("missing DM reference: %+v", result.Message)
 	}
+	workspace, err := testHandler.Queries.GetWorkspace(context.Background(), fixture.issue.WorkspaceID)
+	if err != nil {
+		test.Fatal(err)
+	}
+	wantIssueLink := "/" + workspace.Slug + "/issues/" + uuidToString(fixture.issue.ID)
+	if !strings.Contains(result.Message.Content, "Open issue: "+wantIssueLink) {
+		test.Fatalf("decision note has wrong issue link: %s", result.Message.Content)
+	}
 	replay, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
 	if err != nil || !replay.Replayed || replay.Answer.ID != result.Answer.ID || replay.Comment.ID != result.Comment.ID {
 		test.Fatalf("identical retry did not return the original answer: %+v %v", replay, err)

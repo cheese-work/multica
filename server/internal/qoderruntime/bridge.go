@@ -342,7 +342,13 @@ func (b *Bridge) stepRun(ctx context.Context, r *run) error {
 			b.cleanup(ctx)
 		}
 		if status.Status == "cancelled" {
-			if err := b.taskCall(ctx, r, "/cancel-ack", map[string]any{}, nil); err != nil {
+			// The ack opens the stop gate, so it needs the remote session
+			// stopped, not just a cancel attempted. Keep the run (and its
+			// proof) and retry on the next step until cleanup drains.
+			if r.SessionID != "" && r.Phase != "final" && b.cleanupPending(r.SessionID) {
+				return nil
+			}
+			if err := b.taskCall(ctx, r, "/cancel-ack", map[string]any{"cancel_ack_proof": r.CancelAckProof}, nil); err != nil {
 				return err
 			}
 		}
@@ -657,6 +663,14 @@ func (b *Bridge) queueCleanup(id string) {
 		}
 	}
 	b.state.Cleanup = append(b.state.Cleanup, id)
+}
+func (b *Bridge) cleanupPending(id string) bool {
+	for _, existing := range b.state.Cleanup {
+		if existing == id {
+			return true
+		}
+	}
+	return false
 }
 func (b *Bridge) cleanup(ctx context.Context) {
 	if len(b.state.Cleanup) == 0 {

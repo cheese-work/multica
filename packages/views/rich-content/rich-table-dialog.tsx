@@ -35,6 +35,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
 import { SortHeader, compareCells, textWidth } from "../editor/table-preview";
 import { tableToCsv, type RichTableModel } from "./rich-table-model";
+import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
 const ROW_NUMBER_COLUMN = "__row";
 const BODY_FONT_PX = 14;
@@ -76,13 +77,14 @@ function useCopyFeedback() {
 }
 
 interface RichTableDialogProps {
+  standalone?: boolean;
   model: RichTableModel;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   getMarkdown: () => string;
 }
 
-export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: RichTableDialogProps) {
+export function RichTableDialog({ model, open, onOpenChange, getMarkdown, standalone = false }: RichTableDialogProps) {
   const { t } = useT("editor");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [filter, setFilter] = useState("");
@@ -159,16 +161,9 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
 
   const shownRows = table.getRowModel().rows.length;
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        showCloseButton={false}
-        className="flex h-[min(85dvh,56rem)] w-[min(72rem,calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
-      >
-        <div className="flex shrink-0 items-center gap-2 border-b border-border py-2 pr-2 pl-4">
-          <DialogTitle className="mr-auto text-body font-medium">
-            {t(($) => $.table.expanded_title)}
-          </DialogTitle>
+  const content = <>
+        <div data-testid="media-toolbar" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-2 pr-2 pl-4">
+          {standalone ? <h1 className="mr-auto w-full text-body font-medium md:w-auto">{t(($) => $.table.expanded_title)}</h1> : <DialogTitle className="mr-auto w-full text-body font-medium md:w-auto">{t(($) => $.table.expanded_title)}</DialogTitle>}
           <div className="relative w-56 shrink-0">
             <Search
               aria-hidden
@@ -182,7 +177,7 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
               onChange={(event) => setFilter(event.target.value)}
               aria-label={t(($) => $.table.filter_placeholder)}
               placeholder={t(($) => $.table.filter_placeholder)}
-              className="h-7 pr-7 pl-7 text-caption"
+              className="h-10 pr-7 pl-7 text-caption md:h-7"
             />
             {filter && (
               <IconButton
@@ -198,6 +193,7 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
               </IconButton>
             )}
           </div>
+          <ViewerActions>
           <Button type="button" variant="outline" size="sm" onClick={() => copy("markdown", getMarkdown())}>
             {copied === "markdown" ? <Check /> : <Copy />}
             {t(($) => $.table.copy_markdown)}
@@ -211,7 +207,9 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
             {copied === "csv" ? <Check /> : <Copy />}
             {t(($) => $.table.copy_csv)}
           </Button>
-          <DialogClose
+          <MediaLinkAction kind="table" content={getMarkdown()} />
+          </ViewerActions>
+          {!standalone && <DialogClose
             render={
               <IconButton
                 variant="ghost"
@@ -222,7 +220,7 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
             }
           >
             <X />
-          </DialogClose>
+          </DialogClose>}
         </div>
         <DataTable
           table={table}
@@ -235,7 +233,7 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown }: Rich
           {" · "}
           {t(($) => $.attachment.table_columns, { count: model.headerText.length })}
         </p>
-      </DialogContent>
-    </Dialog>
-  );
+    </>;
+  if (standalone) return <div data-testid="media-stage" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">{content}</div>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent showCloseButton={false} className="flex h-[min(85dvh,56rem)] w-[min(72rem,calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">{content}</DialogContent></Dialog>;
 }

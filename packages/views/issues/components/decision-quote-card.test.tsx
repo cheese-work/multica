@@ -20,7 +20,7 @@ vi.mock("@multica/core/issues/decision-disclaim", async (importActual) => ({
   useDisclaimDecisionAnswer: () => ({ mutateAsync: disclaim, isPending: false }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  useWorkspacePaths: () => ({ chatSession: (id: string) => `/acme/chat?session=${id}` }),
+  useWorkspacePaths: () => ({ chatSession: (id: string) => `/acme/chat?session=${id}`, issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: (_type: string, id: string) => (id === "agent-1" ? "x99-claude-sonnet" : id) }),
@@ -47,16 +47,18 @@ function quote(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
     decision_state: "pending",
     decision_source_session_id: "session-1",
     decision_source_message_id: "msg-1",
+    decision_request_session_id: "session-0",
+    decision_request_message_id: "ask-1",
     ...overrides,
   };
 }
 
-function renderCard(entry: TimelineEntry, currentUserId = "human-1") {
+function renderCard(entry: TimelineEntry, currentUserId = "human-1", compact = false) {
   const qc = new QueryClient();
   const invalidate = vi.spyOn(qc, "invalidateQueries");
   const view = renderWithI18n(
     <QueryClientProvider client={qc}>
-      <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId={currentUserId} />
+      <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId={currentUserId} compact={compact} />
     </QueryClientProvider>,
   );
   return { ...view, invalidate };
@@ -68,6 +70,14 @@ beforeEach(() => {
 });
 
 describe("DecisionQuoteCard", () => {
+  it("names the chosen option, shows Delivered and offers Jump to card", () => {
+    renderCard(quote({ decision_state: "effective", decision_delivered: true, decision_chosen_option_index: 1, decision_option_label: "Hold" }));
+    const card = screen.getByTestId("decision-quote-card");
+    expect(card).toHaveTextContent("Option 2");
+    expect(card).toHaveTextContent("Delivered");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
+  });
+
   it("shows the human's words, the state and the recorder as a sub-line", () => {
     renderCard(quote({ content: "Agent note here.\n\n> Yes, ship it.\n> Keep the words." }));
     const card = screen.getByTestId("decision-quote-card");
@@ -76,9 +86,45 @@ describe("DecisionQuoteCard", () => {
     expect(card).toHaveTextContent("Keep the words.");
     expect(card).not.toHaveTextContent("> Yes");
     expect(card).toHaveTextContent("reversible");
-    expect(card).toHaveTextContent("Pending");
+    expect(card).toHaveTextContent("Recorded");
+    expect(card).not.toHaveTextContent("Pending");
     expect(card).toHaveTextContent("x99-claude-sonnet");
     expect(card).toHaveTextContent("Agent note here.");
+  });
+
+  it("shows Recorded, never In effect, for a woken answer the agent never received", () => {
+    renderCard(quote({ decision_state: "effective", decision_delivered: false }));
+    expect(screen.getByTestId("decision-quote-card")).toHaveTextContent("Recorded");
+    expect(screen.getByTestId("decision-quote-card")).not.toHaveTextContent("In effect");
+  });
+
+  it("puts the receipt on the member's own comment: no quote body, Option N, Jump to card, Disclaim", async () => {
+    renderCard(
+      quote({
+        actor_type: "member",
+        actor_id: "human-1",
+        content: "Hold.",
+        decision_comment_kind: undefined,
+        decision_answer_id: undefined,
+        decision_receipt_answer_id: "answer-9",
+        decision_issue_id: "issue-7",
+        decision_issue_identifier: "CHE-77",
+        decision_chosen_option_index: 0,
+        decision_option_label: "Hold",
+      }),
+      "human-1",
+      true,
+    );
+    const card = screen.getByTestId("decision-quote-card");
+    expect(card).toHaveTextContent("Recorded");
+    expect(card).toHaveTextContent("Option 1");
+    expect(card).not.toHaveTextContent("Hold.");
+    expect(screen.getByTestId("decision-receipt-issue")).toHaveTextContent("Recorded for CHE-77");
+    expect(screen.getByTestId("decision-receipt-issue")).toHaveAttribute("href", "/acme/issues/issue-7");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
+    fireEvent.click(screen.getByTestId("decision-disclaim-button"));
+    fireEvent.click(await screen.findByRole("button", { name: "Disclaim" }));
+    await waitFor(() => expect(calls).toEqual(["answer-9"]));
   });
 
   it("gives the request's human an Open DM link and a Disclaim button", () => {
@@ -87,9 +133,24 @@ describe("DecisionQuoteCard", () => {
     expect(screen.getByTestId("decision-disclaim-button")).toBeEnabled();
   });
 
+  it("links the request card and the answering message, each in its own DM session", () => {
+    renderCard(quote());
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveAttribute("href", "/acme/chat?session=session-0&message=ask-1");
+    expect(screen.getByTestId("decision-quote-asked-dm")).toHaveTextContent("Jump to card");
+    expect(screen.getByTestId("decision-quote-open-dm")).toHaveAttribute("href", "/acme/chat?session=session-1&message=msg-1");
+    expect(screen.getByTestId("decision-quote-open-dm")).toHaveTextContent("Answered");
+  });
+
+  it("omits the asked link when the request card is unknown", () => {
+    renderCard(quote({ decision_request_session_id: undefined, decision_request_message_id: undefined }));
+    expect(screen.queryByTestId("decision-quote-asked-dm")).toBeNull();
+    expect(screen.getByTestId("decision-quote-open-dm")).toBeInTheDocument();
+  });
+
   it("gives another member neither a link nor Disclaim, and says the source is private", () => {
-    renderCard(quote({ decision_source_session_id: undefined, decision_source_message_id: undefined }), "member-2");
+    renderCard(quote({ decision_source_session_id: undefined, decision_source_message_id: undefined, decision_request_session_id: undefined, decision_request_message_id: undefined }), "member-2");
     expect(screen.queryByTestId("decision-quote-open-dm")).toBeNull();
+    expect(screen.queryByTestId("decision-quote-asked-dm")).toBeNull();
     expect(screen.queryByTestId("decision-disclaim-button")).toBeNull();
     expect(screen.getByTestId("decision-quote-card")).toHaveTextContent("from a private DM");
   });

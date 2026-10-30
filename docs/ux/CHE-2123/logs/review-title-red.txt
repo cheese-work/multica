@@ -1,0 +1,128 @@
+
+> @multica/views@0.0.0 test /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+> vitest run media/media-context.test.tsx -t 'readable title'
+
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views
+
+ ❯ media/media-context.test.tsx (11 tests | 4 failed | 6 skipped) 558ms
+     × uses a native app window with a readable title for mermaid 368ms
+     × uses a native app window with a readable title for table 57ms
+     × uses a native app window with a readable title for html 62ms
+     × uses a native app window with a readable title for image 31ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for mermaid
+AssertionError: expected "vi.fn()" to be called with arguments: [ …(2) ]
+
+Received:
+
+  1st vi.fn() call:
+
+  [
+    "/acme/media/issues/issue-1/mermaid/22c4701023872930cbfb9629950f8f8f62aded2537e214850117520fbeb50b7b",
+-   "Mermaid diagram",
++   "mermaid",
+  ]
+
+
+Number of calls: 1
+
+ ❯ media/media-context.test.tsx:39:29
+     37|     await waitFor(() => expect(button).toBeEnabled());
+     38|     fireEvent.click(button);
+     39|     expect(openMediaWindow).toHaveBeenCalledWith(`/acme/media/issues/i…
+       |                             ^
+     40|     expect(openInNewTab).not.toHaveBeenCalled();
+     41|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for table
+AssertionError: expected "vi.fn()" to be called with arguments: [ …(2) ]
+
+Received:
+
+  1st vi.fn() call:
+
+  [
+    "/acme/media/issues/issue-1/table/22c4701023872930cbfb9629950f8f8f62aded2537e214850117520fbeb50b7b",
+-   "Table",
++   "table",
+  ]
+
+
+Number of calls: 1
+
+ ❯ media/media-context.test.tsx:39:29
+     37|     await waitFor(() => expect(button).toBeEnabled());
+     38|     fireEvent.click(button);
+     39|     expect(openMediaWindow).toHaveBeenCalledWith(`/acme/media/issues/i…
+       |                             ^
+     40|     expect(openInNewTab).not.toHaveBeenCalled();
+     41|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for html
+AssertionError: expected "vi.fn()" to be called with arguments: [ …(2) ]
+
+Received:
+
+  1st vi.fn() call:
+
+  [
+    "/acme/media/issues/issue-1/html/22c4701023872930cbfb9629950f8f8f62aded2537e214850117520fbeb50b7b",
+-   "HTML preview",
++   "html",
+  ]
+
+
+Number of calls: 1
+
+ ❯ media/media-context.test.tsx:39:29
+     37|     await waitFor(() => expect(button).toBeEnabled());
+     38|     fireEvent.click(button);
+     39|     expect(openMediaWindow).toHaveBeenCalledWith(`/acme/media/issues/i…
+       |                             ^
+     40|     expect(openInNewTab).not.toHaveBeenCalled();
+     41|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  media/media-context.test.tsx > media viewer actions > uses a native app window with a readable title for image
+AssertionError: expected "vi.fn()" to be called with arguments: [ …(2) ]
+
+Received:
+
+  1st vi.fn() call:
+
+  [
+    "/acme/media/issues/issue-1/image/22c4701023872930cbfb9629950f8f8f62aded2537e214850117520fbeb50b7b",
+-   "View image",
++   "image",
+  ]
+
+
+Number of calls: 1
+
+ ❯ media/media-context.test.tsx:39:29
+     37|     await waitFor(() => expect(button).toBeEnabled());
+     38|     fireEvent.click(button);
+     39|     expect(openMediaWindow).toHaveBeenCalledWith(`/acme/media/issues/i…
+       |                             ^
+     40|     expect(openInNewTab).not.toHaveBeenCalled();
+     41|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 1 passed | 6 skipped (11)
+   Start at  20:32:51
+   Duration  21.38s (transform 17.53s, setup 194ms, import 19.12s, tests 558ms, environment 1.20s)
+
+/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2123-d9bd685c923b/workdir/multica/packages/views:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @multica/views@0.0.0 test: `vitest run media/media-context.test.tsx -t 'readable title'`
+Exit status 1
