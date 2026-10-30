@@ -5,11 +5,13 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatQuickActionsPayload,
+  ChatSession,
 } from "@multica/core/types";
 
 import {
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
+  patchSessionListAfterRename,
   promotePendingTaskToRunning,
   seedAcceptedPendingTask,
   seedPendingTaskFromQueued,
@@ -385,5 +387,78 @@ describe("applyChatQuickActionsToCache", () => {
       { label: "Draft it", prompt: "Draft the complete plan", primary: true },
     ]);
     unsub();
+  });
+});
+
+describe("patchSessionListAfterRename", () => {
+  it("patches pinned, status, and continued_into_session_id and re-sorts active vs archived", () => {
+    const qc = new QueryClient();
+    const wsId = "ws-1";
+    const rows: ChatSession[] = [
+      {
+        id: "s1",
+        workspace_id: wsId,
+        creator_id: "u1",
+        agent_id: "a1",
+        title: "First",
+        status: "active",
+        has_unread: true,
+        unread_count: 2,
+        created_at: "2026-10-21T01:00:00Z",
+        updated_at: "2026-10-21T05:00:00Z",
+      },
+      {
+        id: "s2",
+        workspace_id: wsId,
+        creator_id: "u1",
+        agent_id: "a1",
+        title: "Second",
+        status: "active",
+        has_unread: false,
+        created_at: "2026-10-21T01:00:00Z",
+        updated_at: "2026-10-21T02:00:00Z",
+      },
+    ];
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), rows);
+
+    // Archive s1 with a continuation link
+    patchSessionListAfterRename(qc, wsId, {
+      chat_session_id: "s1",
+      status: "archived",
+      continued_into_session_id: "s2",
+    });
+
+    const afterArchive = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+    // Active s2 comes before archived s1, and s1's unread is cleared
+    expect(afterArchive?.map((s) => s.id)).toEqual(["s2", "s1"]);
+    expect(afterArchive?.[1]?.status).toBe("archived");
+    expect(afterArchive?.[1]?.has_unread).toBe(false);
+    expect(afterArchive?.[1]?.unread_count).toBe(0);
+    expect(afterArchive?.[1]?.continued_into_session_id).toBe("s2");
+  });
+
+  it("clears a stale pin when an event archives a pinned DM without a pinned field", () => {
+    const qc = new QueryClient();
+    const wsId = "ws-1";
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), [
+      {
+        id: "s1",
+        workspace_id: wsId,
+        creator_id: "u1",
+        agent_id: "a1",
+        title: "Pinned",
+        status: "active",
+        pinned: true,
+        has_unread: false,
+        created_at: "2026-10-21T01:00:00Z",
+        updated_at: "2026-10-21T05:00:00Z",
+      },
+    ]);
+
+    patchSessionListAfterRename(qc, wsId, { chat_session_id: "s1", status: "archived" });
+
+    const [row] = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId)) ?? [];
+    expect(row?.status).toBe("archived");
+    expect(row?.pinned).toBe(false);
   });
 });

@@ -407,6 +407,10 @@
         "label": "Archiver la notification",
         "description": "Archiver la notification ouverte, ou la restaurer lors de la consultation des archives."
       },
+      "searchChat": {
+        "label": "Rechercher dans les discussions",
+        "description": "Placer le focus sur le champ de recherche de la page Chat."
+      },
       "send": {
         "label": "Envoyer",
         "description": "Permet aussi de créer des tâches."

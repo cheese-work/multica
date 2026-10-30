@@ -391,6 +391,10 @@ deleted_run_budget_notices AS (
 deleted_issue_run_budget_entries AS (
     DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
 ),
+-- CHE-2489 run capability grants: workspace-owned leaf, no FK.
+deleted_run_capability_grants AS (
+    DELETE FROM run_capability_grant WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),

@@ -1,7 +1,7 @@
 -- CHE-2297 L2a: run-budget ledger. One row per credit or debit of an issue's
 -- run budget; balance = sum of the deltas. No foreign keys and no deletes:
--- usage history is kept. The unique index is migration 799, the workspace
--- index migration 800. tokens_delta is unused until token accounting (L2b).
+-- usage history is kept. The unique index is migration 805, the workspace
+-- index migration 806. tokens_delta is unused until token accounting (L2b).
 CREATE TABLE IF NOT EXISTS issue_run_budget_entry (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL,

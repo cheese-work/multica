@@ -613,6 +613,7 @@ type ChatSession struct {
 	TitleManuallySet       bool               `json:"title_manually_set"`
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
+	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
 }
 
 type ChatWakeup struct {
@@ -1759,6 +1760,7 @@ type IssueWakeup struct {
 	AggregateBlockedScopeKind pgtype.Text        `json:"aggregate_blocked_scope_kind"`
 	AggregateBlockedScopeID   pgtype.UUID        `json:"aggregate_blocked_scope_id"`
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
+	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 }
 
 type IssueWakeupDefinition struct {
@@ -2204,6 +2206,20 @@ type RunBudgetNotice struct {
 	Kind        string             `json:"kind"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type RunCapabilityGrant struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	Scopes            []string           `json:"scopes"`
+	GrantedByMemberID pgtype.UUID        `json:"granted_by_member_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	Reason            string             `json:"reason"`
+	RevokedAt         pgtype.Timestamptz `json:"revoked_at"`
+	PinnedBaseSha     pgtype.Text        `json:"pinned_base_sha"`
+	PinnedHeadSha     pgtype.Text        `json:"pinned_head_sha"`
 }
 
 type RunGateEvent struct {

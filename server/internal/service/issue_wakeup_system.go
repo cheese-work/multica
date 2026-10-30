@@ -335,6 +335,20 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		announceWithdrawn()
 		return nil
 	}
+	baseSHA, covered, err := s.prEventCarries(ctx, q, issue.ID, in)
+	if err != nil {
+		return err
+	}
+	if covered {
+		// The pr.event fallback already carries this cause (CHE-2540); its
+		// identity is spent here so a later snapshot never wakes it again.
+		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		announceWithdrawn()
+		return nil
+	}
 	if !config.matchesPR(in) {
 		// The event's identity is spent: a redelivery never fires once the
 		// filter changes. The refusal is visible on the timeline.
@@ -373,6 +387,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		if in.MergeState != "" {
 			payload["merge_state"] = in.MergeState
 		}
+		if baseSHA != "" {
+			payload["base_sha"] = baseSHA
+		}
 		if in.EventAt != "" {
 			payload["converted_at"] = in.EventAt
 		}
@@ -398,6 +415,34 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	announceWithdrawn()
 	return s.dispatchSystem(ctx, w)
+}
+
+// prEventCarries reports whether the pr.event fallback already carries the
+// cause of a legacy checks-failed or conflict input, and returns the base commit
+// a conflict was captured on (empty when none was, e.g. capture is off). The
+// legacy receipt records that base so the fallback can tell a new conflict on
+// the same head from the one this wake carries (CHE-2540).
+func (s *IssueWakeupService) prEventCarries(ctx context.Context, q *db.Queries, issueID pgtype.UUID, in PullRequestWakeupInput) (string, bool, error) {
+	var kind, baseSHA string
+	switch {
+	case in.Rule == SystemRulePRChecksFailed:
+		kind = "checks_failed"
+	case in.Rule == SystemRulePRAttention && in.Reason == PRAttentionMergeability && in.MergeState == "DIRTY":
+		kind = "conflict"
+		base, err := q.LatestPRConflictBase(ctx, db.LatestPRConflictBaseParams{
+			IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, HeadSha: in.HeadSHA,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", false, err
+		}
+		baseSHA = base
+	default:
+		return "", false, nil
+	}
+	covered, err := q.PREventCarriesLegacyWake(ctx, db.PREventCarriesLegacyWakeParams{
+		IssueID: issueID, RepoOwner: in.RepoOwner, RepoName: in.RepoName, PrNumber: in.Number, Kind: kind, HeadSha: in.HeadSHA, BaseSha: baseSHA,
+	})
+	return baseSHA, covered, err
 }
 
 // captureRunGatePR writes the shadow ledger row for a pr_merged or
@@ -865,13 +910,7 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 		}
 		return text + "Read the current issue and repository state, then decide what follow-up is needed."
 	case SystemRulePRAttention:
-		headSHA, _ := facts["head_sha"].(string)
-		base, _ := facts["base_branch"].(string)
-		if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
-			return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
-		}
-		state, _ := facts["merge_state"].(string)
-		return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
+		return prAttentionInstruction(receipts, pr, facts)
 	case SystemRulePRChecksFailed:
 		headSHA, _ := facts["head_sha"].(string)
 		conclusion, _ := facts["conclusion"].(string)
@@ -882,6 +921,18 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 	default:
 		return w.Instruction
 	}
+}
+
+// prAttentionLegacyText words one mergeability or returned-to-draft receipt.
+func prAttentionLegacyText(pr string, facts map[string]any) string {
+	issueStatus, _ := facts["issue_status"].(string)
+	headSHA, _ := facts["head_sha"].(string)
+	base, _ := facts["base_branch"].(string)
+	if reason, _ := facts["reason"].(string); reason == PRAttentionDraft {
+		return fmt.Sprintf("Linked %s went back to draft at head %s after this issue was accepted (status %s), so re-ready or explain: mark the PR ready for review again, or comment on this issue why it stays in draft.", pr, headSHA, issueStatus)
+	}
+	state, _ := facts["merge_state"].(string)
+	return fmt.Sprintf("Linked %s cannot merge as is: its merge state is %s on head %s against base %s. The issue status then was %s. Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge.", pr, state, headSHA, base, issueStatus)
 }
 
 func systemWakeupTriggerSummary(rule string) string {

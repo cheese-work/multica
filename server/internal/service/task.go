@@ -515,6 +515,16 @@ func (s *TaskService) attributionFromComment(ctx context.Context, comment db.Com
 		AuthorID:   comment.AuthorID,
 		CreatedAt:  comment.CreatedAt,
 	}
+	if comment.AuthorType == "agent" && !comment.SourceTaskID.Valid && comment.DecisionCommentKind.String == "quote" && comment.DecisionAnswerID.Valid {
+		answer, err := s.Queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: comment.WorkspaceID, ID: comment.DecisionAnswerID})
+		if err == nil && answer.IssueCommentID == comment.ID && !answer.AnsweredByTaskID.Valid {
+			request, err := s.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: comment.WorkspaceID, ID: answer.DecisionRequestID})
+			if err == nil && request.Origin == "asked" && request.IssueID == comment.IssueID && request.AskingAgentID == comment.AuthorID {
+				facts.AuthorType = "member"
+				facts.AuthorID = request.HumanUserID
+			}
+		}
+	}
 	// For an agent-authored comment, walk comment.source_task_id → parent task →
 	// parent.originator_user_id (set by every agent comment-write path since
 	// migration 120). A NULL/missing source task leaves ParentOriginator
@@ -5189,6 +5199,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
@@ -5786,6 +5797,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 				WorkDir:   pgtype.Text{String: workDir, Valid: workDir != ""},
 				RuntimeID: sessionRuntimeID,
+				TaskEpoch: t.ChatCompactionEpoch,
 			}); err != nil {
 				return fmt.Errorf("update chat session resume pointer: %w", err)
 			}
