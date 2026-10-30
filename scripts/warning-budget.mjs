@@ -105,9 +105,10 @@ function pages(endpoint, key) {
   }
 }
 
-// gh reports a server error as "... (HTTP 502)"; 4xx and malformed JSON are real faults and keep failing.
+// Only a failed gh process carries stderr; it reports a server error as "... (HTTP 502)".
+// Other exceptions (4xx, malformed JSON) are real faults even when their message mentions HTTP 5xx.
 function isServerError(error) {
-  return /\(HTTP 5\d\d\)/.test(`${error?.stderr ?? ""}${error?.message ?? ""}`)
+  return typeof error?.stderr === "string" && /\(HTTP 5\d\d\)/.test(error.stderr)
 }
 
 export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log }) {

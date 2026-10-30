@@ -233,3 +233,8 @@ test("a non-5xx jobs API error still fails loudly", () => {
   assert.throws(() => scan(() => { throw httpError(404) }), /Command failed/)
   assert.throws(() => scan(() => { throw new SyntaxError("Unexpected token") }), /Unexpected token/)
 })
+
+test("malformed JSON whose message contains an HTTP 5xx marker still fails loudly", () => {
+  const malformed = () => { try { JSON.parse("(HTTP 502)") } catch (error) { return error } }
+  assert.throws(() => scan(() => { throw malformed() }), SyntaxError)
+})
