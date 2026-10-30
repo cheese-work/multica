@@ -296,3 +296,30 @@ func TestRestrictedHomeCodexMissingSourceLeavesNoCredential(t *testing.T) {
 		t.Error("shared auth symlink or stale copy survived a missing source")
 	}
 }
+
+func TestRestrictedHomeRefusesSymlinkedHomeRoot(t *testing.T) {
+	user, root, outside := hostHome(t), t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "home")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Provider: "claude"}); err == nil {
+		t.Error("expected an error for a symlinked per-run HOME")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, ".claude")); err == nil {
+		t.Error("credential was written outside the task through the HOME symlink")
+	}
+}
+
+func TestRestrictedHomeRefusesSymlinkedCodexHomeRoot(t *testing.T) {
+	user, root, outside := hostHome(t), t.TempDir(), t.TempDir()
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.Symlink(outside, codexHome); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareRestrictedHome(homeLayout{RootDir: root, UserHome: user, Provider: "codex", CodexHome: codexHome}); err == nil {
+		t.Error("expected an error for a symlinked CODEX_HOME")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "auth.json")); err == nil {
+		t.Error("credential was written outside the task through the CODEX_HOME symlink")
+	}
+}

@@ -35,7 +35,7 @@ func prepareRestrictedHome(l homeLayout) (string, error) {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", fmt.Errorf("restricted home: %w", err)
 	}
-	homeRoot, err := os.OpenRoot(home)
+	homeRoot, err := openVerifiedRoot(home)
 	if err != nil {
 		return "", fmt.Errorf("restricted home: %w", err)
 	}
@@ -57,7 +57,7 @@ func prepareRestrictedHome(l homeLayout) (string, error) {
 		}
 		src = filepath.Join(sharedCodexHome(l.UserHome), "auth.json")
 		rel = "auth.json"
-		if dstRoot, err = os.OpenRoot(l.CodexHome); err != nil {
+		if dstRoot, err = openVerifiedRoot(l.CodexHome); err != nil {
 			return "", fmt.Errorf("restricted home credential: %w", err)
 		}
 		defer dstRoot.Close()
@@ -68,6 +68,34 @@ func prepareRestrictedHome(l homeLayout) (string, error) {
 		return "", fmt.Errorf("restricted home credential: %w", err)
 	}
 	return home, nil
+}
+
+// openVerifiedRoot opens dir as a root only if dir itself is a real directory.
+// os.OpenRoot follows a symlink at its starting path, so a reused task
+// directory replaced by a link would otherwise make the link target the
+// trusted root. Everything below the root is then confined by os.Root.
+func openVerifiedRoot(dir string) (*os.Root, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err == nil {
+		var current os.FileInfo
+		if current, err = os.Lstat(dir); err == nil {
+			switch {
+			case current.Mode()&os.ModeSymlink != 0:
+				err = fmt.Errorf("%s is a symlink", dir)
+			case !os.SameFile(opened, current):
+				err = fmt.Errorf("%s was replaced while opening it", dir)
+			}
+		}
+	}
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	return root, nil
 }
 
 // sharedCodexHome mirrors execenv's shared-home resolution ($CODEX_HOME, else
