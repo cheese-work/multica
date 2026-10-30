@@ -126,7 +126,7 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 		ParentID: current.IssueCommentID, MessageIDs: []pgtype.UUID{sent.Message.ID},
 	}, decisionRecordSource{
 		TaskID: sent.Task.ID, AgentID: decision.AskingAgentID, SessionID: session.ID, SourceSessionID: session.ID,
-		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content),
+		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content), ReplyText: content,
 	}, root)
 	if err != nil {
 		return nil, err

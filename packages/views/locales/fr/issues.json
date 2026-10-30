@@ -1927,6 +1927,12 @@
     "withdrawn_body": "Ce clic n'a rien modifié.",
     "review_action": "Consulter",
     "failed_notice": "Retrait impossible. La décision est inchangée.",
-    "try_again_action": "Réessayer"
+    "try_again_action": "Réessayer",
+    "full_message": "Message complet",
+    "agent_note": "Note de l'agent",
+    "timing_disclaimed": "Désavoué le {{time}}",
+    "timing_effective": "En vigueur depuis le {{time}}",
+    "timing_pending_window": "En attente. Prend effet le {{time}} ; {{minutes}} min pour désavouer.",
+    "timing_pending_wake": "En attente. Prend effet dès que l'agent est réveillé."
   }
 }

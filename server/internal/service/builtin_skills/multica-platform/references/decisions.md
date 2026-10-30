@@ -44,6 +44,40 @@ window names more than one person. See [chat.md](chat.md).
 The request is the ask, not the wait. Record who owns the next step in the
 issue (status or a wakeup on the answer) and end the run; do not poll.
 
+## Recording the answer
+
+When the person answers in a DM, record it on the issue:
+
+```bash
+multica issue comment add <issue> --decision-record \
+  --message <dm-message-id> [--context-message <offer-message-id>] \
+  [--excerpt "<text>"]... [--content-file ./note.md]
+```
+
+- `--message` is the attested DM message. The server quotes it; you cannot
+  type the quote. `--content-file` is an optional note, kept apart from the
+  quote and collapsed in the UI.
+- `--context-message` is the earlier assistant message that offered the
+  options. The record shows the matching option label, such as `D1`.
+- `--excerpt` quotes only that part of the message. It is repeatable. The
+  server refuses text that is not a verbatim part of the message, after
+  whitespace is collapsed. Without `--excerpt`, the whole message is quoted.
+- When one message answers several asks, record each ask on its own issue and
+  pass the excerpt for that record. Do not quote the whole message on every
+  issue.
+- The full message stays behind a collapsed "Full message" disclosure on an
+  excerpted record.
+
+## Record states
+
+A record is pending until the agent is woken, then effective, or disclaimed
+by the person. `reversible` records wake at once. Every other class waits 10
+minutes. The person can disclaim while it is pending and after it is
+effective; an effective record sends the agent a retraction. A disclaim
+reopens a live asked request, and cancels the request of an unprompted record
+or an archived DM. Times shown to people
+are ICT. User-facing description: `docs/decision-records.md` in the repo.
+
 ## Decision-bound writes (agent changes a governed field)
 
 An agent may change a workflow's steps or a governed instruction field only
