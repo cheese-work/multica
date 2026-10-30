@@ -51,6 +51,7 @@ export type {
   TaskFailureReason,
   AgentRuntime,
   RuntimeDevice,
+  RuntimeUpdateInfo,
   RuntimeProfile,
   RuntimeProtocolFamily,
   RuntimeProfileType,

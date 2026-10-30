@@ -1656,6 +1656,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Get("/api/integrations/composio/callback", h.ComposioCallback)
 
 	daemonUpdate := loadDaemonUpdateSource()
+	h.DaemonUpdate = daemonUpdate
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
