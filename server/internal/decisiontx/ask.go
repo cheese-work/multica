@@ -30,6 +30,24 @@ type Ask struct {
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
 	SourceIssueID    string      `json:"source_issue_id"`
 	SourceCommentID  string      `json:"source_comment_id"`
+	Subject          string      `json:"subject,omitempty"`
+	Artifacts        []Artifact  `json:"artifacts,omitempty"`
+}
+
+// Artifact is a file the human approves. The server checks that it is an
+// attachment of the source issue and that its stored bytes hash to SHA256.
+type Artifact struct {
+	AttachmentID           string             `json:"attachment_id"`
+	Label                  string             `json:"label"`
+	SHA256                 string             `json:"sha256"`
+	SupersedesAttachmentID string             `json:"supersedes_attachment_id,omitempty"`
+	SignedBy               *ArtifactSignature `json:"signed_by,omitempty"`
+}
+
+// ArtifactSignature names the reviewer agent and the signed review comment.
+type ArtifactSignature struct {
+	Reviewer  string `json:"reviewer"`
+	CommentID string `json:"comment_id"`
 }
 
 // AskError carries a fixed, field-named message. It never echoes decoder text,
@@ -41,7 +59,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
@@ -65,12 +83,16 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+		{"subject", &ask.Subject},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
+		return ask, err
+	}
+	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
 		return ask, err
 	}
 	return ask, ask.Validate()
@@ -216,7 +238,7 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
-	return nil
+	return ask.validateArtifacts()
 }
 
 func (ask Ask) Content(workspaceSlug string) string {

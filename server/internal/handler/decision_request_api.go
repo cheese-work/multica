@@ -73,6 +73,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
+		writeDecisionError(writer, err, "decision request")
+		return
+	}
 	if input.NewDM && (input.SessionID != "" || input.For == "") {
 		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
 		return
@@ -174,31 +178,37 @@ type decisionRequestResponse struct {
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
+	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
+		writeJSON(writer, http.StatusOK, stored)
+	}
+}
+
+// loadDecisionForRead resolves {id} for a workspace member who can read the
+// request's issue; it writes the refusal itself when it returns false.
+func (handler *Handler) loadDecisionForRead(writer http.ResponseWriter, request *http.Request) (db.DecisionRequest, db.Issue, bool) {
 	workspaceID := handler.resolveWorkspaceID(request)
 	if _, ok := handler.requireWorkspaceMember(writer, request, workspaceID, "workspace not found"); !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	workspaceUUID, ok := parseUUIDOrBadRequest(writer, workspaceID, "workspace_id")
 	if !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	requestID, ok := parseUUIDOrBadRequest(writer, chi.URLParam(request, "id"), "id")
 	if !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: workspaceUUID, ID: requestID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, http.StatusNotFound, "decision request not found")
-		return
+		return stored, db.Issue{}, false
 	}
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to read decision request")
-		return
+		return stored, db.Issue{}, false
 	}
-	if _, ok := handler.loadIssueForUser(writer, request, uuidToString(stored.IssueID)); !ok {
-		return
-	}
-	writeJSON(writer, http.StatusOK, stored)
+	issue, ok := handler.loadIssueForUser(writer, request, uuidToString(stored.IssueID))
+	return stored, issue, ok
 }
 
 func (handler *Handler) ListDecisions(writer http.ResponseWriter, request *http.Request) {
