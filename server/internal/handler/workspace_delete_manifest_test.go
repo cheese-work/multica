@@ -42,6 +42,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
 	"agent_invocation_target":            workspaceDelete,
+	"agent_preset":                       workspaceDelete,
 	"agent_runtime":                      workspaceDelete,
 	"agent_skill":                        workspaceDelete,
 	"agent_task_queue":                   workspaceDelete,
@@ -80,7 +81,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
+	"decision_action":                    workspaceDeleteWorker,
 	"decision_answer":                    workspaceDeleteWorker,
+	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,
 	"decision_expiry_digest":             workspaceDelete, // workspace_id FK ON DELETE CASCADE removes the day digests with the workspace.
 	"decision_expiry_digest_request":     workspaceDelete, // cascades from its digest and from decision_request (worker orphan cleanup).
@@ -169,6 +172,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"notification_channel_preference":    workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
+	"passkey_assertion_challenge":        workspaceDeleteKeep,
+	"passkey_enroll_ceremony":            workspaceDeleteKeep,
+	"passkey_enroll_limit":               workspaceDeleteKeep,
+	"passkey_event":                      workspaceDeleteKeep,
 	"pinned_item":                        workspaceDelete,
 	"plugin_installation":                workspaceDelete,
 	"plugin_hook_schedule":               workspaceDelete,
@@ -185,6 +192,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
+	"run_capability_grant":               workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -210,6 +218,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"task_usage_hourly_rollup_state":     workspaceDeleteKeep,
 	"user":                               workspaceDeleteKeep,
 	"user_composio_connection":           workspaceDeleteKeep,
+	"user_passkey":                       workspaceDeleteKeep,
 	"vcs_commit_status":                  workspaceDelete,
 	"vcs_connection":                     workspaceDelete,
 	"vcs_pull_request":                   workspaceDelete,
@@ -304,7 +313,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_answer", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_action", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}

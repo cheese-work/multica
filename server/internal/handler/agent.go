@@ -30,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -1495,7 +1494,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != "" {
-		if tokens := jev.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
+		if tokens := util.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -2057,8 +2056,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := jev.EstimateInstructionTokens(existing.Instructions)
+		newTokens := util.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := util.EstimateInstructionTokens(existing.Instructions)
 		if newTokens > 4000 {
 			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))

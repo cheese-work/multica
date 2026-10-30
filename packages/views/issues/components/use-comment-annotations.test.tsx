@@ -264,7 +264,7 @@ describe("selection to reply", () => {
     expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Please explain");
   });
 
-  it.each([false, true])("confirms changes and cancels unsaved edits (description: %s)", async (description) => {
+  it.each([false, true])("keeps dismissed drafts, confirms changes and cancels explicit edits (description: %s)", async (description) => {
     const draftKey = description ? "new:issue" as const : key;
     const { container } = renderWithI18n(description ? <DescriptionFixture /> : <Fixture />);
     selectText(container);
@@ -281,7 +281,7 @@ describe("selection to reply", () => {
     selectText(container);
     fireEvent.click(await screen.findByRole("button", { name: description ? "Add to comment" : "Add to reply" }));
     const reopened = await screen.findByRole("textbox", { name: "Comment" });
-    expect(reopened).toHaveValue("");
+    expect(reopened).toHaveValue("Unsaved note");
     fireEvent.change(reopened, { target: { value: "A real note" } });
     expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Edit annotation 1" })).not.toBeInTheDocument();

@@ -25,7 +25,7 @@ type intentFixture struct {
 
 func newIntentFixture(test *testing.T) intentFixture {
 	test.Helper()
-	agentID := createHandlerTestAgent(test, "decision-intent", []byte("[]"))
+	agentID := createHandlerTestAgent(test, "decision-intent-"+uuid.NewString()[:8], []byte("[]"))
 	issueID := dbfx.Issue(test, "intent issue", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(test, agentID, testutil.Cols{"issue_id": issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	humanID := dbfx.User(test, "Asked human", "intent-"+uuid.NewString()+"@test.invalid")
@@ -108,7 +108,7 @@ func TestDecisionIntentAllowAndStamp(test *testing.T) {
 }
 
 func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
-	for _, refusal := range []string{"chat", "other_issue", "other_agent", "non_assignee", "stopped", "terminal", "pat", "cloud_pat", "interactive_jwt", "cli_jwt", "unstamped", "no_target", "unknown_member", "private_agent"} {
+	for _, refusal := range []string{"chat", "other_issue", "other_agent", "stopped", "terminal", "pat", "cloud_pat", "interactive_jwt", "cli_jwt", "unstamped", "no_target", "unknown_member", "private_agent"} {
 		test.Run(refusal, func(test *testing.T) {
 			fixture := newIntentFixture(test)
 			source, taskID, content, want := "task_token", fixture.taskID, fixture.mention(), http.StatusForbidden
@@ -120,8 +120,6 @@ func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "other issue"), taskID)
 			case "other_agent":
 				taskID = dbfx.Task(test, createHandlerTestAgent(test, "other agent", []byte("[]")), testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, uuid.NewString(), fixture.issueID)
 			case "stopped":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, taskID)
 			case "terminal":

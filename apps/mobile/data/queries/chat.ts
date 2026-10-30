@@ -22,6 +22,8 @@ export const chatKeys = {
   all: (wsId: string | null) => ["chat", wsId] as const,
   sessions: (wsId: string | null) =>
     [...chatKeys.all(wsId), "sessions"] as const,
+  usage: (wsId: string | null, sessionId: string) =>
+    [...chatKeys.all(wsId), "usage", sessionId] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
   pendingTask: (sessionId: string) =>
     ["chat", "pending-task", sessionId] as const,
@@ -51,9 +53,21 @@ export function isTaskMessageTaskId(
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: chatKeys.sessions(wsId),
-    queryFn: ({ signal }) => api.listChatSessions({ signal }),
+    queryFn: ({ signal }) => api.listChatSessions({ status: "all", signal }),
     enabled: !!wsId,
     staleTime: Infinity,
+  });
+
+export const chatSessionUsageOptions = (
+  wsId: string | null,
+  sessionId: string | null,
+) =>
+  queryOptions({
+    queryKey: chatKeys.usage(wsId, sessionId ?? ""),
+    queryFn: ({ signal }) => api.getChatSessionUsage(sessionId!, { signal }),
+    enabled: !!wsId && !!sessionId,
+    staleTime: 0,
+    gcTime: 60_000,
   });
 
 export const chatMessagesOptions = (sessionId: string | null) =>

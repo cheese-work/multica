@@ -106,10 +106,12 @@ import type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
+  ChatSearchPage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
@@ -281,12 +283,15 @@ import {
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
   ChatMessagesPageSchema,
+  ChatSearchPageSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
   ChatSessionUsageSchema,
   EMPTY_CHAT_SESSION_USAGE,
+  ChatWakeupsSchema,
+  EMPTY_CHAT_WAKEUPS,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -3935,6 +3940,18 @@ export class ApiClient {
     });
   }
 
+  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
+  }
+
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",
@@ -4098,6 +4115,20 @@ export class ApiClient {
       }
       throw err;
     }
+  }
+
+  /** Search the caller's DMs by title and message text (`q` is 1-200 characters). */
+  async searchChats(params: { q: string; limit?: number; cursor?: string | null }): Promise<ChatSearchPage> {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.cursor) query.set("cursor", params.cursor);
+    const raw: unknown = await this.fetch(`/api/chat/search?${query.toString()}`);
+    return parseWithFallback(
+      raw,
+      ChatSearchPageSchema,
+      { results: [], next_cursor: null },
+      { endpoint: "GET /api/chat/search" },
+    );
   }
 
   async sendChatMessage(

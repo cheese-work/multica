@@ -407,7 +407,6 @@
     "metadata_restore": "Restore dialog size",
     "metadata_copy_failed": "Failed to copy metadata",
     "metadata_description": "Key-value data recorded by agents and integrations for workflow coordination.",
-
     "section_load_failed_retry": "Could not load. Retry",
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "breadcrumb_project_unknown": "Unknown project",
@@ -609,6 +608,7 @@
     "wakeup_link_run": "View run"
   },
   "comment": {
+    "show_full": "Show full comment",
     "you": "You",
     "add_reaction": "Add reaction",
     "collapse_thread": "Collapse thread",
@@ -1892,11 +1892,15 @@
     "state": {
       "pending": "Pending",
       "effective": "In effect",
-      "disclaimed": "Disclaimed"
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered",
+      "recorded": "Recorded"
     },
     "via_dm": "via DM",
     "recorded_by": "Recorded by {{name}}",
-    "asked_in_dm": "Asked in DM",
+    "recorded_for": "Recorded for {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",
@@ -1911,6 +1915,12 @@
     "withdrawn_body": "Nothing was changed by this click.",
     "review_action": "Review",
     "failed_notice": "Could not disclaim. The decision is unchanged.",
-    "try_again_action": "Try again"
+    "try_again_action": "Try again",
+    "full_message": "Full message",
+    "agent_note": "Agent's note",
+    "timing_disclaimed": "Disclaimed at {{time}}",
+    "timing_effective": "In effect since {{time}}",
+    "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
+    "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
   }
 }

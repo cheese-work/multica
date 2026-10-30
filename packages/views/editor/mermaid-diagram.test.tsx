@@ -187,6 +187,48 @@ describe("MermaidDiagram lifecycle", () => {
     expect(source).toContain("rgb(12, 34, 56)");
   });
 
+  function lastConfig() {
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(mermaidRenderMock.mock.lastCall?.[1]);
+    return parse(frontmatter![1]!).config;
+  }
+
+  it("applies the full app theme, neo look and themeCSS by default", async () => {
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    const config = lastConfig();
+    expect(config.look).toBe("neo");
+    expect(config.themeCSS).toContain("drop-shadow");
+    // Exports carry no host page, so the CSS must hold resolved colors.
+    expect(config.themeCSS).not.toContain("var(");
+    // Wide default spacing shrinks sequence labels once fitted to a column.
+    expect(config.sequence).toMatchObject({ width: 110, actorMargin: 24, wrap: true });
+    expect(config.themeVariables).toMatchObject({
+      mainBkg: "rgb(12, 34, 56)",
+      nodeBorder: "rgb(12, 34, 56)",
+      fontSize: "15px",
+    });
+  });
+
+  it("lets author frontmatter win over the theme defaults", async () => {
+    render(
+      <MermaidDiagram
+        chart={`---\nconfig:\n  look: classic\n  themeCSS: ".mine { color: red; }"\n  themeVariables:\n    mainBkg: "#123456"\n---\n${CHART}`}
+      />,
+    );
+    await findFrame();
+    const config = lastConfig();
+    expect(config.look).toBe("classic");
+    expect(config.themeCSS).toBe(".mine { color: red; }");
+    expect(config.themeVariables.mainBkg).toBe("#123456");
+    expect(config.themeVariables.nodeBorder).toBe("rgb(12, 34, 56)");
+  });
+
+  it("merges author sequence settings over the compact defaults", async () => {
+    render(<MermaidDiagram chart={`---\nconfig:\n  sequence:\n    width: 200\n---\n${CHART}`} />);
+    await findFrame();
+    expect(lastConfig().sequence).toMatchObject({ width: 200, actorMargin: 24 });
+  });
+
   it.each([
     { name: "without frontmatter", chart: CHART, theme: "base" },
     {
@@ -761,5 +803,47 @@ describe("MermaidDiagram orientation", () => {
     await waitFor(() => {
       expect(viewerPropsMock.mock.lastCall?.[0].viewerDocument).toContain("variant-LR");
     });
+  });
+});
+
+describe("MermaidDiagram auto top-down", () => {
+  const WIDE_SVG = '<svg viewBox="0 0 2000 500"><g><text>wide diagram</text></g></svg>';
+
+  it("redraws top-down when the column would shrink text below the minimum", async () => {
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidRenderMock.mock.calls[0]![1]).toContain("graph LR");
+    expect(mermaidRenderMock.mock.calls[1]![1]).toContain("graph TD");
+  });
+
+  it("keeps a diagram whose scaled text is exactly the minimum", async () => {
+    stubColumnWidth(800);
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the author's direction when the setting changes to author after a stack", async () => {
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    const { rerender } = render(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(2));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph TD");
+    orientationSetting.value = "author";
+    rerender(<MermaidDiagram chart={CHART} />);
+    await waitFor(() => expect(mermaidRenderMock).toHaveBeenCalledTimes(3));
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph LR");
+  });
+
+  it("keeps the author's direction when orientation is set to author", async () => {
+    orientationSetting.value = "author";
+    stubColumnWidth(800);
+    mermaidRenderMock.mockResolvedValueOnce({ svg: WIDE_SVG });
+    render(<MermaidDiagram chart={CHART} />);
+    await findFrame();
+    expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
+    expect(mermaidRenderMock.mock.lastCall?.[1]).toContain("graph LR");
   });
 });
