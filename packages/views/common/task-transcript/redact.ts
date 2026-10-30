@@ -72,7 +72,8 @@ function redactGenericCredentials(text: string): string {
     const value = text.slice(match.index + match[0].length);
     const literal = /^\S+/.exec(value)?.[0];
     if (!literal || isCredentialReference(value)) continue;
-    parts.push(text.slice(end, match.index), "[REDACTED CREDENTIAL]");
+    // Keep "KEY=" so a reader can see which credential was masked.
+    parts.push(text.slice(end, match.index + match[0].length), "[REDACTED]");
     end = match.index + match[0].length + literal.length;
   }
   if (!end) return text;

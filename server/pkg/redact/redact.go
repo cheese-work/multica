@@ -114,8 +114,9 @@ func redactGenericCredentials(text string) string {
 		if literal == "" || isCredentialReference(value) {
 			continue
 		}
-		result.WriteString(text[end:match[0]])
-		result.WriteString("[REDACTED CREDENTIAL]")
+		// Keep "KEY=" so a reader can see which credential was masked.
+		result.WriteString(text[end:match[1]])
+		result.WriteString("[REDACTED]")
 		end = match[1] + len(literal)
 	}
 	if end == 0 {
@@ -216,8 +217,16 @@ func redactValue(v any, depth int) any {
 // running the agent. Transcript visibility is an authorization concern and is
 // handled at that layer, not by string replacement here.
 func Text(s string) string {
+	return redactGenericCredentials(Prose(s))
+}
+
+// Prose applies only the provider-token rules. Use it for text an agent wrote
+// for people to read (replies, summaries, comments): the generic keyword rule
+// in Text reads label words such as "Token:" in a table cell as a credential
+// and deletes the text after them (CHE-2587). Use Text for machine output.
+func Prose(s string) string {
 	for _, p := range patterns {
 		s = p.re.ReplaceAllString(s, p.replacement)
 	}
-	return redactGenericCredentials(s)
+	return s
 }

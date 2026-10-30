@@ -101,7 +101,7 @@ describe("redactSecrets", () => {
   it("redacts generic credential env vars", () => {
     for (const key of ["PASSWORD", "SECRET", "TOKEN", "DATABASE_URL", "API_KEY"]) {
       const result = redactSecrets(`${key}=supersecretvalue123`);
-      expect(result).toContain("[REDACTED CREDENTIAL]");
+      expect(result).toBe(`${key}=[REDACTED]`);
       expect(result).not.toContain("supersecretvalue123");
     }
   });
