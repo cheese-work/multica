@@ -2,10 +2,9 @@
 # ask body changes section order and the agent's working notes fold into a collapsed Details block.
 # No page, dialog, route or control is added, moved or removed.
 issue: CHE-2186
-# NO APPROVED DESIGN AND NO CHEESE WAIVER RECORDED YET. rev-2/A.html is a replay fixture of the
-# built card, not an approved revision. Replace this line with `design/... @ <merge-sha>` or
-# `waived   # waiver: <comment link>` once Cheese approves or waives. Do not infer a waiver.
-design: pending   # approval or waiver requested on CHE-2186
+# rev-2/A.html is a replay fixture of the built card, not an approved revision. Cheese waived the
+# design-approval requirement for this slice at head 04ab6c590; the waiver covers nothing else.
+design: waived   # waiver: Cheese "WAIVE" on decision request 105d2826-290a-48de-a07c-1e78bc16853e, CHE-2186 comment 01a18cba-61e8-7131-9d36-0d9a0b3945e1, 30 Oct 2026 19:13 ICT; code review, exact-head CI, cross-lab review and Cheese merge gates stay
 pages:
   - id: chat-decision-request-card
     url: /<workspace-slug>/chat   # same path on base and preview; a decision request in a DM thread
