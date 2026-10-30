@@ -35,6 +35,40 @@ func readRelations(t *testing.T, id, query string) relationsGraph {
 	return graph
 }
 
+func TestIssueRelationsMentionsAreOptIn(t *testing.T) {
+	root := dbfx.Issue(t, "opt-in root")
+	child := dbfx.Issue(t, "opt-in child", testutil.Cols{"parent_issue_id": root})
+	mentioned := dbfx.Issue(t, "opt-in mention")
+	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": mentioned, "author_type": "member", "author_id": testUserID, "content": "[root](mention://issue/" + root + ")"})
+	for _, query := range []string{"", "?include=mentions"} {
+		graph := readRelations(t, root, query)
+		want := 2
+		if query != "" {
+			want = 3
+		}
+		if len(graph.Nodes) != want {
+			t.Fatalf("query %q: got %d nodes, want %d (root and %s without mentions)", query, len(graph.Nodes), want, child)
+		}
+	}
+}
+
+func TestIssueRelationsWithoutMentionsDoesNotTouchComments(t *testing.T) {
+	root := dbfx.Issue(t, "no comment scan root")
+	for _, includeMentions := range []bool{false, true} {
+		var plan []byte
+		err := testPool.QueryRow(context.Background(), "EXPLAIN (FORMAT JSON) "+issueRelationsSQL(includeMentions),
+			parseUUID(testWorkspaceID), parseUUID(root), 1, []pgtype.UUID{}, "TEST").Scan(&plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		touchesComments := strings.Contains(string(plan), `"Relation Name": "comment"`)
+		if touchesComments != includeMentions {
+			t.Fatalf("includeMentions=%t: comment in plan=%t", includeMentions, touchesComments)
+		}
+		t.Logf("includeMentions=%t: comment in EXPLAIN plan=%t", includeMentions, touchesComments)
+	}
+}
+
 func TestIssueRelationsDepthCapAndWorkspaceIsolation(t *testing.T) {
 	root := dbfx.Issue(t, "relations root")
 	child := dbfx.Issue(t, "relations child", testutil.Cols{"parent_issue_id": root})
@@ -97,7 +131,7 @@ func TestIssueRelationsTypesAndCycles(t *testing.T) {
 			dbfx.Exec(t, `DELETE FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2`, id, pr)
 		})
 	}
-	graph := readRelations(t, root, "?depth=2")
+	graph := readRelations(t, root, "?depth=2&include=mentions")
 	if len(graph.Nodes) != 6 {
 		t.Fatalf("nodes: %+v", graph)
 	}
@@ -132,6 +166,10 @@ func TestIssueRelationsRejectsInvalidDepthAndForeignRoot(t *testing.T) {
 	root := dbfx.Issue(t, "relations root")
 	for _, depth := range []string{"0", "3", "-1", "no", "2&depth=1"} {
 		req := withURLParam(newRequest("GET", "/api/issues/"+root+"/relations?depth="+depth, nil), "id", root)
+		testutil.Call(t, testHandler.GetIssueRelations, req).Want(http.StatusBadRequest)
+	}
+	for _, include := range []string{"", "comments", "mentions&include=mentions"} {
+		req := withURLParam(newRequest("GET", "/api/issues/"+root+"/relations?include="+include, nil), "id", root)
 		testutil.Call(t, testHandler.GetIssueRelations, req).Want(http.StatusBadRequest)
 	}
 	foreign := dbfx.Issue(t, "relations foreign root", testutil.Cols{"workspace_id": dbfx.Workspace(t, "relations foreign", "relations-foreign-root")})
@@ -186,7 +224,7 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 	measure := func(depth int) mentionWork {
 		t.Helper()
 		var planJSON []byte
-		err := testPool.QueryRow(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+issueRelationsSQL,
+		err := testPool.QueryRow(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+issueRelationsSQL(true),
 			parseUUID(testWorkspaceID), parseUUID(root), depth, []pgtype.UUID{}, "TEST").Scan(&planJSON)
 		if err != nil {
 			t.Fatal(err)
@@ -257,7 +295,7 @@ func TestIssueRelationsKeepsBoundaryEdgesAndMixedCaseMentions(t *testing.T) {
 	dbfx.Exec(t, `UPDATE issue SET description=$2 WHERE id=$1`, first, "[second](mention://issue/"+strings.ToUpper(second)+")")
 	dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": second, "author_type": "member", "author_id": testUserID, "content": "[first](mention://issue/" + strings.ToUpper(first) + ")"})
 	for _, rootID := range []string{root, first, second} {
-		graph := readRelations(t, rootID, "?depth=2")
+		graph := readRelations(t, rootID, "?depth=2&include=mentions")
 		mentions := map[string]bool{}
 		for _, edge := range graph.Edges {
 			if edge.Type == "mention" {
