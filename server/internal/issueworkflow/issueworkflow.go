@@ -24,11 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -40,6 +42,9 @@ const (
 	HandlerMember      = "member"
 	HandlerProjectLead = "project_lead"
 	HandlerCreator     = "creator"
+	// HandlerHumanByRole hands the issue to a person, by role: the issue's
+	// requester, then the project lead, then the workspace owner.
+	HandlerHumanByRole = "human_by_role"
 )
 
 const (
@@ -168,6 +173,23 @@ type Step struct {
 	Instructions  string  `json:"instructions"`
 	NextStatusKey string  `json:"next_status_key,omitempty"`
 	BackStatusKey string  `json:"back_status_key,omitempty"`
+	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
+	// when the checks of a linked PR pass on the current head.
+	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
+	// Edges are the step's exits, each taken when its guard holds. Without
+	// them the exits derive from the fields above (see EdgesOf).
+	Edges []Edge `json:"edges,omitempty"`
+	// SubWorkflow makes the step a sub-workflow node (CHE-2031): entering it
+	// creates a child issue that follows another workflow, and a children_done
+	// edge joins when every child of the stage is done.
+	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
+}
+
+// SubWorkflow names the workflow a sub-workflow step starts and the stage its
+// child issues join on.
+type SubWorkflow struct {
+	WorkflowID string `json:"workflow_id"`
+	Stage      int    `json:"stage,omitempty"`
 }
 
 // Definition is a decoded workflow.
@@ -176,12 +198,21 @@ type Definition struct {
 	Name      string
 	IsDefault bool
 	Steps     []Step
+	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
+	// (see EffectiveMaxRuns).
+	MaxRunsPerIssue int
+	// IncludeChildPRs makes the PRs of an issue's direct children count as
+	// its own for edge guards.
+	IncludeChildPRs bool
+	// RunBudgetSince is when the budget starts counting: runs before it are
+	// free, so issues in flight when the budget shipped start fresh.
+	RunBudgetSince time.Time
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole:
 		return true
 	}
 	return false
@@ -190,11 +221,14 @@ func (s Step) HandsOff() bool {
 // storedStep is a step as the workflow row stores it; a step without a
 // handoff is just its status key.
 type storedStep struct {
-	StatusKey     string   `json:"status_key"`
-	Handler       *Handler `json:"handler,omitempty"`
-	Instructions  string   `json:"instructions,omitempty"`
-	NextStatusKey string   `json:"next_status_key,omitempty"`
-	BackStatusKey string   `json:"back_status_key,omitempty"`
+	StatusKey     string       `json:"status_key"`
+	Handler       *Handler     `json:"handler,omitempty"`
+	Instructions  string       `json:"instructions,omitempty"`
+	NextStatusKey string       `json:"next_status_key,omitempty"`
+	BackStatusKey string       `json:"back_status_key,omitempty"`
+	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
+	Edges         []Edge       `json:"edges,omitempty"`
+	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -203,7 +237,14 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	return Definition{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps}, nil
+	def := Definition{
+		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
+		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+	}
+	if row.RunBudgetSince.Valid {
+		def.RunBudgetSince = row.RunBudgetSince.Time
+	}
+	return def, nil
 }
 
 // DecodeSteps parses a stored steps array, normalizing a missing handler to
@@ -224,6 +265,10 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			Instructions:  s.Instructions,
 			NextStatusKey: s.NextStatusKey,
 			BackStatusKey: s.BackStatusKey,
+
+			AdvanceOnCIGreen: s.AdvanceOnCI,
+			Edges:            s.Edges,
+			SubWorkflow:      s.SubWorkflow,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -245,7 +290,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -299,12 +344,18 @@ func (d Definition) HandsOffAnywhere() bool {
 	return false
 }
 
-// NextStatus is where a step's handler moves the issue when done: the step's
-// own choice, or else the next status on the board that is not blocked.
+// NextStatus is where a step's handler moves the issue when done: the target
+// of the step's first agent_done exit, else the step's own choice, else the
+// next status on the board that is not blocked.
 func (d Definition) NextStatus(key string) string {
 	step, ok := d.Step(key)
 	if !ok {
 		return ""
+	}
+	for _, e := range step.Edges {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentDone {
+			return e.To
+		}
 	}
 	if step.NextStatusKey != "" {
 		return step.NextStatusKey
@@ -411,7 +462,17 @@ func NormalizeHandoff(s Step) Step {
 	}
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
+	s.Edges = normalizeEdges(s.Edges)
+	if s.SubWorkflow != nil {
+		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
+	}
 	return s
+}
+
+// CanAdvanceOnCIGreen reports whether CI green may move an issue out of a
+// status: never out of a closed, parked or blocked one.
+func CanAdvanceOnCIGreen(key string) bool {
+	return AcceptsHandoff(key) && key != issuestatus.Blocked
 }
 
 // ValidateHandoff checks one normalized handoff against its workflow.
@@ -421,7 +482,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -444,7 +505,13 @@ func ValidateHandoff(s Step, def Definition) error {
 			return invalid("%q is not another status of this workflow", ref)
 		}
 	}
-	return nil
+	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
+		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
+	}
+	if err := validateSubWorkflow(s); err != nil {
+		return err
+	}
+	return validateEdges(s, def)
 }
 
 // Querier is the read surface workflow resolution needs.
@@ -460,25 +527,50 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, nil
+			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys()), IncludeChildPRs: true}, nil
 		}
 		return Definition{}, err
 	}
 	return Decode(row)
 }
 
+// ErrOverrideMissing means an issue's workflow override names a workflow that
+// no longer exists. Deletion is blocked while an issue references a workflow,
+// so this is a data fault; the issue never falls back to a looser workflow.
+var ErrOverrideMissing = errors.New("the issue's workflow override no longer exists")
+
 // ForProject loads the workflow a project uses. def is nil only for an issue
 // outside any project.
 func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID) (*Definition, db.Project, error) {
-	if !projectID.Valid {
-		return nil, db.Project{}, nil
-	}
-	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, db.Project{}, nil
+	return ForIssue(ctx, q, workspaceID, pgtype.UUID{}, projectID)
+}
+
+// ForIssue loads the workflow an issue follows: its own override when set,
+// otherwise its project's. def is nil only for an issue with neither. project
+// is the zero value outside a project, so handlers relative to the project
+// resolve to nobody. Every consumer resolves through here.
+func ForIssue(ctx context.Context, q Querier, workspaceID, workflowID, projectID pgtype.UUID) (*Definition, db.Project, error) {
+	var project db.Project
+	if projectID.Valid {
+		var err error
+		project, err = q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, db.Project{}, err
 		}
-		return nil, db.Project{}, err
+	}
+	if workflowID.Valid {
+		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: workflowID, WorkspaceID: workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, project, ErrOverrideMissing
+		}
+		if err != nil {
+			return nil, project, err
+		}
+		def, err := Decode(row)
+		return &def, project, err
+	}
+	if !project.ID.Valid {
+		return nil, db.Project{}, nil
 	}
 	def, err := ForProjectRow(ctx, q, project)
 	return def, project, err
@@ -507,10 +599,21 @@ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definit
 	return &def, nil
 }
 
+// Humans are the people a human-by-role handler can fall back to, looked up by
+// the caller: the member an agent created the issue for, and the workspace
+// owner. An invalid id means nobody holds that role. The caller sets Requester
+// only for a current member, and LeadNotMember when the project's member lead
+// has left the workspace.
+type Humans struct {
+	Requester      pgtype.UUID
+	LeadNotMember  bool
+	WorkspaceOwner pgtype.UUID
+}
+
 // ResolveHandler turns a step's handler into a concrete assignee for one
 // issue. ok is false when the step does not hand off, or when a relative
-// handler (project lead, creator) has nobody to resolve to.
-func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
+// handler (project lead, creator, human by role) has nobody to resolve to.
+func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
 		var id pgtype.UUID
@@ -528,6 +631,17 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return issueCreatorType, issueCreatorID, true
+	case HandlerHumanByRole:
+		// Always a member: an agent project lead is not a human, so the chain
+		// moves on to the workspace owner.
+		switch {
+		case humans.Requester.Valid:
+			return "member", humans.Requester, true
+		case project.LeadType.String == "member" && project.LeadID.Valid && !humans.LeadNotMember:
+			return "member", project.LeadID, true
+		case humans.WorkspaceOwner.Valid:
+			return "member", humans.WorkspaceOwner, true
+		}
 	}
 	return "", pgtype.UUID{}, false
 }
@@ -582,6 +696,21 @@ func (e *StepMovedError) Error() string {
 	return fmt.Sprintf("%s is no longer at %s: %s moved it to %s while this run was working, so this status change was not applied. "+
 		"Do not change the status again in this run; leave a comment if something still needs attention.",
 		e.IssueIdentifier, statusLabel(e.StepName, e.Step), mover, statusLabel(e.CurrentName, e.Current))
+}
+
+// StaleVerdictError refuses a status change from a review run that was
+// superseded by a newer head: its verdict is for a commit that is no longer the
+// head of the pull request.
+type StaleVerdictError struct {
+	IssueIdentifier string
+	// ReviewedSHA is the head the superseded run reviewed.
+	ReviewedSHA string
+}
+
+func (e *StaleVerdictError) Error() string {
+	return fmt.Sprintf("%s: verdict for %s is stale: a newer head superseded this review, so this status change was not applied. "+
+		"Do not change the status again in this run; the replacement review covers the new head.",
+		e.IssueIdentifier, e.ReviewedSHA)
 }
 
 // statusLabel names a status for an agent: its display name with the key the
@@ -735,4 +864,27 @@ func briefText(s string) string {
 		return r
 	}, s)
 	return strings.TrimSpace(s)
+}
+
+// MaxSubWorkflowStage bounds the stage a sub-workflow step joins on.
+const MaxSubWorkflowStage = 100
+
+// validateSubWorkflow checks a sub-workflow step. The join is the step's
+// children_done edge: without one the parent would wait for ever. That the
+// target workflow exists in the workspace is the caller's check.
+func validateSubWorkflow(s Step) error {
+	sub := s.SubWorkflow
+	if sub == nil {
+		return nil
+	}
+	if _, err := util.ParseUUID(sub.WorkflowID); err != nil {
+		return invalid("sub-workflow needs a valid workflow id")
+	}
+	if sub.Stage < 0 || sub.Stage > MaxSubWorkflowStage {
+		return invalid("sub-workflow stage must be between 0 and %d", MaxSubWorkflowStage)
+	}
+	if !hasGuard(s.Edges, GuardChildrenDone) {
+		return invalid("a sub-workflow step needs a children_done edge to join on")
+	}
+	return nil
 }

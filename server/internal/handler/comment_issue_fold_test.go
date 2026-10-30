@@ -4,7 +4,9 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -63,6 +65,54 @@ func (fx issueFoldFixture) tasks(t *testing.T, status string) []db.AgentTaskQueu
 
 func coalescedIDs(task db.AgentTaskQueue) []string {
 	return uuidsToStrings(task.CoalescedCommentIds)
+}
+
+func TestCommentFoldRecordsOnlyCommittedHumanDelegation(test *testing.T) {
+	for _, path := range []string{"thread", "issue"} {
+		test.Run(path, func(test *testing.T) {
+			ctx := context.Background()
+			fixture := newIssueFoldFixture(test, "telemetry "+path)
+			enabled := testHandler.TaskService.RecordMemberActivity
+			testHandler.TaskService.RecordMemberActivity = true
+			test.Cleanup(func() {
+				testHandler.TaskService.RecordMemberActivity = enabled
+				dbfx.Exec(test, "DELETE FROM member_delegation_day WHERE user_id=$1", testUserID)
+			})
+			dbfx.Exec(test, "DELETE FROM member_delegation_day WHERE user_id=$1", testUserID)
+			rootID := dbfx.Comment(test, fixture.issueID, "original instruction")
+			actedAt := time.Now().UTC().Add(-24 * time.Hour)
+			commentID := dbfx.Comment(test, fixture.issueID, "human follow-up", testutil.Cols{"parent_id": rootID, "created_at": actedAt})
+			taskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtime, "issue_id": fixture.issueID, "trigger_comment_id": rootID})
+			trigger := commentAgentTrigger{Agent: fixture.agent, Source: commentTriggerSourceMentionAgent}
+			fold := func() bool {
+				if path == "thread" {
+					return testHandler.mergeCommentIntoPendingTask(ctx, fixture.issue, trigger, parseUUID(commentID), pgtype.Text{}) == commentMergeSucceeded
+				}
+				return testHandler.foldCommentIntoQueuedIssueTask(ctx, fixture.issue, trigger, parseUUID(commentID), pgtype.Text{})
+			}
+			if !fold() {
+				test.Fatal("expected a committed comment fold")
+			}
+			var count int
+			if err := testPool.QueryRow(ctx, "SELECT count(*) FROM member_delegation_day WHERE user_id=$1 AND activity_date=$2::date", testUserID, actedAt.Format(time.DateOnly)).Scan(&count); err != nil {
+				test.Fatal(err)
+			}
+			if count != 1 {
+				test.Fatalf("committed fold delegation days = %d, want 1 on the comment's date", count)
+			}
+			dbfx.Exec(test, "DELETE FROM member_delegation_day WHERE user_id=$1", testUserID)
+			dbfx.Exec(test, "UPDATE agent_task_queue SET status='dispatched', dispatched_at=now() WHERE id=$1", taskID)
+			if fold() {
+				test.Fatal("fold must not rewrite a claimed task")
+			}
+			if err := testPool.QueryRow(ctx, "SELECT count(*) FROM member_delegation_day WHERE user_id=$1", testUserID).Scan(&count); err != nil {
+				test.Fatal(err)
+			}
+			if count != 0 {
+				test.Fatalf("refused fold recorded %d delegation days", count)
+			}
+		})
+	}
 }
 
 func TestCommentInNewThreadFoldsIntoQueuedRun_CHE1418(t *testing.T) {

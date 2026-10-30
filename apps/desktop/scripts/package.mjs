@@ -27,7 +27,7 @@
 // real `git describe` invocation against a throwaway repo.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -156,6 +156,28 @@ export const DESCRIBE_ARGS = [
 // isolation — the gap that let the Windows quoting regression through CI.
 export function deriveVersion(cwd = repoRoot) {
   return normalizeGitVersion(git(DESCRIBE_ARGS, cwd));
+}
+
+// Version stamped into the bundled `multica` CLI (main.version): the daemon
+// advertises it, so it must be `<UPSTREAM_VERSION>-YYYYMMDD-hhmm` in ICT
+// (UTC+7) like scripts/daemon-artifact-version.sh (CHE-1910). Reimplemented
+// here, not shelled out, so Windows packaging needs no bash. Null when the
+// upstream version or commit time is unreadable; the caller decides.
+export function deriveCliVersion(cwd = repoRoot) {
+  let upstream;
+  try {
+    upstream = readFileSync(resolve(cwd, "UPSTREAM_VERSION"), "utf-8").trim();
+  } catch {
+    return null;
+  }
+  const committedAt = new Date(git(["show", "-s", "--format=%cI", "HEAD"], cwd));
+  if (!/^\d+\.\d+\.\d+$/.test(upstream) || Number.isNaN(committedAt.getTime())) {
+    return null;
+  }
+  const ict = new Date(committedAt.getTime() + 7 * 3600 * 1000)
+    .toISOString()
+    .replace(/[-:]/g, "");
+  return `${upstream}-${ict.slice(0, 8)}-${ict.slice(9, 13)}`;
 }
 
 function uniqueOrdered(values) {
@@ -351,9 +373,6 @@ export function builderArgsForTarget(
     builderArgs.push("-c.publish.channel=latest-arm64");
   }
   if (target.platform === "mac" && target.arch === "x64") {
-    // Scope the Electron 39 platform floor to the new Intel package so this
-    // change does not rewrite established Apple Silicon bundle metadata.
-    builderArgs.push("-c.mac.minimumSystemVersion=12.0.0");
     builderArgs.push("-c.publish.channel=latest-x64");
   }
   return builderArgs;

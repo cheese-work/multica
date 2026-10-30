@@ -29,6 +29,7 @@ type prWakeupSettings struct {
 	GitHubEnabled   *bool `json:"github_enabled"`
 	WakeOnPRMerge   *bool `json:"github_wake_on_pr_merge"`
 	WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
+	WakeOnCISuccess *bool `json:"github_wake_on_ci_success"`
 	WakeOnAttention *bool `json:"github_wake_on_pr_attention"`
 }
 
@@ -37,6 +38,8 @@ func (v prWakeupSettings) ruleSetting(rule string) *bool {
 	switch rule {
 	case SystemRulePRChecksFailed:
 		return v.WakeOnCIFailure
+	case SystemRulePRChecksPassed:
+		return v.WakeOnCISuccess
 	case SystemRulePRAttention:
 		return v.WakeOnAttention
 	default:

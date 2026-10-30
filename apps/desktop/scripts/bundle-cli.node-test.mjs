@@ -36,9 +36,11 @@ for (const [platform, arch, goos, goarch, foreignCaller] of [
         for (const name of ["bundle-cli.mjs", "package.mjs"]) {
           copyFileSync(join(scriptDir, name), join(scripts, name));
         }
+        writeFileSync(join(root, "UPSTREAM_VERSION"), "0.6.5\n");
         fakeExecutable(join(bin, "git"), `
 const args = process.argv.slice(2);
 if (args[0] === "describe") console.log("v9.9.9");
+else if (args.join(" ") === "show -s --format=%cI HEAD") console.log("2026-10-23T01:51:00Z");
 else if (args.join(" ") === "rev-parse --short HEAD") console.log("abc1234");
 else if (args.join(" ") === "rev-parse HEAD") {
   if (process.env.TEST_MISSING_REVISION === "true") process.exit(1);
@@ -62,7 +64,8 @@ else if (args[0] === "build") {
         });
         const build = JSON.parse(readFileSync(record, "utf8"));
         const flags = build.args[build.args.indexOf("-ldflags") + 1].split(" ");
-        assert.ok(flags.includes("main.version=9.9.9"));
+        // CHE-1985: <upstream>-YYYYMMDD-hhmm in ICT (UTC+7), never `git describe`.
+        assert.ok(flags.includes("main.version=0.6.5-20261023-0851"));
         assert.ok(flags.includes("main.commit=abc1234"));
         assert.ok(flags.includes(`main.buildCommit=${missingRevision ? "unknown" : fullRevision}`));
         assert.equal(build.goos, goos);

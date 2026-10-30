@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import type { Workspace, WorkspaceGovernanceRollback, WorkspaceJevGovernancePatch } from "../types";
+import type {
+  JevCredentialPresence,
+  Workspace,
+  WorkspaceGovernanceRollback,
+  WorkspaceJevGovernancePatch,
+} from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
 import { clearWorkspaceStorage } from "../platform/storage-cleanup";
@@ -230,7 +235,11 @@ export function useRemoveJevCredential(wsId: string) {
     gcTime: 0,
     mutationFn: () => api.deleteJevCredential(wsId),
     onSuccess: () => {
-      qc.setQueryData(workspaceKeys.jevCredential(wsId), { present: false });
+      qc.setQueryData<JevCredentialPresence>(workspaceKeys.jevCredential(wsId), (prev) => ({
+        configurable: true,
+        ...prev,
+        present: false,
+      }));
     },
   });
 }

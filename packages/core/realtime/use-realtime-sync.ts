@@ -12,6 +12,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
+import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -70,6 +71,7 @@ import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
+import { isWakeupHeaderContent } from "../chat/wakeup";
 import {
   promotePendingChatTask,
   removePendingChatTask,
@@ -82,6 +84,7 @@ import type {
   WorkspaceDeletedPayload,
   WorkspaceUpdatedPayload,
   MemberRemovedPayload,
+  IssueStatusChangedPayload,
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
@@ -97,6 +100,7 @@ import type {
   CommentDeletedPayload,
   CommentResolvedPayload,
   CommentUnresolvedPayload,
+  DecisionAnswerUpdatedPayload,
   ActivityCreatedPayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
@@ -124,6 +128,7 @@ import type {
   ChatSession,
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
+  AgentRuntime,
 } from "../types";
 
 const chatWsLogger = createLogger("chat.ws");
@@ -171,6 +176,40 @@ export function refetchPendingChatAggregate(
 }
 
 /**
+ * A decision card changed state. Both surfaces render the same state, so
+ * refresh the issue's quote card and every DM message list.
+ */
+export function applyDecisionAnswerUpdated(
+  qc: QueryClient,
+  payload: DecisionAnswerUpdatedPayload,
+) {
+  qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.issue_id) });
+  if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
+ * A task started or ended. A paused machine shows "N tasks left" from the
+ * runtime list, which no heartbeat refreshes, so refetch it while a pause is on
+ * screen. Without a pause the list is left alone: task events are frequent.
+ */
+export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
+  const lists = qc.getQueriesData<AgentRuntime[]>({ queryKey: runtimeKeys.list(wsId) });
+  const paused = lists.some(([, runtimes]) => runtimes?.some((runtime) => runtime.pause));
+  if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
+}
+
+/**
+ * An issue run started. A decision card in a DM shows the run that picked its
+ * answer up, and that run has no message of its own to push, so refresh them.
+ */
+export function applyIssueRunStarted(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
  * Apply a chat:message event: write the turn's USER message into the message
  * caches, then reconcile authoritatively (MUL-5711).
  *
@@ -196,7 +235,14 @@ export function applyChatMessageToCache(
   payload: ChatMessageEventPayload,
 ) {
   const sessionId = payload.chat_session_id;
-  if (payload.role === "user" && payload.message_id) {
+  // A fired wakeup renders as an event row, which needs `scheduled_wakeup` that
+  // this payload lacks; writing it here would flash a user bubble. Leave it to
+  // the invalidate below, which refetches the row with its wakeup data.
+  if (
+    payload.role === "user" &&
+    payload.message_id &&
+    !isWakeupHeaderContent(payload.content ?? "")
+  ) {
     upsertChatMessageToCaches(qc, sessionId, {
       id: payload.message_id,
       chat_session_id: sessionId,
@@ -208,6 +254,8 @@ export function applyChatMessageToCache(
   }
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+  // A scheduled wakeup fires as a system user message; it leaves the DM's list.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 export function applyChatDoneToCache(
@@ -239,6 +287,9 @@ export function applyChatDoneToCache(
     // landed this row.
     upsertChatMessageToCaches(qc, sessionId, assistant);
   }
+  // The turn may have scheduled or cancelled a wakeup: creating one emits no
+  // event of its own, so the end of the turn is when the chip learns of it.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
   // Replacement is in the messages list now; remove only this task. If a
   // follow-up is queued, it becomes the next head in the same render tick.
   qc.setQueryData<ChatPendingTask>(
@@ -701,6 +752,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
   qc.invalidateQueries({ queryKey: chatKeys.pendingTaskAll() });
   qc.invalidateQueries({ queryKey: chatKeys.taskMessagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.wakeupsAll() });
   // A chat:cancel_finalized broadcast missed while disconnected is exactly
   // what the durable draft-restore rows exist for (#5219) — re-pull them so
   // a mounted composer recovers the prompt without a remount.
@@ -964,6 +1016,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        refreshRuntimesWhilePaused(qc, wsId);
         // Working-agent projections have their own bounded refresh below.
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
@@ -1053,7 +1106,7 @@ export function useRealtimeSync(
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
-      "comment:resolved", "comment:unresolved",
+      "comment:resolved", "comment:unresolved", "decision_answer:updated",
       "activity:created",
       "reaction:added", "reaction:removed",
       "issue_reaction:added", "issue_reaction:removed",
@@ -1083,6 +1136,16 @@ export function useRealtimeSync(
       }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
+      // A category move is the one catalog edit that does reach issue caches:
+      // rows carry the server-resolved status_category, and groups, facets and
+      // category-scoped lists are bucketed by it. Presentation-only edits keep
+      // the catalog-only path above.
+      if (msg.type === "issue_status:changed" && (msg.payload as IssueStatusChangedPayload | undefined)?.category_changed) {
+        debouncedRefresh("issue_status:category", () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        });
+      }
     });
 
     // --- Specific event handlers (granular cache updates) ---
@@ -1220,6 +1283,9 @@ export function useRealtimeSync(
       // updated_at, so the other comment events below deliberately do not.
       const wsId = getCurrentWsId();
       if (wsId) {
+        if (comment.decision_request_id || comment.decision_answer_id) {
+          qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
         // A comment carries only the aggregate owner revision, not a full
@@ -1231,6 +1297,12 @@ export function useRealtimeSync(
           invalidateIssueOwnerProjections(qc, wsId, comment.issue_id);
         }
       }
+    });
+
+    const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
+      applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
+      const wsId = getCurrentWsId();
+      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1563,6 +1635,10 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const invalidateOpenDecisions = () => {
+      const id = getCurrentWsId();
+      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+    };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as ChatMessageEventPayload;
@@ -1573,7 +1649,10 @@ export function useRealtimeSync(
       // Write the user turn before invalidating so the prompt does not depend
       // on the refetch surviving (MUL-5711) — same shape as chat:done.
       applyChatMessageToCache(qc, payload);
-      if (payload.role !== "user") invalidateSessionLists();
+      if (payload.role !== "user") {
+        invalidateOpenDecisions();
+        if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
+      }
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
@@ -1604,7 +1683,8 @@ export function useRealtimeSync(
       // chat:done no longer invalidates it, so a chatty session doesn't refetch
       // the aggregate on every turn (MUL-4159).
       // Assistant message just landed → has_unread may have flipped to true.
-      invalidateSessionLists();
+      invalidateOpenDecisions();
+      if (!isDecisionLifecycleMessage(payload.message_kind)) invalidateSessionLists();
     });
 
     // Late quick-actions supplement from the daemon's background suggestion
@@ -1673,7 +1753,10 @@ export function useRealtimeSync(
     // would stay parked even after the daemon resumed work.
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
-      if (!payload.chat_session_id) return;
+      if (!payload.chat_session_id) {
+        if (payload.issue_id) applyIssueRunStarted(qc);
+        return;
+      }
       qc.setQueryData<ChatPendingTask>(
         chatKeys.pendingTask(payload.chat_session_id),
         (old) => promotePendingChatTask(old, payload.task_id, "running"),
@@ -1853,6 +1936,7 @@ export function useRealtimeSync(
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();
+      unsubDecisionAnswerUpdated();
       unsubActivityCreated();
       unsubReactionAdded();
       unsubReactionRemoved();

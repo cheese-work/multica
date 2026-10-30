@@ -19,7 +19,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -250,7 +249,7 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Instructions != nil {
-		if tokens := jev.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
+		if tokens := util.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -393,8 +392,8 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := jev.EstimateInstructionTokens(squad.Instructions)
+		newTokens := util.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := util.EstimateInstructionTokens(squad.Instructions)
 		if newTokens > 3000 {
 			if *req.Instructions != squad.Instructions && (existingTokens <= 3000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", newTokens))
@@ -460,16 +459,23 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+
+	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
+		return
+	}
+
 	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 
 	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
 	// guard above so a machine actor never reaches it.
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, rawFields)
+		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
 		return
 	}
 

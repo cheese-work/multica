@@ -205,9 +205,7 @@ func TestDecisionMutationOrders(test *testing.T) {
 				}
 				unblock()
 				firstError, secondError := awaitDecisionMutation(test, firstDone), awaitDecisionMutation(test, secondDone)
-				if first == "record" && second == "veto" {
-					requireDecisionConflict(test, firstError)
-				} else if firstError != nil {
+				if firstError != nil {
 					test.Fatal(firstError)
 				}
 				if pair == [2]string{"veto", "disclaim"} || pair == [2]string{"veto", "veto"} {

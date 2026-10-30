@@ -40,6 +40,9 @@ type AppConfig struct {
 	// with the operator's own domains instead of Multica Cloud defaults.
 	DaemonServerURL string `json:"daemon_server_url,omitempty"`
 	DaemonAppURL    string `json:"daemon_app_url,omitempty"`
+	// Explicit even when URLs are omitted, so clients never infer Cloud from
+	// missing self-host configuration. Older clients ignore this additive field.
+	DaemonSetupTarget string `json:"daemon_setup_target"`
 
 	// VCSIntegrationAvailable mirrors the MULTICA_VCS_INTEGRATION_ENABLED
 	// deployment switch so the Settings UI can hide the whole self-hosted Git
@@ -98,14 +101,13 @@ type AppConfig struct {
 	// replies unless it is declared.
 	CommentDeleteKeepRepliesSupported bool `json:"comment_delete_keep_replies_supported"`
 
-	// ServerVersion is the running API build version, so self-hosted
-	// operators can confirm what's deployed and include it in bug reports.
-	// Only emitted on self-hosted deployments — omitted on the managed cloud,
-	// which is continuously deployed so its users can't act on the version —
-	// and empty for dev builds that aren't stamped via -X main.version.
+	// ServerVersion is the running API plain semver version, ServerBuild is the
+	// fork ICT build stamp (YYYYMMDD-hhmm), and ServerCommit is the 7-char short
+	// commit SHA. Only emitted on self-hosted deployments — omitted on the
+	// managed cloud and empty for unstamped dev builds.
 	ServerVersion string `json:"server_version,omitempty"`
-	Version       string `json:"version,omitempty"`
-	Build         string `json:"build,omitempty"`
+	ServerBuild   string `json:"server_build,omitempty"`
+	ServerCommit  string `json:"server_commit,omitempty"`
 }
 
 // GetConfig is mounted on the public (unauthenticated) route group because
@@ -130,14 +132,30 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.AttachmentPublicURL = h.cfg.PublicURL
 	config.CdnSigned = h.CFSigner != nil
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
+	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so
 	// the Help popover's version row would just be noise there (MUL-4108).
 	if !isOfficialCloudDeployment() {
-		config.ServerVersion = h.cfg.ServerVersion
-		config.Version, config.Build = buildinfo.Split(h.cfg.ServerVersion)
+		plainVersion, splitBuild := buildinfo.Split(h.cfg.ServerVersion)
+		if plainVersion != "" && plainVersion != "dev" {
+			config.ServerVersion = plainVersion
+			config.ServerBuild = strings.TrimSpace(h.cfg.ServerBuild)
+			if config.ServerBuild == "" {
+				config.ServerBuild = splitBuild
+			}
+			c := strings.TrimSpace(h.cfg.ServerCommit)
+			if c != "" && c != "unknown" && c != "dev" {
+				if len(c) > 7 {
+					c = c[:7]
+				}
+				config.ServerCommit = c
+			}
+		}
+	} else {
+		config.DaemonSetupTarget = "cloud"
 	}
 
 	// Re-read from env on every request so operators can rotate keys via

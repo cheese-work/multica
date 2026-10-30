@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/inbox"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -116,7 +117,7 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
-	content := fmt.Sprintf("Decision vetoed for [%s-%d](mention://issue/%s) by %s.\nReason: %s\nOpen issue: /issue/%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), actor, answer.VetoReason.String, uuidToString(issue.ID))
+	content := fmt.Sprintf("Decision vetoed for [%s-%d](mention://issue/%s) by %s.\nReason: %s\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), actor, answer.VetoReason.String, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
 	var message db.ChatMessage
 	if active {
 		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: content, MessageKind: pgtype.Text{String: "decision_veto", Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})
@@ -143,7 +144,7 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	}
 	workspaceID, agentID := uuidToString(request.WorkspaceID), uuidToString(answer.DisclaimedByAgentID)
 	if message.ID.Valid {
-		handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt)})
+		handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 	}
 	if inserted {
 		handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})

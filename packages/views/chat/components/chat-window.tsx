@@ -1,9 +1,23 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { motion } from "motion/react";
-import { Minus, Maximize2, Minimize2, ChevronDown, Plus, Check, Archive, Pencil, Loader2, Square } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  Minus,
+  Maximize2,
+  Minimize2,
+  ChevronDown,
+  Plus,
+  Check,
+  Archive,
+  Info,
+  Pencil,
+  Pin,
+  PinOff,
+  Loader2,
+  Square,
+} from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
@@ -19,7 +33,6 @@ import { agentListOptions, memberListOptions } from "@multica/core/workspace/que
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
 import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
-import { InteractiveLoginBanner } from "./interactive-login-banner";
 import {
   isAgentRuntimeBound,
   useAgentPresenceDetail,
@@ -27,6 +40,8 @@ import {
   useWorkspaceAgentAvailability,
 } from "@multica/core/agents";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { DeferredTooltip } from "../../common/deferred-tooltip";
+import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useAppForeground } from "../../common/use-app-foreground";
 import {
   RowActionsMenu,
@@ -40,6 +55,8 @@ import {
   PropertyPicker,
 } from "../../issues/components/pickers/property-picker";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { ChatSearch } from "./chat-search";
+import { useOpenChatMessageHit } from "./use-open-chat-message-hit";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
@@ -47,7 +64,6 @@ import { AgentAccessRevokedBanner } from "./agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./runtime-required-banner";
 import {
   chatSessionsOptions,
-  chatMessagesPageOptions,
   pendingChatTaskOptions,
   pendingChatTasksOptions,
   chatKeys,
@@ -56,28 +72,30 @@ import {
 import {
   useCreateChatSession,
   useMarkChatSessionRead,
-  useRegenerateChatQuickActions,
-  useSetChatSessionArchived,
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./use-quick-actions-failure-toast";
-import { hideQueuedChatMessages } from "@multica/core/chat/pending";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatTaskActions } from "./use-chat-task-actions";
 import { useChatInputFocus } from "./use-chat-input-focus";
-import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
+import { useQuoteRequest } from "./use-quote-request";
+import { ChatWindowMessages } from "./chat-window-messages";
+import { ChatAnnotationContext } from "./chat-annotation-context";
+import { useChatAnnotations } from "./use-chat-annotations";
 import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
 import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
 import { useChatRename } from "./use-chat-rename";
 import { useChatFork } from "./use-chat-fork";
+import { useDmSessionSurface } from "./use-dm-session-surface";
 import { canForkSession } from "../lib/can-fork-session";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
@@ -97,7 +115,6 @@ import { useLocale, useT } from "../../i18n";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 
 export function ChatWindow() {
@@ -113,7 +130,6 @@ export function ChatWindow() {
   useQuickActionsPendingTimeout(activeSessionId ?? null, quickActionsPending);
   // Toast when an accepted refresh later fails in the daemon (async half).
   useQuickActionsFailureToast(activeSessionId ?? null);
-  const regenerateQuickActions = useRegenerateChatQuickActions();
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
   const selectedProjectId = useChatStore((s) => s.selectedProjectId);
   const setOpen = useChatStore((s) => s.setOpen);
@@ -131,25 +147,6 @@ export function ChatWindow() {
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
     projectListOptions(wsId),
   );
-  const {
-    data: rawMessagePages,
-    isLoading: messagesLoading,
-    error: messagesError,
-    fetchNextPage: fetchOlderMessages,
-    hasNextPage: hasOlderMessages,
-    isFetchingNextPage: isFetchingOlderMessages,
-  } = useInfiniteQuery(chatMessagesPageOptions(activeSessionId ?? ""));
-  // When no active session, always show empty — don't use stale cache.
-  // Page 0 contains the latest chronological window; later cursor pages are
-  // older chronological windows. Reverse pages so older fetched pages render
-  // above the initial latest page. The Virtuoso firstItemIndex is client-owned:
-  // it starts from a large stable base and only subtracts the count of loaded
-  // prepended rows, so concurrent server inserts cannot drift the scroll anchor.
-  const messagePages = activeSessionId ? rawMessagePages?.pages ?? [] : [];
-  const allMessages = [...messagePages].reverse().flatMap((page) => page.messages);
-  // Skeleton only shows for an un-cached session fetch. Cached switches
-  // return data synchronously — no flash. `enabled: false` (new chat)
-  // keeps isLoading false so the conversation starters aren't hidden.
   // Server-authoritative pending task. Survives refresh / reopen / session
   // switch because it's keyed on sessionId in the Query cache; WS events
   // (chat:message / chat:done / task:*) keep it invalidated in real time.
@@ -158,16 +155,6 @@ export function ChatWindow() {
   const { data: pendingTask, isLoading: pendingTaskLoading } = useQuery(
     pendingChatTaskOptions(activeSessionId ?? ""),
   );
-  const showSkeleton =
-    !!activeSessionId && (messagesLoading || pendingTaskLoading);
-  const messages = hideQueuedChatMessages(allMessages, pendingTask);
-  const olderMessageCount = messagePages.slice(1).reduce(
-    (sum, page) => sum + page.messages.length,
-    0,
-  );
-  const firstItemIndex = messages.length > 0
-    ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-    : 0;
   const pendingTaskId = pendingTask?.task_id ?? null;
   const stopRequestedBeforeTaskRef = useRef(false);
   // Durable deferred-cancellation draft restores (#5219). Same hook as the chat
@@ -195,6 +182,7 @@ export function ChatWindow() {
   // chat starts (⊕ or switching agent), and whenever the window itself opens.
   const windowRef = useRef<HTMLDivElement>(null);
   const { focusRequest, requestInputFocus } = useChatInputFocus(isOpen, windowRef);
+  const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const [conversationStarterRequest, setConversationStarterRequest] = useState<{
     id: number;
     content: string;
@@ -442,6 +430,7 @@ export function ChatWindow() {
       attachmentIds?: string[],
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
+      decisionRequestId?: string,
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -520,7 +509,7 @@ export function ChatWindow() {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, ...(decisionRequestId ? [decisionRequestId] as const : []));
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         const reason = dispatchReasonCode(err);
@@ -715,7 +704,29 @@ export function ChatWindow() {
     },
     [activeAgent, setSelectedAgentId, setActiveSession],
   );
+  // A message search hit opens the full page at the message, as a pushed history entry.
+  const openMessageHit = useOpenChatMessageHit();
   const { handleFork } = useChatFork(currentSession, handleSelectSession);
+  // Statistics, the DM commands and the archived-send confirmation, shared with
+  // the Chat page. Archiving the open chat advances to the next one (fall back
+  // to the previous, clear only when none remain) instead of stranding the
+  // composer on a now archived session.
+  const dm = useDmSessionSurface({
+    session: currentSession,
+    sessions,
+    send: handleSend,
+    onOpenSession: handleSelectSession,
+    onArchived: (archivedSession) => {
+      if (useChatStore.getState().activeSessionId !== archivedSession.id) return;
+      const history = sessions.filter((s) => s.status !== "archived");
+      const idx = history.findIndex((s) => s.id === archivedSession.id);
+      const next = history[idx + 1] ?? history[idx - 1] ?? null;
+      if (next) handleSelectSession(next);
+      else setActiveSession(null);
+    },
+    onRename: handleRename,
+    onFork: canForkSession(currentSession) ? handleFork : undefined,
+  });
 
   const handleProjectChange = useCallback(
     (projectId: string | null) => {
@@ -769,10 +780,6 @@ export function ChatWindow() {
   const isExpanded = useChatStore((s) => s.isExpanded);
 
   const { renderWidth, renderHeight, isAtMax, boundsReady, isDragging, toggleExpand, startDrag } = useChatResize(windowRef);
-
-  // Show the list (vs empty state) as soon as there's anything to display —
-  // a real message, or a pending task whose timeline will stream in.
-  const hasMessages = messages.length > 0 || !!pendingTaskId;
 
   const isVisible = isOpen && (isExpanded || boundsReady);
 
@@ -838,10 +845,23 @@ export function ChatWindow() {
 
   const contextItems = useChatContextItems(wsId);
   const queuedTasks = pendingTask?.queued_tasks ?? [];
-  const interactiveLoginRequired = Boolean(
-    (sessionsError && errorCode(sessionsError) === "interactive_login_required") ||
-    (messagesError && errorCode(messagesError) === "interactive_login_required"),
-  );
+  // Reported by the message list while it is mounted; empty while the window is closed.
+  const [listedMessages, setListedMessages] = useState<ChatMessage[]>([]);
+  const interactiveLoginRequired =
+    !!sessionsError && errorCode(sessionsError) === "interactive_login_required";
+
+  const annotation = useChatAnnotations({
+    sessionId: activeSessionId,
+    messages: listedMessages,
+    agentName: activeAgent?.name,
+    enabled:
+      !interactiveLoginRequired &&
+      !isSessionArchived &&
+      !isAgentArchived &&
+      !isAgentAccessRevoked &&
+      activeAgentRuntimeBound &&
+      !noAgent,
+  });
 
   return (
     <motion.div
@@ -850,17 +870,15 @@ export function ChatWindow() {
       aria-hidden={!isOpen}
       className={containerClass}
       style={containerStyle}
-      initial={{ opacity: 0, scale: 0.95, ...motionSize }}
+      initial={{ opacity: 0, ...motionSize }}
       animate={{
         opacity: isVisible ? 1 : 0,
-        scale: isVisible ? 1 : 0.95,
         ...motionSize,
       }}
       transition={{
         width: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
         height: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
         opacity: { duration: 0.15 },
-        scale: { type: "spring", duration: 0.2, bounce: 0 },
       }}
     >
       {!isMobile && <ChatResizeHandles onDragStart={startDrag} />}
@@ -890,6 +908,11 @@ export function ChatWindow() {
             agents={agents}
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
+            onArchiveSession={dm.archive}
+            onUnarchiveSession={dm.unarchive}
+            onOpenMessageHit={(session, messageId) => openMessageHit(session.id, messageId)}
+            onTogglePin={dm.togglePin}
+            onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
@@ -925,60 +948,51 @@ export function ChatWindow() {
             >
               <Minus />
             </TooltipTrigger>
-            <TooltipContent side="top">{t(($) => $.window.minimize_tooltip)}</TooltipContent>
+            <TooltipContent side="top">
+              {t(($) => $.window.minimize_tooltip)}
+              <ActionShortcutKeycaps action="toggleChat" />
+            </TooltipContent>
           </Tooltip>
         </div>
       </div>
 
+      {/* `contents`: no box of its own, it only holds the comment ref and handlers. */}
+      <ChatAnnotationContext.Provider value={annotation.scope}>
+      <div ref={annotation.cardRef} {...annotation.captureProps} className="contents">
+      {annotation.popup}
       {/* Messages / skeleton / empty state */}
-      {interactiveLoginRequired ? (
-        <InteractiveLoginBanner />
-      ) : showSkeleton ? (
-        <ChatMessageSkeleton />
-      ) : hasMessages || currentSession?.continued_from_session_id || currentSession?.continued_into_session_id || currentSession?.forked_from_session_id ? (
-        <ChatMessageList
-          key={activeSessionId}
-          messages={messages}
-          continuedFromSessionId={currentSession?.continued_from_session_id}
-          continuedIntoSessionId={currentSession?.continued_into_session_id}
-          sessionId={activeSessionId}
-          forkedFromSessionId={currentSession?.forked_from_session_id}
-          forkLastMessageId={currentSession?.fork_last_message_id}
-          forkMessageCount={currentSession?.fork_message_count}
-          sessions={sessionsLoaded ? sessions : undefined}
-          pendingTask={pendingTask}
-          availability={availability}
-          firstItemIndex={firstItemIndex}
-          hasOlderMessages={!!hasOlderMessages}
-          isFetchingOlderMessages={isFetchingOlderMessages}
-          onLoadOlderMessages={() => void fetchOlderMessages()}
-          onQuickAction={(action) => handleSend(action.prompt)}
-          quickActionsDisabled={
-            !!pendingTaskId ||
-            isSessionArchived ||
-            isAgentArchived ||
-            isAgentAccessRevoked ||
-            !activeAgentRuntimeBound ||
-            noAgent
-          }
-          onRegenerateQuickActions={(message) =>
-            activeSessionId
-              ? regenerateQuickActions.mutateAsync({
-                  sessionId: activeSessionId,
-                  messageId: message.id,
-                })
-              : undefined
-          }
-          quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
-        />
-      ) : (
-        <EmptyState
-          agent={activeAgent}
-          hasSessions={sessions.length > 0}
-          onPickPrompt={sendConversationStarter}
-          customizeHref={customizeConversationStartersHref}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <ChatWindowMessages
+            sessionId={activeSessionId}
+            session={currentSession}
+            sessions={sessionsLoaded ? sessions : undefined}
+            interactiveLoginRequired={interactiveLoginRequired}
+            onMessages={setListedMessages}
+            pendingTask={pendingTask}
+            pendingTaskLoading={pendingTaskLoading}
+            availability={availability}
+            onQuickAction={(action) => handleSend(action.prompt)}
+            quickActionsDisabled={
+              !!pendingTaskId ||
+              isSessionArchived ||
+              isAgentArchived ||
+              isAgentAccessRevoked ||
+              !activeAgentRuntimeBound ||
+              noAgent
+            }
+            quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+            onQuoteMessage={quote}
+          >
+            <EmptyState
+              agent={activeAgent}
+              hasSessions={sessions.length > 0}
+              onPickPrompt={sendConversationStarter}
+              customizeHref={customizeConversationStartersHref}
+            />
+          </ChatWindowMessages>
+        )}
+      </AnimatePresence>
 
       {/* Status banner above the input — single mutually-exclusive slot.
        *  Priority: no-agent > offline / unstable. Agent presence is the
@@ -1018,10 +1032,11 @@ export function ChatWindow() {
        *  agent has been archived (read-only); locked out entirely when there's
        *  no agent (the EmptyState above carries the CTA). */}
       <ChatInput
-        onSend={handleSend}
-        onRename={handleRename}
-        onFork={canForkSession(currentSession) ? handleFork : undefined}
+        {...dm.inputProps}
+        testId="floating-chat-composer"
         restoreDraftRequest={restoreDraftRequest}
+        quoteRequest={quoteRequest}
+        onQuoteApplied={handleQuoteApplied}
         conversationStarterRequest={conversationStarterRequest}
         onConversationStarterApplied={handleConversationStarterApplied}
         onRestoreDraftApplied={handleRestoreDraftApplied}
@@ -1031,7 +1046,6 @@ export function ChatWindow() {
         allowSubmitWhileRunning={pendingTask?.supports_queue === true}
         disabled={
           interactiveLoginRequired ||
-          isSessionArchived ||
           isAgentArchived ||
           isAgentAccessRevoked ||
           !activeAgentRuntimeBound ||
@@ -1060,7 +1074,11 @@ export function ChatWindow() {
         }
         contextItems={contextItems}
         focusRequest={focusRequest}
+        annotationScope={annotation.input}
       />
+      </div>
+      </ChatAnnotationContext.Provider>
+      {dm.dialogs}
     </motion.div>
   );
 }
@@ -1224,17 +1242,29 @@ interface SessionRowAction extends RowActionItem {
  * (sessions are bound 1:1 to an agent). "New chat" lives in the header's
  * ⊕ button, not inside this dropdown.
  */
-function SessionDropdown({
+export function SessionDropdown({
   sessions,
   agents,
   activeSessionId,
   onSelectSession,
+  onArchiveSession,
+  onUnarchiveSession,
+  onOpenMessageHit,
+  onTogglePin,
+  onOpenStatistics,
   renameRequest,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
   onSelectSession: (session: ChatSession) => void;
+  /** Archives through the shared guarded door; the owner advances the selection. */
+  onArchiveSession: (session: ChatSession) => unknown;
+  onUnarchiveSession: (session: ChatSession) => unknown;
+  /** Open a chat at a matching message; the owner pushes the history entry that scrolls there. */
+  onOpenMessageHit: (session: ChatSession, messageId: string) => void;
+  onTogglePin: (session: ChatSession) => unknown;
+  onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
 }) {
   const { t } = useT("chat");
@@ -1269,9 +1299,7 @@ function SessionDropdown({
     setRenamingId(activeSessionId);
     setIsHistoryOpen(true);
   }, [renameRequest, activeSessionId]);
-  const setArchived = useSetChatSessionArchived();
   const updateSession = useUpdateChatSession();
-  const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
   const formatTimeAgo = useFormatTimeAgo();
 
@@ -1348,18 +1376,7 @@ function SessionDropdown({
   // view (reachable via the expand button), so a stale floating dropdown can't
   // bypass the "archive first, delete only from Archived" semantics.
   const handleArchive = (session: ChatSession) => {
-    if (activeSessionId === session.id) {
-      // Archiving the session in view: advance to the next chat (fall back to
-      // the previous, clear only when none remain) instead of stranding the
-      // composer on a now read-only session — mirrors the Chat tab and the
-      // Inbox list. Routing the non-null advance through onSelectSession keeps
-      // selectedAgentId in sync when the next chat belongs to another agent.
-      const idx = historySessions.findIndex((s) => s.id === session.id);
-      const next = historySessions[idx + 1] ?? historySessions[idx - 1] ?? null;
-      if (next) onSelectSession(next);
-      else setActiveSession(null);
-    }
-    setArchived.mutate({ sessionId: session.id, archived: true });
+    void onArchiveSession(session);
   };
 
   const handleSubmitRename = (sessionId: string, raw: string) => {
@@ -1452,20 +1469,56 @@ function SessionDropdown({
             onSelect: () => setConfirmingStopId(session.id),
           },
         ]
-      : [
-          {
-            key: "rename",
-            icon: <Pencil className="size-3.5" />,
-            label: t(($) => $.session_history.row_rename_aria),
-            onSelect: () => setRenamingId(session.id),
-          },
-          {
-            key: "archive",
-            icon: <Archive className="size-3.5" />,
-            label: t(($) => $.list.archive),
-            onSelect: () => handleArchive(session),
-          },
-        ];
+      : getChatSessionMenuItems({ archived: session.status === "archived" }).flatMap<SessionRowAction>((item) => {
+          if (item.id === "statistic") {
+            return [
+              {
+                key: "statistics",
+                icon: <Info className="size-3.5" />,
+                label: t(($) => $.header.statistics),
+                onSelect: () => {
+                  setIsHistoryOpen(false);
+                  onOpenStatistics(session);
+                },
+              },
+            ];
+          }
+          if (item.id === "pin") {
+            return [
+              {
+                key: "pin",
+                icon: session.pinned ? (
+                  <PinOff className="size-3.5" />
+                ) : (
+                  <Pin className="size-3.5 -rotate-45" />
+                ),
+                label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
+                onSelect: () => void onTogglePin(session),
+              },
+            ];
+          }
+          if (item.id === "rename") {
+            return [
+              {
+                key: "rename",
+                icon: <Pencil className="size-3.5" />,
+                label: t(($) => $.session_history.row_rename_aria),
+                onSelect: () => setRenamingId(session.id),
+              },
+            ];
+          }
+          if (item.id === "archive") {
+            return [
+              {
+                key: "archive",
+                icon: <Archive className="size-3.5" />,
+                label: t(($) => $.list.archive),
+                onSelect: () => handleArchive(session),
+              },
+            ];
+          }
+          return [];
+        });
 
     return (
       <div
@@ -1580,31 +1633,33 @@ function SessionDropdown({
                 groups={[rowActions]}
               />
               <div className="hidden h-7 items-center gap-0.5 [@media(hover:hover)]:group-hover/history-row:flex [@media(hover:hover)]:group-focus-within/history-row:flex">
-                {rowActions.map((action) => (
-                  <button
-                    key={action.key}
-                    type="button"
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      action.onSelect();
-                    }}
-                    className={
-                      action.danger
-                        ? "inline-flex h-7 items-center gap-1 rounded-xs px-1.5 text-micro font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus-visible:outline-none"
-                        : "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
-                    }
-                    aria-label={action.label}
-                    title={action.label}
-                  >
-                    {action.icon}
-                    {action.stripText}
-                  </button>
-                ))}
+                {rowActions.map((action) => {
+                  const button = (
+                    <button
+                      key={action.key}
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        action.onSelect();
+                      }}
+                      className={
+                        action.danger
+                          ? "inline-flex h-7 items-center gap-1 rounded-xs px-1.5 text-micro font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus-visible:outline-none"
+                          : "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+                      }
+                      aria-label={action.label}
+                    >
+                      {action.icon}
+                      {action.stripText}
+                    </button>
+                  );
+                  return <DeferredTooltip key={action.key} content={action.label} trigger={button} />;
+                })}
               </div>
             </div>
           )
@@ -1617,7 +1672,10 @@ function SessionDropdown({
     <>
       <Popover open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
         <div className="flex min-w-0 items-center gap-1">
-          <PopoverTrigger className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent">
+          <PopoverTrigger
+            data-testid="floating-chat-session-dropdown"
+            className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent"
+          >
             {triggerAgent && (
               <ActorAvatar
                 actorType="agent"
@@ -1661,18 +1719,38 @@ function SessionDropdown({
           className="max-h-96 w-auto min-w-[max(16rem,var(--anchor-width,16rem))] max-w-96 gap-0 overflow-y-auto p-1"
           onClick={(e) => e.stopPropagation()}
         >
-          {historySessions.length === 0 ? (
-            <div className="px-2 py-1.5 text-caption text-muted-foreground">
-              {t(($) => $.window.no_previous)}
-            </div>
-          ) : (
-            <div role="group" aria-label={t(($) => $.window.history_group)}>
-              <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
-                {t(($) => $.window.history_group)}
+          <ChatSearch
+            scope="popover"
+            sessions={sessions}
+            agents={agents}
+            activeSessionId={activeSessionId}
+            onOpenHit={(hit) => {
+              const session = sessions.find((s) => s.id === hit.session_id);
+              if (!session) return;
+              if (hit.message_id) {
+                onOpenMessageHit(session, hit.message_id);
+                setIsHistoryOpen(false);
+              } else {
+                handleSelectSession(session);
+              }
+            }}
+            onUnarchive={(session) => void onUnarchiveSession(session)}
+            onTogglePin={(session) => void onTogglePin(session)}
+            onArchive={(session) => void onArchiveSession(session)}
+          >
+            {historySessions.length === 0 ? (
+              <div className="px-2 py-1.5 text-caption text-muted-foreground">
+                {t(($) => $.window.no_previous)}
               </div>
-              {historySessions.map(renderRow)}
-            </div>
-          )}
+            ) : (
+              <div role="group" aria-label={t(($) => $.window.history_group)}>
+                <div className="px-1.5 py-1 text-caption font-medium text-muted-foreground">
+                  {t(($) => $.window.history_group)}
+                </div>
+                {historySessions.map(renderRow)}
+              </div>
+            )}
+          </ChatSearch>
         </PopoverContent>
       </Popover>
     </>

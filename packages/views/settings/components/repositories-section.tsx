@@ -14,6 +14,7 @@ import {
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
@@ -377,7 +378,6 @@ export function RepositoriesSection() {
   return (
     <SettingsSection
       title={t(($) => $.repositories.section_title)}
-      description={t(($) => $.repositories.description)}
       anchor="repositories"
       action={
         canManageWorkspace ? (
@@ -414,6 +414,15 @@ export function RepositoriesSection() {
                   ) : null}
                 </span>
               </DropdownMenuItem>
+              {githubInstallations.length > 0 && githubData?.can_manage === true ? (
+                <DropdownMenuItem
+                  disabled={connectingGitHub || !githubConnectConfigured}
+                  onClick={() => void connectGitHub()}
+                >
+                  <Plus />
+                  {t(($) => $.repositories.github_add_account_or_organization)}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem
                 onClick={() => setDraft({ index: null, url: "", description: "" })}
               >
@@ -465,10 +474,10 @@ export function RepositoriesSection() {
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       render={
-                        <Button
+                        <IconButton
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={t(($) => $.repositories.actions_aria, {
+                          label={t(($) => $.repositories.actions_aria, {
                             url: repository.url,
                           })}
                         />
@@ -637,6 +646,18 @@ export function RepositoriesSection() {
                   {githubInstallations[0].account_login}
                 </span>
               </p>
+            ) : null}
+
+            {githubData?.can_manage === true ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void connectGitHub()}
+                disabled={connectingGitHub || !githubConnectConfigured}
+                aria-busy={connectingGitHub || undefined}
+              >
+                {t(($) => $.repositories.github_add_account_or_organization)}
+              </Button>
             ) : null}
 
             <div className="relative">

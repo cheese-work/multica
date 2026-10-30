@@ -1,4 +1,5 @@
 import { normalizeStatusPatch } from "./status-category";
+import { pickDecisionFields } from "./decision-fields";
 import {
   hashKey,
   useMutation,
@@ -864,6 +865,7 @@ export function useCreateComment(issueId: string) {
         created_at: comment.created_at,
         updated_at: comment.updated_at,
         supplements: comment.supplements,
+        ...pickDecisionFields(comment),
       };
       const steered = !!comment.supplements?.length;
       // Dedupe by id: the `comment:created` WS event may have already added

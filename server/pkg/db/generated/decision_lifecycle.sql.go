@@ -57,7 +57,7 @@ func (q *Queries) AcknowledgeDecisionRetraction(ctx context.Context, arg Acknowl
 const cancelDecisionLifecycleRequest = `-- name: CancelDecisionLifecycleRequest :one
 UPDATE decision_request SET status = 'cancelled', cancel_reason = $1, cancel_notice_posted_at = clock_timestamp()
 WHERE workspace_id = $2 AND id = $3 AND status IN ('open', 'answered')
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
 `
 
 type CancelDecisionLifecycleRequestParams struct {
@@ -89,20 +89,62 @@ func (q *Queries) CancelDecisionLifecycleRequest(ctx context.Context, arg Cancel
 		&i.ReaskDeliveredAt,
 		&i.ReaskOutcome,
 		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.SourceContentSnapshot,
+		&i.RequestFingerprint,
+		&i.WithdrawReason,
+		&i.WithdrawnAt,
+		&i.WithdrawnByTaskID,
+		&i.WithdrawnByUserID,
+		&i.Options,
+		&i.AskJson,
 	)
 	return i, err
+}
+
+const decisionIssueClosedAt = `-- name: DecisionIssueClosedAt :one
+SELECT COALESCE(
+    (SELECT max(activity.created_at) FROM activity_log activity
+     WHERE activity.workspace_id = issue.workspace_id AND activity.issue_id = issue.id
+       AND activity.action = 'status_changed' AND activity.details->>'to' = issue.status),
+    issue.updated_at
+)::timestamptz AS closed_at
+FROM issue
+WHERE issue.workspace_id = $1 AND issue.id = $2
+`
+
+type DecisionIssueClosedAtParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// Comments bump issue.updated_at, so the close time comes from the status change record;
+// updated_at only covers an issue whose record is missing or not yet written.
+func (q *Queries) DecisionIssueClosedAt(ctx context.Context, arg DecisionIssueClosedAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, decisionIssueClosedAt, arg.WorkspaceID, arg.ID)
+	var closed_at pgtype.Timestamptz
+	err := row.Scan(&closed_at)
+	return closed_at, err
 }
 
 const decisionLifecycleReason = `-- name: DecisionLifecycleReason :one
 SELECT CASE
     WHEN issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved') THEN 'issue_closed'
     WHEN NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id) THEN 'human_removed'
-    WHEN agent.archived_at IS NOT NULL THEN 'agent_archived'
+    WHEN agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL) THEN 'agent_archived'
+    WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' THEN 'expired'
+    WHEN request.status = 'open' AND EXISTS (
+        SELECT 1 FROM decision_action action
+        WHERE action.decision_request_id = request.id AND action.state = 'pending' AND action.expires_at <= clock_timestamp()
+    ) THEN 'expired'
     ELSE ''
 END::text AS reason
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.workspace_id = $1 AND request.id = $2
 `
 
@@ -119,7 +161,7 @@ func (q *Queries) DecisionLifecycleReason(ctx context.Context, arg DecisionLifec
 }
 
 const getDecisionCancelComment = `-- name: GetDecisionCancelComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind FROM comment
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only FROM comment
 WHERE workspace_id = $1 AND decision_request_id = $2 AND decision_comment_kind = 'cancel'
 `
 
@@ -156,18 +198,120 @@ func (q *Queries) GetDecisionCancelComment(ctx context.Context, arg GetDecisionC
 		&i.DecisionAnswerID,
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
 	)
 	return i, err
 }
 
+const hasDecisionCancelNoticeSinceClose = `-- name: HasDecisionCancelNoticeSinceClose :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request request
+    WHERE request.workspace_id = $1 AND request.issue_id = $2
+      AND request.chat_session_id = $3 AND request.id <> $4
+      AND request.status = 'cancelled' AND request.cancel_reason = 'issue_closed'
+      AND request.cancel_notice_posted_at >= $5::timestamptz
+)::bool AS posted
+`
+
+type HasDecisionCancelNoticeSinceCloseParams struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ID            pgtype.UUID        `json:"id"`
+	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
+}
+
+func (q *Queries) HasDecisionCancelNoticeSinceClose(ctx context.Context, arg HasDecisionCancelNoticeSinceCloseParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasDecisionCancelNoticeSinceClose,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.ChatSessionID,
+		arg.ID,
+		arg.ClosedAt,
+	)
+	var posted bool
+	err := row.Scan(&posted)
+	return posted, err
+}
+
+const listDecisionCancelSiblings = `-- name: ListDecisionCancelSiblings :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2 AND chat_session_id = $3
+  AND status IN ('open', 'answered')
+ORDER BY created_at, id
+`
+
+type ListDecisionCancelSiblingsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+}
+
+func (q *Queries) ListDecisionCancelSiblings(ctx context.Context, arg ListDecisionCancelSiblingsParams) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listDecisionCancelSiblings, arg.WorkspaceID, arg.IssueID, arg.ChatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionLifecycleCancellations = `-- name: ListDecisionLifecycleCancellations :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+LEFT JOIN squad ON issue.assignee_type = 'squad' AND squad.id = issue.assignee_id AND squad.workspace_id = issue.workspace_id AND squad.archived_at IS NULL
+LEFT JOIN agent fallback ON fallback.workspace_id = issue.workspace_id AND fallback.id = CASE
+    WHEN issue.assignee_type = 'agent' THEN issue.assignee_id WHEN issue.assignee_type = 'squad' THEN squad.leader_id END
 WHERE request.status IN ('open', 'answered') AND (
     issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
-    OR agent.archived_at IS NOT NULL
+    OR (agent.archived_at IS NOT NULL AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL))
     OR NOT EXISTS (SELECT 1 FROM member WHERE member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id)
+    OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours')
+    OR (request.status = 'open' AND EXISTS (
+        SELECT 1 FROM decision_action action
+        WHERE action.decision_request_id = request.id AND action.state = 'pending' AND action.expires_at <= clock_timestamp()
+    ))
 )
 ORDER BY request.id
 LIMIT LEAST(GREATEST($1::int, 0), 100)
@@ -202,6 +346,15 @@ func (q *Queries) ListDecisionLifecycleCancellations(ctx context.Context, batchS
 			&i.ReaskDeliveredAt,
 			&i.ReaskOutcome,
 			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskJson,
 		); err != nil {
 			return nil, err
 		}
@@ -214,7 +367,7 @@ func (q *Queries) ListDecisionLifecycleCancellations(ctx context.Context, batchS
 }
 
 const listDecisionReaskCandidates = `-- name: ListDecisionReaskCandidates :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE request.status = 'cancelled' AND request.cancel_reason IN ('human_removed', 'lane_archived')
   AND request.cancel_notice_posted_at IS NOT NULL AND request.reask_delivered_at IS NULL
@@ -251,6 +404,15 @@ func (q *Queries) ListDecisionReaskCandidates(ctx context.Context, batchSize int
 			&i.ReaskDeliveredAt,
 			&i.ReaskOutcome,
 			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskJson,
 		); err != nil {
 			return nil, err
 		}
@@ -263,7 +425,7 @@ func (q *Queries) ListDecisionReaskCandidates(ctx context.Context, batchSize int
 }
 
 const listDecisionRetractionCandidates = `-- name: ListDecisionRetractionCandidates :many
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, request.workspace_id FROM decision_answer answer
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, request.workspace_id FROM decision_answer answer
 JOIN decision_request request ON request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
@@ -297,6 +459,14 @@ type ListDecisionRetractionCandidatesRow struct {
 	RetractionOutcome       pgtype.Text        `json:"retraction_outcome"`
 	WithdrawalCommentID     pgtype.UUID        `json:"withdrawal_comment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
+	AnsweredByUserID        pgtype.UUID        `json:"answered_by_user_id"`
+	AnswerSource            string             `json:"answer_source"`
+	ChosenOptionIndex       pgtype.Int4        `json:"chosen_option_index"`
+	ReplyText               pgtype.Text        `json:"reply_text"`
+	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
+	Excerpted               bool               `json:"excerpted"`
+	AnsweredLabel           pgtype.Text        `json:"answered_label"`
 	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
 }
 
@@ -333,6 +503,14 @@ func (q *Queries) ListDecisionRetractionCandidates(ctx context.Context, batchSiz
 			&i.RetractionOutcome,
 			&i.WithdrawalCommentID,
 			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.AnsweredByUserID,
+			&i.AnswerSource,
+			&i.ChosenOptionIndex,
+			&i.ReplyText,
+			&i.ContextMessageID,
+			&i.Excerpted,
+			&i.AnsweredLabel,
 			&i.WorkspaceID,
 		); err != nil {
 			return nil, err

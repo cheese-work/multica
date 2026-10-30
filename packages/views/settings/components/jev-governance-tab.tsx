@@ -73,7 +73,7 @@ function moveTabFocus(event: KeyboardEvent<HTMLElement>) {
   tabs[next]?.focus();
 }
 
-type Notice = { kind: "key_saved" | "key_removed" } | { kind: "rolled_back"; version: number };
+type Notice = { kind: "key_saved" | "key_removed" | "url_saved" | "url_cleared" } | { kind: "rolled_back"; version: number };
 
 /**
  * Jev / Governance: Routing, Credential and History as one tab group, from the
@@ -126,7 +126,11 @@ export function JevGovernanceTab() {
                 ? t(($) => $.jev_governance.history.done, { version: notice.version })
                 : notice.kind === "key_saved"
                   ? t(($) => $.jev_governance.credential.saved)
-                  : t(($) => $.jev_governance.credential.removed)}
+                  : notice.kind === "key_removed"
+                    ? t(($) => $.jev_governance.credential.removed)
+                    : notice.kind === "url_saved"
+                      ? t(($) => $.jev_governance.api_url.saved)
+                      : t(($) => $.jev_governance.api_url.cleared)}
             </p>
           ) : null}
 
@@ -169,6 +173,7 @@ export function JevGovernanceTab() {
             <TabsContent value="credential" className="pt-4">
               <JevCredentialPane
                 credential={credential}
+                config={config}
                 canManage={canManage}
                 online={online}
                 onNotice={(kind) => setNotice({ kind })}

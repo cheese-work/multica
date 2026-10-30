@@ -339,6 +339,16 @@ describe("reply annotations", () => {
   });
   afterEach(() => setCurrentWorkspace(null, null));
 
+  it("stores annotations for a DM draft key and keeps them across a store reload", () => {
+    const key = "chat:session-1" as const;
+    const store = useCommentDraftStore.getState();
+    expect(store.addAnnotation(key, annotation)).toBe("a");
+    expect(useCommentDraftStore.getState().getAnnotations(key)).toEqual([annotation]);
+    expect(useCommentDraftStore.getState().drafts[key]?.replyTarget).toBeUndefined();
+    useCommentDraftStore.getState().clearDraft(key);
+    expect(useCommentDraftStore.getState().getAnnotations(key)).toHaveLength(0);
+  });
+
   it("keeps annotation-only drafts through text/upload changes and preserves the first exact reply target", () => {
     const store = useCommentDraftStore.getState();
     store.addAnnotation(key, annotation);

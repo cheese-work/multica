@@ -28,6 +28,8 @@ import { RenameMachineDialog } from "./rename-machine-dialog";
 import { RuntimeProfilesDialog } from "./runtime-profiles-dialog";
 import { pendingRuntimesForProfiles } from "./pending-runtime";
 import { MachineCliSection } from "./machine-cli-section";
+import { MachinePauseCard } from "./machine-pause-card";
+import { isQoderLocator, QoderDetailPage } from "./qoder-detail-page";
 import { HealthIcon, useHealthLabel } from "./shared";
 import { useT, useTimeAgo } from "../../i18n";
 
@@ -94,7 +96,12 @@ export function RuntimeDetailPage({
   const healthLabel = useHealthLabel();
   const timeAgo = useTimeAgo();
   const currentUserId = useAuthStore((state) => state.user?.id);
-  const { data: runtimes = [], isLoading } = useQuery(runtimeListOptions(wsId));
+  const {
+    data: runtimes = [],
+    isLoading,
+    isError: runtimesFailed,
+    refetch: refetchRuntimes,
+  } = useQuery(runtimeListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: tasks = [] } = useQuery(agentTaskSnapshotOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -177,6 +184,13 @@ export function RuntimeDetailPage({
     };
   }, [machine, isAdmin, currentUserId]);
 
+  if (
+    isQoderLocator(machineLocator, runtimes) ||
+    (machine?.runtimes.length &&
+      machine.runtimes.every((runtime) => runtime.provider === "qoder_cloud"))
+  ) {
+    return <QoderDetailPage />;
+  }
   if (isLoading) return <MachineDetailSkeleton />;
 
   if (!machine) {
@@ -295,6 +309,15 @@ export function RuntimeDetailPage({
 
       <div className="min-h-0 flex-1 overflow-y-auto bg-background">
         <div className={cn(PAGE_RAIL, PAGE_GUTTER, "py-4 sm:py-6")}>
+          <MachinePauseCard
+            machine={machine}
+            wsId={wsId}
+            currentUserId={currentUserId}
+            members={members}
+            now={now}
+            loadFailed={runtimesFailed}
+            onRetry={() => void refetchRuntimes()}
+          />
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div className="min-w-0">
               <h2 className="text-body font-semibold">

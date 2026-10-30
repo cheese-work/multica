@@ -134,6 +134,9 @@ type activeRepoCheckoutTask struct {
 	AgentID     string
 	AgentName   string
 	WorkDir     string
+	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
+	// tasks with no issue.
+	IssueIdentifier string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -477,7 +480,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "workdir is required", http.StatusBadRequest)
 			return
 		}
-		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated {
+		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated && req.CheckoutMode != repoCheckoutModeShared {
 			http.Error(w, "invalid checkout_mode", http.StatusBadRequest)
 			return
 		}
@@ -539,8 +542,10 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			Ref:                 checkoutRef,
 			AgentName:           req.AgentName,
 			TaskID:              req.TaskID,
+			IssueIdentifier:     activeTask.IssueIdentifier,
 			CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
 			IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+			SharedObjects:       req.CheckoutMode == repoCheckoutModeShared,
 			Fresh:               req.Fresh,
 		}
 		if req.RetryBusy {

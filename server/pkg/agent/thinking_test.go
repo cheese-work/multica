@@ -555,12 +555,16 @@ func TestValidateCapabilitiesPassThroughUnverifiedCatalog(t *testing.T) {
 		}
 	}
 
-	// A verified catalog still decides: a listed model without the value, or a
-	// model it does not list, drops the value without an error.
+	// A verified catalog rejects listed unsupported effort; an omitted explicit
+	// Codex model stays unknown. Service tiers still require catalog support.
 	verified := func() (Catalog, error) { return Catalog{Models: []Model{listed}}, nil }
 	for _, model := range []string{"listed", "unlisted"} {
-		if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || err != nil {
-			t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, nil)", model, ok, err)
+		var wantThinkingError error
+		if model == "unlisted" {
+			wantThinkingError = errUnverifiedCatalog
+		}
+		if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || !errors.Is(err, wantThinkingError) {
+			t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, %v)", model, ok, err, wantThinkingError)
 		}
 		if ok, err := ValidateServiceTierWith(verified, "codex", model, "priority"); ok || err != nil {
 			t.Errorf("verified catalog, model %q tier: got (%v, %v), want (false, nil)", model, ok, err)
@@ -962,8 +966,11 @@ func TestValidateThinkingLevel_ExplicitModel(t *testing.T) {
 	// Sonnet does not advertise xhigh.
 	check("claude-sonnet-4-6[1m]", "xhigh", false)
 
-	// A model a verified catalog does not list still fails closed (no guess).
-	check("claude-nonexistent", "high", false)
+	// Claude's picker may omit runnable explicit models. An unlisted model is
+	// unknown, rather than evidence that its saved effort is unsupported.
+	if ok, err := ValidateThinkingLevelWith(claudeVerifiedCatalog, "claude", "claude-nonexistent", "high"); ok || !errors.Is(err, errUnverifiedCatalog) {
+		t.Errorf("unlisted Claude model = (%v, %v), want unknown capability", ok, err)
+	}
 }
 
 // TestValidateThinkingLevel_CodexEmptyModelFailsClosed pins the MUL-4347

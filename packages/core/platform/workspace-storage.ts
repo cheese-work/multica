@@ -10,6 +10,8 @@ let _currentWsId: string | null = null;
 
 const _rehydrateFns: Array<() => void> = [];
 const _slugSubscribers = new Set<(slug: string | null) => void>();
+const _rehydrationSubscribers = new Set<() => void>();
+let _rehydrationGeneration = 0;
 let _pendingNotify = false;
 let _pendingRehydrate = false;
 
@@ -59,6 +61,10 @@ export function setCurrentWorkspace(slug: string | null, wsId: string | null) {
       for (const fn of _rehydrateFns) {
         fn();
       }
+      _rehydrationGeneration += 1;
+      for (const fn of _rehydrationSubscribers) {
+        fn();
+      }
     });
   }
 }
@@ -83,6 +89,24 @@ export function subscribeToCurrentSlug(
   _slugSubscribers.add(fn);
   return () => {
     _slugSubscribers.delete(fn);
+  };
+}
+
+/**
+ * Count of completed workspace rehydrations. A rehydration replaces persisted
+ * client state (for example the chat selection) after components may already
+ * have synced it from the URL, so a component that owns a URL-addressable
+ * piece of that state re-applies it when this changes. Designed for
+ * `useSyncExternalStore` together with `subscribeToWorkspaceRehydration`.
+ */
+export function getWorkspaceRehydrationGeneration(): number {
+  return _rehydrationGeneration;
+}
+
+export function subscribeToWorkspaceRehydration(fn: () => void): () => void {
+  _rehydrationSubscribers.add(fn);
+  return () => {
+    _rehydrationSubscribers.delete(fn);
   };
 }
 

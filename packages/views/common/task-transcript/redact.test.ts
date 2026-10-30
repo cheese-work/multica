@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { redactSecrets } from "./redact";
+
+const genericCredentialCases: { name: string; input: string; want: string }[] = JSON.parse(
+  readFileSync(new URL("../../../../server/pkg/redact/testdata/generic-credentials.json", import.meta.url), "utf8"),
+);
 
 describe("redactSecrets", () => {
   it("redacts AWS access key", () => {
@@ -86,6 +91,20 @@ describe("redactSecrets", () => {
       const result = redactSecrets(`${key}=supersecretvalue123`);
       expect(result).toContain("[REDACTED CREDENTIAL]");
       expect(result).not.toContain("supersecretvalue123");
+    }
+  });
+
+  it.each(genericCredentialCases)("generic credential: $name", ({ input, want }) => {
+    expect(redactSecrets(input)).toBe(want);
+  });
+
+  it("keeps provider literals redacted in assignments and shell expansions", () => {
+    const githubToken = ["ghp_", "A".repeat(36)].join("");
+    const apiKey = ["sk-", "a".repeat(24)].join("");
+    for (const input of [`TOKEN=${githubToken}`, `API_KEY=${apiKey}`, `TOKEN=$(echo ${githubToken})`]) {
+      const result = redactSecrets(input);
+      expect(result).not.toContain(githubToken);
+      expect(result).not.toContain(apiKey);
     }
   });
 

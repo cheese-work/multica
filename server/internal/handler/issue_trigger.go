@@ -12,6 +12,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // maxPreviewTriggerIssues caps a single preview request so a pathological
@@ -26,6 +28,9 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, uuidToString(issue.WorkspaceID))
+		},
 		IsSelfLoop: func() bool {
 			return h.isAgentRunningOnIssue(r, actorType, issue)
 		},
@@ -49,6 +54,9 @@ func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID str
 func (h *Handler) issueTriggerPreviewProbe(r *http.Request, actorType, actorID, workspaceID string, issue db.Issue) service.IssueTriggerProbe {
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
 	return service.IssueTriggerProbe{
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, workspaceID)
+		},
 		CanAccessAgent: func(agent db.Agent) bool {
 			return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 		},
@@ -85,6 +93,13 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	// Checked here as well as at the queue door so the activity names the actor
+	// whose status move or assignment was refused; the door has no actor.
+	var notConfirmed *service.StopNotConfirmedError
+	if err := service.StopGate(ctx, h.Queries, issue.ID); errors.As(err, &notConfirmed) {
+		h.recordStopNotConfirmed(ctx, issue, actorType, actorID, notConfirmed)
+		return false
+	}
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
@@ -117,7 +132,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 // for the run a write lost to the pending-task unique index.
 func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
 	stepHandsOff := false
-	if def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID); err == nil && def != nil {
+	if def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID); err == nil && def != nil {
 		step, ok := def.Step(issue.Status)
 		stepHandsOff = ok && step.HandsOff()
 	}
@@ -258,7 +273,12 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+						humans, err := h.workflowHumans(r.Context(), step, project, wsUUID, previewRequester(actorType, actorID))
+						if err != nil {
+							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+							return
+						}
+						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID), humans); ok {
 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
 							candidate.AssigneeID = id
 						}
@@ -305,7 +325,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 					AssigneeType: loaded.AssigneeType,
 					AssigneeID:   loaded.AssigneeID,
 				}
-				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, nil); err == nil && hand != nil {
+				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, workflowCaller{}); err == nil && hand != nil {
 					post.AssigneeType = params.AssigneeType
 					post.AssigneeID = params.AssigneeID
 					in.AssigneeChanged = true
@@ -319,4 +339,31 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 
 	resp.TotalCount = len(resp.Triggers)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordStopNotConfirmed leaves the reason a run did not start where people
+// read the issue: the gate is closed until the old run's daemon acks.
+func (h *Handler) recordStopNotConfirmed(ctx context.Context, issue db.Issue, actorType, actorID string, e *service.StopNotConfirmedError) {
+	details, _ := json.Marshal(map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		ActorType:   strToText(actorType),
+		ActorID:     optionalActorUUID(actorID),
+		Action:      "stop_not_confirmed",
+		Details:     details,
+	})
+	if err != nil {
+		slog.Warn("record stop-not-confirmed activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
+		"issue_id": uuidToString(issue.ID),
+		"entry": map[string]any{
+			"type": "activity", "id": uuidToString(activity.ID), "action": activity.Action,
+			"actor_type": actorType, "actor_id": actorID, "details": json.RawMessage(details),
+			"created_at": timestampToString(activity.CreatedAt),
+		},
+	})
 }

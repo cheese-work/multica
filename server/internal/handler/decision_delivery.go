@@ -121,6 +121,37 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 		}
 		agentID, snapshot.squadID = squad.LeaderID, squad.ID
 	}
+	if kind == "" || kind == "retraction" {
+		askingID := request.AskingAgentID
+		if request.Origin == "unprompted" && len(snapshot.answers) == 1 {
+			quote, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: snapshot.answers[0].IssueCommentID})
+			if err != nil {
+				return snapshot, err
+			}
+			askingID = pgtype.UUID{}
+			if quote.ParentID.Valid {
+				parent, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: quote.ParentID})
+				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return snapshot, err
+				}
+				if err == nil && parent.IssueID == request.IssueID && !parent.DeletedAt.Valid && parent.AuthorType == "agent" {
+					askingID = parent.AuthorID
+				}
+			}
+		}
+		if askingID.Valid {
+			asking, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: askingID})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return snapshot, err
+			}
+			if err == nil && !asking.ArchivedAt.Valid && asking.RuntimeID.Valid && asking.Kind != "system" {
+				if asking.ID != agentID {
+					snapshot.squadID = pgtype.UUID{}
+				}
+				agentID = asking.ID
+			}
+		}
+	}
 	if agentID.Valid {
 		snapshot.recipient, err = queries.GetAgent(ctx, agentID)
 		if err != nil || snapshot.recipient.WorkspaceID != workspaceID {
@@ -305,11 +336,24 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
 	}
-	eligible = eligible && !asking.ArchivedAt.Valid
+	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
 	outcome := "skipped_ineligible"
 	var queued db.AgentTaskQueue
 	var comments, cleared []db.Comment
 	if eligible {
+		if snapshot.kind == "" {
+			for _, answer := range snapshot.answers {
+				if _, err := transaction.Exec(ctx, `SELECT capture_issue_wakeup($1, 'comment.created', c.id::text, c.author_id, c.source_task_id,
+					jsonb_build_object('comment_id', c.id, 'author_type', c.author_type, 'author_id', c.author_id,
+					'actor_type', 'member', 'actor_id', r.human_user_id, 'decision_answer_id', a.id))
+					FROM decision_answer a JOIN decision_request r ON r.id = a.decision_request_id
+					JOIN comment c ON c.id = a.issue_comment_id
+					WHERE a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
+					AND a.disclaimed_at IS NULL AND c.deleted_at IS NULL`, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
+					return false, err
+				}
+			}
+		}
 		if snapshot.recipient.ID.Valid {
 			if !snapshot.recipient.RuntimeID.Valid || snapshot.recipient.ArchivedAt.Valid {
 				return false, nil
@@ -383,6 +427,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		handler.publish(protocol.EventCommentCreated, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID))
+	if snapshot.kind == "" {
+		for _, answer := range snapshot.answers {
+			handler.publishDecisionAnswerUpdated(uuidToString(workspaceID), "agent", uuidToString(snapshot.request.AskingAgentID), answer.ID, snapshot.issue.ID, decisionStateEffective)
+		}
+	}
 	return false, nil
 }
 
@@ -446,7 +495,7 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 		return "", empty, nil
 	}
 	if snapshot.task.Status == "queued" {
-		params, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
+		params, _, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
 		if err != nil {
 			return "", empty, err
 		}

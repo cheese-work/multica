@@ -24,6 +24,20 @@ type governanceConfigFenceTxStarter struct {
 	continueLock   <-chan struct{}
 }
 
+type governanceConfigDeleteTxStarter struct {
+	prep  txStarter
+	inner txStarter
+}
+
+func (s *governanceConfigDeleteTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	if s.prep != nil {
+		prep := s.prep
+		s.prep = nil
+		return prep.Begin(ctx)
+	}
+	return s.inner.Begin(ctx)
+}
+
 func (s governanceConfigFenceTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	if s.beginRequested != nil {
 		signalGovernanceConfigRace(s.beginRequested)
@@ -37,14 +51,6 @@ func (s governanceConfigFenceTxStarter) Begin(ctx context.Context) (pgx.Tx, erro
 	if err != nil {
 		return nil, err
 	}
-	if s.backendPID != nil {
-		var pid int32
-		if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
-			_ = tx.Rollback(ctx)
-			return nil, err
-		}
-		s.backendPID <- pid
-	}
 	return governanceConfigFenceTx{Tx: tx, starter: s}, nil
 }
 
@@ -54,11 +60,13 @@ type governanceConfigFenceTx struct {
 }
 
 func (tx governanceConfigFenceTx) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	row := tx.Tx.QueryRow(ctx, query, args...)
 	if tx.starter.lockQuery == "" || !strings.Contains(query, tx.starter.lockQuery) {
-		return row
+		return tx.Tx.QueryRow(ctx, query, args...)
 	}
-	return governanceConfigFenceRow{Row: row, starter: tx.starter}
+	if tx.starter.backendPID != nil {
+		tx.starter.backendPID <- int32(tx.Tx.Conn().PgConn().PID())
+	}
+	return governanceConfigFenceRow{Row: tx.Tx.QueryRow(ctx, query, args...), starter: tx.starter}
 }
 
 type governanceConfigFenceRow struct {
@@ -163,6 +171,13 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 	awaitGovernanceConfigRaceSignal(t, patchLockAcquired, "PATCH workspace lifetime lock")
 	writerPID := <-patchPID
 
+	prepConn, err := testPool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepConn.Release()
+	prepPID := int32(prepConn.Conn().PgConn().PID())
+
 	deleteLockAcquired := make(chan struct{}, 1)
 	continueDelete := make(chan struct{})
 	deletePID := make(chan int32, 1)
@@ -172,7 +187,10 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 	deleteDone := make(chan struct{})
 	deleteHandler := *testHandler
 	deleteHandler.TxStarter = governanceConfigFenceTxStarter{
-		inner:        testHandler.TxStarter,
+		inner: &governanceConfigDeleteTxStarter{
+			prep:  prepConn,
+			inner: testHandler.TxStarter,
+		},
 		backendPID:   deletePID,
 		lockQuery:    "FOR UPDATE",
 		lockAcquired: deleteLockAcquired,
@@ -188,10 +206,14 @@ func TestGovernanceConfigPatchWinsBeforeWorkspaceTeardown(t *testing.T) {
 		awaitGovernanceConfigRaceDone(t, deleteDone, "workspace teardown completion")
 	}()
 	deleterPID := <-deletePID
+	t.Logf("Qoder preparation backend %d; observed teardown backend %d", prepPID, deleterPID)
+	if deleterPID == prepPID {
+		t.Fatalf("observed Qoder preparation backend %d instead of workspace teardown backend", deleterPID)
+	}
 	if writerPID == deleterPID {
 		t.Fatalf("PATCH and DELETE shared backend pid %d; race requires independent connections", writerPID)
 	}
-	waitForGovernanceConfigBackendLockWait(t, deleterPID)
+	waitForGovernanceConfigBackendLockWait(t, deleterPID, writerPID)
 
 	releasePatch()
 	awaitGovernanceConfigRaceSignal(t, deleteLockAcquired, "DELETE workspace lock after PATCH commit")
@@ -280,25 +302,20 @@ func awaitGovernanceConfigRaceDone(t *testing.T, done <-chan struct{}, descripti
 	}
 }
 
-func waitForGovernanceConfigBackendLockWait(t *testing.T, pid int32) {
+func waitForGovernanceConfigBackendLockWait(t *testing.T, waiterPID, holderPID int32) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var waiting bool
-		if err := testPool.QueryRow(t.Context(), `
-SELECT EXISTS (
-    SELECT 1 FROM pg_stat_activity
-    WHERE pid = $1 AND state = 'active' AND wait_event_type = 'Lock'
-)
-`, pid).Scan(&waiting); err != nil {
-			t.Fatalf("poll lock wait for backend %d: %v", pid, err)
+		if err := testPool.QueryRow(t.Context(), `SELECT $2::integer = ANY(pg_blocking_pids($1::integer))`, waiterPID, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("poll lock wait for backend %d: %v", waiterPID, err)
 		}
 		if waiting {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("backend %d never blocked on the workspace teardown lock", pid)
+	t.Fatalf("backend %d never blocked on the workspace teardown lock held by backend %d", waiterPID, holderPID)
 }
 
 func assertNoGovernanceConfigTeardownRows(t *testing.T, workspaceID string) {

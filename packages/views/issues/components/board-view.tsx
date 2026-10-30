@@ -45,7 +45,6 @@ import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-u
 import { stepHandlerActor, useStepHandlerLabel } from "../../workflows/step-handler";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { BoardCardContent } from "./board-card";
-import { HiddenColumnsPanel, HiddenColumnRow } from "./hidden-columns-panel";
 import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
 import { ListLoadMoreFooter } from "./list-load-more-footer";
 import type { ChildProgress } from "./list-row";
@@ -263,7 +262,6 @@ const EMPTY_IDS: string[] = [];
 function BoardViewImpl({
   issues,
   visibleStatuses,
-  hiddenStatuses,
   onMoveIssue,
   childProgressMap = EMPTY_PROGRESS_MAP,
   projectMap,
@@ -274,7 +272,6 @@ function BoardViewImpl({
 }: {
   issues: Issue[];
   visibleStatuses: IssueStatus[];
-  hiddenStatuses: IssueStatus[];
   onMoveIssue: (issueId: string, updates: DragMoveUpdates, onSettled?: () => void) => void;
   childProgressMap?: Map<string, ChildProgress>;
   projectMap?: Map<string, Project>;
@@ -504,7 +501,7 @@ function BoardViewImpl({
   // is as unresolved as one still loading.
   const resolveIssue = useCallback(
     (issue: Issue | null | undefined) =>
-      resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, workspaceProjects, issue?.project_id),
+      resolveIssueWorkflow(workflowsLoaded ? workflows : undefined, workspaceProjects, issue?.project_id, issue?.workflow_id),
     [workflows, workflowsLoaded, workspaceProjects],
   );
   const workflowOfIssue = useCallback((issue: Issue | null | undefined) => resolveIssue(issue).workflow, [resolveIssue]);
@@ -964,14 +961,6 @@ function BoardViewImpl({
             />
           </div>
         )}
-
-
-        {grouping === "status" && hiddenStatuses.length > 0 && (
-          <BoardHiddenColumnsPanel
-            hiddenStatuses={hiddenStatuses}
-            statusPagination={statusPagination}
-          />
-        )}
       </div>
 
       <DragOverlay dropAnimation={null}>
@@ -1062,27 +1051,6 @@ const ServerPaginatedBoardColumn = memo(function ServerPaginatedBoardColumn({
   );
 });
 
-
-function BoardHiddenColumnsPanel({
-  hiddenStatuses,
-  statusPagination,
-}: {
-  hiddenStatuses: IssueStatus[];
-  statusPagination?: IssueStatusPagination;
-}) {
-  return (
-    <HiddenColumnsPanel
-      hiddenStatuses={hiddenStatuses}
-      renderRow={(status) => (
-        <HiddenColumnRow
-          key={status}
-          status={status}
-          total={statusPagination?.[status]?.total}
-        />
-      )}
-    />
-  );
-}
 
 /**
  * Memoized: the surface controller re-renders on loading-flag flips (e.g. a

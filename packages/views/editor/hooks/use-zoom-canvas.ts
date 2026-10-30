@@ -10,8 +10,9 @@
  * none`, so it never takes focus, and key events always stay in the host
  * document where the Dialog can hear them.
  *
- * Transform math lives in `../utils/zoom-transform`; this hook owns only
- * event plumbing and state.
+ * Transform math lives in `../utils/zoom-transform`, gesture logic (pointer
+ * pan/pinch, wheel, Safari pinch) in `../utils/gesture-session`; this hook owns
+ * only event plumbing and state.
  */
 
 import {
@@ -33,17 +34,26 @@ import {
   computeFitScale,
   computeFitTransform,
   computeMinScale,
-  distanceBetween,
-  midpointOf,
   panBy,
   resizeTransform,
-  wheelZoomFactor,
   zoomByAtCenter,
   zoomToAt,
   type Point,
   type Size,
   type ZoomTransform,
 } from "../utils/zoom-transform";
+import {
+  EMPTY_POINTER_SESSION,
+  IDLE_SAFARI_GESTURE,
+  classifyWheel,
+  gestureChange,
+  gestureEnd,
+  gestureStart,
+  pointerDown,
+  pointerMove,
+  pointerUp,
+  shouldIgnoreWebkitWheel,
+} from "../utils/gesture-session";
 
 interface UseZoomCanvasOptions {
   /** Natural (unscaled) size of the content, or null while it is unknown. */
@@ -110,9 +120,9 @@ export function useZoomCanvas({
   // Fit is deferred until both sizes are known; until then any transform we
   // computed would be against a 0x0 viewport and would have to be thrown away.
   const hasFittedRef = useRef(false);
-  const activePointersRef = useRef(new Map<number, Point>());
-  const panOriginRef = useRef<{ pointer: Point; transform: ZoomTransform } | null>(null);
-  const pinchOriginRef = useRef<{ distance: number; scale: number } | null>(null);
+  const sessionRef = useRef(EMPTY_POINTER_SESSION);
+  const touchPointerIdsRef = useRef(new Set<number>());
+  const safariGestureRef = useRef(IDLE_SAFARI_GESTURE);
 
   const contentSize = content ?? EMPTY_SIZE;
   const hasContent = contentSize.width > 0 && contentSize.height > 0;
@@ -192,6 +202,13 @@ export function useZoomCanvas({
     );
   }, [ready, contentSize, viewport]);
 
+  // Direct-manipulation updates also write the ref: events outrun renders, and
+  // a pointer-set change re-baselines from the transform the user last saw.
+  const applyGestureTransform = useCallback((next: ZoomTransform) => {
+    stateRef.current.transform = next;
+    setTransform(next);
+  }, []);
+
   const fit = useCallback(() => {
     const { contentSize: c, viewport: v, ready: r } = stateRef.current;
     if (!r) return;
@@ -216,31 +233,83 @@ export function useZoomCanvas({
   const zoomIn = useCallback(() => zoomBy(ZOOM_STEP), [zoomBy]);
   const zoomOut = useCallback(() => zoomBy(1 / ZOOM_STEP), [zoomBy]);
 
-  // Wheel must be a native non-passive listener: React routes `onWheel` through
-  // a passive root listener, where preventDefault is ignored and the page would
-  // scroll behind the dialog instead of the diagram zooming.
+  // Wheel and Safari gesture events must be native non-passive listeners:
+  // React routes them through a passive root listener, where preventDefault is
+  // ignored and the page would scroll or zoom behind the dialog instead.
   useEffect(() => {
     const element = viewportNode;
     if (!element) return;
+
+    const toLocal = (event: { clientX: number; clientY: number }): Point => {
+      const rect = element.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    // WebKit only (macOS and iOS Safari): pinch arrives as `gesture*` events.
+    const webkit = typeof window !== "undefined" && "GestureEvent" in window;
 
     const onWheel = (event: WheelEvent) => {
       const { transform: t, contentSize: c, viewport: v, ready: r } = stateRef.current;
       if (!r) return;
       event.preventDefault();
+      if (webkit && shouldIgnoreWebkitWheel(safariGestureRef.current, event, event.timeStamp)) {
+        return;
+      }
       setIsAnimated(false);
 
-      const rect = element.getBoundingClientRect();
-      const anchor: Point = {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
-      };
-      const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
-      setTransform(zoomToAt(t, t.scale * factor, anchor, c, v));
+      const action = classifyWheel(event);
+      applyGestureTransform(
+        action.type === "zoom"
+          ? zoomToAt(t, t.scale * action.factor, toLocal(event), c, v)
+          : panBy(t, action.dx, action.dy, c, v),
+      );
+    };
+
+    // Gesture events carry clientX/clientY and a cumulative `scale`; they are
+    // not in lib.dom, so read them through a narrow structural type.
+    type GestureLike = Event & { scale: number; clientX: number; clientY: number };
+
+    const onGestureStart = (event: Event) => {
+      event.preventDefault();
+      if (!stateRef.current.ready) return;
+      safariGestureRef.current = gestureStart(
+        safariGestureRef.current,
+        stateRef.current.transform,
+        toLocal(event as GestureLike),
+      );
+    };
+    const onGestureChange = (event: Event) => {
+      // Always cancel: on iOS an unhandled gesture zooms the page.
+      event.preventDefault();
+      const { contentSize: c, viewport: v, ready: r } = stateRef.current;
+      if (!r) return;
+      const next = gestureChange(
+        safariGestureRef.current,
+        (event as GestureLike).scale,
+        touchPointerIdsRef.current.size > 0,
+        { content: c, viewport: v },
+      );
+      if (!next) return;
+      setIsAnimated(false);
+      applyGestureTransform(next);
+    };
+    const onGestureEnd = (event: Event) => {
+      event.preventDefault();
+      safariGestureRef.current = gestureEnd(safariGestureRef.current, event.timeStamp);
     };
 
     element.addEventListener("wheel", onWheel, { passive: false });
-    return () => element.removeEventListener("wheel", onWheel);
-  }, [viewportNode]);
+    if (webkit) {
+      element.addEventListener("gesturestart", onGestureStart, { passive: false });
+      element.addEventListener("gesturechange", onGestureChange, { passive: false });
+      element.addEventListener("gestureend", onGestureEnd, { passive: false });
+    }
+    return () => {
+      element.removeEventListener("wheel", onWheel);
+      element.removeEventListener("gesturestart", onGestureStart);
+      element.removeEventListener("gesturechange", onGestureChange);
+      element.removeEventListener("gestureend", onGestureEnd);
+    };
+  }, [viewportNode, applyGestureTransform]);
 
   const localPoint = useCallback(
     (event: { clientX: number; clientY: number }): Point => {
@@ -260,90 +329,46 @@ export function useZoomCanvas({
       if (event.pointerType === "mouse" && event.button !== 0) return;
 
       setIsAnimated(false);
-      const point = localPoint(event);
-      activePointersRef.current.set(event.pointerId, point);
+      if (event.pointerType === "touch") touchPointerIdsRef.current.add(event.pointerId);
+      sessionRef.current = pointerDown(
+        sessionRef.current,
+        event.pointerId,
+        localPoint(event),
+        stateRef.current.transform,
+      );
       event.currentTarget.setPointerCapture?.(event.pointerId);
-
-      const pointers = [...activePointersRef.current.values()];
-      if (pointers.length === 1) {
-        panOriginRef.current = { pointer: point, transform: stateRef.current.transform };
-        pinchOriginRef.current = null;
-        setIsPanning(true);
-        return;
-      }
-      if (pointers.length === 2) {
-        // Second finger down: hand off from pan to pinch.
-        panOriginRef.current = null;
-        pinchOriginRef.current = {
-          distance: distanceBetween(pointers[0]!, pointers[1]!),
-          scale: stateRef.current.transform.scale,
-        };
-        setIsPanning(false);
-      }
+      setIsPanning(sessionRef.current.pointers.length === 1);
     },
     [localPoint],
   );
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
-      if (!activePointersRef.current.has(event.pointerId)) return;
       const { contentSize: c, viewport: v, ready: r } = stateRef.current;
       if (!r) return;
-
-      const point = localPoint(event);
-      activePointersRef.current.set(event.pointerId, point);
-      const pointers = [...activePointersRef.current.values()];
-
-      if (pointers.length >= 2) {
-        const pinchOrigin = pinchOriginRef.current;
-        if (!pinchOrigin || pinchOrigin.distance <= 0) return;
-        const [first, second] = pointers as [Point, Point];
-        const nextScale =
-          pinchOrigin.scale * (distanceBetween(first, second) / pinchOrigin.distance);
-        setTransform((current) =>
-          zoomToAt(current, nextScale, midpointOf(first, second), c, v),
-        );
-        return;
-      }
-
-      const panOrigin = panOriginRef.current;
-      if (!panOrigin) return;
-      setTransform(
-        clampTransform(
-          {
-            scale: panOrigin.transform.scale,
-            x: panOrigin.transform.x + (point.x - panOrigin.pointer.x),
-            y: panOrigin.transform.y + (point.y - panOrigin.pointer.y),
-          },
-          c,
-          v,
-        ),
+      const { session, transform: next } = pointerMove(
+        sessionRef.current,
+        event.pointerId,
+        localPoint(event),
+        { content: c, viewport: v },
       );
+      sessionRef.current = session;
+      if (next) applyGestureTransform(next);
     },
-    [localPoint],
+    [localPoint, applyGestureTransform],
   );
 
+  // pointerup and pointercancel both land here: only the lifted pointer leaves
+  // and the survivors re-baseline, so the canvas never jumps.
   const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    activePointersRef.current.delete(event.pointerId);
+    touchPointerIdsRef.current.delete(event.pointerId);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-
-    const pointers = [...activePointersRef.current.values()];
-    if (pointers.length === 1) {
-      // Lifting one finger out of a pinch: resume panning from the survivor
-      // rather than freezing until the user lifts and re-touches.
-      panOriginRef.current = {
-        pointer: pointers[0]!,
-        transform: stateRef.current.transform,
-      };
-      pinchOriginRef.current = null;
-      setIsPanning(true);
-      return;
-    }
-    if (pointers.length === 0) {
-      panOriginRef.current = null;
-      pinchOriginRef.current = null;
-      setIsPanning(false);
-    }
+    sessionRef.current = pointerUp(
+      sessionRef.current,
+      event.pointerId,
+      stateRef.current.transform,
+    );
+    setIsPanning(sessionRef.current.pointers.length === 1);
   }, []);
 
   const handleKeyDown = useCallback(

@@ -10,6 +10,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
@@ -52,6 +54,7 @@ func init() {
 	issueCmd.GroupID = groupCore
 	projectCmd.GroupID = groupCore
 	labelCmd.GroupID = groupCore
+	workflowCmd.GroupID = groupCore
 	propertyCmd.GroupID = groupCore
 	agentCmd.GroupID = groupCore
 	autopilotCmd.GroupID = groupCore
@@ -75,10 +78,12 @@ func init() {
 	configCmd.GroupID = groupAdditional
 	updateCmd.GroupID = groupAdditional
 	versionCmd.GroupID = groupAdditional
+	githubCmd.GroupID = groupAdditional
 
 	rootCmd.AddCommand(issueCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(labelCmd)
+	rootCmd.AddCommand(workflowCmd)
 	rootCmd.AddCommand(propertyCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(autopilotCmd)
@@ -98,6 +103,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(githubCmd)
 
 	initHelp(rootCmd)
 }
@@ -110,12 +116,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == sandbox.BridgeHelperArg {
+		os.Exit(sandbox.BridgeMain(os.Args[2:]))
+	}
 	if len(os.Args) == 2 && os.Args[1] == execenv.PreparationHelperArg {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 		if err := execenv.RunPreparationHelper(os.Stdin, os.Stdout, logger); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == agent.CursorHookHelperArg {
+		agent.RunCursorHookRelay(os.Stdin, os.Stdout, os.Getenv)
 		return
 	}
 	cli.CleanupStaleUpdateArtifacts()

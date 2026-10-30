@@ -13,7 +13,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -157,6 +156,24 @@ func ownerCASParse(w http.ResponseWriter, raw map[string]json.RawMessage, c owne
 // read-then-write window. Zero rows updated means stale or missing, told apart
 // by a read that writes nothing.
 func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+	defer tx.Rollback(ctx)
+	result, reason, err := ownerCASWriteTx(ctx, tx, c, workspaceID, id, newContent, expectedDigest)
+	if reason != hermesExceptionRejectNone {
+		return result, reason, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+	return result, hermesExceptionRejectNone, nil
+}
+
+// ownerCASWriteTx is the compare-and-swap inside the caller's transaction; the
+// caller commits. It returns reason none when the swap is staged.
+func ownerCASWriteTx(ctx context.Context, tx pgx.Tx, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
@@ -165,12 +182,6 @@ func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspace
 	if err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
-	}
-	defer tx.Rollback(ctx)
-
 	var storedDigest string
 	err = tx.QueryRow(ctx, fmt.Sprintf(
 		`UPDATE %[1]s SET %[2]s = $1, updated_at = now() WHERE id = $2 AND %[3]s = $3 AND %[4]s = $4 RETURNING %[5]s`,
@@ -194,9 +205,6 @@ func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspace
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal,
 			fmt.Errorf("post-write digest mismatch: stored %s, sent %s", storedDigest, want)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
-	}
 	return hermesExceptionSwapResult{BeforeDigest: expectedDigest, AfterDigest: storedDigest}, hermesExceptionRejectNone, nil
 }
 
@@ -212,29 +220,8 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 	if !ok {
 		return hermesExceptionSwapResult{}, false
 	}
-	if c.kind == "squad.instructions" || c.kind == "agent.instructions" {
-		limit := 3000
-		if c.kind == "agent.instructions" {
-			limit = 4000
-		}
-		newTokens := jev.EstimateInstructionTokens(content)
-		if newTokens > limit {
-			var existingContent string
-			wsUUID, _ := util.ParseUUID(workspaceID)
-			idUUID, _ := util.ParseUUID(id)
-			err := h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				writeError(w, http.StatusInternalServerError, "failed to read existing instructions")
-				return hermesExceptionSwapResult{}, false
-			}
-			if err == nil {
-				existingTokens := jev.EstimateInstructionTokens(existingContent)
-				if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
-					writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
-					return hermesExceptionSwapResult{}, false
-				}
-			}
-		}
+	if !h.instructionTokenLimitOK(w, r, c, workspaceID, id, content) {
+		return hermesExceptionSwapResult{}, false
 	}
 	result, reason, err := h.ownerCASWrite(r.Context(), c, workspaceID, id, content, digest)
 	logOwnerCASOutcome(r, c, id, result, reason, "", err)
@@ -243,6 +230,37 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 		return hermesExceptionSwapResult{}, false
 	}
 	return result, true
+}
+
+// instructionTokenLimitOK enforces the squad/agent instruction token limits,
+// writing the error response itself. A value over the limit is still accepted
+// when it does not grow an already-oversized value. Other columns have no limit.
+func (h *Handler) instructionTokenLimitOK(w http.ResponseWriter, r *http.Request, c ownerCASColumn, workspaceID, id, content string) bool {
+	if c.kind == "squad.instructions" || c.kind == "agent.instructions" {
+		limit := 3000
+		if c.kind == "agent.instructions" {
+			limit = 4000
+		}
+		newTokens := util.EstimateInstructionTokens(content)
+		if newTokens > limit {
+			var existingContent string
+			wsUUID, _ := util.ParseUUID(workspaceID)
+			idUUID, _ := util.ParseUUID(id)
+			err := h.DB.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM %s WHERE id = $1 AND %s = $2", c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&existingContent)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusInternalServerError, "failed to read existing instructions")
+				return false
+			}
+			if err == nil {
+				existingTokens := util.EstimateInstructionTokens(existingContent)
+				if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
+					writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // logOwnerCASOutcome writes one audit line per attempt. Ids and digests only.
@@ -273,12 +291,12 @@ func logOwnerCASOutcome(r *http.Request, c ownerCASColumn, id string, result her
 
 // ownerCASUpdateWorkspace handles an UpdateWorkspace request that carries the
 // digest key. Called after the Hermes exception and the CHE-455 guard.
-func (h *Handler) ownerCASUpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceID, actorType string, raw map[string]json.RawMessage) {
+func (h *Handler) ownerCASUpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceID, actorType, actorID string, raw map[string]json.RawMessage) {
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return
 	}
-	result, ok := h.ownerCASApply(w, r, actorType, member.Role, raw, ownerCASWorkspaceContext, workspaceID, workspaceID)
+	result, ok := h.governedApply(w, r, actorType, actorID, member.Role, raw, ownerCASWorkspaceContext, workspaceID, workspaceID)
 	if !ok {
 		return
 	}
@@ -289,13 +307,14 @@ func (h *Handler) ownerCASUpdateWorkspace(w http.ResponseWriter, r *http.Request
 		return
 	}
 	resp := h.workspaceToResponse(ws)
-	h.publish(protocol.EventWorkspaceUpdated, workspaceID, "member", requestUserID(r), map[string]any{"workspace": resp})
+	pubType, pubID := governedPublisher(r, actorType, actorID)
+	h.publish(protocol.EventWorkspaceUpdated, workspaceID, pubType, pubID, map[string]any{"workspace": resp})
 	writeJSON(w, http.StatusOK, map[string]any{"workspace": resp, "before_digest": result.BeforeDigest, "after_digest": result.AfterDigest})
 }
 
 // ownerCASUpdateSquad is the squad.instructions analogue.
-func (h *Handler) ownerCASUpdateSquad(w http.ResponseWriter, r *http.Request, workspaceID string, member db.Member, squad db.Squad, actorType string, raw map[string]json.RawMessage) {
-	result, ok := h.ownerCASApply(w, r, actorType, member.Role, raw, ownerCASSquadInstructions, workspaceID, uuidToString(squad.ID))
+func (h *Handler) ownerCASUpdateSquad(w http.ResponseWriter, r *http.Request, workspaceID string, member db.Member, squad db.Squad, actorType, actorID string, raw map[string]json.RawMessage) {
+	result, ok := h.governedApply(w, r, actorType, actorID, member.Role, raw, ownerCASSquadInstructions, workspaceID, uuidToString(squad.ID))
 	if !ok {
 		return
 	}
@@ -310,18 +329,19 @@ func (h *Handler) ownerCASUpdateSquad(w http.ResponseWriter, r *http.Request, wo
 		writeError(w, http.StatusInternalServerError, "failed to load squad member preview")
 		return
 	}
-	h.publish(protocol.EventSquadUpdated, workspaceID, "member", requestUserID(r), map[string]any{"squad": resp})
+	pubType, pubID := governedPublisher(r, actorType, actorID)
+	h.publish(protocol.EventSquadUpdated, workspaceID, pubType, pubID, map[string]any{"squad": resp})
 	writeJSON(w, http.StatusOK, map[string]any{"squad": resp, "before_digest": result.BeforeDigest, "after_digest": result.AfterDigest})
 }
 
 // ownerCASUpdateAgent is the agent.instructions analogue.
-func (h *Handler) ownerCASUpdateAgent(w http.ResponseWriter, r *http.Request, existing db.Agent, actorType string, raw map[string]json.RawMessage) {
+func (h *Handler) ownerCASUpdateAgent(w http.ResponseWriter, r *http.Request, existing db.Agent, actorType, actorID string, raw map[string]json.RawMessage) {
 	workspaceID := uuidToString(existing.WorkspaceID)
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return
 	}
-	result, ok := h.ownerCASApply(w, r, actorType, member.Role, raw, ownerCASAgentInstructions, workspaceID, uuidToString(existing.ID))
+	result, ok := h.governedApply(w, r, actorType, actorID, member.Role, raw, ownerCASAgentInstructions, workspaceID, uuidToString(existing.ID))
 	if !ok {
 		return
 	}

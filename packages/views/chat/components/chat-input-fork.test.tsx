@@ -62,7 +62,7 @@ describe("ChatInput /fork", () => {
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
 
     await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
-    expect(onFork).toHaveBeenCalledWith("continue with plan B");
+    expect(onFork).toHaveBeenCalledWith("continue with plan B", []);
     expect(onSend).not.toHaveBeenCalled();
     await waitFor(() => expect(editor.getText()).toBe(""));
     expect(useChatStore.getState().inputDrafts[SESSION] ?? "").toBe("");
@@ -75,7 +75,7 @@ describe("ChatInput /fork", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
 
-    await waitFor(() => expect(onFork).toHaveBeenCalledWith(""));
+    await waitFor(() => expect(onFork).toHaveBeenCalledWith("", []));
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -145,7 +145,7 @@ describe("ChatInput /fork", () => {
     expect(editor.getText()).toBe("");
   });
 
-  it("refuses /fork with an attachment and keeps text and attachment", async () => {
+  it("forks with the draft attachment ids and clears the draft attachments", async () => {
     const attachment = {
       id: "att-1", url: "/api/attachments/att-1/download", download_url: "/api/attachments/att-1/download",
       filename: "a.png", content_type: "image/png", size_bytes: 1,
@@ -157,9 +157,26 @@ describe("ChatInput /fork", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
 
-    expect(await screen.findByText("Attachments cannot be sent with /fork.")).toBeInTheDocument();
-    expect(onFork).not.toHaveBeenCalled();
+    await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
+    expect(onFork).toHaveBeenCalledWith(expect.stringContaining("look"), ["att-1"]);
     expect(onSend).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(useChatStore.getState().inputDraftAttachments[SESSION] ?? []).toHaveLength(0));
+  });
+
+  it("keeps text and attachment when the fork fails", async () => {
+    const attachment = {
+      id: "att-1", url: "/api/attachments/att-1/download", download_url: "/api/attachments/att-1/download",
+      filename: "a.png", content_type: "image/png", size_bytes: 1,
+    } as unknown as Attachment;
+    useChatStore.setState({ inputDraftAttachments: { [SESSION]: [attachmentToDraftUpload(attachment)] } });
+    const onFork = vi.fn().mockResolvedValue({ ok: false, error: "nope" });
+    const { editor } = renderInput({ onFork });
+    await type(editor, "/fork look /api/attachments/att-1/download");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+
+    expect(await screen.findByText("nope")).toBeInTheDocument();
     expect(editor.getText()).toContain("/fork look");
     expect(useChatStore.getState().inputDraftAttachments[SESSION]).toHaveLength(1);
   });

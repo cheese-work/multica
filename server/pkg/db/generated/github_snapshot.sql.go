@@ -122,7 +122,7 @@ func (q *Queries) DeleteGitHubPRCheckRuns(ctx context.Context, prID pgtype.UUID)
 }
 
 const getGitHubPullRequestByID = `-- name: GetGitHubPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at FROM github_pull_request WHERE id = $1
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at FROM github_pull_request WHERE id = $1
 `
 
 func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) (GithubPullRequest, error) {
@@ -159,6 +159,11 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 		&i.SnapshotFetchedAt,
 		&i.SnapshotBaseRef,
 		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
 	)
 	return i, err
 }
@@ -255,6 +260,56 @@ func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, ar
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConflictWatchedGitHubPRNumbersInRepo = `-- name: ListConflictWatchedGitHubPRNumbersInRepo :many
+SELECT DISTINCT pr.pr_number
+FROM issue_wakeup AS w
+JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+JOIN github_pull_request AS pr ON pr.id = ipr.pull_request_id
+WHERE w.enabled
+  AND w.condition->>'type' = 'pull_request'
+  AND w.condition->>'event' = 'conflicts'
+  AND pr.installation_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
+  AND pr.state IN ('open', 'draft')
+  AND pr.pr_number <> $4
+ORDER BY pr.pr_number
+LIMIT 200
+`
+
+type ListConflictWatchedGitHubPRNumbersInRepoParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// Open/draft PRs in one repository that an enabled "wake on merge conflict"
+// rule watches. A merge into the repository can make them conflicting without
+// an event of their own, so the merge webhook re-fetches them.
+func (q *Queries) ListConflictWatchedGitHubPRNumbersInRepo(ctx context.Context, arg ListConflictWatchedGitHubPRNumbersInRepoParams) ([]int32, error) {
+	rows, err := q.db.Query(ctx, listConflictWatchedGitHubPRNumbersInRepo,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int32{}
+	for rows.Next() {
+		var pr_number int32
+		if err := rows.Scan(&pr_number); err != nil {
+			return nil, err
+		}
+		items = append(items, pr_number)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -369,6 +424,92 @@ func (q *Queries) ListGitHubPRRowsByAddress(ctx context.Context, arg ListGitHubP
 			&i.WorkspaceID,
 			&i.HeadSha,
 			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleConflictWatchedGitHubPRs = `-- name: ListStaleConflictWatchedGitHubPRs :many
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND (pr.snapshot_fetched_at IS NULL OR pr.snapshot_fetched_at < $6)
+      AND pr.id IN (
+          SELECT ipr.pull_request_id
+          FROM issue_wakeup AS w
+          JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+          WHERE w.enabled
+            AND w.condition->>'type' = 'pull_request'
+            AND w.condition->>'event' = 'conflicts'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+)
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM candidates
+ORDER BY (
+    ROW(installation_id, repo_owner, repo_name, pr_number) >
+    ROW(
+        $1::BIGINT,
+        $2::TEXT,
+        $3::TEXT,
+        $4::INTEGER
+    )
+) DESC,
+installation_id, repo_owner, repo_name, pr_number
+LIMIT $5
+`
+
+type ListStaleConflictWatchedGitHubPRsParams struct {
+	AfterInstallationID int64              `json:"after_installation_id"`
+	AfterRepoOwner      string             `json:"after_repo_owner"`
+	AfterRepoName       string             `json:"after_repo_name"`
+	AfterPrNumber       int32              `json:"after_pr_number"`
+	MaxRows             int32              `json:"max_rows"`
+	OlderThan           pgtype.Timestamptz `json:"older_than"`
+}
+
+type ListStaleConflictWatchedGitHubPRsRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// Second sweep source: open/draft PRs linked to an issue with an enabled
+// "wake on merge conflict" rule. A decided snapshot leaves the undecided sweep,
+// but a base-branch move can turn it conflicting without any event for this
+// PR, so watched PRs are re-fetched on the TTL regardless. The candidate set
+// comes from the enabled rules, whose count is capped. Like the undecided
+// sweep, an address cursor rotates the bounded batch, so addresses whose
+// fetches keep failing (their snapshot never gets newer) cannot pin it.
+func (q *Queries) ListStaleConflictWatchedGitHubPRs(ctx context.Context, arg ListStaleConflictWatchedGitHubPRsParams) ([]ListStaleConflictWatchedGitHubPRsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleConflictWatchedGitHubPRs,
+		arg.AfterInstallationID,
+		arg.AfterRepoOwner,
+		arg.AfterRepoName,
+		arg.AfterPrNumber,
+		arg.MaxRows,
+		arg.OlderThan,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleConflictWatchedGitHubPRsRow{}
+	for rows.Next() {
+		var i ListStaleConflictWatchedGitHubPRsRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}

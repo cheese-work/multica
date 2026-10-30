@@ -1,0 +1,20 @@
+{
+  "id": 40339614920,
+  "name": "CD qualification build",
+  "head_branch": "main",
+  "head_sha": "7f6712c77a32f4d45b51182169ab05c5a18af0f5",
+  "path": ".github/workflows/cd-qualification.yml",
+  "display_title": "ci: validate merge-group candidates (CHE-2142) (#411)",
+  "run_number": 253,
+  "event": "push",
+  "status": "completed",
+  "conclusion": "success",
+  "workflow_id": 356876776,
+  "url": "https://api.github.com/repos/cheese-work/multica/actions/runs/40339614920",
+  "html_url": "https://github.com/cheese-work/multica/actions/runs/40339614920",
+  "created_at": "2026-10-26T14:26:05Z",
+  "updated_at": "2026-10-26T14:48:13Z",
+  "run_attempt": 1,
+  "run_started_at": "2026-10-26T14:26:05Z",
+  "jobs_url": "https://api.github.com/repos/cheese-work/multica/actions/runs/40339614920/jobs"
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ func newRequestCoreFixture(test *testing.T, group bool) requestCoreFixture {
 	}
 	intentID, tagID := openLaneIntent(test, fixture, content)
 	sessionID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "Decision lane"})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + fixture.issueID + ")"})
 	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
 	if err != nil {
 		test.Fatal(err)
@@ -63,7 +65,7 @@ func (fixture requestCoreFixture) assertCounts(test *testing.T, wanted int) {
 			test.Fatalf("%s = %d, want %d", label, count, wanted)
 		}
 	}
-	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, fixture.sessionID) != 0 {
+	if wanted == 0 && dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_request'`, fixture.sessionID) != 0 {
 		test.Fatal("refusal left a DM message")
 	}
 }
@@ -73,6 +75,36 @@ func requireRequestRefusal(test *testing.T, err error) {
 	var refusal decisionIntentRefusal
 	if !errors.As(err, &refusal) || (refusal.status != http.StatusForbidden && refusal.status != http.StatusConflict && refusal.status != http.StatusBadRequest) {
 		test.Fatalf("expected explicit refusal, got %v", err)
+	}
+}
+
+func TestDecisionNonAssigneeIssueTaskFlow(test *testing.T) {
+	for _, assignee := range []string{"member", "other_agent", "other_squad", "unassigned"} {
+		test.Run(assignee, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			var kind, id any
+			switch assignee {
+			case "member":
+				kind, id = "member", fixture.humanID
+			case "other_agent":
+				kind, id = "agent", createHandlerTestAgent(test, "Assigned agent", []byte("[]"))
+			case "other_squad":
+				kind, id = "squad", dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Other squad", "creator_id": testUserID, "leader_id": createHandlerTestAgent(test, "Other leader", []byte("[]"))})
+			}
+			dbfx.Exec(test, `UPDATE issue SET assignee_type = $1, assignee_id = $2 WHERE id = $3`, kind, id, fixture.issueID)
+			// The mention-triggered task must open its own intent, discover its
+			// own lane and send, regardless of the current issue assignee.
+			fixture.intentID, fixture.tagID = openLaneIntent(test, fixture.intentFixture, fixture.mention())
+			testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture.intentFixture, "&for="+fixture.humanID)).Want(http.StatusOK)
+			result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
+			if err != nil {
+				test.Fatal(err)
+			}
+			if result.Request.AskingAgentID != parseUUID(fixture.agentID) || result.Comment.SourceTaskID != parseUUID(fixture.taskID) {
+				test.Fatalf("wrong request provenance: %+v", result.Request)
+			}
+			fixture.assertCounts(test, 1)
+		})
 	}
 }
 
@@ -96,7 +128,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if stored != result.Request || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
+			if !reflect.DeepEqual(stored, result.Request) || stored.IssueID != fixture.issue.ID || stored.AskingAgentID != parseUUID(fixture.agentID) || stored.HumanUserID != parseUUID(fixture.humanID) || stored.ChatSessionID != input.SessionID || stored.DecisionIntentID != parseUUID(fixture.intentID) || stored.Ask != input.Ask || stored.Origin != "asked" || stored.Status != "open" || stored.EscalationClass != input.EscalationClass || stored.PingNotifiedAt.Valid {
 				test.Fatalf("wrong request: %+v", stored)
 			}
 			if result.Comment.ID != stored.IssueCommentID || result.Comment.ParentID != parseUUID(fixture.tagID) || result.Comment.DecisionRequestID != stored.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.AuthorType != "agent" || result.Comment.AuthorID != stored.AskingAgentID || result.Comment.SourceTaskID != parseUUID(fixture.taskID) || result.Comment.Content != input.Ask {
@@ -120,7 +152,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 }
 
 func TestDecisionRequestCoreRefusals(test *testing.T) {
-	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "non_assignee", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
+	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
 		test.Run(reason, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			request, input := fixture.request(), fixture.input()
@@ -145,8 +177,6 @@ func TestDecisionRequestCoreRefusals(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET chat_session_id = $1 WHERE id = $2`, fixture.sessionID, fixture.taskID)
 			case "other_issue":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "wrong issue"), fixture.taskID)
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_type = NULL, assignee_id = NULL WHERE id = $1`, fixture.issueID)
 			case "archived_agent":
 				dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
 			case "private_agent":
@@ -227,7 +257,7 @@ func TestDecisionRequestCoreGroupConsumption(test *testing.T) {
 	_, err = testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
 	requireRequestRefusal(test, err)
 	fixture.assertCounts(test, 1)
-	secondSession := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Owner lane"})
+	secondSession := laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Owner lane")
 	input := fixture.input()
 	input.SessionID = parseUUID(secondSession)
 	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
@@ -274,7 +304,7 @@ func TestDecisionRequestCoreConcurrentConsumption(test *testing.T) {
 			fixture := newRequestCoreFixture(test, group)
 			input := fixture.input()
 			if group {
-				input.SessionID = parseUUID(dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": testUserID, "title": "Concurrent owner lane"}))
+				input.SessionID = parseUUID(laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Concurrent owner lane"))
 			}
 			first := startRequestCore(test, fixture, fixture.input())
 			second := startRequestCore(test, fixture, input)
@@ -563,5 +593,50 @@ func TestDecisionRequestCorePingWins(test *testing.T) {
 			}
 			fixture.assertCounts(test, 1)
 		})
+	}
+}
+
+func TestDecisionRequestAttachesToIntentCommentWhenAskMatches(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	input := fixture.input()
+	input.Ask = fixture.mention()
+	before := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID)
+	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1`, fixture.issueID); after != before {
+		test.Fatalf("comments = %d, want %d (no second ask comment)", after, before)
+	}
+	fixture.assertCounts(test, 1)
+	if result.Comment.ID != parseUUID(fixture.tagID) || result.Request.IssueCommentID != result.Comment.ID || result.Comment.DecisionRequestID != result.Request.ID || result.Comment.DecisionCommentKind.String != "ask" || result.Comment.DecisionIntentID != parseUUID(fixture.intentID) {
+		test.Fatalf("ask did not attach to the intent comment: %+v", result.Comment)
+	}
+}
+
+func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
+	fixture := newRequestCoreFixture(test, true)
+	var content string
+	dbfx.QueryRow(test, `SELECT content FROM comment WHERE id = $1`, fixture.tagID).Scan(&content)
+	input := fixture.input()
+	input.Ask = content
+	first, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	input.SessionID = parseUUID(laneNamingIssue(test, fixture.issueID, fixture.agentID, testUserID, "Owner lane"))
+	second, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
+	if err != nil {
+		test.Fatal(err)
+	}
+	fixture.assertCounts(test, 2)
+	for _, result := range []decisionRequestResult{first, second} {
+		stored, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.issue.WorkspaceID, ID: result.Request.ID})
+		if err != nil {
+			test.Fatal(err)
+		}
+		if dbfx.Count(test, `SELECT count(*) FROM comment WHERE id = $1 AND decision_request_id = $2 AND decision_comment_kind = 'ask'`, uuidToString(stored.IssueCommentID), uuidToString(stored.ID)) != 1 {
+			test.Fatalf("request %s lost its ask comment link", uuidToString(stored.ID))
+		}
 	}
 }

@@ -18,7 +18,9 @@ function initRepo(parent, name, tag) {
   git("config", "user.name", "test");
   git("config", "user.email", "test@multica.ai");
   git("config", "commit.gpgsign", "false");
-  git("commit", "-q", "--allow-empty", "-m", name);
+  writeFileSync(join(root, "UPSTREAM_VERSION"), "0.6.5\n");
+  git("add", "UPSTREAM_VERSION");
+  git("commit", "-q", "-m", name);
   git("tag", tag);
   return { root, commit: git("rev-parse", "--short", "HEAD") };
 }
@@ -52,7 +54,8 @@ if (args[0] === "version") {
   });
   const build = JSON.parse(readFileSync(capture, "utf-8"));
   const ldflags = build.args[build.args.indexOf("-ldflags") + 1];
-  expect(ldflags).toContain("-X main.version=1.4.2 ");
+  // CHE-1985: <upstream>-YYYYMMDD-hhmm, not the `git describe` tag.
+  expect(ldflags).toMatch(/-X main\.version=0\.6\.5-\d{8}-\d{4} /);
   expect(ldflags).toContain(`-X main.commit=${repo.commit} `);
   expect(ldflags).not.toContain(`-X main.commit=${other.commit} `);
   expect(build.cwd).toBe(join(repo.root, "server"));

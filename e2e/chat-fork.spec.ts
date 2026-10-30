@@ -161,6 +161,8 @@ for (const surface of ["page", "window"] as const) {
         // DM list titles; the list renders before the DM header that repeats the title.
         const forkRow = page.getByText("Storage engine choice (fork)", { exact: true }).first();
         const otherRow = page.getByText("Unrelated recent DM", { exact: true });
+        // The reload must keep the fork selected: under load it can start before the URL names the fork.
+        await expect(page).toHaveURL(new RegExp(`session=${child.rows[0]!.id}`));
         await page.reload({ waitUntil: "domcontentloaded" });
         await expect(otherRow).toBeVisible({ timeout: 30_000 });
         await expect(forkRow).toBeVisible();
@@ -173,6 +175,47 @@ for (const surface of ["page", "window"] as const) {
       await expect(forkedInto).toBeVisible({ timeout: 30_000 });
       await expect(forkedInto).toHaveAttribute("href", `/${workspace.slug}/chat?session=${child.rows[0]!.id}`);
       await shot(page, testInfo, `${surface}-source-after-idle-fork`);
+    });
+
+    test("lists each fork under the source message it copied up to, past a late-visible row", async ({ page }, testInfo) => {
+      const { workspace, sourceId } = seed;
+      const forkSource = async (key: string, title: string) => {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.PORT || "8080"}`}/api/chat/sessions/${sourceId}/fork`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${api.getToken()}`, "X-Workspace-Slug": workspace.slug },
+          body: JSON.stringify({ idempotency_key: key }),
+        });
+        expect(response.status).toBe(201);
+        const { session } = (await response.json()) as { session: { id: string } };
+        await database.query(`UPDATE chat_session SET title = $2 WHERE id = $1`, [session.id, title]);
+      };
+      const addSourceMessage = (role: string, content: string, ago: string) => database.query(
+        `INSERT INTO chat_message (chat_session_id, role, content, created_at) VALUES ($1, $2, $3, now() - $4::interval)`,
+        [sourceId, role, content, ago],
+      );
+      // The first fork copies the two seeded messages. A row that was queued at
+      // that moment then surfaces with a time before the fork. The second fork
+      // copies it; a newer reply follows both forks.
+      await forkSource("e2e-early", "Early branch");
+      await addSourceMessage("user", "Late visible question", "1 minute");
+      await forkSource("e2e-later", "Later branch");
+      await addSourceMessage("assistant", "Newest reply", "0 seconds");
+
+      await openSource(page, workspace.slug, sourceId, surface, api.getToken()!);
+      const early = page.getByRole("link", { name: "Early branch", exact: true });
+      const later = page.getByRole("link", { name: "Later branch", exact: true });
+      await expect(early).toBeVisible({ timeout: 30_000 });
+      await expect(later).toBeVisible();
+      const rows = page.locator("[data-index]");
+      await expect(rows.filter({ hasText: "Postgres fits the current deployment" }).getByRole("link", { name: "Early branch", exact: true })).toBeVisible();
+      await expect(rows.filter({ hasText: "Late visible question" }).getByRole("link", { name: "Later branch", exact: true })).toBeVisible();
+      const y = async (locator: typeof early) => (await locator.boundingBox())!.y;
+      const lateRow = page.getByText("Late visible question").last();
+      const newest = page.getByText("Newest reply").last();
+      expect(await y(early)).toBeLessThan(await y(lateRow));
+      expect(await y(lateRow)).toBeLessThan(await y(later));
+      expect(await y(later)).toBeLessThan(await y(newest));
+      await shot(page, testInfo, `${surface}-forks-at-copied-messages`);
     });
   });
 }

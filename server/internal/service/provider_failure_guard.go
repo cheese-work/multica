@@ -41,6 +41,8 @@ type HTTPProviderFailureProbe struct {
 	client *http.Client
 }
 
+var errProviderRecoveryProbeNotConfigured = errors.New("provider recovery probe is not configured")
+
 func NewHTTPProviderFailureProbe(baseURL string) (*HTTPProviderFailureProbe, error) {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
@@ -70,7 +72,7 @@ func NewHTTPProviderFailureProbe(baseURL string) (*HTTPProviderFailureProbe, err
 
 func (p *HTTPProviderFailureProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence, error) {
 	if p == nil || p.client == nil || p.url == "" {
-		return ProviderFailureProbeEvidence{}, errors.New("provider recovery probe is not configured")
+		return ProviderFailureProbeEvidence{}, errProviderRecoveryProbeNotConfigured
 	}
 	ctx, cancel := context.WithTimeout(ctx, providerFailureRecoveryTimeout)
 	defer cancel()
@@ -178,6 +180,10 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 	}
 	evidence, err := s.ProviderFailureProbe.Probe(ctx)
 	if err != nil {
+		if errors.Is(err, errProviderRecoveryProbeNotConfigured) {
+			attempt.SkipReason = "cooldown expiry alone is not recovery evidence; probe is not configured"
+			return attempt, nil
+		}
 		attempt.SkipReason = "cooldown expiry alone is not recovery evidence; probe failed"
 		return attempt, nil
 	}

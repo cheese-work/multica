@@ -4,6 +4,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 import enIssues from "../../locales/en/issues.json";
+import { NavigationProvider } from "../../navigation";
 
 // --- Mocks ------------------------------------------------------------------
 // The list no longer owns the archive-advance behavior — the parent (ChatPage)
@@ -17,6 +18,14 @@ import enIssues from "../../locales/en/issues.json";
 
 const setActiveSession = vi.fn();
 const archiveMutate = vi.fn();
+const retryNeedsYou = vi.fn();
+const needsYou = { rows: [] as Record<string, unknown>[], isPending: false, isError: false };
+const navigate = vi.fn();
+
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@multica/core/paths")>(),
+  useWorkspaceSlug: () => "test-ws",
+}));
 
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: ({ actorId }: { actorId: string }) => (
@@ -51,7 +60,10 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: () => ({ data: { tasks: [] } }),
+    useQuery: (options: { queryKey: readonly unknown[] }) =>
+      options.queryKey.includes("open-decisions")
+        ? { data: needsYou.rows, isPending: needsYou.isPending, isError: needsYou.isError, refetch: retryNeedsYou }
+        : { data: { tasks: [] } },
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });
@@ -98,6 +110,7 @@ function renderList(
 ) {
   render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <NavigationProvider value={{ push: navigate, replace: vi.fn(), back: vi.fn(), pathname: "/test-ws/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
       <ChatThreadList
         sessions={renderedSessions}
         agents={renderedAgents}
@@ -105,6 +118,7 @@ function renderList(
         onSelectSession={onSelectSession}
         onArchive={onArchive}
       />
+      </NavigationProvider>
     </I18nProvider>,
   );
   return { onArchive, onSelectSession };
@@ -114,8 +128,56 @@ const ARCHIVE_LABEL = enChat.list.archive;
 
 describe("ChatThreadList archive delegation", () => {
   beforeEach(() => {
+    needsYou.rows = [];
+    needsYou.isPending = false;
+    needsYou.isError = false;
+    navigate.mockClear();
+    retryNeedsYou.mockClear();
     setActiveSession.mockClear();
     archiveMutate.mockClear();
+  });
+
+  it("keeps a read-but-unanswered ask above history with a count and its card jump", () => {
+    needsYou.rows = [{
+      id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2405",
+      asking_agent_id: "agent-1", asking_agent_name: "Alpha", escalation_class: "spend",
+      ask: "**Agent did**\nChecks passed.\n\n**Decision**\nApprove the build?\n\n**Stakes if wrong**\nA slow build.", created_at: "2026-10-28T04:00:00Z",
+      chat_session_id: "s1", message_id: "ask-message",
+    }];
+    renderList("s1");
+    expect(screen.getByRole("heading", { name: /Needs you/ })).toBeInTheDocument();
+    expect(screen.getByText("Approve the build?")).toBeInTheDocument();
+    expect(screen.getByText("CHE-2405")).toBeInTheDocument();
+    expect(screen.getByText("spend")).toBeInTheDocument();
+    expect(screen.queryByText("Checks passed.")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Approve the build/ })).toHaveAttribute(
+      "href", expect.stringContaining("session=s1&message=ask-message"),
+    );
+    expect(needsYou.rows).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: /Approve the build/ }));
+    expect(navigate).toHaveBeenCalledWith("/test-ws/chat?session=s1&message=ask-message");
+  });
+
+  it("shows the Needs you count even when chat history is empty", () => {
+    renderList(null, { renderedSessions: [] });
+    expect(screen.getByRole("heading", { name: "Needs you 0" })).toBeInTheDocument();
+    expect(screen.getByText("No open asks.")).toBeInTheDocument();
+  });
+
+  it("distinguishes loading and query errors from no open asks", () => {
+    needsYou.isPending = true;
+    renderList(null);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading open asks");
+    expect(screen.queryByText("No open asks.")).not.toBeInTheDocument();
+  });
+
+  it("offers retry when the open-ask query fails", () => {
+    needsYou.isError = true;
+    renderList(null);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load open asks.");
+    expect(screen.queryByText("No open asks.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retryNeedsYou).toHaveBeenCalledOnce();
   });
 
   it("delegates the history-row Archive action to onArchive with that session", () => {
@@ -146,6 +208,34 @@ describe("ChatThreadList archive delegation", () => {
     // Advance + mutation are the parent/controller's job now; the list stays out.
     expect(setActiveSession).not.toHaveBeenCalled();
     expect(archiveMutate).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatThreadList continuation chains", () => {
+  const chain: ChatSession[] = [
+    makeSession({ id: "c1", title: "Chain first", status: "archived", continued_into_session_id: "c2", updated_at: "2026-07-08T01:00:00Z" }),
+    makeSession({ id: "c2", title: "Chain second", status: "archived", continued_from_session_id: "c1", continued_into_session_id: "c3", updated_at: "2026-07-08T02:00:00Z" }),
+    makeSession({ id: "c3", title: "Chain newest", continued_from_session_id: "c2", updated_at: "2026-07-08T03:00:00Z" }),
+    makeSession({ id: "solo", title: "Archived alone", status: "archived", updated_at: "2026-07-08T00:00:00Z" }),
+  ];
+
+  it("lists one row per chain: the newest DM; archived predecessors are not rows", () => {
+    renderList(null, { renderedSessions: chain });
+    expect(screen.getByText("Chain newest")).toBeInTheDocument();
+    expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
+    expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
+    // The Archived entry counts only the unrelated archived DM.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    expect(screen.getByText("Archived alone")).toBeInTheDocument();
+    expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
+    expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
+  });
+
+  it("keeps an archived DM whose successor is not in the list", () => {
+    const orphan = makeSession({ id: "o1", title: "Orphan source", status: "archived", continued_into_session_id: "gone" });
+    renderList(null, { renderedSessions: [orphan] });
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    expect(screen.getByText("Orphan source")).toBeInTheDocument();
   });
 });
 

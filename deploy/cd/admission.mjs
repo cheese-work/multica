@@ -119,8 +119,13 @@ function verify(args) {
     if (image?.source_sha !== manifest.source_sha) fail(`${name} provenance source SHA does not match manifest`);
   }
 
-  const checks = readJSON(option("--checks", args));
-  if (checks.sha !== manifest.source_sha) fail("checks were recorded for a different source SHA");
+  verifyChecks(readJSON(option("--checks", args)), manifest.source_sha);
+
+  process.stdout.write(`${JSON.stringify({ admitted: true, source_sha: manifest.source_sha })}\n`);
+}
+
+function verifyChecks(checks, sourceSha) {
+  if (checks.sha !== sourceSha) fail("checks were recorded for a different source SHA");
   for (const name of requiredChecks) {
     const conclusion = checks.contexts?.[name];
     if (conclusion === "success") continue;
@@ -133,8 +138,6 @@ function verify(args) {
     if (conclusion === null) fail(`required check ${name} has not completed`);
     fail(`required check ${name} is not success`);
   }
-
-  process.stdout.write(`${JSON.stringify({ admitted: true, source_sha: manifest.source_sha })}\n`);
 }
 
 // Lists the required checks whose result is not yet final, one per line; no
@@ -156,8 +159,9 @@ function pending(args) {
 try {
   const [command, ...args] = process.argv.slice(2);
   if (command === "verify") verify(args);
+  else if (command === "checks") verifyChecks(readJSON(option("--checks", args)), option("--source-sha", args));
   else if (command === "pending") pending(args);
-  else fail("usage: admission.mjs verify|pending [options]");
+  else fail("usage: admission.mjs verify|checks|pending [options]");
 } catch (error) {
   process.stderr.write(`admission: ${error.message}\n`);
   process.exitCode = 1;

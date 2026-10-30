@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -36,64 +37,87 @@ func writeDecisionError(writer http.ResponseWriter, err error, operation string)
 	}
 }
 
-func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID, content string) (db.Issue, []pgtype.UUID, error) {
+// authorizeDecisionTask locks and re-reads the issue, then proves the caller is
+// authorID's running, non-chat task on this open issue. Issue assignment
+// does not grant or revoke a task's decision authority.
+func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
 	ctx := request.Context()
-	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running assigned issue task on this issue"}
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running non-chat issue task on this issue"}
 	if request.Header.Get("X-Actor-Source") != "task_token" || authorType != "agent" {
-		return issue, nil, deny
+		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
 	if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return issue, nil, decisionIntentRefusal{http.StatusNotFound, "issue not found"}
+			return issue, db.Agent{}, db.AgentTaskQueue{}, decisionIntentRefusal{http.StatusNotFound, "issue not found"}
 		}
-		return issue, nil, err
+		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
 	issue, err := queries.GetIssue(ctx, issue.ID)
 	if err != nil {
-		return issue, nil, err
+		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil {
-		return issue, nil, err
+		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
-		return issue, nil, deny
+		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
 	taskID, err := util.ParseUUID(request.Header.Get("X-Task-ID"))
 	if err != nil {
-		return issue, nil, deny
+		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: taskID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return issue, nil, deny
+			return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 		}
-		return issue, nil, err
+		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
 	task, err := queries.GetAgentTask(ctx, taskID)
 	if err != nil {
-		return issue, nil, err
+		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
 	if task.Status != "running" || task.ChatSessionID.Valid || task.IssueID != issue.ID || task.AgentID != authorID {
-		return issue, nil, deny
+		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
-	assigned := issue.AssigneeType.String == "agent" && issue.AssigneeID == task.AgentID
-	if issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
-		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && squad.ArchivedAt.Valid) {
-			return issue, nil, deny
-		}
-		if err != nil {
-			return issue, nil, err
-		}
-		assigned, err = queries.IsSquadMember(ctx, db.IsSquadMemberParams{SquadID: squad.ID, MemberType: "agent", MemberID: task.AgentID})
-		if err != nil {
-			return issue, nil, err
-		}
-	}
-	if !assigned {
-		return issue, nil, deny
-	}
+
 	agent, err := queries.GetAgent(ctx, task.AgentID)
+	if err != nil {
+		return issue, agent, task, err
+	}
+	return issue, agent, task, nil
+}
+
+// checkDecisionTarget refuses a person who is not an active member who may
+// invoke the asking agent.
+func (handler *Handler) checkDecisionTarget(request *http.Request, queries *db.Queries, issue db.Issue, agent db.Agent, humanID pgtype.UUID) error {
+	ctx := request.Context()
+	if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: humanID, WorkspaceID: issue.WorkspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return decisionIntentRefusal{http.StatusBadRequest, "named person is not an active workspace member: " + uuidToString(humanID)}
+		}
+		return err
+	}
+	if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
+		return decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + uuidToString(humanID)}
+	}
+	return nil
+}
+
+// supersedeDecisionIntent closes the task's still-pending intent, if any.
+func supersedeDecisionIntent(ctx context.Context, queries *db.Queries, issue db.Issue, taskID pgtype.UUID) error {
+	previous, err := queries.LockDecisionPendingIntent(ctx, db.LockDecisionPendingIntentParams{WorkspaceID: issue.WorkspaceID, TaskID: taskID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return queries.CloseDecisionIntent(ctx, db.CloseDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: previous.ID, CloseReason: pgtype.Text{String: "superseded", Valid: true}})
+}
+
+func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID, content string) (db.Issue, []pgtype.UUID, error) {
+	issue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, authorType, authorID)
 	if err != nil {
 		return issue, nil, err
 	}
@@ -110,14 +134,8 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 		if seen[humanID] {
 			continue
 		}
-		if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: humanID, WorkspaceID: issue.WorkspaceID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return issue, nil, decisionIntentRefusal{http.StatusBadRequest, "named person is not an active workspace member: " + mention.ID}
-			}
+		if err := handler.checkDecisionTarget(request, queries, issue, agent, humanID); err != nil {
 			return issue, nil, err
-		}
-		if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
-			return issue, nil, decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + mention.ID}
 		}
 		seen[humanID] = true
 		targets = append(targets, humanID)
@@ -126,14 +144,8 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 		return issue, nil, decisionIntentRefusal{http.StatusBadRequest, "decision intent must name at least one person with a member mention"}
 	}
 	sort.Slice(targets, func(first, second int) bool { return uuidToString(targets[first]) < uuidToString(targets[second]) })
-	previous, err := queries.LockDecisionPendingIntent(ctx, db.LockDecisionPendingIntentParams{WorkspaceID: issue.WorkspaceID, TaskID: task.ID})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := supersedeDecisionIntent(request.Context(), queries, issue, task.ID); err != nil {
 		return issue, nil, err
-	}
-	if err == nil {
-		if err := queries.CloseDecisionIntent(ctx, db.CloseDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: previous.ID, CloseReason: pgtype.Text{String: "superseded", Valid: true}}); err != nil {
-			return issue, nil, err
-		}
 	}
 	return issue, targets, nil
 }

@@ -13,6 +13,7 @@
  *                                  onto the assistant message
  *   - task:queued / dispatch    → seed / promote pendingTask
  *   - task:cancelled            → refresh pendingTask + messages
+ *   - chat:cancel_finalized     → refresh the durable cancellation outcome
  *   - task:completed            → no-op for messages (chat:done already
  *                                  wrote the assistant message); just
  *                                  refresh pendingTask
@@ -43,15 +44,20 @@ export function useChatSessionRealtime(
   const qc = useQueryClient();
 
   useWSSubscriptions(
-    (ws) => {
+    (ws, wsId) => {
       if (!sessionId) return;
 
       const isMine = (p: { chat_session_id?: string }) =>
         p.chat_session_id === sessionId;
 
+      const invalidateUsage = () => {
+        qc.invalidateQueries({ queryKey: chatKeys.usage(wsId, sessionId) });
+      };
+
       const invalidateMine = () => {
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+        invalidateUsage();
       };
 
       return [
@@ -62,10 +68,12 @@ export function useChatSessionRealtime(
           if (!isMine(payload)) return;
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
           qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+          invalidateUsage();
         }),
         ws.on("chat:done", (payload) => {
           if (!isMine(payload)) return;
           applyChatDoneToCache(qc, payload);
+          invalidateUsage();
         }),
         // The daemon's background suggestion pass lands here, after chat:done
         // already refetched an actions-less message list. Patch the actions in
@@ -77,19 +85,30 @@ export function useChatSessionRealtime(
         ws.on("task:queued", (payload) => {
           if (!isMine(payload)) return;
           seedPendingTaskFromQueued(qc, payload);
+          invalidateUsage();
         }),
         ws.on("task:dispatch", (payload) => {
           if (!isMine(payload)) return;
           promotePendingTaskToRunning(qc, payload);
+          invalidateUsage();
         }),
         ws.on("task:cancelled", (payload) => {
           if (!isMine(payload)) return;
           invalidatePendingTask(qc, sessionId);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+          invalidateUsage();
+        }),
+        // Revocation arms durable chat settlement in its transaction. The
+        // outcome may arrive after task:cancelled (including after an offline
+        // daemon's ack), so refresh again when the authoritative row is ready.
+        ws.on("chat:cancel_finalized", (payload) => {
+          if (!isMine(payload)) return;
+          invalidateMine();
         }),
         ws.on("task:completed", (payload) => {
           if (!isMine(payload)) return;
           invalidatePendingTask(qc, sessionId);
+          invalidateUsage();
         }),
         ws.on("task:failed", (payload) => {
           if (!isMine(payload)) return;
@@ -97,6 +116,7 @@ export function useChatSessionRealtime(
           // and recover any queued successor from the authoritative endpoint.
           invalidatePendingTask(qc, sessionId);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+          invalidateUsage();
         }),
         ws.on("chat:session_deleted", (payload) => {
           if (!isMine(payload)) return;

@@ -1,0 +1,9 @@
+{
+  "pull_request": {
+    "number": 332,
+    "state": "open",
+    "title": "fix(autopilot): scope schedule cooldown lookup and unset probe wiring (CHE-1926) [squash]",
+    "body": "Closes CHE-1926\n\nRefs CHE-1911",
+    "head": { "ref": "fix/che-1911-schedule-cooldown-lookup" }
+  }
+}

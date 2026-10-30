@@ -27,7 +27,7 @@ test.describe("Authentication", () => {
     }
 
     await page.goto(`/${workspace.slug}/issues`, { waitUntil: "domcontentloaded" });
-    await page.waitForURL("**/login", { timeout: 10000, waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 10000, waitUntil: "domcontentloaded" });
     await waitForPageText(page, "Sign in to Multica");
   });
 
@@ -39,7 +39,7 @@ test.describe("Authentication", () => {
 
     await page.getByRole("menuitem", { name: "Log out" }).click();
 
-    await page.waitForURL("**/login", { timeout: 10000, waitUntil: "domcontentloaded" });
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 10000, waitUntil: "domcontentloaded" });
     await waitForPageText(page, "Sign in to Multica");
     await expect(page).toHaveURL(/\/login/);
   });

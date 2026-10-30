@@ -55,13 +55,11 @@ func TestMain(m *testing.M) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		testutil.ExitWithoutDatabase(err)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		testutil.ExitWithoutDatabase(err)
 	}
 	queries := db.New(pool)
 	hub := realtime.NewHub()
@@ -3775,5 +3773,15 @@ func TestUpsertSkillFileRejectsSkillMd(t *testing.T) {
 	}
 	if !strings.Contains(upsertRec.Body.String(), "SKILL.md is reserved") {
 		t.Fatalf("expected error message about reserved SKILL.md, got: %s", upsertRec.Body.String())
+	}
+}
+
+func TestHandlerNewLeavesUnconfiguredProviderFailureProbeNil(t *testing.T) {
+	if testHandler == nil || testHandler.TaskService == nil {
+		t.Skip("testHandler not initialized")
+	}
+	if testHandler.TaskService.ProviderFailureProbe != nil {
+		t.Fatalf("TaskService.ProviderFailureProbe = %#v (%T), want nil when ProviderRecoveryBaseURL is empty",
+			testHandler.TaskService.ProviderFailureProbe, testHandler.TaskService.ProviderFailureProbe)
 	}
 }

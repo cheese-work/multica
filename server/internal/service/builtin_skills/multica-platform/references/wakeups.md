@@ -12,14 +12,15 @@ current run. A wakeup persists on the issue; it is not a sleeping process.
 multica issue wakeup create <issue> --until-status in_review --instruction-file ./instruction.md
 multica issue wakeup create <issue> --until-pr checks --expires-in 2h --on-timeout wake --instruction-file ./instruction.md
 multica issue wakeup create <issue> --until-pr merged --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-pr conflicts --mode continuous --instruction-file ./instruction.md
 multica issue wakeup create <issue> --until-children-done --instruction-file ./instruction.md
 multica issue wakeup create <issue> --until-children-done --stage 2 --instruction-file ./instruction.md
 multica issue wakeup create <issue> --until-issue <other-issue-id> --until-issue-state done --instruction-file ./instruction.md
 ```
 
-- `--until-status KEY` waits for this issue's status. `--until-pr checks` waits for linked PR checks to finish on the current head, passing or failing; `merged` waits for any linked PR to merge. Both inspect only PRs linked directly to this issue, not a parent's. Check evaluation needs server-side GitHub snapshots; a missing link or snapshot is recorded in the rule's `last_error` and retried automatically instead of rejecting the rule.
+- `--until-status KEY` waits for this issue's status. `--until-pr checks` waits for linked PR checks to finish on the current head, passing or failing; `merged` waits for any linked PR to merge; `conflicts` waits for an open linked GitHub PR to have merge conflicts on its current head, for example after another PR merged into its base. With `--mode continuous` it fires again each time a resolved conflict comes back or a new head still conflicts; Forgejo, Gitea and GitLab PRs are not detected. All three inspect only PRs linked directly to this issue, not a parent's. Check and conflict evaluation need server-side GitHub snapshots; a missing link or snapshot is recorded in the rule's `last_error` and retried automatically instead of rejecting the rule.
 - `--until-children-done` waits for all sub-issues to close (`done` or `cancelled`). With `--stage N`, it waits for staged sub-issues through N; stage N must exist. A parent with no sub-issues never fires. The parent assignee already receives the stage wake, so do not add the same condition.
-- `--until-issue ISSUE` waits for another workspace issue to reach `done` (default), `ended` (`done` or `cancelled`), or `in_review`. Conditions also support `--until-assignee member|agent|squad:ID`, `--until-label LABEL_ID`, and `--until-property PROPERTY_ID=VALUE` (including JSON); see `multica issue wakeup create --help`.
+- `--until-issue ISSUE` waits for another workspace issue to reach `done` (default), `ended` (`done` or `cancelled`), `in_review`, or `blocked`. `--until-gh-run owner/repo:RUN_ID` (also `owner/repo:WORKFLOW_FILE@SHA` or a run URL) waits for a GitHub Actions run to reach `--until-gh-run-state completed` (default) or `waiting` (a job waits at an environment gate); it needs no linked PR. It sees only webhook events received after the GitHub App subscribed, so a lost event leaves the rule waiting: pair it with `--expires-in D --on-timeout wake`. Check `waiting_now` in the woken facts before you ask anyone to approve a gate. Conditions also support `--until-assignee member|agent|squad:ID`, `--until-label LABEL_ID`, and `--until-property PROPERTY_ID=VALUE` (including JSON); see `multica issue wakeup create --help`.
 - `wakeup create <issue> --kind at --after 10m --instruction-file ./instruction.md` schedules one run. Alternatively use `--at <RFC3339>`.
 - `wakeup create <issue> --kind every --every 1h --instruction-file ./instruction.md` schedules a repeating check. Or use `--kind cron --cron '0 * * * *' --timezone Asia/Shanghai`.
 - `--max-fires N` (1–1000) caps repeating rules; once rules reject it and continuous event rules default to 20. The run reaching the cap still starts, then the rule pauses with `paused_reason=max_fires`. Re-enabling clears the pause and restarts the count.
@@ -36,7 +37,7 @@ multica issue wakeup create <issue> --until-issue <other-issue-id> --until-issue
 
 Read current state with issue get, comment list, and run inspection before
 judging business completion. Wait for linked pull requests with `--until-pr`
-(`checks` or `merged`) instead of polling a timer. There is no separate CI event;
+(`checks`, `merged` or `conflicts`) instead of polling a timer. There is no separate CI event;
 use the existing GitHub tools to inspect check details or logs after waking. A
 failed run does not imply its business goal is complete. Automatic retry chains
 are not followed by event filters; subscribe to a new run if needed. Once the
@@ -54,3 +55,29 @@ with `paused_reason=rate` after 12 runs in an hour. Other paused rules stay off
 until re-enabled. A PR system rule keeps events received during a rate pause
 pending; the scheduler resumes them once fewer than 12 runs remain in the
 preceding hour, without requiring another PR event.
+
+## Managing a wakeup
+
+```bash
+multica issue wakeup list <issue-id>
+multica issue wakeup get <issue-id> <wakeup-id>
+multica issue wakeup events                          # event types and filters
+multica issue wakeup runs <issue-id> <wakeup-id>     # latest runs it started
+multica issue wakeup update <issue-id> <wakeup-id> --kind every --every 1h ...
+multica issue wakeup disable <issue-id> <wakeup-id>
+multica issue wakeup trigger <issue-id> <wakeup-id>  # wake the target now
+multica issue wakeup delete <issue-id> <wakeup-id>
+```
+
+- `update` creates or replaces the complete configuration, so pass every flag
+  you want to keep. It takes the same flags as `create` and explicitly
+  re-enables the wakeup.
+- `disable` stops it firing and keeps the rule. Use it before `delete` when you
+  are unsure.
+- `trigger` fires the rule now, as if its condition held. It starts a real run:
+  do not use it to test.
+- `delete` removes the wakeup and withdraws its runs that have not started.
+- `events` lists the event types `--event` accepts and the filters each
+  supports. Read it before writing an event rule.
+- `runs` shows what a wakeup actually started; use it first when a wakeup
+  "did nothing".

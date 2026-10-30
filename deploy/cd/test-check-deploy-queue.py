@@ -79,7 +79,7 @@ class QueueAlarmTest(unittest.TestCase):
 
     def test_alarm_independent_of_deploy_capacity(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/cd-queue-watch.yml").read_text()
-        self.assertIn("runs-on: ubuntu-latest", workflow)
+        self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertNotIn("concurrency:", workflow)
         self.assertNotIn("actions: write", workflow)
         self.assertIn("github.event_name != 'pull_request'", workflow)

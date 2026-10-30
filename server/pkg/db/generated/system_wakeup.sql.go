@@ -16,7 +16,7 @@ const applySystemWakeupDefault = `-- name: ApplySystemWakeupDefault :many
 UPDATE issue_wakeup SET enabled= $1,updated_at=clock_timestamp()
 WHERE workspace_id= $2 AND system_rule= $3 AND customized_at IS NULL
  AND paused_reason IS NULL AND enabled<> $1::bool
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
 `
 
 type ApplySystemWakeupDefaultParams struct {
@@ -82,6 +82,7 @@ func (q *Queries) ApplySystemWakeupDefault(ctx context.Context, arg ApplySystemW
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}
@@ -156,7 +157,7 @@ const createSystemWakeup = `-- name: CreateSystemWakeup :one
 INSERT INTO issue_wakeup(id,workspace_id,issue_id,instruction,kind,mode,event_types,timezone,condition,condition_state,enabled,system_rule)
 VALUES($1,$2,$3,'','event','continuous',$4,'UTC',$5,$6,$7,$8)
 ON CONFLICT (issue_id,system_rule) WHERE system_rule IS NOT NULL DO NOTHING
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
 `
 
 type CreateSystemWakeupParams struct {
@@ -230,6 +231,7 @@ func (q *Queries) CreateSystemWakeup(ctx context.Context, arg CreateSystemWakeup
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -239,7 +241,7 @@ UPDATE issue_wakeup SET enabled= $1,instruction= $2,customized_at=clock_timestam
  paused_reason=CASE WHEN $1::bool THEN NULL ELSE paused_reason END,
  disabled_at=CASE WHEN $1::bool THEN NULL ELSE disabled_at END,
  updated_at=clock_timestamp()
-WHERE id= $3 RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at
+WHERE id= $3 RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
 `
 
 type CustomizeSystemWakeupParams struct {
@@ -299,6 +301,7 @@ func (q *Queries) CustomizeSystemWakeup(ctx context.Context, arg CustomizeSystem
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
@@ -329,7 +332,7 @@ func (q *Queries) FinishChildEvents(ctx context.Context, ids []pgtype.UUID) erro
 }
 
 const getSystemWakeup = `-- name: GetSystemWakeup :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE issue_id= $1 AND system_rule= $2
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE issue_id= $1 AND system_rule= $2
 `
 
 type GetSystemWakeupParams struct {
@@ -386,12 +389,13 @@ func (q *Queries) GetSystemWakeup(ctx context.Context, arg GetSystemWakeupParams
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.WorkflowStep,
 	)
 	return i, err
 }
 
 const listChildConditionWakeups = `-- name: ListChildConditionWakeups :many
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at FROM issue_wakeup WHERE issue_id= $1 AND enabled AND condition->>'type'='children_done'
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE issue_id= $1 AND enabled AND condition->>'type'='children_done'
 ORDER BY (system_rule IS NOT NULL),id
 `
 
@@ -451,6 +455,7 @@ func (q *Queries) ListChildConditionWakeups(ctx context.Context, issueID pgtype.
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
 		}
@@ -463,7 +468,7 @@ func (q *Queries) ListChildConditionWakeups(ctx context.Context, issueID pgtype.
 }
 
 const listParentsWithoutSystemWakeup = `-- name: ListParentsWithoutSystemWakeup :many
-SELECT p.id, p.workspace_id, p.title, p.description, p.status, p.priority, p.assignee_type, p.assignee_id, p.creator_type, p.creator_id, p.parent_issue_id, p.acceptance_criteria, p.context_refs, p.position, p.due_date, p.created_at, p.updated_at, p.number, p.project_id, p.origin_type, p.origin_id, p.first_executed_at, p.start_date, p.metadata, p.stage, p.properties, p.revision, p.last_activity_at, p.triage_state, p.duplicate_of_issue_id FROM (SELECT DISTINCT c.parent_issue_id AS id FROM issue c WHERE c.parent_issue_id IS NOT NULL) parents
+SELECT p.id, p.workspace_id, p.title, p.description, p.status, p.priority, p.assignee_type, p.assignee_id, p.creator_type, p.creator_id, p.parent_issue_id, p.acceptance_criteria, p.context_refs, p.position, p.due_date, p.created_at, p.updated_at, p.number, p.project_id, p.origin_type, p.origin_id, p.first_executed_at, p.start_date, p.metadata, p.stage, p.properties, p.revision, p.last_activity_at, p.triage_state, p.duplicate_of_issue_id, p.workflow_id, p.requested_by_id, p.max_runs_override FROM (SELECT DISTINCT c.parent_issue_id AS id FROM issue c WHERE c.parent_issue_id IS NOT NULL) parents
 JOIN issue p ON p.id=parents.id
 WHERE NOT EXISTS(SELECT 1 FROM issue_wakeup w WHERE w.issue_id=p.id AND w.system_rule= $1)
  AND p.status NOT IN ('done','cancelled')
@@ -517,6 +522,9 @@ func (q *Queries) ListParentsWithoutSystemWakeup(ctx context.Context, arg ListPa
 			&i.LastActivityAt,
 			&i.TriageState,
 			&i.DuplicateOfIssueID,
+			&i.WorkflowID,
+			&i.RequestedByID,
+			&i.MaxRunsOverride,
 		); err != nil {
 			return nil, err
 		}

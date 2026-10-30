@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -527,6 +528,97 @@ func TestChannelMediaReconciler_TailRowIsUnclaimedUntilItsTurn(t *testing.T) {
 		if !exists || state != "tombstoned" || attempt != 1 {
 			t.Fatalf("row %s = (%q, attempt=%d, %v), want ('tombstoned', 1, true) — one claim, one delete", key, state, attempt, exists)
 		}
+	}
+}
+
+// priorClaimShape is the claim as it was written before the fix: the candidate
+// is FROM-joined, so a Nested Loop with the target outer re-runs the
+// SKIP LOCKED subquery for every target row. Kept only as the negative control
+// that proves the fixture below still produces the pathological plan.
+const priorClaimShape = `
+UPDATE channel_media_pending_object AS obj
+SET state = 'deleting', lease_token = $1, attempt = obj.attempt + 1
+FROM (
+    SELECT cand.storage_key FROM channel_media_pending_object AS cand
+    WHERE cand.next_attempt_at <= now() AND cand.state = 'pending'
+    ORDER BY cand.next_attempt_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+) AS due
+WHERE obj.storage_key = due.storage_key`
+
+// The pathological plan needs a Nested Loop with the target (obj) outer, which
+// the planner picks when its statistics say the table holds one row while it
+// holds three: ANALYZE with a single row, then insert the rest. Everything runs
+// in one rolled-back transaction, so the stale statistics never leave the test.
+func TestChannelMediaReconciler_ClaimTakesOneRowUnderNestedLoopPlan(t *testing.T) {
+	pool := newCancelFinalizePool(t)
+	f := seedReconcilerFixture(t, pool)
+
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off; TRUNCATE channel_media_pending_object`); err != nil {
+		t.Fatalf("prepare session: %v", err)
+	}
+	seed := func(key string, age time.Duration) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO channel_media_pending_object (storage_key, workspace_id, chat_message_id, storage_url, state, created_at, next_attempt_at)
+			VALUES ($1, $2, $3, 'https://cdn.test/'||$1, 'pending', now() - $4::interval, now() - $4::interval)
+		`, key, f.workspaceID, f.messageID, age.String()); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	// TRUNCATE (transactional) gives a fresh heap, so rows scan in insert order.
+	// Key order == age order, so the outer scan reaches the oldest row first
+	// and each later row is the subquery's next pick; a different physical
+	// order could make the prior shape lease a single row.
+	seed("ws/lark/claim-a", ChannelMediaReconcileSettleDelay+3*time.Minute)
+	if _, err := tx.Exec(ctx, `ANALYZE channel_media_pending_object`); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	seed("ws/lark/claim-b", ChannelMediaReconcileSettleDelay+2*time.Minute)
+	seed("ws/lark/claim-c", ChannelMediaReconcileSettleDelay+time.Minute)
+
+	leased := func(token pgtype.UUID) int {
+		t.Helper()
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM channel_media_pending_object WHERE lease_token = $1`, token).Scan(&n); err != nil {
+			t.Fatalf("count leased: %v", err)
+		}
+		return n
+	}
+
+	// Negative control: the prior shape must over-claim here, or this fixture
+	// no longer reaches the bug and the assertion below proves nothing.
+	if _, err := tx.Exec(ctx, `SAVEPOINT control`); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	controlToken := pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	if _, err := tx.Exec(ctx, priorClaimShape, controlToken); err != nil {
+		t.Fatalf("prior claim shape: %v", err)
+	}
+	if n := leased(controlToken); n <= 1 {
+		t.Fatalf("prior claim shape leased %d rows; fixture no longer forces the target-outer Nested Loop plan", n)
+	}
+	if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT control`); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
+	}
+
+	leaseToken := pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	if _, err := db.New(tx).ClaimNextChannelMediaPendingObjectForReconcile(ctx, db.ClaimNextChannelMediaPendingObjectForReconcileParams{
+		LeaseToken:  leaseToken,
+		Lease:       pgInterval(channelMediaReconcileLease),
+		SettleDelay: pgInterval(ChannelMediaReconcileSettleDelay),
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if n := leased(leaseToken); n != 1 {
+		t.Fatalf("one claim leased %d rows, want exactly 1", n)
 	}
 }
 

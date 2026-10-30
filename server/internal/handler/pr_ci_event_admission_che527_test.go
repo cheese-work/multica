@@ -91,6 +91,7 @@ func linkedPRForWakeup(t *testing.T, fx prMergeWebhookFixture, installationID in
 		PrCreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		PrUpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		HeadSha:     headSHA, ClearMergeableState: pgtype.Bool{Bool: true, Valid: true},
+		HeadRepoSame: true,
 	})
 	if err != nil {
 		t.Fatalf("UpsertGitHubPullRequest: %v", err)
@@ -432,7 +433,7 @@ func TestMergedPRWakesLinkedIssueSquadLeader(t *testing.T) {
 	}
 }
 
-func TestMergedPRDoesNotQueueWhileAssignedAgentIsAlreadyActive(t *testing.T) {
+func TestMergedPRWaitsForNextTurnWhileAssignedAgentIsAlreadyActive(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -456,8 +457,9 @@ func TestMergedPRDoesNotQueueWhileAssignedAgentIsAlreadyActive(t *testing.T) {
 	if err := (&service.IssueWakeupService{Tasks: testHandler.TaskService}).TickWorkspaces(context.Background(), parseUUID(testWorkspaceID)); err != nil {
 		t.Fatalf("tick wakeup scheduler after active run: %v", err)
 	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_merged'`, fx.child.ID, agentID); got != 0 {
-		t.Fatalf("PR wake runs after active agent task completed = %d, want 0", got)
+	// The fact is not dropped (CHE-2304): it starts one wake on the next turn.
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND context->>'wakeup_system'='pr_merged'`, fx.child.ID, agentID); got != 1 {
+		t.Fatalf("PR wake runs after active agent task completed = %d, want 1", got)
 	}
 }
 

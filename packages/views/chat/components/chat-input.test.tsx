@@ -7,6 +7,8 @@ import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 
 // Uploads flow through the module-level coordinator, which calls
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
@@ -586,6 +588,37 @@ describe("ChatInput rename command", () => {
   });
 });
 
+describe("ChatInput quote request", () => {
+  beforeEach(() => insertMarkdownSpy.mockClear());
+
+  it("inserts the quoted text verbatim as a blockquote, once, without sending", async () => {
+    const onSend = vi.fn();
+    const onQuoteApplied = vi.fn();
+    const request = { id: 1, content: "Line one\nLine two with `code`" };
+    const { rerender } = renderInput({ onSend });
+
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+    rerender(element({ onSend, quoteRequest: request, onQuoteApplied }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledTimes(1);
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Line one\n> Line two with `code`");
+    expect(editorState.focused).toBe(1);
+    expect(onQuoteApplied).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("appends to a draft in progress instead of replacing it", () => {
+    const { rerender } = renderInput();
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "my own words" } });
+
+    rerender(element({ quoteRequest: { id: 1, content: "Earlier reply" } }));
+
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("> Earlier reply");
+    expect((screen.getByTestId("editor") as HTMLTextAreaElement).value).toBe("my own words");
+    expect(editorState.adopted).toEqual([]);
+  });
+});
+
 describe("ChatInput conversation starter send", () => {
   it("sends the chosen prompt immediately from an empty draft", async () => {
     const onSend = vi.fn().mockResolvedValue(false);
@@ -1092,12 +1125,19 @@ describe("ChatInput attachment wiring", () => {
 
     // While the upload is pending the SubmitButton must be disabled.
     // Bypassing this would send the message with the attachment id
-    // missing from the body.
+    // missing from the body. It is aria-disabled rather than natively
+    // disabled so its "uploading" tooltip stays reachable.
     await waitFor(() => {
       const buttons = screen.getAllByRole("button");
       const sendButton = buttons[buttons.length - 1]!;
-      expect(sendButton).toBeDisabled();
+      expect(sendButton).toHaveAttribute("aria-disabled", "true");
+      expect(sendButton).toHaveAttribute("aria-busy", "true");
     });
+    {
+      const buttons = screen.getAllByRole("button");
+      fireEvent.click(buttons[buttons.length - 1]!);
+    }
+    expect(onSend).not.toHaveBeenCalled();
 
     await act(async () => {
       resolveUpload!(makeUpload({ id: "att-slow", link: "https://cdn.example/att-slow.png", filename: "slow.png" }));
@@ -1803,3 +1843,220 @@ describe("ChatInput Stop while compacting", () => {
   });
 });
 
+
+// CHE-1876: comments on an agent reply ride along with the message as Markdown quotes.
+describe("ChatInput DM comments", () => {
+  const draftKey = "chat:session-1" as const;
+  const annotation = (n: number, quote = `Quote ${n}`): ReplyAnnotation => ({
+    id: `a${n}`, sourceCommentId: "m1", sourceActorName: "Multica", quote, note: `Note ${n}`, start: n * 10, prefix: "", suffix: "",
+  });
+  const scope = (extra: Partial<NonNullable<React.ComponentProps<typeof ChatInput>["annotationScope"]>> = {}) =>
+    ({ draftKey, onEditAnnotation: () => true, ...extra });
+  beforeEach(() => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(1, "The delay (fixed) is 5 s."));
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(2));
+  });
+
+  it("shows a count above the composer only when a scope and comments exist", () => {
+    const { unmount } = renderInput({ annotationScope: scope() });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeInTheDocument();
+    unmount();
+    renderInput();
+    expect(screen.queryByRole("button", { name: /comments?$/ })).not.toBeInTheDocument();
+  });
+
+  it("sends the comments as readable Markdown quotes above the typed text", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go with 15 s." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe(
+      "> The delay (fixed) is 5 s.\n\nNote 1\n\n&nbsp;\n\n> Quote 2\n\nNote 2\n\n---\n\nGo with 15 s.",
+    );
+  });
+
+  it("sends comments alone when no text is typed", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("> Quote 2\n\nNote 2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("---");
+  });
+
+  it("sends ordered plain-text notes with the selected request id", async () => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1, "C. CHE-2162"), sourceCommentId: "decision-request:request-2", note: "1" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2, "D. Start one at a time."), sourceCommentId: "decision-request:request-2", note: "done" });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("> C. CHE-2162\n\n1\n\n&nbsp;\n\n> D. Start one at a time.\n\ndone");
+    expect(onSend.mock.calls[0]![4]).toBe("request-2");
+    expect(onSend.mock.calls[0]![0]).not.toContain("&#46;");
+  });
+
+  it.each(["decision-request:request-1", "m1"])("keeps the draft and refuses a mixed request/source %s", async (sourceCommentId) => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(1), sourceCommentId: "decision-request:request-2" });
+    useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation(2), sourceCommentId });
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => {});
+    expect(onSend).not.toHaveBeenCalled();
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("clears the comments once the send is committed, and keeps them when it is rejected", async () => {
+    const rejected = vi.fn().mockResolvedValue(false);
+    const { unmount } = renderInput({ annotationScope: scope(), onSend: rejected });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Try" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(rejected).toHaveBeenCalledTimes(1));
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+    unmount();
+
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+  });
+
+  it("keeps a note edited, and comments added, while the send is pending", async () => {
+    // P1-1: every editing path (marker note box, list Edit, Remove, a new comment) ends in the draft store.
+    // A deferred send must clear only the comments it sent, exactly as sent.
+    useCommentDraftStore.getState().addAnnotation(draftKey, annotation(4));
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toContain("Note 1");
+
+    const store = useCommentDraftStore.getState();
+    store.updateAnnotation(draftKey, "a1", "Newer note");
+    store.removeAnnotation(draftKey, "a2");
+    store.addAnnotation(draftKey, annotation(3));
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey).map((a) => [a.id, a.note])).toEqual([
+      ["a1", "Newer note"],
+      ["a3", "Note 3"],
+    ]));
+  });
+
+  it("keeps a note edited while a second submit is refused during a pending send", async () => {
+    // P1-1 (verdict 01a15a53): a refused second submit must not replace the first send's snapshot.
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+
+    useCommentDraftStore.getState().updateAnnotation(draftKey, "a1", "Newer note");
+    // Cmd/Ctrl+Enter bypasses the disabled Send button. The single-flight guard refuses it.
+    await act(async () => { (editorProps.last as { onSubmit: () => void }).onSubmit(); });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey).map((a) => [a.id, a.note])).toEqual([
+      ["a1", "Newer note"],
+    ]));
+  });
+
+  it("clears the sent session's comments, and only those, when the user switches DM during a pending send", async () => {
+    const otherKey = "chat:session-2" as const;
+    useCommentDraftStore.getState().addAnnotation(otherKey, annotation(7));
+    let finish: (accepted: boolean) => void = () => {};
+    const onSend = vi.fn((_content: string) => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { rerender } = renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Go" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+
+    rerender(element({ annotationScope: { draftKey: otherKey, onEditAnnotation: () => true }, onSend }));
+    await act(async () => { (editorProps.last as { onSubmit: () => void }).onSubmit(); });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => { finish(true); });
+
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+    expect(useCommentDraftStore.getState().getAnnotations(otherKey).map((a) => a.id)).toEqual(["a7"]);
+  });
+
+  it("does not send a conversation starter over pending comments, and keeps them", async () => {
+    const onSend = vi.fn().mockResolvedValue(true);
+    const onConversationStarterApplied = vi.fn();
+    const { rerender } = renderInput({ onSend, annotationScope: scope() });
+    rerender(element({
+      onSend, annotationScope: scope(),
+      conversationStarterRequest: { id: 1, content: "Review the release pull request." },
+      onConversationStarterApplied,
+    }));
+    expect(onConversationStarterApplied).toHaveBeenCalledTimes(1);
+    await act(async () => {});
+    expect(onSend).not.toHaveBeenCalled();
+    expect(mockToastInfo).toHaveBeenCalled();
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("leaves a slash command untouched and keeps the comments for the next message", async () => {
+    const onSend = vi.fn();
+    renderInput({ annotationScope: scope(), onSend });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("/compact");
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(2);
+  });
+
+  it("locks the count while the composer is disabled", () => {
+    renderInput({ annotationScope: scope(), disabled: true });
+    expect(screen.getByRole("button", { name: "2 comments" })).toBeDisabled();
+  });
+
+  it("returns focus to the composer when the last comment is removed", async () => {
+    useCommentDraftStore.getState().removeAnnotation(draftKey, "a2");
+    renderInput({ annotationScope: scope() });
+    fireEvent.click(screen.getByRole("button", { name: "1 comment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove comment 1" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "1 comment" })).not.toBeInTheDocument());
+    expect(editorState.focused).toBeGreaterThan(0);
+  });
+});
+
+// A natively disabled send button takes no hover or focus, so the reason it is
+// blocked would never reach its tooltip; the blocked composer keeps it
+// aria-disabled and names the same reason as the placeholder.
+describe("ChatInput send disabled reason", () => {
+  function sendButton() {
+    const buttons = screen.getAllByRole("button");
+    return buttons[buttons.length - 1]!;
+  }
+
+  it("keeps the send button reachable and describes why it is blocked", () => {
+    const onSend = vi.fn();
+    renderInput({ disabled: true, agentArchived: true, onSend });
+
+    const button = sendButton();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("stays natively disabled when the composer is only empty", () => {
+    renderInput({ agentName: "Multica" });
+
+    expect(sendButton()).toBeDisabled();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
+  });
+});

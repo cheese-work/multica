@@ -26,7 +26,13 @@ test("pins, edits and clears a repository's checkout ref", async ({ page }) => {
   await page.getByRole("button", { name: /^add$/i }).click();
   await page.getByRole("button", { name: /^create project$/i }).click();
 
+  // Creating a project leaves the list open, so open the new project.
   await waitForPageText(page, "Release line");
+  // The row takes clicks only once the list has hydrated; click until it opens.
+  await expect(async () => {
+    await page.getByText("Release line", { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/projects\/[^/]+/, { timeout: 3000 });
+  }).toPass({ timeout: 30000 });
   await expect(page.getByText("release/2026-09")).toBeVisible({ timeout: 15000 });
 
   // Editing an attached resource — the affordance the UI never had.

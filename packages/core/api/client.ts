@@ -1,9 +1,12 @@
 import type { ZodType } from "zod";
+import type { OpenDecisionRequest } from "../types/decision";
+import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
-import type { InboxFilters } from "../inbox/filter-store";
+import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
+import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
   Issue,
@@ -13,6 +16,7 @@ import type {
   UpdateIssueRequest,
   BatchUpdateIssuesResponse,
   IssueDuplicates,
+  IssueRelations,
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
@@ -48,6 +52,8 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  RuntimePause,
+  RuntimePauseReason,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
@@ -102,10 +108,12 @@ import type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
+  ChatSearchPage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
@@ -267,6 +275,7 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
+  OpenDecisionRequestListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -276,12 +285,15 @@ import {
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
   ChatMessagesPageSchema,
+  ChatSearchPageSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatContinueResponseSchema,
   ChatSessionUsageSchema,
   EMPTY_CHAT_SESSION_USAGE,
+  ChatWakeupsSchema,
+  EMPTY_CHAT_WAKEUPS,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -1647,6 +1659,14 @@ export class ApiClient {
     });
   }
 
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
+  }
+
   async moveIssue(id: string, data: MoveIssueRequest): Promise<Issue> {
     return this.fetch(`/api/issues/${id}/move`, {
       method: "POST",
@@ -1662,6 +1682,16 @@ export class ApiClient {
       { duplicate_of: null, duplicates: [] },
       { endpoint: "GET /api/issues/:id/duplicates" },
     );
+  }
+
+  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal, includeMentions = false): Promise<IssueRelations> {
+    const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
+    const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
+    if (includeMentions) params.set("include", "mentions");
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
+    const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
+    if (!graph) throw new Error("Invalid issue relations response");
+    return graph;
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
@@ -2093,6 +2123,34 @@ export class ApiClient {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
 
+  async listQoderEnvironments(wsId: string, token: string, baseUrl: string, signal?: AbortSignal) {
+    return parseQoderCatalog(await this.fetch(`/api/workspaces/${wsId}/qoder/environments`, { method: "POST", body: JSON.stringify({ qoder_token: token, base_url: baseUrl }), signal }));
+  }
+  async listQoderAgents(wsId: string) {
+    return parseQoderCatalog(await this.fetch(`/api/workspaces/${wsId}/qoder/agents`));
+  }
+  async stopQoderConnection(wsId: string) {
+    return parseQoderConnection(await this.fetch(`/api/workspaces/${wsId}/qoder/stop`, { method: "POST" }));
+  }
+  // Refuses with 409 `runtime_delete_plan_changed` and the current
+  // `active_agents` when the confirmed list no longer matches.
+  async disconnectQoderConnection(wsId: string, expectedActiveAgentIds: string[]) {
+    return parseQoderConnection(await this.fetch(`/api/workspaces/${wsId}/qoder`, { method: "DELETE", body: JSON.stringify({ expected_active_agent_ids: expectedActiveAgentIds }) }));
+  }
+  async getQoderConnection(wsId: string) {
+    return parseQoderConnection(await this.fetch(`/api/workspaces/${wsId}/qoder`));
+  }
+  // Saving keeps a paused connection paused; use resumeQoderConnection to run again.
+  async saveQoderConnection(wsId: string, input: QoderInput) {
+    return parseQoderConnection(await this.fetch(`/api/workspaces/${wsId}/qoder`, { method: "PUT", body: JSON.stringify({ name: input.name, base_url: input.baseUrl, environment_id: input.environmentId, qoder_token: input.qoderToken, github_tokens: input.githubTokens, max_concurrency: input.maxConcurrency, run_timeout_minutes: input.runTimeoutMinutes }) }));
+  }
+  async resumeQoderConnection(wsId: string, input: QoderInput) {
+    return parseQoderConnection(await this.fetch(`/api/workspaces/${wsId}/qoder/resume`, { method: "POST", body: JSON.stringify({ name: input.name, base_url: input.baseUrl, environment_id: input.environmentId, qoder_token: input.qoderToken, github_tokens: input.githubTokens, max_concurrency: input.maxConcurrency, run_timeout_minutes: input.runTimeoutMinutes }) }));
+  }
+  async checkQoderConnection(wsId: string, input: QoderInput): Promise<void> {
+    await this.fetch(`/api/workspaces/${wsId}/qoder/check`, { method: "POST", body: JSON.stringify({ name: input.name, base_url: input.baseUrl, environment_id: input.environmentId, qoder_token: input.qoderToken, github_tokens: input.githubTokens, max_concurrency: input.maxConcurrency, run_timeout_minutes: input.runTimeoutMinutes }) });
+  }
+
   async listRuntimes(
     params?: { workspace_id?: string; owner?: "me" },
     workspaceSlug?: string,
@@ -2103,9 +2161,10 @@ export class ApiClient {
     // workspace_id alone is not enough: the server resolves the workspace from
     // the slug header first, so a caller listing another workspace's runtimes
     // must override the header too.
-    return this.fetch(`/api/runtimes?${search}`, {
+    const raw = await this.fetch<unknown>(`/api/runtimes?${search}`, {
       headers: workspaceHeader(workspaceSlug),
     });
+    return parseWithFallback(raw, AgentRuntimeSchema.array(), [], { endpoint: "listRuntimes" });
   }
 
   async listCloudRuntimeNodes(
@@ -2452,6 +2511,7 @@ export class ApiClient {
     runtimeId: string,
     patch: {
       visibility?: "private" | "public";
+      shared_with?: string[];
       /**
        * Custom display name. Pass an empty string to clear it (the server
        * reverts to the default name). Omit to leave it unchanged — a JSON
@@ -2462,9 +2522,53 @@ export class ApiClient {
       apply_to_machine?: boolean;
     },
   ): Promise<AgentRuntime> {
-    return this.fetch(`/api/runtimes/${runtimeId}`, {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_RUNTIME, { endpoint: "updateRuntime" });
+  }
+
+  // Pause the whole machine hosting this runtime (CHE-2430). Only the machine
+  // owner and the workspace owner may call it; the server answers 403 otherwise.
+  async pauseRuntimeMachine(
+    runtimeId: string,
+    reason: RuntimePauseReason,
+  ): Promise<RuntimePause> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/pause`, {
+      method: "PUT",
+      body: JSON.stringify({ reason }),
+    });
+    return parseWithFallback(
+      raw,
+      RuntimePauseSchema,
+      { reason, paused_by: null, paused_at: "", expires_at: "" },
+      { endpoint: "pauseRuntimeMachine" },
+    );
+  }
+
+  // Idempotent: resuming a machine that is not paused still answers 204.
+  async resumeRuntimeMachine(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/pause`, { method: "DELETE" });
+  }
+
+  // Confirmed counterpart to a runtime access restriction PATCH. The PATCH
+  // returns a structured 409 when teammates still have bound agents or active
+  // tasks on the runtime; callers present that plan, then submit its exact
+  // agent/task ID sets here. The server rechecks both sets in one transaction.
+  async revokeRuntimeWorkspaceAccess(
+    runtimeId: string,
+    expectedNonownerAgentIds: string[],
+    expectedTaskIds: string[],
+    sharedWith?: string[],
+  ): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/revoke-workspace-access`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_nonowner_agent_ids: expectedNonownerAgentIds,
+        expected_task_ids: expectedTaskIds,
+        shared_with: sharedWith,
+      }),
     });
   }
 
@@ -2965,7 +3069,7 @@ export class ApiClient {
     });
   }
 
-  private archivedInboxParams(filters: InboxFilters): URLSearchParams {
+  private archivedInboxParams(filters: ArchivedInboxFilters): URLSearchParams {
     const params = new URLSearchParams();
     if (filters.statuses.length) params.set("statuses", [...filters.statuses].sort().join(","));
     if (filters.priorities.length) params.set("priorities", [...filters.priorities].sort().join(","));
@@ -2974,7 +3078,7 @@ export class ApiClient {
     return params;
   }
 
-  async listArchivedInboxPage(filters: InboxFilters, options: {
+  async listArchivedInboxPage(filters: ArchivedInboxFilters, options: {
     cursor?: string | null; groupId?: string; signal?: AbortSignal;
   } = {}): Promise<ArchivedInboxPage> {
     const params = this.archivedInboxParams(filters);
@@ -2989,7 +3093,7 @@ export class ApiClient {
     return page;
   }
 
-  async getArchivedInboxFacets(filters: InboxFilters, signal?: AbortSignal): Promise<ArchivedInboxFacets> {
+  async getArchivedInboxFacets(filters: ArchivedInboxFilters, signal?: AbortSignal): Promise<ArchivedInboxFacets> {
     const raw = await this.fetch<unknown>(`/api/inbox/archived/facets?${this.archivedInboxParams(filters)}`, { signal });
     const facets = parseWithFallback<ArchivedInboxFacets | null>(raw, ArchivedInboxFacetsSchema, null, {
       endpoint: "GET /api/inbox/archived/facets",
@@ -3128,7 +3232,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -3862,6 +3966,18 @@ export class ApiClient {
     });
   }
 
+  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
+  }
+
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",
@@ -3874,7 +3990,7 @@ export class ApiClient {
 
   async forkChatSession(
     id: string,
-    data: { idempotency_key: string; message?: string },
+    data: { idempotency_key: string; message?: string; attachment_ids?: string[] },
   ): Promise<ChatForkResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/fork`, {
       method: "POST",
@@ -3971,9 +4087,24 @@ export class ApiClient {
     });
   }
 
+  async disclaimDecisionAnswer(answerId: string): Promise<void> {
+    await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
+  }
+
+  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
+    const raw: unknown = await this.fetch("/api/decisions/open");
+    return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
+      endpoint: "GET /api/decisions/open",
+    });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
-    params: { before?: { created_at: string; id: string } | null; limit?: number } = {},
+    params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
   ): Promise<ChatMessagesPage> {
     const limit = params.limit ?? 50;
     const query = new URLSearchParams({ limit: String(limit) });
@@ -3981,6 +4112,8 @@ export class ApiClient {
       query.set("before_created_at", params.before.created_at);
       query.set("before_id", params.before.id);
     }
+    // Anchored window centred on one message; the server rejects a cursor with it.
+    if (params.around) query.set("around", params.around);
     try {
       const raw: unknown = await this.fetch(
         `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
@@ -4002,7 +4135,7 @@ export class ApiClient {
       // the fallback page reports has_more: false and there is no follow-up
       // request to translate. A 404 on a cursor request is an unexpected state
       // and propagates instead of duplicating the whole list.
-      if (err instanceof ApiError && err.status === 404 && !params.before) {
+      if (err instanceof ApiError && err.status === 404 && !params.before && !params.around) {
         const messages = await this.listChatMessages(sessionId);
         return { messages, limit, has_more: false, next_cursor: null };
       }
@@ -4010,15 +4143,32 @@ export class ApiClient {
     }
   }
 
+  /** Search the caller's DMs by title and message text (`q` is 1-200 characters). */
+  async searchChats(params: { q: string; limit?: number; cursor?: string | null }): Promise<ChatSearchPage> {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.cursor) query.set("cursor", params.cursor);
+    const raw: unknown = await this.fetch(`/api/chat/search?${query.toString()}`);
+    return parseWithFallback(
+      raw,
+      ChatSearchPageSchema,
+      { results: [], next_cursor: null },
+      { endpoint: "GET /api/chat/search" },
+    );
+  }
+
   async sendChatMessage(
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    decisionRequestId?: string,
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      decision_request_id?: string;
     } = { content };
+    if (decisionRequestId) body.decision_request_id = decisionRequestId;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }

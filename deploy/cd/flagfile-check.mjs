@@ -76,6 +76,9 @@ const LIST_FIELDS = new Set(["allow", "deny"]);
 
 const lines = readFileSync(file, "utf8").split("\n");
 const flags = new Set();
+const defaults = new Map();
+const percentages = new Map();
+let flagName;
 let fields = null; // fields seen under the current flag
 let block = null; // "list" | "percent" while a nested block is open
 let percentKeys = null;
@@ -94,6 +97,8 @@ for (const raw of lines) {
     if (RESERVED.test(m[1]) || NUMERIC.test(m[1])) refuse("flag name must not look like a boolean, null or number");
     if (flags.has(m[1])) refuse(`duplicate flag ${m[1]}`);
     flags.add(m[1]);
+    flagName = m[1];
+    defaults.set(flagName, false);
     fields = new Set();
     block = null;
   } else if (indent === 2) {
@@ -109,6 +114,7 @@ for (const raw of lines) {
       const v = /^(true|false)(?=\s|$)/.exec(value)?.[1];
       if (v === undefined) refuse("default must be true or false");
       tail(value.slice(v.length));
+      defaults.set(flagName, v === "true");
     } else if (SCALAR_FIELDS.has(name)) {
       tail(scalar(value)[1]);
     } else if (LIST_FIELDS.has(name)) {
@@ -117,6 +123,7 @@ for (const raw of lines) {
     } else if (name === "percent") {
       if (!(value === "" || value.startsWith("#"))) refuse("percent must be a nested block");
       block = "percent";
+      percentages.set(flagName, 0n);
       percentKeys = new Set();
     } else {
       refuse(`unknown field ${name}`);
@@ -138,6 +145,7 @@ for (const raw of lines) {
         if (!n) refuse("percent must be a plain decimal integer without leading zeros");
         if (BigInt(n[1]) > 9223372036854775807n) refuse("percent exceeds the 64-bit integer range");
         tail(m[2].slice(n[1].length));
+        percentages.set(flagName, BigInt(n[1]));
       } else {
         tail(scalar(m[2])[1]);
       }
@@ -146,5 +154,29 @@ for (const raw of lines) {
     }
   } else {
     refuse("indentation must be 0, 2 or 4 spaces");
+  }
+}
+
+if (process.argv[3] === "--config-stdin") {
+  let config;
+  try {
+    config = JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    refuse("frontend flag verification: /api/config is not valid JSON");
+  }
+  if (!config || typeof config.feature_flags !== "object" || !config.feature_flags || Array.isArray(config.feature_flags)) {
+    refuse("frontend flag verification: /api/config has no feature_flags object");
+  }
+  for (const key of ["project_workflows_v1", "plugins_v1", "composio_mcp_apps", "billing_workspace_subscriptions"]) {
+    if (!flags.has(key)) continue;
+    let expected = defaults.get(key);
+    if (percentages.has(key)) {
+      let hash = 2166136261;
+      for (const byte of Buffer.from(`${key}\0`)) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+      expected = BigInt(hash % 100) < percentages.get(key);
+    }
+    if (config.feature_flags[key] !== expected) {
+      refuse(`frontend flag mismatch: ${key} (expected ${expected})`);
+    }
   }
 }

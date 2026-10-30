@@ -1,0 +1,20 @@
+# Jev API URL field on the Credential pane (CHE-1880, implementation CHE-1881). One row added to
+# the existing Credential card, and a note shows when the server cannot store a key; no tab,
+# section or dialog is added, moved or removed.
+issue: CHE-1880
+design: design/jev-governance-tab/rev-4/C.html @ 968d0eab8bf7ff04a92c7ded65d36758b6e304a9
+pages:
+  - id: settings-jev-governance
+    url: /<workspace-slug>/settings?tab=jev-governance   # same path on base and preview
+    keep:
+      - jev-governance-routing
+      - jev-governance-tabs
+      - jev-credential-actions
+      - jev-key-dialog
+      - jev-remove-key-dialog
+      - jev-history-list
+      - jev-rollback-dialog
+    change:
+      - jev-api-url: "new API URL row under Provider key in the Credential card: owners and admins edit, save and clear; members read the value or the default"
+      - jev-credential-unconfigured: "note under the Credential card, shown on load when the server has no credential encryption key; Set key is disabled with it"
+    remove: []

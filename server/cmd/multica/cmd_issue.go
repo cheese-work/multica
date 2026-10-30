@@ -226,7 +226,20 @@ var issueCmd = &cobra.Command{
 var issueListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List issues in the workspace",
-	RunE:  runIssueList,
+	Long: "List issues in the workspace.\n\n" +
+		"--property filters by a custom property, one member per flag. \"Name=Value\" is\n" +
+		"equality; the value is an option name or id (select, multi_select), true or\n" +
+		"false (checkbox), a member name, email or id (actor types), one list entry\n" +
+		"(multi_text, multi_url), or the stored value itself (text, url, number, date as\n" +
+		"YYYY-MM-DD). Comparisons use the same flag:\n" +
+		"  number    \"Score>3\"  \"Score>=3\"  \"Score<3\"  \"Score<=3\"\n" +
+		"  date      \"Ship Date>2026-01-01\" (after)  \"Ship Date<2026-01-01\" (before)\n" +
+		"  text/url  \"Notes~=review\" (contains, case-insensitive; the needle is sent as typed)\n" +
+		"A comparison on any other type is rejected, as is != (the server has no not-equal\n" +
+		"filter) and >= or <= on a date (the error names the strict form to use instead).\n" +
+		"Repeating a property matches ANY of its members, so \"Score>1\" plus \"Score<10\"\n" +
+		"is not a range.",
+	RunE: runIssueList,
 }
 
 var issueGetCmd = &cobra.Command{
@@ -239,9 +252,26 @@ var issueGetCmd = &cobra.Command{
 var issuePullRequestsCmd = &cobra.Command{
 	Use:     "pull-requests <id>",
 	Aliases: []string{"prs"},
-	Short:   "List pull requests linked to an issue",
+	Short:   "List or unlink pull requests linked to an issue",
 	Args:    exactArgs(1),
 	RunE:    runIssuePullRequests,
+}
+
+var issuePullRequestsListCmd = &cobra.Command{
+	Use:   "list <id>",
+	Short: "List pull requests linked to an issue",
+	Args:  exactArgs(1),
+	RunE:  runIssuePullRequests,
+}
+
+var issuePullRequestsUnlinkCmd = &cobra.Command{
+	Use:   "unlink <issue-id> <pr>",
+	Short: "Unlink a pull request from an issue and exclude it from auto-relinking",
+	Long: "Remove a pull request link from an issue and record an exclusion so subsequent\n" +
+		"webhooks for that pull request do not re-link or auto-complete the issue.\n\n" +
+		"<pr> accepts a pull request UUID, number (42 or #42), owner/repo#number, or URL.",
+	Args: exactArgs(2),
+	RunE: runIssuePullRequestsUnlink,
 }
 
 var issueChildrenCmd = &cobra.Command{
@@ -506,7 +536,7 @@ var validIssueFields = []string{
 	"id", "workspace_id", "number", "identifier", "title", "description",
 	"status", "status_category", "status_name", "priority", "assignee_type",
 	"assignee_id", "creator_type", "creator_id", "parent_issue_id",
-	"duplicate_of", "project_id", "position", "stage", "start_date", "due_date", "created_at",
+	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "position", "stage", "start_date", "due_date", "created_at",
 	"updated_at", "revision", "last_activity_at", "metadata", "properties",
 	"labels",
 }
@@ -592,6 +622,9 @@ func init() {
 	issueSubscriberCmd.AddCommand(issueSubscriberAddCmd)
 	issueSubscriberCmd.AddCommand(issueSubscriberRemoveCmd)
 
+	issuePullRequestsCmd.AddCommand(issuePullRequestsListCmd)
+	issuePullRequestsCmd.AddCommand(issuePullRequestsUnlinkCmd)
+
 	// issue list
 	issueListCmd.Flags().String("output", "table", "Output format: table or json")
 	issueListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -601,7 +634,7 @@ func init() {
 	issueListCmd.Flags().String("assignee-id", "", "Filter by assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueListCmd.Flags().String("project", "", "Filter by project ID")
 	issueListCmd.Flags().StringSlice("metadata", nil, "Filter by metadata key=value (repeatable; combined with AND). Value is JSON-parsed: 'true'/'false' → bool, numbers → number, otherwise string. Wrap as '\"42\"' to force a string when the value would otherwise sniff as a number.")
-	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" (repeatable, one value per flag). Name is a property name (case-insensitive) or its UUID. Value depends on the type: an option name or id for select and multi_select, true or false for checkbox, a member name, email, or id for actor types, and the value itself for text, url, number, and date (YYYY-MM-DD). Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id, as does a property whose name contains "=" or ends in <, > or ! (the >=, <=, and != spellings are reserved for comparison filters). Repeating a property matches ANY of its values; different properties must ALL match.`)
+	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" or as a comparison such as "Score>=3", "Ship Date<2026-01-01" or "Notes~=review" (repeatable, one member per flag; quote it so the shell does not read < and > as redirection). Name is a property name (case-insensitive) or its UUID; a name containing =, <, >, ! or ~ has to be given by UUID. Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id. Repeating a property matches ANY of its members; different properties must ALL match. The per-type value forms and comparisons are in the command description above.`)
 	issueListCmd.Flags().Int("limit", 50, fmt.Sprintf("Page size, 1 to %d (the server returns at most %d issues per request; use --offset to page through more)", issueListMaxPageSize, issueListMaxPageSize))
 	issueListCmd.Flags().Int("offset", 0, "Number of issues to skip (for pagination; while --output json reports has_more, advance it by the number of issues in that same response)")
 	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
@@ -615,6 +648,8 @@ func init() {
 
 	// issue pull-requests
 	issuePullRequestsCmd.Flags().String("output", "table", "Output format: table or json")
+	issuePullRequestsListCmd.Flags().String("output", "table", "Output format: table or json")
+	issuePullRequestsUnlinkCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -632,6 +667,8 @@ func init() {
 	issueCreateCmd.Flags().String("parent", "", "Parent issue ID")
 	issueCreateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) grouping this sub-issue into an ordered barrier group under its parent; omit for unstaged. The parent assignee is woken only when every sub-issue in a stage finishes.")
 	issueCreateCmd.Flags().String("project", "", "Project ID")
+	issueCreateCmd.Flags().String("on-behalf-of", "", "Member (user ID) you are creating the issue for; defaults to the person your run acts for")
+	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
@@ -652,6 +689,7 @@ func init() {
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
+	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	issueUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD)")
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
@@ -711,16 +749,20 @@ func init() {
 	issueRunMessagesCmd.Flags().String("issue", "", "Issue ID/key to scope short run ID prefix resolution")
 
 	// issue comment add
-	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running assigned issue tasks only)")
-	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record this DM human's decision from attested messages (running chat tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
+	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's decision from attested DM messages or a member comment")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
+	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
+	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
+	issueCommentAddCmd.Flags().String("context-message", "", "Earlier assistant DM message UUID that offered the options; quoted as \"Options offered\" above the reply (requires --decision-record)")
 	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueCommentAddCmd.Flags().Bool("allow-external-file", false, "Allow --content-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent run must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
+	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -1062,6 +1104,165 @@ func runIssuePullRequests(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runIssuePullRequestsUnlink(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	prRef, err := resolveIssuePullRequestRef(ctx, client, issueRef, args[1])
+	if err != nil {
+		return err
+	}
+
+	var result map[string]any
+	path := "/api/issues/" + url.PathEscape(issueRef.ID) + "/pull-requests/" + url.PathEscape(prRef.ID)
+	if err := client.DeleteJSONResponse(ctx, path, &result); err != nil {
+		return fmt.Errorf("unlink pull request: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Unlinked pull request %s from issue %s.\n", prRef.Display, issueRef.Display)
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		prs, _ := result["pull_requests"].([]any)
+		printIssuePullRequestsTable(normalizePullRequestList(prs))
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+var issuePRURLPattern = regexp.MustCompile(`^(https?://[^/?#]+/.+?/(?:pull|pulls|merge_requests)/\d+)(?:[/?#].*)?$`)
+
+func normalizeIssuePullRequestURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	m := issuePRURLPattern.FindStringSubmatch(u.Scheme + "://" + u.Host + u.EscapedPath())
+	if m == nil {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimRight(m[1], "/")), true
+}
+
+func resolveIssuePullRequestRef(ctx context.Context, client *cli.APIClient, issueRef resolvedID, raw string) (resolvedID, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return resolvedID{}, fmt.Errorf("pull request reference is required")
+	}
+	if uuidRegexp.MatchString(trimmed) {
+		id := strings.ToLower(trimmed)
+		return resolvedID{ID: id, Display: id}, nil
+	}
+
+	var (
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+		wantURL    string
+	)
+	if n, ok := parsePositiveInt(strings.TrimPrefix(trimmed, "#")); ok {
+		wantNumber = n
+	} else if hash := strings.LastIndex(trimmed, "#"); hash > 0 && !strings.Contains(trimmed, "://") {
+		repoPart, numPart := trimmed[:hash], trimmed[hash+1:]
+		slash := strings.Index(repoPart, "/")
+		if slash > 0 && slash < len(repoPart)-1 && !strings.Contains(repoPart[slash+1:], "/") {
+			if n, ok := parsePositiveInt(numPart); ok {
+				wantOwner = strings.ToLower(strings.TrimSpace(repoPart[:slash]))
+				wantRepo = strings.ToLower(strings.TrimSpace(repoPart[slash+1:]))
+				wantNumber = n
+			}
+		}
+	}
+	if wantNumber == 0 {
+		if normURL, ok := normalizeIssuePullRequestURL(trimmed); ok {
+			wantURL = normURL
+		}
+	}
+	if wantNumber == 0 && wantURL == "" {
+		return resolvedID{}, fmt.Errorf("invalid pull request reference %q; pass a PR number (e.g. 42 or #42), owner/repo#number, PR URL, or PR UUID", raw)
+	}
+
+	var listResp map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/pull-requests", &listResp); err != nil {
+		return resolvedID{}, fmt.Errorf("list issue pull requests: %w", err)
+	}
+	prsRaw, _ := listResp["pull_requests"].([]any)
+	prs := normalizePullRequestList(prsRaw)
+
+	var matches []map[string]any
+	for _, pr := range prs {
+		prNum, _ := parsePositiveInt(strVal(pr, "number"))
+		prOwner := strings.ToLower(strings.TrimSpace(strVal(pr, "repo_owner")))
+		prRepo := strings.ToLower(strings.TrimSpace(strVal(pr, "repo_name")))
+		prURL, _ := normalizeIssuePullRequestURL(pullRequestURL(pr))
+		switch {
+		case wantURL != "":
+			if prURL != "" && prURL == wantURL {
+				matches = append(matches, pr)
+			}
+		case wantOwner != "":
+			if prNum == wantNumber && ((prOwner == wantOwner && prRepo == wantRepo) || strings.HasSuffix(prURL, "/"+wantOwner+"/"+wantRepo+"/pull/"+strconv.Itoa(wantNumber)) || strings.HasSuffix(prURL, "/"+wantOwner+"/"+wantRepo+"/pulls/"+strconv.Itoa(wantNumber))) {
+				matches = append(matches, pr)
+			}
+		default:
+			if prNum == wantNumber {
+				matches = append(matches, pr)
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return resolvedID{}, fmt.Errorf("no linked pull request matching %q on issue %s", raw, issueRef.Display)
+	case 1:
+		pr := matches[0]
+		id := strings.TrimSpace(strVal(pr, "id"))
+		if id == "" {
+			return resolvedID{}, fmt.Errorf("linked pull request matching %q has no id", raw)
+		}
+		return resolvedID{ID: id, Display: formatPullRequestDisplay(pr, id)}, nil
+	default:
+		labels := make([]string, 0, len(matches))
+		for _, pr := range matches {
+			labels = append(labels, formatPullRequestDisplay(pr, strVal(pr, "id")))
+		}
+		return resolvedID{}, fmt.Errorf("ambiguous pull request %q on issue %s; matches: %s (disambiguate with owner/repo#number, URL, or PR UUID)", raw, issueRef.Display, strings.Join(labels, ", "))
+	}
+}
+
+func formatPullRequestDisplay(pr map[string]any, fallback string) string {
+	owner := strings.TrimSpace(strVal(pr, "repo_owner"))
+	repo := strings.TrimSpace(strVal(pr, "repo_name"))
+	num := strings.TrimSpace(strVal(pr, "number"))
+	if owner != "" && repo != "" && num != "" {
+		return fmt.Sprintf("%s/%s#%s", owner, repo, num)
+	}
+	if num != "" {
+		return "#" + num
+	}
+	if u := pullRequestURL(pr); u != "" {
+		return u
+	}
+	return fallback
+}
+
 func normalizePullRequestList(raw []any) []map[string]any {
 	prs := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
@@ -1251,6 +1452,7 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 			strVal(issue, "description"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		printWebURL(os.Stdout, issue)
 		fmt.Fprintf(os.Stderr, "Observed at %s. ETA is unknown: no structured ETA field exists on an issue; due date is a separate, unrelated field and is never used as an ETA.\n", observedAt)
 		return nil
 	}
@@ -1645,6 +1847,12 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		}
 		body["project_id"] = project.ID
 	}
+	if v, _ := cmd.Flags().GetString("workflow"); v != "" && v != "none" {
+		body["workflow_id"] = v
+	}
+	if v, _ := cmd.Flags().GetString("on-behalf-of"); v != "" {
+		body["requested_by_id"] = v
+	}
 	if cmd.Flags().Changed("stage") {
 		stage, _ := cmd.Flags().GetInt("stage")
 		if stage < 1 {
@@ -1747,6 +1955,7 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		printWebURL(os.Stdout, result)
 		return nil
 	}
 
@@ -1957,7 +2166,38 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		body["expected_revision"] = v
 	}
 
+	// The override has its own endpoint and goes first, so a status in the same
+	// call is judged against the workflow the issue will follow.
+	workflowChanged := cmd.Flags().Changed("workflow")
+	var result map[string]any
+	if workflowChanged {
+		v, _ := cmd.Flags().GetString("workflow")
+		var workflowID any = v
+		if v == "" || v == "none" {
+			workflowID = nil
+		}
+		switchBody := map[string]any{"workflow_id": workflowID}
+		if cmd.Flags().Changed("expected-revision") {
+			switchBody["expected_revision"], _ = cmd.Flags().GetInt64("expected-revision")
+		}
+		if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID+"/workflow", switchBody, &result); err != nil {
+			if msg, ok := revisionConflictMessage(err); ok {
+				return errors.New(msg)
+			}
+			return fmt.Errorf("set issue workflow: %w", err)
+		}
+		// The switch advanced the revision; the update that follows chains on
+		// it, and a switch with nothing else to write sends no second request.
+		if len(body) == 1 && body["expected_revision"] != nil {
+			delete(body, "expected_revision")
+		} else if revision, ok := result["revision"].(float64); ok && body["expected_revision"] != nil {
+			body["expected_revision"] = int64(revision)
+		}
+	}
 	if len(body) == 0 && len(attachmentPaths) == 0 {
+		if workflowChanged {
+			return printIssueUpdateResult(cmd, result)
+		}
 		return fmt.Errorf("no fields to update; use flags like --title, --status, --priority, --assignee, etc.")
 	}
 	// Validate every path before any upload so an invalid later path cannot
@@ -2000,7 +2240,6 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		body["suppress_run"] = true
 	}
 
-	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
 		if msg, ok := revisionConflictMessage(err); ok {
 			return errors.New(msg)
@@ -2016,6 +2255,10 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	return printIssueUpdateResult(cmd, result)
+}
+
+func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY"}
@@ -2686,8 +2929,15 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
-	if decisionRecord && (decisionIntent || len(messageIDs) == 0) || !decisionRecord && (len(messageIDs) > 0 || escalationClass != "") {
-		return fmt.Errorf("--decision-record requires --message and cannot combine with --decision-intent; --message and --class require --decision-record")
+	contextMessage, _ := cmd.Flags().GetString("context-message")
+	sourceComment, _ := cmd.Flags().GetString("source-comment")
+	excerpts, _ := cmd.Flags().GetStringArray("excerpt")
+	parent, _ := cmd.Flags().GetString("parent")
+	if len(excerpts) > 0 && (!decisionRecord || len(messageIDs) == 0) {
+		return fmt.Errorf("--excerpt requires --decision-record with --message")
+	}
+	if decisionRecord && (decisionIntent || (len(messageIDs) > 0) == (sourceComment != "") || sourceComment != "" && (parent == "" || contextMessage != "")) || !decisionRecord && (len(messageIDs) > 0 || sourceComment != "" || escalationClass != "" || contextMessage != "") {
+		return fmt.Errorf("--decision-record requires --message or --source-comment, not both; --source-comment requires --parent and excludes --context-message; decision sources and --class require --decision-record, not --decision-intent")
 	}
 	content, hasContent, err := resolveTextFlag(cmd, "content")
 	if err != nil {
@@ -2703,6 +2953,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
+	}
+	resolveThread, _ := cmd.Flags().GetBool("resolve-thread")
+	if parent, _ := cmd.Flags().GetString("parent"); resolveThread && parent == "" {
+		return fmt.Errorf("--resolve-thread requires --parent: it resolves the thread the reply belongs to")
 	}
 	if err := guardLocalPathLinks(content, "comment body",
 		"Deliver the file itself with `multica issue comment add <issue-id> --attachment <path>` (repeatable) and drop the link."); err != nil {
@@ -2762,6 +3016,15 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionRecord {
 		body["decision_record"] = true
 		body["message_ids"] = messageIDs
+		if sourceComment != "" {
+			body["source_comment_id"] = sourceComment
+		}
+		if contextMessage != "" {
+			body["context_message_id"] = contextMessage
+		}
+		if len(excerpts) > 0 {
+			body["excerpts"] = excerpts
+		}
 		if escalationClass != "" {
 			body["escalation_class"] = escalationClass
 		}
@@ -2782,9 +3045,26 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	if hints, ok := result["hints"].([]any); ok {
+		for _, value := range hints {
+			if hint, ok := value.(string); ok && hint != "" {
+				fmt.Fprintln(os.Stderr, "Hint: "+hint)
+			}
+		}
+	}
+
+	if resolveThread {
+		newID, _ := result["id"].(string)
+		var resolved map[string]any
+		if err := client.PostJSON(ctx, "/api/comments/"+url.PathEscape(newID)+"/resolve", nil, &resolved); err != nil {
+			return fmt.Errorf("comment %s was posted but resolving its thread failed (do not repost; run `multica issue comment resolve %s`): %w", newID, newID, err)
+		}
+		fmt.Fprintf(os.Stderr, "Thread resolved.\n")
+	}
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
+		printWebURL(os.Stdout, result)
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)

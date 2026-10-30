@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
-import { MAX_RAIL_TICKS, ThreadMinimap, commentPreview, waveScale } from "./thread-minimap";
+import {
+  MAX_RAIL_TICKS,
+  ThreadMinimap,
+  commentPreview,
+  createRowRangeSource,
+  waveScale,
+} from "./thread-minimap";
 
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({
@@ -388,31 +394,79 @@ describe("ThreadMinimap", () => {
     expect(onJump).toHaveBeenCalledWith("r2");
   });
 
-  it("lists replies under their thread in the outline and marks the resolution", () => {
-    const onJump = vi.fn();
+  const resolvedWithReplies = () => [
+    {
+      ...thread(comment("c1", "First thread opener"), [
+        reply("r1", "Looking into it", "Alice"),
+        reply("r2", "Fixed in the latest build", "Lambda"),
+      ]),
+      resolved: true,
+      resolutionReplyId: "r2",
+    },
+    ...threads.slice(1),
+  ];
+
+  it("folds resolved threads to their root on the rail and in the outline by default", () => {
+    renderWithI18n(
+      <ThreadMinimap threads={resolvedWithReplies()} scrollContainerEl={null} onJump={vi.fn()} />,
+    );
+
+    const nav = screen.getByRole("navigation");
+    expect(within(nav).getAllByRole("button").map((tick) => tick.getAttribute("aria-label"))).toEqual([
+      "First thread opener (resolved)",
+      "Second thread opener",
+      "member:author-c3",
+    ]);
+
+    act(() => within(nav).getByRole("button", { name: "First thread opener (resolved)" }).focus());
+    const list = screen.getByRole("list");
+    expect(within(list).queryByRole("button", { name: "Alice: Looking into it" })).not.toBeInTheDocument();
+    const toggle = within(list).getByRole("button", { name: "Show 2 replies" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("2");
+
+    fireEvent.click(toggle, { detail: 0 });
+    expect(within(list).getByRole("button", { name: "Hide replies" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(list).getByRole("button", { name: "Alice: Looking into it" })).toBeInTheDocument();
+    expect(within(nav).getAllByRole("button")).toHaveLength(5);
+
+    fireEvent.click(within(list).getByRole("button", { name: "Hide replies" }), { detail: 0 });
+    expect(within(list).queryByRole("button", { name: "Alice: Looking into it" })).not.toBeInTheDocument();
+    expect(within(nav).getAllByRole("button")).toHaveLength(3);
+  });
+
+  it("offers no fold toggle on open threads or resolved threads without replies", () => {
     renderWithI18n(
       <ThreadMinimap
         threads={[
-          {
-            ...thread(comment("c1", "First thread opener"), [
-              reply("r1", "Looking into it", "Alice"),
-              reply("r2", "Fixed in the latest build", "Lambda"),
-            ]),
-            resolved: true,
-            resolutionReplyId: "r2",
-          },
-          ...threads.slice(1),
+          thread(comment("c1", "First thread opener"), [reply("r1", "Looking into it", "Alice")]),
+          { ...threads[1]!, resolved: true },
+          threads[2]!,
         ]}
         scrollContainerEl={null}
-        onJump={onJump}
+        onJump={vi.fn()}
       />,
+    );
+    act(() => screen.getByRole("button", { name: "First thread opener" }).focus());
+    const list = screen.getByRole("list");
+    expect(within(list).getByRole("button", { name: "Alice: Looking into it" })).toBeInTheDocument();
+    expect(within(list).queryByRole("button", { expanded: false })).not.toBeInTheDocument();
+    expect(within(list).queryByRole("button", { expanded: true })).not.toBeInTheDocument();
+  });
+
+  it("lists replies under an expanded resolved thread and marks the resolution", () => {
+    const onJump = vi.fn();
+    renderWithI18n(
+      <ThreadMinimap threads={resolvedWithReplies()} scrollContainerEl={null} onJump={onJump} />,
     );
 
     act(() => screen.getByRole("button", { name: "First thread opener (resolved)" }).focus());
     const list = screen.getByRole("list");
+    fireEvent.click(within(list).getByRole("button", { name: "Show 2 replies" }), { detail: 0 });
     const rows = within(list).getAllByRole("button");
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
       "First thread opener (resolved)",
+      "Hide replies",
       "Alice: Looking into it",
       "Lambda: Fixed in the latest build",
       "Second thread opener",
@@ -482,5 +536,80 @@ describe("ThreadMinimap", () => {
     expect(onJump).toHaveBeenCalledWith("r7");
     fireEvent.keyDown(row, { key: "Escape" });
     expect(within(nav).getByRole("button", { name: "First thread opener" })).toHaveFocus();
+  });
+});
+
+describe("ThreadMinimap viewport tracking", () => {
+  const ids = ["m1", "m2", "m3", "m4", "m5"];
+  const threads = ids.map((id) => ({
+    id,
+    entry: comment(id, `Thread ${id}`),
+    resolved: false,
+    participants: [],
+    replies: [],
+    resolutionReplyId: null as string | null,
+  }));
+
+  // Every row sits inside the 0-100 viewport, so a tick is dark exactly when
+  // the minimap read that row's rect.
+  function mountRows() {
+    const container = document.createElement("div");
+    container.getBoundingClientRect = () => ({ top: 0, bottom: 100 }) as DOMRect;
+    const reads: string[] = [];
+    for (const id of ids) {
+      const row = document.createElement("div");
+      row.id = `comment-${id}`;
+      row.getBoundingClientRect = () => {
+        reads.push(id);
+        return { top: 10, bottom: 20 } as DOMRect;
+      };
+      document.body.append(row);
+    }
+    return { container, reads };
+  }
+  afterEach(() => {
+    for (const id of ids) document.getElementById(`comment-${id}`)?.remove();
+  });
+
+  const tick = (id: string) => screen.getByRole("button", { name: `Thread ${id}` });
+  const isDark = (id: string) => tick(id).firstElementChild!.className.includes("bg-foreground/70");
+
+  it("reads rects only for rows in the mounted range, following the range as it moves", async () => {
+    const { container, reads } = mountRows();
+    const range = createRowRangeSource();
+    range.set({ start: 0, end: 1 });
+    renderWithI18n(
+      <ThreadMinimap
+        threads={threads}
+        scrollContainerEl={container}
+        onJump={vi.fn()}
+        mountedRows={{ rowIds: ids, range }}
+      />,
+    );
+
+    await waitFor(() => expect(isDark("m1") && isDark("m2")).toBe(true));
+    expect(reads.sort()).toEqual(["m1", "m2"]);
+    expect(isDark("m3")).toBe(false);
+
+    reads.length = 0;
+    act(() => range.set({ start: 2, end: 3 }));
+    await waitFor(() => expect(isDark("m3") && isDark("m4")).toBe(true));
+    expect(reads.sort()).toEqual(["m3", "m4"]);
+    expect(isDark("m1")).toBe(false);
+    expect(isDark("m5")).toBe(false);
+  });
+
+  it("reads every rail row until the mounted range is known", async () => {
+    const { container, reads } = mountRows();
+    renderWithI18n(
+      <ThreadMinimap
+        threads={threads}
+        scrollContainerEl={container}
+        onJump={vi.fn()}
+        mountedRows={{ rowIds: ids, range: createRowRangeSource() }}
+      />,
+    );
+    await waitFor(() => expect(isDark("m5")).toBe(true));
+    expect(new Set(reads)).toEqual(new Set(ids));
   });
 });

@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -53,7 +55,7 @@ type workflowWrite struct {
 	pre, got                                 db.UpdateIssueParams
 	handoff                                  *workflowHandoff
 	statusExplicit, assigneeTouched, enterOn bool
-	run                                      *db.AgentTaskQueue
+	caller                                   workflowCaller
 	// preview is what the person confirmed, when the client sent it.
 	preview *HandoffPreviewBinding
 	// stopPrevious is the caller's request to stop the previous assignee's runs.
@@ -69,9 +71,9 @@ type workflowWrite struct {
 // applyIssueWorkflow, and returns what the write transaction needs to verify
 // the decision. An issue that lands in no project still gets a write: it
 // checks that no one moved the issue into a project in the meantime.
-func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, *workflowWrite, error) {
-	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, run: run}
-	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, run)
+func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
+	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, caller: caller}
+	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
 	if err != nil {
 		return handoff, nil, err
 	}
@@ -82,17 +84,34 @@ func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params
 // lockProject takes the catalog and project locks of the project the write
 // lands the issue in. Call it before any row lock.
 func (w *workflowWrite) lockProject(ctx context.Context, q *db.Queries) error {
-	if w == nil || !w.pre.ProjectID.Valid {
+	if w == nil || (!w.pre.ProjectID.Valid && !w.prev.ProjectID.Valid && !w.prev.WorkflowID.Valid) {
 		return nil
 	}
+	// An override reads the workflow row, so a workflow edit (exclusive on the
+	// catalog) must not interleave, in a project or not.
 	if err := q.LockIssueStatusCatalogShared(ctx, w.prev.WorkspaceID); err != nil {
 		return err
 	}
-	if _, err := q.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: w.pre.ProjectID, WorkspaceID: w.prev.WorkspaceID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return errWorkflowChanged
+	projectIDs := []pgtype.UUID{w.pre.ProjectID}
+	if w.prev.ProjectID != w.pre.ProjectID {
+		projectIDs = append(projectIDs, w.prev.ProjectID)
+	}
+	sort.Slice(projectIDs, func(first, second int) bool {
+		return uuidToString(projectIDs[first]) < uuidToString(projectIDs[second])
+	})
+	for _, projectID := range projectIDs {
+		if !projectID.Valid {
+			continue
 		}
-		return err
+		if _, err := q.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: projectID, WorkspaceID: w.prev.WorkspaceID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				if projectID == w.pre.ProjectID {
+					return errWorkflowChanged
+				}
+				continue
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -116,7 +135,7 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 		return errWorkflowChanged
 	}
 	params := w.pre
-	handoff, err := h.applyIssueWorkflow(ctx, q, locked, &params, w.statusExplicit, w.assigneeTouched, w.enterOn, w.run)
+	handoff, err := h.applyIssueWorkflow(ctx, q, locked, &params, w.statusExplicit, w.assigneeTouched, w.enterOn, w.caller)
 	if err != nil {
 		return err
 	}

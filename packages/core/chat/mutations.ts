@@ -7,6 +7,7 @@ import type {
   ChatSession,
   ChatPinnedAgent,
   ChatDraftRestoresResponse,
+  ChatWakeup,
   ChatQuickActionsPendingState,
 } from "../types";
 
@@ -138,11 +139,17 @@ export function useForkChatSession() {
   const wsId = useWorkspaceId();
 
   return useMutation({
-    mutationFn: (data: { sessionId: string; idempotencyKey: string; message?: string }) => {
+    mutationFn: (data: {
+      sessionId: string;
+      idempotencyKey: string;
+      message?: string;
+      attachmentIds?: string[];
+    }) => {
       logger.info("forkChatSession.start", { sessionId: data.sessionId });
       return api.forkChatSession(data.sessionId, {
         idempotency_key: data.idempotencyKey,
         ...(data.message ? { message: data.message } : {}),
+        ...(data.attachmentIds?.length ? { attachment_ids: data.attachmentIds } : {}),
       });
     },
     onSuccess: ({ session }) => {
@@ -287,6 +294,7 @@ export function useSetChatSessionPinned() {
   const wsId = useWorkspaceId();
 
   return useMutation({
+    mutationKey: chatKeys.sessionAction(wsId),
     mutationFn: (data: { sessionId: string; pinned: boolean }) => {
       logger.info("setChatSessionPinned.start", data);
       return api.setChatSessionPinned(data.sessionId, data.pinned);
@@ -334,6 +342,7 @@ export function useSetChatSessionArchived() {
   const wsId = useWorkspaceId();
 
   return useMutation({
+    mutationKey: chatKeys.sessionAction(wsId),
     mutationFn: (data: { sessionId: string; archived: boolean }) => {
       logger.info("setChatSessionArchived.start", data);
       return api.setChatSessionArchived(data.sessionId, data.archived);
@@ -450,6 +459,27 @@ export function useRegenerateChatQuickActions() {
           ctx.previous ?? null,
         );
       }
+    },
+  });
+}
+
+/**
+ * Cancel a pending DM wakeup. Waits for the server, then drops the row from the
+ * cached list. A wakeup that already fired or was cancelled elsewhere answers
+ * 404; the refetch on settle reconciles that.
+ */
+export function useCancelChatWakeup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, wakeupId }: { sessionId: string; wakeupId: string }) =>
+      api.cancelChatSessionWakeup(sessionId, wakeupId),
+    onSuccess: (_data, { sessionId, wakeupId }) => {
+      qc.setQueryData<ChatWakeup[]>(chatKeys.wakeups(sessionId), (old) =>
+        old?.filter((w) => w.id !== wakeupId),
+      );
+    },
+    onSettled: (_data, _err, { sessionId }) => {
+      qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
     },
   });
 }

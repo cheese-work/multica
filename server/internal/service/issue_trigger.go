@@ -18,8 +18,8 @@ const (
 	// RunSourceAssign covers issue creation and assignee changes — the issue
 	// is being handed to an agent/squad. Parks silently on backlog.
 	RunSourceAssign RunEnqueueSource = "assign"
-	// RunSourceStatus covers promoting an already-assigned issue out of
-	// backlog into an active status.
+	// RunSourceStatus covers backlog promotion and member status input on a
+	// blocked issue, when the destination remains actionable.
 	RunSourceStatus RunEnqueueSource = "status"
 )
 
@@ -46,6 +46,9 @@ type IssueTriggerProbe struct {
 	CanAccessAgent               func(agent db.Agent) bool
 	IsSelfLoop                   func() bool
 	SuppressActiveSelfAssignment func(agentID pgtype.UUID) bool
+	// CanResumeBlockedIssue permits member status input to wake the assignee.
+	// Nil disables this source; callers retain invocation permission checks.
+	CanResumeBlockedIssue func(agent db.Agent) bool
 }
 
 // IssueTriggerInput describes one prospective issue write in its post-write
@@ -105,6 +108,9 @@ func allowAllAgents(db.Agent) bool { return true }
 //     instead of a swallowed error.
 func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput, probe IssueTriggerProbe) (IssueRunTrigger, bool) {
 	issue := in.Issue
+	if err := RequireActiveProject(ctx, s.Queries, issue.WorkspaceID, issue.ProjectID); err != nil {
+		return IssueRunTrigger{}, false
+	}
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return IssueRunTrigger{}, false
 	}
@@ -133,6 +139,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 	}
 
 	var source RunEnqueueSource
+	blockedResume := false
 	switch {
 	case in.IsCreate || in.AssigneeChanged:
 		// Backlog is the parking lot: assigning into backlog never starts a run.
@@ -147,6 +154,11 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		source = RunSourceStatus
+	case in.StatusChanged && prevStatus == "blocked" &&
+		currentStatus != "backlog" && currentStatus != "done" && currentStatus != "cancelled" &&
+		probe.CanResumeBlockedIssue != nil:
+		source = RunSourceStatus
+		blockedResume = true
 	default:
 		return IssueRunTrigger{}, false
 	}
@@ -157,7 +169,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
 			return IssueRunTrigger{}, false
 		}
-		if !canAccess(agent) {
+		if !canAccess(agent) || (blockedResume && !probe.CanResumeBlockedIssue(agent)) {
 			return IssueRunTrigger{}, false
 		}
 		if source == RunSourceAssign && !in.IsCreate && !in.EnteredHandoffStep && probe.SuppressActiveSelfAssignment != nil &&
@@ -204,7 +216,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if err != nil || !verdict.Ready() {
 			return IssueRunTrigger{}, false
 		}
-		if !canAccess(leader) {
+		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {
 			return IssueRunTrigger{}, false
 		}
 		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {

@@ -85,3 +85,11 @@ export function profileArgs(profile: string): string[] {
   assertResolvedProfile(profile);
   return ["--profile", profile];
 }
+
+// `multica daemon stop` waits this long for the daemon to release its instance
+// lock (waitForDaemonShutdown in server/cmd/multica/cmd_daemon.go).
+export const CLI_STOP_WAIT_MS = 35_000;
+// execFile timeout for `daemon stop`. Must stay above CLI_STOP_WAIT_MS plus the
+// CLI's 2s /health probe and 2s /shutdown request, or Electron kills the CLI
+// mid-drain and a restart never reaches the start step.
+export const DAEMON_STOP_EXEC_TIMEOUT_MS = CLI_STOP_WAIT_MS + 10_000;

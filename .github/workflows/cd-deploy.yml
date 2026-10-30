@@ -1,4 +1,5 @@
 name: CD deploy to C00
+run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
 # D2 (CHE-530): deploys an already-admitted release-candidate tuple to the
 # live C00 self-host stack. This workflow is the ONLY place in the repo that
@@ -56,31 +57,95 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  # One deploy at a time, repo-wide: a second dispatch while one is running
-  # queues instead of racing a second SSH session against the same compose
-  # stack. deploy.sh's own flock on C00 is the second, host-local layer of
-  # the same guarantee for anyone who runs it by hand outside this workflow.
-  group: cd-deploy-c00
-  cancel-in-progress: false
-
+# No workflow-level concurrency (CHE-2027): a run waiting for approval would
+# hold it and block every newer version behind it. Instead the approval gate
+# below is replaced by a newer version, and the two jobs that touch C00
+# (prepare-release-candidate, deploy) share one never-cancelled lock group.
+#
+# The lock uses `queue: max`. The default (`single`) keeps ONE pending job and
+# cancels it for any newcomer, whatever its version, so a stale stage joining
+# late would evict the newest candidate; a freshness check made before the join
+# cannot close that gap, since check and join are not atomic. `max` queues up
+# to 100 pending jobs FIFO and evicts none. `cancel-in-progress` stays off (the default): it
+# cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
+  # ---------------------------------------------------------------------------
+  # The ONE approval per version. It uses c00-production, the protected
+  # environment (required reviewer, wait timer) the C00 jobs always used, and
+  # holds no secrets. The jobs that use the C00 secrets run in c00-runtime,
+  # which has no reviewers, so they do not ask again. c00-production keeps its
+  # protection on purpose: runs started by the previous workflow, and reruns of
+  # their jobs, still use it. A newer version entering this group cancels an
+  # older one that is still waiting for approval. Nothing in this group touches
+  # C00, so cancelling it can never interrupt a deploy.
+  # ---------------------------------------------------------------------------
+  approve-c00:
+    needs: candidate-preflight
+    # The manual path skips candidate-preflight, so this must not be skipped
+    # just because that job did not run.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    runs-on: ubuntu-24.04
+    environment: c00-production
+    concurrency:
+      group: cd-deploy-c00-approval
+      cancel-in-progress: true
+    steps:
+      - name: Approval granted
+        run: echo "C00 deployment approved."
+
+  candidate-preflight:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 65
+    outputs:
+      eligible: ${{ steps.candidate.outputs.eligible }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Install the YAML parser the path-filter reader needs
+        shell: bash
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Select a forward candidate before C00 approval
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
+          CHECKS_WAIT_SECONDS: "3600"
+        run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
+
   # ---------------------------------------------------------------------------
   # Automatic path only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
   #
   # This job needs C00 SSH access to read that baseline, so it runs on the
-  # same C00-reachable runner and the same protected environment as the
-  # deploy job. It reads and writes nothing on C00 beyond a temp file it
+  # same C00-reachable runner and the same secrets environment (c00-runtime)
+  # as the deploy job. Approval was already given at approve-c00. It reads and writes nothing on C00 beyond a temp file it
   # removes: capture-tuple.sh inspects containers and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    needs: [candidate-preflight, approve-c00]
+    if: needs.candidate-preflight.outputs.eligible == 'true'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
     # Up to 60 minutes waiting for CI's required checks plus the original
     # 15-minute budget for the baseline read and evidence issue.
     timeout-minutes: 80
-    environment: c00-production
+    environment: c00-runtime
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
     steps:
@@ -96,9 +161,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       # Before anything reads C00: CI's required checks finish well after
       # this workflow is triggered, and the baseline read below should be as
@@ -118,7 +184,7 @@ jobs:
         run: bash deploy/cd/record-checks.sh "$SOURCE_SHA" cd-checks.json
 
       - name: Download D1 build evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-build-evidence-${{ github.event.workflow_run.head_sha }}
           path: d1-evidence
@@ -134,85 +200,7 @@ jobs:
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
-          chmod 600 ~/.ssh/c00_deploy_key
-          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
-          remote_dir="${C00_STATE_DIR%/}/cd-baseline-$(date +%s)"
-
-          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            deploy/cd/capture-tuple.sh deploy/cd/tuple-snapshot.mjs \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
-
-          # Resolve the deployed commit HERE, on the runner, and pass it in —
-          # but ONLY when the image cannot speak for itself.
-          #
-          # Precedence, highest first:
-          #   1. the image's own org.opencontainers.image.revision label
-          #   2. this workflow's tag-based git resolution
-          #
-          # The label is authoritative: it is what the image was actually built
-          # from, recorded at build time by D1. A tag is a name someone chose
-          # and can be wrong or reused. So when the label is present we pass
-          # nothing and let capture-tuple.sh read it directly; passing
-          # --application-sha would unconditionally override the label, which
-          # inverts this precedence and lets a tag-guess beat the truth.
-          #
-          # The tag path exists because C00 may still be running images not
-          # built by D1, which carry no label — only a short SHA tag. Expanding
-          # that needs a git checkout, and the script runs on C00 from a bare
-          # scp'd temp directory with no repository, so the runner (which has
-          # the checkout) does the lookup.
-          #
-          # Never substitute this workflow's own commit — that would record a
-          # baseline claiming C00 runs something it does not.
-          # The live C00 stack is A/B: the base backend/frontend services are
-          # stopped and the router points at one colour-specific pair. Read
-          # the router's active generation and ask capture-tuple.sh for that
-          # exact Compose service pair; inspecting the stopped base service
-          # yields no container id and therefore no config-hash.
-          active_colour="$("${ssh_cmd[@]}" "node -e 'const fs=require(\"node:fs\"); const p=\"${C00_CUTOVER_STATE_DIR%/}/cutover-state.json\"; const c=JSON.parse(fs.readFileSync(p,\"utf8\")).active_colour; if(!/^(blue|green)\$/.test(c)) process.exit(1); process.stdout.write(c)'" | tr -d '[:space:]')"
-          echo "C00 router reports active colour ${active_colour}; capturing backend-${active_colour}/frontend-${active_colour}"
-
-          baseline_sha=""
-          deployed_label="$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \"\$(cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml ps -q backend-${active_colour})\"" 2>/dev/null | tr -d '[:space:]' || true)"
-
-          if [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "C00's backend image carries revision label ${deployed_label}; deferring to it (no --application-sha)"
-          else
-            deployed_tag="$("${ssh_cmd[@]}" "cd '${C00_COMPOSE_DIR}' && docker compose -f docker-compose.selfhost.yml -f deploy/cd/docker-compose.ab.yml images backend-${active_colour} --format json" 2>/dev/null \
-              | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(d||"[]");const x=Array.isArray(r)?r[0]:r;process.stdout.write(x&&x.Tag?String(x.Tag):"")}catch{process.stdout.write("")}})' || true)"
-            candidate="${deployed_tag#sha-}"
-            if [[ "$candidate" =~ ^[a-f0-9]{7,40}$ ]]; then
-              baseline_sha="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
-            fi
-          fi
-
-          capture_args=(--compose-dir "'${C00_COMPOSE_DIR}'" --output "'${remote_dir}/baseline-tuple.json'" --compose-service-suffix "'${active_colour}'")
-          if [[ "$baseline_sha" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "no usable revision label; resolved C00's deployed image tag '${deployed_tag}' to commit ${baseline_sha}"
-            capture_args+=(--application-sha "'${baseline_sha}'")
-          elif ! [[ "$deployed_label" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "could not resolve C00's deployed tag '${deployed_tag:-<none>}' to a commit; capture-tuple.sh will fail loudly with its own diagnostic"
-          fi
-
-          set +e
-          "${ssh_cmd[@]}" "bash '${remote_dir}/capture-tuple.sh' ${capture_args[*]}"
-          capture_status=$?
-          set -e
-
-          if [ "$capture_status" -eq 0 ]; then
-            scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-              "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/baseline-tuple.json" \
-              baseline-tuple.json
-          fi
-          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
-          exit "$capture_status"
+        run: bash deploy/cd/capture-remote-baseline.sh baseline-tuple.json
 
       - name: Issue the release-candidate manifest
         id: evidence
@@ -269,7 +257,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Upload the release-candidate evidence set
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
           path: |
@@ -285,12 +273,12 @@ jobs:
     # Admission is a read-only evidence check — it never touches C00 — so it
     # can run on a regular GitHub-hosted runner. Only the deploy job below
     # needs the dedicated C00-reachable runner and secrets.
-    needs: prepare-release-candidate
+    needs: [approve-c00, prepare-release-candidate]
     # The manual path skips prepare-release-candidate entirely (its caller
     # supplies an already-issued manifest), so this must not be skipped just
-    # because that job did not run.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
-    runs-on: ubuntu-latest
+    # because that job did not run. Nothing runs without the approval.
+    if: always() && needs.approve-c00.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
+    runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
       ref: ${{ steps.paths.outputs.ref }}
@@ -329,13 +317,14 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Download the prepared evidence set
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
           path: cd-evidence
@@ -378,7 +367,7 @@ jobs:
           cp "$BASELINE_TUPLE_PATH" cutover-input/baseline-tuple.json
 
       - name: Upload exact cutover input layout
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cd-deploy-admitted-input
           path: cutover-input
@@ -393,23 +382,44 @@ jobs:
     # whichever self-hosted runner has network access to C00.
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
-    environment: c00-production
+    environment: c00-runtime
+    # A job-level block replaces the workflow-level one, so contents and
+    # actions are repeated. packages: read lets the job's own token pull the
+    # private images; only this job gets it.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    # Shared with prepare-release-candidate: one C00 stage at a time, queued
+    # FIFO. Never cancelled and never evicted, so a newer version can neither
+    # interrupt a deploy that has started nor displace a queued newer one.
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.admission.outputs.ref }}
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
 
       - name: Download exact cutover input layout
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cd-deploy-admitted-input
           path: cutover-input
 
       - name: Deploy to C00 over SSH
+        id: deploy
         shell: bash
         env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
           # The only C00 credentials in this repository. Scoped to this
           # workflow/job only — cd-qualification.yml (D1) has none of these
           # and must stay that way (see its own header comment).
@@ -438,13 +448,16 @@ jobs:
           # as the real absolute path, not the shorthand this comment used
           # before.
           C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
-          # read:packages-only PAT (CHE-549) — C00 has no ambient registry
-          # credential, so deploy.sh logs in to ghcr.io with this immediately
-          # before its pull step and logs out unconditionally afterwards (see
-          # deploy.sh's own comment). Forwarded to the remote shell as an
-          # exported var, never interpolated into the command line, so it
-          # never appears in a process listing or shell history on C00.
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          # This job's own token, read-only for packages (CHE-549, CHE-2027):
+          # C00 has no ambient registry credential, so deploy.sh logs in to
+          # ghcr.io with this immediately before its pull step and logs out
+          # unconditionally afterwards (see deploy.sh's own comment). It
+          # expires with the job, so no personal access token is stored. The
+          # package must grant this repository read access (Manage Actions
+          # access). Forwarded to the remote shell as an exported var, never
+          # interpolated into the command line, so it never appears in a
+          # process listing or shell history on C00.
+          GHCR_PULL_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           manifest_path="cutover-input/manifest.json"
@@ -469,10 +482,12 @@ jobs:
               ;;
           esac
 
-          mkdir -p ~/.ssh
-          printf '%s\n' "$C00_SSH_KEY" > ~/.ssh/c00_deploy_key
-          chmod 600 ~/.ssh/c00_deploy_key
-          ssh-keyscan -H "$C00_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          bash deploy/cd/capture-remote-baseline.sh live-baseline-tuple.json
+          decision="$(node deploy/cd/verify-deploy-baseline.mjs "$SOURCE_SHA" "$baseline_path" live-baseline-tuple.json)"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          if [ "$decision" = "skip" ]; then
+            exit 0
+          fi
 
           ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
@@ -549,7 +564,7 @@ jobs:
           exit "$deploy_status"
 
       - name: Record outcome
-        if: always()
+        if: always() && steps.deploy.outputs.decision != 'skip'
         shell: bash
         run: |
           if [ "${{ job.status }}" = "success" ]; then

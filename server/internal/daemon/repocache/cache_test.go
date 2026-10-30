@@ -34,6 +34,19 @@ func TestGitEnv(t *testing.T) {
 		t.Error("gitEnv() must include GIT_TERMINAL_PROMPT=0")
 	}
 
+	// Must contain GCM_INTERACTIVE=never so the Windows Git Credential
+	// Manager cannot spray login dialogs from background sync.
+	found = false
+	for _, entry := range env {
+		if entry == "GCM_INTERACTIVE=never" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("gitEnv() must include GCM_INTERACTIVE=never")
+	}
+
 	// Must contain HOME from the current environment.
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -2352,6 +2365,74 @@ func TestBranchNameDistinctForSharedUUIDv7Prefix(t *testing.T) {
 	b := fmt.Sprintf("agent/%s/%s", sanitizeName("Windows Codex"), taskKey("01a01ec0-f014-7000-8000-000000000002"))
 	if a == b {
 		t.Fatalf("both tasks resolved to branch %q", a)
+	}
+}
+
+// TestCreateWorktreeBranchCarriesIssueIdentifier: the PR webhook links a PR to
+// an issue from the identifier in its branch, so an issue task's branch has to
+// carry it. A task without an issue keeps the plain task-scoped name.
+func TestCreateWorktreeBranchCarriesIssueIdentifier(t *testing.T) {
+	t.Parallel()
+	const taskID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	cases := []struct {
+		name  string
+		issue string
+		want  string
+	}{
+		{"issue task", "CHE-1988", "agent/code-reviewer/che-1988-" + taskKey(taskID)},
+		{"no issue", "", "agent/code-reviewer/" + taskKey(taskID)},
+		{"unsafe identifier is sanitized", "CHE 19/88", "agent/code-reviewer/che-19-88-" + taskKey(taskID)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sourceRepo := createTestRepo(t)
+			cache := New(t.TempDir(), testLogger())
+			if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+				t.Fatalf("sync failed: %v", err)
+			}
+			result, err := cache.CreateWorktree(WorktreeParams{
+				WorkspaceID:     "ws-1",
+				RepoURL:         sourceRepo,
+				WorkDir:         t.TempDir(),
+				AgentName:       "Code Reviewer",
+				TaskID:          taskID,
+				IssueIdentifier: tc.issue,
+			})
+			if err != nil {
+				t.Fatalf("CreateWorktree failed: %v", err)
+			}
+			if result.BranchName != tc.want {
+				t.Errorf("branch = %q, want %q", result.BranchName, tc.want)
+			}
+		})
+	}
+}
+
+// TestCreateWorktreeKeepsCheckoutOnPreIdentifierBranch: a checkout this task
+// already made under the old identifier-less name is the task's branch, not a
+// stranger to reset or rename.
+func TestCreateWorktreeKeepsCheckoutOnPreIdentifierBranch(t *testing.T) {
+	t.Parallel()
+	const taskID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	sourceRepo := createTestRepo(t)
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	workDir := t.TempDir()
+	params := WorktreeParams{WorkspaceID: "ws-1", RepoURL: sourceRepo, WorkDir: workDir, AgentName: "Code Reviewer", TaskID: taskID}
+	first, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+	params.IssueIdentifier = "CHE-1988"
+	second, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("second CreateWorktree failed: %v", err)
+	}
+	if second.Kept != KeptTaskBranch || second.BranchName != first.BranchName {
+		t.Errorf("second = {Kept:%q Branch:%q}, want kept on %q", second.Kept, second.BranchName, first.BranchName)
 	}
 }
 

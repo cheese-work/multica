@@ -27,5 +27,13 @@ export const metadata: Metadata = {
 };
 
 export default function ChangelogPage() {
-  return <ChangelogPageClient fork={fork} buildStamp={forkBuildStamp(process.env.NEXT_PUBLIC_APP_VERSION, process.env.NEXT_PUBLIC_BUILD_DATE)} />;
+  return (
+    <ChangelogPageClient
+      fork={fork}
+      buildStamp={forkBuildStamp(
+        process.env.NEXT_PUBLIC_APP_COMMIT || process.env.NEXT_PUBLIC_APP_VERSION,
+        process.env.NEXT_PUBLIC_BUILD_DATE,
+      )}
+    />
+  );
 }

@@ -44,10 +44,16 @@ import {
   type IssueIdentifierResolver,
 } from "./issue-identifier-autolink";
 import { SlashCommandExtension } from "./slash-command-extension";
-import { createSlashCommandSuggestion, createBuiltinCommandSuggestion } from "./slash-command-suggestion";
+import {
+  createSlashCommandSuggestion,
+  createBuiltinCommandSuggestion,
+  type DmClientCommand,
+} from "./slash-command-suggestion";
 import type { BuiltinCommandSuggestionOptions } from "./slash-command-suggestion";
 import { SuggestionTriggerArmingExtension } from "./suggestion-trigger-arming";
 import { CodeBlockView } from "./code-block-view";
+import { TableView } from "./table-view";
+import { RICH_TABLE_CHROME_ATTRIBUTE } from "../../rich-content/rich-table";
 import { PatchedListItem, PatchedTaskItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import { createMarkdownCopyExtension } from "./markdown-copy";
@@ -170,6 +176,8 @@ export interface EditorExtensionsOptions {
   enableSlashCommands?: boolean;
   canRename?: () => boolean;
   canFork?: () => boolean;
+  canUseCommand?: (command: DmClientCommand) => boolean;
+  canCompact?: () => boolean;
   /**
    * Which `/` menu to attach when enableSlashCommands is true:
    * - "skill" (default) — the chat picker listing the active agent's skills.
@@ -245,8 +253,19 @@ export function createEditorExtensions(
     // wrapper the resizable NodeView emits), which prose.css styles with
     // `overflow-x: auto`. Without it a wide table is a bare <table> that can't
     // shrink below min-content, so the horizontal scrollbar lands on the
-    // page-level scroll container instead of the table itself.
-    Table.configure({ resizable: false, renderWrapper: true }),
+    // page-level scroll container instead of the table itself. That covers
+    // renderHTML; the editor itself draws TableView, the readonly tables' frame.
+    Table.extend({
+      addNodeView() {
+        return ReactNodeViewRenderer(TableView, {
+          contentDOMElementTag: "tbody",
+          // The frame's toolbar and resize handles are controls, not content.
+          stopEvent: ({ event }) =>
+            event.target instanceof Element &&
+            event.target.closest(`[${RICH_TABLE_CHROME_ATTRIBUTE}]`) !== null,
+        });
+      },
+    }).configure({ resizable: false, renderWrapper: true }),
     TableRow,
     TableHeader,
     TableCell,
@@ -287,7 +306,13 @@ export function createEditorExtensions(
         : options.slashCommandMode === "command"
           ? createBuiltinCommandSuggestion(options.quickActionMenu)
           : options.queryClient
-            ? createSlashCommandSuggestion(options.queryClient, options.canRename, options.canFork)
+            ? createSlashCommandSuggestion(
+              options.queryClient,
+              options.canRename,
+              options.canFork,
+              options.canUseCommand,
+              options.canCompact,
+            )
             : { char: "/", allow: () => false },
     }),
     Typography,

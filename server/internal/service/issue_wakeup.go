@@ -104,7 +104,13 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 	return pgtype.Timestamptz{Time: at, Valid: true}, pgtype.Int8{}, nil
 }
 
-type IssueWakeupService struct{ Tasks *TaskService }
+type IssueWakeupService struct {
+	Tasks *TaskService
+	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
+	scopedPos scopedCursor
+	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
+	prEvents prEventCursor
+}
 
 func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Timestamptz, error) {
 	bad := func(msg string) (pgtype.Timestamptz, error) {
@@ -564,7 +570,7 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	}
 	params := db.CreateIssueWakeupParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next, ExpiresAt: expiresAt, ExpirySeconds: expirySeconds, OnTimeout: onTimeout, Condition: condition, MaxFires: maxFires}
 	if existingID.Valid {
-		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires)
+		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,workflow_step=CASE WHEN $4::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=issue_wakeup.issue_id) END,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires)
 		if err == nil {
 			out, err = q.LockIssueWakeup(ctx, existingID)
 		}
@@ -719,7 +725,26 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	pruneCtx, pruneCancel := context.WithTimeout(ctx, 2*time.Second)
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
+	// Scoped events captured in the outbox become receipts before due rules are
+	// dispatched, so an instance created now can run in this same pass. Inputs past
+	// retention expire first; the drain never claims them. The drain has its own
+	// budget so it cannot use up the pass.
+	scopedPruneCtx, scopedPruneCancel := context.WithTimeout(ctx, 2*time.Second)
+	scopedPruneErr := s.pruneScopedEvents(scopedPruneCtx, time.Now())
+	scopedPruneCancel()
+	drainCtx, drainCancel := context.WithTimeout(ctx, 10*time.Second)
+	drainErr := s.drainScopedEvents(drainCtx, workspaceIDs)
+	drainCancel()
 	var errs []error
+	if drainErr != nil {
+		errs = append(errs, fmt.Errorf("drain scoped wakeup events: %w", drainErr))
+	}
+	if scopedPruneErr != nil {
+		errs = append(errs, fmt.Errorf("prune scoped wakeup events: %w", scopedPruneErr))
+	}
+	if err := s.queueNextTurnPREvents(ctx, workspaceIDs); err != nil {
+		errs = append(errs, fmt.Errorf("queue next-turn PR events: %w", err))
+	}
 	if cleanupErr != nil {
 		errs = append(errs, fmt.Errorf("expire wakeup receipts: %w", cleanupErr))
 	}
@@ -824,10 +849,17 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
+	if w.SystemRule.String == SystemRuleWorkflowEdges {
+		dispatch = s.dispatchWorkflowEdges
+	}
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
+		reason := err.Error()
+		if IsProjectInactive(err) {
+			reason = ErrProjectInactive.Error()
+		}
+		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
 		cancel()
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
@@ -966,6 +998,9 @@ func (s *IssueWakeupService) systemRuleRunWaiting(ctx context.Context, q *db.Que
 }
 
 func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) error {
+	if held, err := s.settleInactiveProject(ctx, prev); held || err != nil {
+		return err
+	}
 	// A rule gets at most two seconds including credentials and SQL. Lock waits
 	// below are shorter: even 100 contended rules consume only ~5s of the 45s
 	// batch budget, leaving time to dispatch unrelated issues.
@@ -1352,7 +1387,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if taskExists {
 		task, err = q.ReplaceWakeupEvidence(ctx, db.ReplaceWakeupEvidenceParams{ID: task.ID, HandoffNote: pgtype.Text{String: noteText, Valid: true}, WakeupEvidence: evidence})
 	} else {
-		if err := guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
+		// A wakeup a person created is a run they chose to pay for; one an agent
+		// created from a task (SourceTaskID) is derived, so a spent budget stops it.
+		origin := OriginNamed
+		if w.SourceTaskID.Valid {
+			origin = OriginDerived
+		}
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1408,8 +1449,25 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				return nil
 			}
 		}
+		var squadID pgtype.UUID
+		if issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
+			squad, squadErr := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+				ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID,
+			})
+			if squadErr != nil && !errors.Is(squadErr, pgx.ErrNoRows) {
+				return squadErr
+			}
+			// Only the issue's current, active squad leader gets leader authority.
+			// Other wakeup targets remain ordinary agent turns.
+			if squadErr == nil && !squad.ArchivedAt.Valid && squad.LeaderID == agent.ID {
+				squadID = squad.ID
+			}
+		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
-		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupStep: w.WorkflowStep, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		if err == nil {
+			err = noteRunInserted(ctx, q, w.IssueID, task.ID)
+		}
 	}
 	if err != nil {
 		return err
@@ -1604,7 +1662,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		}
 		if config != nil && config.Eff.Config.Target.Set {
 			// A named target is asked again whether its writer may use it.
-			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 			if err != nil {
 				return err
 			}
@@ -1709,7 +1767,7 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
-		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 		if err != nil {
 			return err
 		}
@@ -1726,4 +1784,14 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		return s.checkJoinedFireCap(ctx, task, entry, limit)
 	}
 	return nil
+}
+
+// dispatchWorkflowEdges hands a due workflow_edges watch to the handler's
+// evaluator. It starts no run itself: a move goes through the same status write
+// a person makes, which dispatches the next step's handler.
+func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.WorkflowEdges == nil {
+		return nil
+	}
+	return s.Tasks.WorkflowEdges(ctx, w)
 }

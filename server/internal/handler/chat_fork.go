@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -32,7 +34,10 @@ type ChatForkResponse struct {
 	Session           ChatSessionResponse  `json:"session"`
 	PreviousSessionID string               `json:"previous_session_id"`
 	URL               string               `json:"url"`
+	WebURL            string               `json:"web_url,omitempty"`
 	Message           *ChatMessageResponse `json:"message,omitempty"`
+	// AttachmentIDs are the draft attachments bound to the first message.
+	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 }
 
 // ForkChatSession copies a web DM into a new child DM: every member-visible
@@ -55,6 +60,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey string          `json:"idempotency_key"`
 		Message        string          `json:"message"`
 		Summary        json.RawMessage `json:"summary"`
+		AttachmentIDs  []string        `json:"attachment_ids"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, forkRequestMaxBytes)
 	decoder := json.NewDecoder(r.Body)
@@ -69,8 +75,12 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	message := strings.TrimSpace(request.Message)
-	if taskScoped && message != "" {
+	if taskScoped && (message != "" || len(request.AttachmentIDs) > 0) {
 		writeError(w, http.StatusBadRequest, "a chat task cannot send a fork message")
+		return
+	}
+	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, request.AttachmentIDs, "attachment_ids")
+	if !ok {
 		return
 	}
 	if !utf8.ValidString(message) || strings.ContainsRune(message, '\x00') {
@@ -107,7 +117,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	childID := dbid.NewV7()
 	var plan service.DirectChatSendPlan
-	if message != "" {
+	if message != "" || len(attachmentIDs) > 0 {
 		if agent, _, _, ok = h.preflightChatSend(w, r, session, userID, workspaceID); !ok {
 			return
 		}
@@ -203,12 +213,22 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		child, err = qtx.SetChatForkSource(r.Context(), db.SetChatForkSourceParams{
 			ID: child.ID, ForkedFromSessionID: session.ID, ForkIdempotencyKey: key,
-			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
+			ForkLastMessageID: copied.ids[len(copied.ids)-1], ForkSourceMessageID: copied.sourceIDs[len(copied.sourceIDs)-1], ForkMessageCount: pgtype.Int4{Int32: int32(len(copied.ids)), Valid: true},
 		})
 	}
+	// Drafts uploaded in the source DM move to the child so the first send can
+	// bind them. A fork whose only attachments cannot move sends nothing.
+	var movable []pgtype.UUID
+	if err == nil && len(attachmentIDs) > 0 {
+		movable, err = qtx.MoveDraftAttachmentsToForkChild(r.Context(), db.MoveDraftAttachmentsToForkChildParams{
+			ChildSessionID: child.ID, WorkspaceID: session.WorkspaceID, SourceSessionID: session.ID,
+			UploaderID: parseUUID(userID), AttachmentIds: attachmentIDs,
+		})
+	}
+	sendFirst := message != "" || len(movable) > 0
 	var sent service.DirectChatSendResult
-	if err == nil && message != "" {
-		sent, err = h.TaskService.SendDirectChatMessageTx(r.Context(), qtx, plan, child, parseUUID(userID), message, nil, "member", parseUUID(userID), r.Header.Get("X-Actor-Source"))
+	if err == nil && sendFirst {
+		sent, err = h.TaskService.SendDirectChatMessageTx(r.Context(), qtx, plan, child, parseUUID(userID), message, movable, "member", parseUUID(userID), r.Header.Get("X-Actor-Source"))
 		if err == nil {
 			sent.Message, err = qtx.PlaceForkFirstMessage(r.Context(), sent.Message.ID)
 		}
@@ -226,13 +246,14 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	slog.Info("chat fork created",
 		"source_session_id", uuidToString(session.ID), "child_session_id", uuidToString(child.ID),
 		"copied_messages", len(copied.ids), "copied_attachments", len(attachmentCopy.ids),
-		"copy_duration_ms", time.Since(started).Milliseconds(), "replay", false, "first_message", message != "")
+		"copy_duration_ms", time.Since(started).Milliseconds(), "replay", false, "first_message", sendFirst)
 	creatorID := uuidToString(session.CreatorID)
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(child.ID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(child.ID), AgentID: uuidToString(child.AgentID), CreatorID: creatorID, Title: child.Title,
 	})
-	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID)}
-	if message != "" {
+	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID), WebURL: weblink.Build(h.cfg.AppURL, forkChatURL(workspace.Slug, child.ID))}
+	if sendFirst {
+		h.TaskService.RecordHumanDelegation(r.Context(), plan.Attribution)
 		h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(child.ID), protocol.ChatMessagePayload{
 			ChatSessionID: uuidToString(child.ID), MessageID: uuidToString(sent.Message.ID), Role: "user",
 			Content: message, TaskID: uuidToString(sent.Task.ID), CreatedAt: timestampToString(sent.Message.CreatedAt),
@@ -240,6 +261,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 		h.TaskService.NotifyDirectChatSent(r.Context(), sent.Task)
 		first := chatMessageToResponse(sent.Message, nil)
 		response.Message = &first
+		response.AttachmentIDs = uuidsToStrings(sent.BoundAttachmentIDs)
 	}
 	writeJSON(w, http.StatusCreated, response)
 }
@@ -293,10 +315,18 @@ func (h *Handler) writeForkReplay(w http.ResponseWriter, r *http.Request, source
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
-	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(source.ID), URL: forkChatURL(workspace.Slug, child.ID)}
+	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(source.ID), URL: forkChatURL(workspace.Slug, child.ID), WebURL: weblink.Build(h.cfg.AppURL, forkChatURL(workspace.Slug, child.ID))}
 	if first, err := h.Queries.GetChatForkFirstMessage(r.Context(), child.ID); err == nil {
 		message := chatMessageToResponse(first, nil)
 		response.Message = &message
+		bound, err := h.Queries.ListAttachmentsByChatMessage(r.Context(), db.ListAttachmentsByChatMessageParams{ChatMessageID: first.ID, WorkspaceID: child.WorkspaceID})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load the fork message attachments")
+			return
+		}
+		for _, attachment := range bound {
+			response.AttachmentIDs = append(response.AttachmentIDs, uuidToString(attachment.ID))
+		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to load the fork message")
 		return
@@ -309,13 +339,33 @@ func forkChatURL(slug string, id pgtype.UUID) string {
 	return "/" + url.PathEscape(slug) + "/chat?session=" + uuidToString(id)
 }
 
-// forkTitle is "<source> (fork: <message>)", the message whitespace-collapsed
-// and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
+var (
+	markdownLink   = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	markdownPrefix = regexp.MustCompile(`^(?:>\s*|#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)+`)
+)
+
+// plainText reduces markdown to what a reader sees in a title: link and slash
+// chips become their label; fence lines and leading quote, heading and list
+// markers are dropped.
+func plainText(markdown string) string {
+	var lines []string
+	for _, line := range strings.Split(markdown, "\n") {
+		line = markdownPrefix.ReplaceAllString(strings.TrimSpace(line), "")
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			continue
+		}
+		lines = append(lines, markdownLink.ReplaceAllString(line, "$1"))
+	}
+	return strings.Join(lines, " ")
+}
+
+// forkTitle is "<source> (fork: <message>)", the message as plain text,
+// whitespace-collapsed and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
 func forkTitle(source, message string) string {
 	if message == "" {
 		return strings.TrimSpace(source + " (fork)")
 	}
-	label := strings.Join(strings.Fields(message), " ")
+	label := strings.Join(strings.Fields(plainText(message)), " ")
 	if runes := []rune(label); len(runes) > forkTitleMessageRunes {
 		label = string(runes[:forkTitleMessageRunes]) + "…"
 	}

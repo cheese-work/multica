@@ -1,0 +1,197 @@
+
+ RUN  v4.1.0 /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-2167-7ec159f2dbe2/workdir/multica/packages/views
+
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > does not mount its child until the block is near the viewport 53ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > mounts the child once it becomes near-viewport 13ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > stops observing after mounting so the block never unmounts 6ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > reserves the same height before and after mount 8ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > watches an area larger than the viewport so blocks are ready on arrival 3ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > observes against the surface's scroll root when one is provided 3ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > falls back to the viewport root for page-scrolled surfaces 3ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock > mounts via an effect when IntersectionObserver is unavailable 3ms
+stderr | rich-content/lazy-rich-block.test.tsx > LazyRichBlock SSR > produces the same first frame on server and client
+An update to Root inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock across row recycling > re-mounts a recycled block immediately, without waiting to be seen again 9ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock across row recycling > does not resurrect a different block that was never mounted 5ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock across row recycling > keeps deferring when no sourceKey is supplied 5ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock SSR > renders the placeholder, not the block, on the server 9ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock SSR > hydrates the server markup without a mismatch 16ms
+ ✓ rich-content/lazy-rich-block.test.tsx > LazyRichBlock SSR > produces the same first frame on server and client 6ms
+stderr | rich-content/rich-table.test.tsx > RichTable > gives an overflowing table capped content widths without saving them
+`NaN` is an invalid value for the `left` css style property.
+
+ ✓ rich-content/rich-table.test.tsx > RichTable > keeps the browser's layout until a column is resized 316ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > gives an overflowing table capped content widths without saving them 83ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > resizes a column from the keyboard, persists it, and resets 161ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > keeps a handle's height after a click, so a double-click lands 95ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > copies the table as the author wrote it 83ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > copies code, explicit links and quoted tables unchanged 76ms
+ ✓ rich-content/rich-table.test.tsx > RichTable > expands into a sortable, filterable view of the same cells 1063ms
+ ✓ rich-content/rich-content-parity.test.tsx > Mermaid parity across the five surfaces > renders a diagram in an Issue description 631ms
+ ✓ rich-content/rich-content-parity.test.tsx > Mermaid parity across the five surfaces > renders a diagram in a Comment 253ms
+ ✓ rich-content/rich-content-parity.test.tsx > Mermaid parity across the five surfaces > renders a diagram in a Chat user message 358ms
+ ✓ rich-content/rich-content-parity.test.tsx > Mermaid parity across the five surfaces > renders a diagram in a persisted Chat assistant message 253ms
+ ✓ rich-content/rich-content-parity.test.tsx > Mermaid parity across the five surfaces > renders a diagram in a live (streaming) Chat assistant row 212ms
+ ✓ rich-content/rich-content-parity.test.tsx > streaming fence gate in Chat > does not instantiate Mermaid while the fence is still open 24ms
+ ✓ rich-content/rich-content-parity.test.tsx > streaming fence gate in Chat > upgrades in place once the closing fence arrives 219ms
+ ✓ rich-content/rich-content-parity.test.tsx > streaming fence gate in Chat > keeps a settled-but-unclosed fence as source 33ms
+ ✓ rich-content/rich-content-parity.test.tsx > live → persisted row identity > keeps one row key across the handoff and does not re-run Mermaid 255ms
+ ✓ rich-content/rich-content-parity.test.tsx > live → persisted row identity > gives a persisted assistant message a task-scoped row key 18ms
+ ✓ rich-content/rich-content-parity.test.tsx > semantic parity beyond Mermaid > produces the same block set in Issue/Comment and Chat 245ms
+ ✓ rich-content/rich-content-parity.test.tsx > semantic parity beyond Mermaid > does not dispatch htmlbars / mermaidx to rich blocks on either surface 28ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > routes a link to this deployment into the app instead of the browser 220ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > still hands a genuinely external link to the browser 67ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > keeps an attachment download URL on the app origin external 38ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > keeps a same-origin /uploads file external — the backend serves it, not the router 22ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > routes a UUID attachment download link through the download hook (WK-11) 29ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > recognizes the API-host link when runtime config arrives after rendering 13ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > does not intercept a non-UUID /api/attachments link 23ms
+ ✓ rich-content/app-url-link-routing.test.tsx > RichContent link routing > keeps another deployment's attachment URL on the external link path 14ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > renders a pasted project URL as a project chip linking to the project 109ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > renders a pasted issue URL as an issue chip 29ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > renders a pasted identifier-form issue URL as an issue chip 20ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > keeps the link when an identifier-form issue URL resolves to nothing 17ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > leaves a link the author labelled alone 20ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > leaves a link into another workspace as a plain link 11ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > leaves a project list URL as a plain link 11ms
+ ✓ rich-content/entity-link-unfurl.test.tsx > bare entity URLs in readonly content > leaves an external URL as a plain link 8ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > strips <script> 75ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > strips event-handler attributes from raw HTML 20ms
+stderr | common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > blanks a non-image data: URI
+An empty string ("") was passed to the src attribute. This may cause the browser to download the whole page again over the network. To fix this, either do not render the element at all or pass null to src instead of an empty string.
+
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > neutralizes javascript: hrefs 14ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > preserves an inline data:image/* src 11ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > blanks a non-image data: URI 8ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > keeps http(s) image src intact 13ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > allows <mark> (==highlight== lowering target) 7ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Chat (ui/markdown)' > allows the slash:// protocol 15ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > strips <script> 10ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > strips event-handler attributes from raw HTML 7ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > neutralizes javascript: hrefs 6ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > preserves an inline data:image/* src 6ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > blanks a non-image data: URI 5ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > keeps http(s) image src intact 5ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > allows <mark> (==highlight== lowering target) 5ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > sanitize contract — 'Issue/Comment (ReadonlyContent)' > allows the slash:// protocol 6ms
+ ✓ common/rich-content-sanitize-contract.test.tsx > canonical sanitize schema > permits language-/math-/hljs class tokens on <code> 1ms
+stderr | rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > uses the skeleton height on the client's first frame despite a warm cache
+An update to Root inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to LazyRichBlock inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to RichFenceBlock inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > reserves the skeleton height on the server, not the cached height 14ms
+ ✓ rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > uses the skeleton height on the client's first frame despite a warm cache 47ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > hydrates a warm-cache client against server markup without a mismatch 579ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > adopts the cached height after mount, so the zero-shift benefit survives 151ms
+ ✓ rich-content/rich-fence-block-ssr.test.tsx > RichFenceBlock reserved height > falls back to the skeleton height when the cache is cold 167ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > renders an anchor with the project href 86ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > does not render the chip as a click-only span 17ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > is keyboard focusable 181ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > activates on Enter 63ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > navigates on click through the adapter 18ms
+ ✓ rich-content/project-mention-a11y.test.tsx > project mention accessibility > opens in a new tab on modifier-click, labelled with the mention text 8ms
+ ✓ rich-content/current-issue-rendering.test.tsx > RichContent current-issue rendering > marks only the current UUID mention in a paragraph with two other references as current 144ms
+ ✓ rich-content/current-issue-rendering.test.tsx > RichContent current-issue rendering > marks the current issue written as a bare identifier, and only it, as current 26ms
+ ✓ rich-content/current-issue-rendering.test.tsx > RichContent current-issue rendering > marks the current issue written as a UUID URL, and only it, as current 15ms
+ ✓ rich-content/current-issue-rendering.test.tsx > RichContent current-issue rendering > marks the current issue written as an identifier URL, and only it, as current 13ms
+ ✓ rich-content/current-issue-rendering.test.tsx > RichContent current-issue rendering > keeps every chip on regular content without a current-issue provider 22ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > treats a closed backtick fence as closed 19ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > treats an unterminated fence as open 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > treats a bare opener with no content as open 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > stays open while content accumulates 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > handles tilde fences 3ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > does not accept a tilde closer for a backtick opener 1ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > does not accept a shorter closer than the opener 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > accepts a longer closer than the opener 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > handles an indented fence 3ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > handles a fence inside a list item 8ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > does not report an inner fence of a nested block 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > reports each block independently when several are present 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > flips to closed exactly when the closing fence arrives 7ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > ignores an indented (non-fenced) code block 2ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > returns an empty map for empty input 0ms
+ ✓ rich-content/streaming-fence.test.ts > computeClosedFences > returns an empty map for prose with no code 3ms
+ ✓ rich-content/streaming-fence.test.ts > fence titles > reads the title attribute from a closed fence's info string 2ms
+ ✓ rich-content/streaming-fence.test.ts > fence titles > has no title when the info string carries none 1ms
+ ✓ rich-content/streaming-fence.test.ts > fence titles > accepts double, single and bare values 1ms
+ ✓ rich-content/rich-table-model.test.ts > readTableModel > reads header and body cells from react-markdown's table children 9ms
+ ✓ rich-content/rich-table-model.test.ts > tableMarkdownFromSource > copies the table from the source, not the preprocessed copy 33ms
+ ✓ rich-content/rich-table-model.test.ts > tableMarkdownFromSource > finds the table by its place among the tables 13ms
+ ✓ rich-content/rich-table-model.test.ts > tableMarkdownFromSource > drops a blockquote's or list item's markers so the copy is a table 7ms
+ ✓ rich-content/rich-table-model.test.ts > tableMarkdownFromSource > returns nothing without a source position 0ms
+ ✓ rich-content/rich-table-model.test.ts > tableToCsv > quotes fields that contain a separator, quote or newline 1ms
+ ✓ rich-content/rich-table-model.test.ts > column width storage > round-trips widths and forgets them on reset 3ms
+ ✓ rich-content/rich-table-model.test.ts > column width storage > ignores widths stored for a different column count 1ms
+ ✓ rich-content/rich-table-model.test.ts > column width storage > keys a table by its content 1ms
+ ✓ rich-content/rich-table-model.test.ts > column width storage > keeps only the most recently used tables 77ms
+ ✓ rich-content/rich-table-model.test.ts > column width storage > survives a corrupt entry 1ms
+ ✓ rich-content/cdn-config-reactivity.test.tsx > RichContent CDN config reactivity > upgrades a legacy CDN link to a file card when the config arrives late 125ms
+ ✓ rich-content/cdn-config-reactivity.test.tsx > RichContent CDN config reactivity > renders the file card immediately when the config is already present 17ms
+ ✓ rich-content/cdn-config-reactivity.test.tsx > RichContent CDN config reactivity > leaves non-CDN links alone when the config arrives 17ms
+ ✓ rich-content/package-exports.test.ts > workspace package exports > every export target points at a file that exists 8ms
+ ✓ rich-content/package-exports.test.ts > workspace package exports > does not pass vacuously when traversal or existence checks break 1ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in compact content 126ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > uses solid brand fill and background text tokens only for the viewer in document content 25ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights only the viewer's member mention in compact content without changing case 19ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > highlights only the viewer's member mention in document content without changing case 12ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > does not highlight member mentions without a current user 25ms
+ ✓ rich-content/self-mention.test.tsx > RichContent self-member mentions > updates the self variant when the viewer changes or logs out 23ms
+
+ Test Files  14 passed (14)
+      Tests  123 passed (123)
+   Start at  08:55:38
+   Duration  30.77s (transform 7.78s, setup 1.35s, import 30.21s, tests 7.64s, environment 14.62s)
+

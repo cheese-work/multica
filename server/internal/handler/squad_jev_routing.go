@@ -119,10 +119,12 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	// issue write in a project, in the same order: the status catalog, the
 	// project, then the issue row. A workflow switch or edit cannot commit
 	// between the membership check below and the write.
-	if issue.ProjectID.Valid {
+	if issue.ProjectID.Valid || issue.WorkflowID.Valid {
 		if err := qtx.LockIssueStatusCatalogShared(ctx, issue.WorkspaceID); err != nil {
 			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to lock the status catalog: %v\n- Decision ID: %s", err, decisionID)
 		}
+	}
+	if issue.ProjectID.Valid {
 		if _, err := qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to lock the issue's project: %v\n- Decision ID: %s", err, decisionID)
 		}
@@ -147,7 +149,7 @@ func (h *Handler) tryJevSquadRouting(ctx context.Context, issue db.Issue, squad 
 	statusChanged := false
 	newStatus := currentStatus
 	if currentStatus == "backlog" || currentStatus == "todo" {
-		workflow, _, err := issueworkflow.ForProject(ctx, qtx, issue.WorkspaceID, issue.ProjectID)
+		workflow, _, err := issueworkflow.ForIssue(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 		if err != nil {
 			return false, fmt.Sprintf("### Jev Pre-Route Advisory\n- Ambiguity: Failed to read the project workflow: %v\n- Decision ID: %s", err, decisionID)
 		}

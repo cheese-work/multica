@@ -69,33 +69,61 @@ var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived fr
 // run. Redoing triage is re-triage.
 var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which is redone by re-triaging the issue rather than by rerunning it")
 
-// guardIssueNotInTriage refuses a DERIVED enqueue for an issue in Triage. q is
+// guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
+// whose workflow run budget is spent (guardRunBudget). q is
 // the caller's own query handle so a transaction-scoped enqueue reads the
 // status its own transaction wrote — the deferred-channel path creates the
 // issue and its task together, and an uncommitted Triage issue must still be
 // seen.
 //
-// A named run skips the read entirely: Triage never refuses it, so there is
-// nothing to look up.
+// target names the agent and trigger of the run, for the run budget.
+//
+// A named run is never refused: it skips the Triage read and the budget check,
+// and only takes the budget lock and window credit for its debit.
 //
 // A missing issue is not in Triage: the enqueue proceeds and fails (or not) on
 // its own terms. A read error refuses, because a run that cannot be shown to be
 // allowed must not start.
-func guardIssueNotInTriage(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
-	if origin == OriginNamed || !issueID.Valid {
-		return nil
+func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) error {
+	_, err := guardIssueRunGate(ctx, q, issueID, origin, target)
+	return err
+}
+
+// guardIssueRunGate is guardIssueRunAllowed for an enqueue that inserts the
+// task row itself: it also returns the review gate to apply to that insert.
+func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) (ReviewGate, error) {
+	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
+		return ReviewGate{}, err
+	}
+	// Before the OriginNamed exit: a person naming an agent does not start a
+	// second runner next to one that is not proven stopped.
+	if issueID.Valid {
+		if err := StopGate(ctx, q, issueID); err != nil {
+			return ReviewGate{}, err
+		}
+	}
+	if !issueID.Valid {
+		return ReviewGate{}, nil
+	}
+	if origin == OriginNamed {
+		// Never refused, but the lock and the window credit are taken here so
+		// the named run's debit lands in the same window the others read.
+		if _, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return ReviewGate{}, fmt.Errorf("run budget: %w", err)
+		}
+		return ReviewGate{}, nil
 	}
 	state, err := q.GetIssueTriageState(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return ReviewGate{}, nil
 		}
-		return fmt.Errorf("triage guard: load issue triage state: %w", err)
+		return ReviewGate{}, fmt.Errorf("triage guard: load issue triage state: %w", err)
 	}
 	if state.Valid {
-		return ErrIssueInTriage
+		return ReviewGate{}, ErrIssueInTriage
 	}
-	return nil
+	return guardRunBudget(ctx, q, issueID, target)
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB

@@ -1,4 +1,35 @@
 {
+  "relations": {
+    "graph": "Graphe",
+    "list": "Liste",
+    "sub_issues": "Sous-tâches",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sous-tâches",
+    "done_count": "terminées",
+    "in_progress_count": "en cours",
+    "todo_count": "à faire",
+    "closed_count": "fermées",
+    "no_parent": "Aucun parent",
+    "mentions_hint": "Chargé à l’activation",
+    "navigation_hint": "Cliquer pour ouvrir · survoler pour le titre complet · ← → ↑ ↓ déplacer le focus · Échap pour fermer",
+    "title": "Graphe des relations",
+    "direction": "Les flèches vont du parent à l’enfant, d’une tâche surveillée à celle qu’elle réveille, et d’une mention à sa cible. La tâche actuelle a une bordure épaisse.",
+    "depth": "Profondeur",
+    "loading": "Chargement des relations…",
+    "load_failed": "Impossible de charger les relations.",
+    "render_failed": "Impossible d’afficher le graphe.",
+    "filter_label": "Afficher les types de liens",
+    "retry": "Réessayer",
+    "empty": "Aucune tâche liée.",
+    "omitted": "{{count}} autres tâches masquées (limite de 40 nœuds).",
+    "parent": "parent → enfant",
+    "duplicate": "doublon de",
+    "wakeup": "réveille",
+    "children_done": "enfants terminés → réveil",
+    "mention": "mentionne",
+    "shared_pr": "PR partagée",
+    "unknown": "lié"
+  },
   "inline_run": {
     "label": "Exécution de {{name}}",
     "stop": "Arrêter",
@@ -206,6 +237,8 @@
     "grouping_section": "Regroupement",
     "ordering_section": "Tri",
     "card_properties_section": "Propriétés des cartes",
+    "columns_section": "Colonnes",
+    "columns_locked_by_filter": "Retirez le filtre d’état pour afficher ou masquer des colonnes.",
     "ascending_title": "Croissant",
     "descending_title": "Décroissant",
     "newest_first": "Plus récents d'abord",
@@ -363,18 +396,13 @@
     "toggle_collapse": "Replier ou déplier le couloir"
   },
   "board": {
-    "hidden_columns_label": "Colonnes masquées",
     "hide_column": "Masquer la colonne",
-    "show_column": "Afficher la colonne",
     "add_issue_tooltip": "Ajouter une tâche",
     "empty_column": "Aucune tâche",
     "empty_grouping": "Aucune tâche correspondante",
     "no_value": "Aucune valeur",
     "ordered_by": "Tableau trié par {{field}}",
-    "manual_reorder_hint": "Passez au tri Manuel pour réorganiser les tâches dans une colonne.",
-    "filter_to_status": "Filtrer sur cet état",
-    "outside_workflow": "Hors du workflow de ce tableau",
-    "workflow_columns_note": "Les colonnes viennent du workflow du tableau ; hors projet, les vues utilisent Default."
+    "manual_reorder_hint": "Passez au tri Manuel pour réorganiser les tâches dans une colonne."
   },
   "peek": {
     "panel_label": "Aperçu de la tâche",
@@ -384,6 +412,14 @@
     "close": "Fermer l'aperçu"
   },
   "detail": {
+    "metadata_close": "Fermer les métadonnées",
+    "metadata_copy": "Copier les métadonnées",
+    "metadata_view": "Agrandir les métadonnées",
+    "metadata_expand": "Agrandir la boîte de dialogue",
+    "metadata_restore": "Rétablir la taille de la boîte de dialogue",
+    "metadata_copy_failed": "Impossible de copier les métadonnées",
+    "metadata_description": "Données clé-valeur enregistrées par les agents et les intégrations pour poursuivre le workflow.",
+    "section_load_failed_retry": "Échec du chargement. Réessayer",
     "not_found": "Cette tâche n'existe pas ou a été supprimée dans cet espace de travail.",
     "breadcrumb_project_unknown": "Projet inconnu",
     "back": "Retour",
@@ -407,6 +443,7 @@
     "section_parent_issue": "Tâche parente",
     "section_pull_requests": "Pull requests",
     "section_metadata": "Métadonnées",
+    "status_summary_label": "Résumé du statut",
     "section_details": "Détails",
     "section_quick_actions": "Actions rapides",
     "quick_actions_more": "Afficher {{count}} de plus",
@@ -452,6 +489,7 @@
     "prop_labels": "Étiquettes",
     "add_property_action": "Ajouter une propriété",
     "prop_created_by": "Créé par",
+    "prop_requested_by": "Demandé par",
     "prop_created": "Création",
     "prop_updated": "Mise à jour",
     "activity_section": "Activité",
@@ -473,9 +511,15 @@
     "archive_tooltip": "Archiver",
     "pin_tooltip": "Épingler à la barre latérale",
     "unpin_tooltip": "Détacher de la barre latérale",
+    "quick_jump_label": "Navigation rapide",
+    "description_nav_label": "Description de la tâche",
+    "sub_issues_nav_progress": "{{done}}/{{total}} terminées",
     "thread_nav_label": "Aller au fil de commentaires",
     "thread_nav_resolved_label": "{{title}} (résolu)",
     "thread_nav_reply_label": "{{author}} : {{title}}",
+    "thread_nav_show_replies_one": "Afficher {{count}} réponse",
+    "thread_nav_show_replies_other": "Afficher {{count}} réponses",
+    "thread_nav_hide_replies": "Masquer les réponses",
     "sidebar_tooltip": "Afficher ou masquer la barre latérale droite",
     "find": {
       "placeholder": "Rechercher dans la tâche...",
@@ -524,6 +568,7 @@
     "squad_leader_no_action_reason": "a évalué : aucune action nécessaire ({{reason}})",
     "squad_leader_failed": "évaluation en échec",
     "squad_leader_failed_reason": "évaluation en échec : {{reason}}",
+    "stop_not_confirmed": "arrêt non confirmé pour l’exécution {{taskId}}",
     "coalesced_badge": "×{{count}}",
     "activity_count_one": "{{count}} activité",
     "activity_count_other": "{{count}} activités",
@@ -539,6 +584,7 @@
     "pr_auto_complete_disabled": "a configuré cette tâche pour garder son statut à la fusion des PR",
     "pr_auto_complete_enabled": "a de nouveau fait changer le statut de cette tâche à la fusion des PR",
     "wakeup_created": "a ajouté un réveil : {{condition}} · réveiller {{agent}}",
+    "wakeup_created_scheduled": "a ajouté un réveil pour {{agent}} : {{condition}}",
     "wakeup_triggered": "{{condition}} · {{agent}} réveillé",
     "wakeup_triggered_merged": "{{condition}} · ajouté à l’exécution en attente de {{agent}}",
     "wakeup_triggered_acknowledged": "{{condition}} · déclenché par {{agent}} lui-même ; pas de nouveau réveil",
@@ -574,6 +620,8 @@
     "wakeup_link_run": "Voir l'exécution"
   },
   "comment": {
+    "show_full": "Afficher le commentaire complet",
+    "you": "Vous",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",
@@ -748,6 +796,7 @@
     "retry_failed": "Échec de la relance de l'exécution",
     "retry_blocked": "Non relancée — vous n'avez pas la permission d'utiliser cet agent",
     "transcript_tooltip": "Voir la transcription",
+    "jump_to_run": "Aller à l'exécution",
     "cancel_failed": "Échec de l'annulation de l'exécution",
     "trigger_retry": "Relance",
     "trigger_retry_attempt": "Relance n° {{attempt}}",
@@ -784,8 +833,8 @@
     "summary_runs_other": "{{count}} exécutions",
     "latest": "Récentes",
     "open_timeline": "Ouvrir la chronologie",
-    "more_runs_one": "{{count}} de plus",
-    "more_runs_other": "{{count}} de plus",
+    "more_runs_one": "Afficher {{count}} de plus",
+    "more_runs_other": "Afficher {{count}} de plus",
     "strip_aria": "Coût par exécution — ouvrir la chronologie",
     "strip_no_usage": "Aucune consommation enregistrée",
     "sparkline_now": "Maintenant"
@@ -894,6 +943,7 @@
     "updated_ago": "Mis à jour {{time}}"
   },
   "actions": {
+    "rename_issue": "Renommer la tâche",
     "status": "Statut",
     "priority": "Priorité",
     "assignee": "Assigné à",
@@ -1134,7 +1184,7 @@
     "wake_agent": "Réveiller {{agent}}",
     "needs_attention": "Action requise",
     "turn_off": "Désactiver",
-    "ended": "Historique des réveils {{count}}",
+    "ended": "Historique des réveils · {{count}}",
     "waiting_event": "En attente du déclencheur",
     "triggered_by_wakeup": "Déclenché par un réveil",
     "upcoming": "{{count}} règles de réveil activées",
@@ -1319,12 +1369,14 @@
       "children_stage": "Étape {{stage}}",
       "pr_checks": "Fin de la CI",
       "pr_merged": "Fusion",
+      "pr_conflicts": "Conflits de fusion",
       "choose_issue": "Choisir une tâche",
       "pick_issue_title": "Suivre une tâche",
       "pick_issue_description": "Réveille l’agent quand cette tâche atteint l’état choisi.",
       "other_done": "est terminée",
       "other_ended": "est terminée ou annulée",
       "other_in_review": "passe en revue",
+      "other_blocked": "passe à Bloqué",
       "max_fires": "Au plus",
       "max_fires_times_one": "{{count}} fois",
       "max_fires_times_other": "{{count}} fois",
@@ -1376,9 +1428,15 @@
       "children_stage": "Quand les sous-tâches de l’étape {{stage}} sont terminées",
       "pr_checks": "Quand la CI d’une PR liée se termine",
       "pr_merged": "Quand une PR liée est fusionnée",
+      "pr_conflicts": "Quand une PR liée a des conflits de fusion",
       "other_done": "Quand {{issue}} est terminée",
       "other_ended": "Quand {{issue}} est terminée ou annulée",
       "other_in_review": "Quand {{issue}} passe en revue",
+      "gh_run_id": "l'exécution {{id}} de {{repo}}",
+      "gh_run_sha": "{{workflow}} à {{sha}} de {{repo}}",
+      "gh_run_completed": "Quand {{run}} se termine",
+      "gh_run_waiting": "Quand {{run}} attend à une étape d'approbation",
+      "other_blocked": "Quand {{issue}} passe à Bloqué",
       "another_issue": "une autre tâche",
       "unknown_label": "un libellé supprimé",
       "unknown_property": "une propriété supprimée",
@@ -1398,9 +1456,13 @@
       "children_stage": "Attend l’étape {{stage}}",
       "pr_checks": "Attend la CI",
       "pr_merged": "Attend la fusion de la PR",
+      "pr_conflicts": "Surveille les conflits de fusion",
       "other_done": "Attend {{issue}}",
       "other_ended": "Attend la fin de {{issue}}",
       "other_in_review": "Attend la revue de {{issue}}",
+      "gh_run_completed": "Attend la fin de {{run}}",
+      "gh_run_waiting": "Attend que {{run}} atteigne une étape d'approbation",
+      "other_blocked": "Attend que {{issue}} passe à Bloqué",
       "time": "{{time}} · réveille {{agent}}",
       "header": "{{agent}} : {{what}}",
       "paused": "Réveil en pause",
@@ -1472,6 +1534,7 @@
     "not_merged": "{{prs}} fermée sans fusion",
     "not_merged_action": "Retirer",
     "all_merged_to": "Toutes les PR sont fusionnées. La prochaine PR fusionnée fera passer la tâche à {{status}}.",
+    "workflow_owned": "Le workflow déplace la tâche quand sa PR est fusionnée",
     "issue_disabled": "Les fusions de PR ne changent pas cette tâche",
     "issue_disabled_action": "Réactiver"
   },
@@ -1526,7 +1589,8 @@
       "member": "Membre",
       "project_lead": "Responsable du projet",
       "creator": "Créateur de la tâche",
-      "project_lead_named": "{{name}} (responsable du projet)"
+      "project_lead_named": "{{name}} (responsable du projet)",
+      "human_by_role": "Personne selon le rôle"
     },
     "settings": {
       "title": "Workflows",
@@ -1574,7 +1638,7 @@
       "instructions": "Instructions de passage",
       "instructions_placeholder": "Que doit-il se passer à cette étape ?",
       "next": "Une fois terminé, passer à",
-      "back": "Si des changements sont nécessaires, revenir à",
+      "back": "En cas de rejet, renvoyer à",
       "none_option": "Non défini",
       "save": "Enregistrer",
       "create": "Créer",
@@ -1589,6 +1653,7 @@
       "copy_name": "Copie de {{name}}",
       "more": "Plus d’actions",
       "steps_hint": "Faites glisser pour réordonner les colonnes du milieu. Backlog et Blocked sont facultatives. Un nouveau statut est créé à l’enregistrement.",
+      "status_needs_admin": "{{names}} seraient de nouveaux statuts. Seuls les administrateurs de l’espace peuvent ajouter des statuts : retirez ces colonnes ou demandez d’abord à un administrateur de les ajouter.",
       "reorder": "Réordonner {{name}}",
       "card_hand_to": "Confier à",
       "card_then": "puis → {{status}}",
@@ -1602,7 +1667,8 @@
       "target_squad": "Squad · le leader répartit",
       "target_member": "Membre",
       "instructions_hint": "Envoyées au responsable avec cette exécution, avec la description et les commentaires de la tâche.",
-      "next_hint": "Inscrit dans les consignes du responsable pour qu’il sache quel état vient ensuite. Le système n’avance jamais l’état à la fin d’une exécution.",
+      "advance_on_ci_green": "Quand les contrôles d’une PR liée réussissent, passer à la colonne suivante",
+      "next_hint": "C’est le responsable qui déplace le ticket, et il ne le renvoie que pour une reprise, pas pour un blocage. La fin d’une exécution ne change jamais l’état.",
       "preview_brief": "Aperçu des consignes de l’agent",
       "preview_title": "Consignes de l’étape « {{status}} »",
       "preview_description": "Ce que reçoit l’exécution du responsable quand une tâche entre dans cette étape. Pas besoin d’enregistrer pour prévisualiser.",
@@ -1623,8 +1689,7 @@
       "step_off": "Désactivé : ce workflow n’utilise pas ce statut. Activez-le dans la liste des étapes pour l’utiliser.",
       "status_new_hint": "Nouveau statut. Il sera ajouté à la bibliothèque de statuts à l’enregistrement.",
       "no_other_status": "Tous les statuts sont déjà des étapes.",
-      "no_handoff_step": "Cette étape ne relaie pas : le responsable ne change pas et aucune exécution ne démarre.",
-      "new_step_handoff": "Enregistrez d’abord le workflow ; le nouveau statut pourra relayer ensuite."
+      "no_handoff_step": "Cette étape ne relaie pas : le responsable ne change pas et aucune exécution ne démarre."
     },
     "mapping": {
       "title": "Déplacer les tâches vers {{name}}",
@@ -1667,6 +1732,7 @@
     },
     "picker": {
       "header": "{{workflow}} · selon le projet « {{project}} »",
+      "header_no_project": "Statuts {{workflow}} · sans projet",
       "footer": "Seuls les états du workflow de cette tâche sont affichés. À droite : à qui elle est confiée en entrant dans l’état."
     },
     "confirm": {
@@ -1715,8 +1781,13 @@
     },
     "detail": {
       "follows_project": "(selon le projet)",
+      "follows_override": "(défini sur cette tâche)",
+      "override_title": "Workflow de cette tâche",
+      "override_follow_project": "Suivre le workflow du projet",
+      "override_error": "Impossible de modifier le workflow",
+      "no_workflow": "Aucun workflow",
       "card_title": "{{workflow}} · selon {{project}}",
-      "card_hint": "Le workflow du projet décide de ces colonnes et transferts."
+      "flowchart": "Organigramme"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1725,7 +1796,7 @@
       "next_default": "Colonne suivante ({{status}})",
       "saved": "Passage de relais enregistré",
       "error": "Impossible d’enregistrer le passage de relais",
-      "read_only": "Les transferts appartiennent au workflow ; les administrateurs de l’espace les modifient.",
+      "read_only": "Les transferts appartiennent au workflow ; son propriétaire et les administrateurs de l’espace les modifient.",
       "to": "Confier à",
       "members": "Membres",
       "mode_none": "Pas de relais",
@@ -1735,6 +1806,7 @@
       "mode_member": "Confier à un membre",
       "mode_member_hint": "Change l’assigné ; rien ne s’exécute",
       "project_lead_hint": "Si le responsable du projet est un agent, il démarre une exécution.",
+      "human_by_role_hint": "Demandeur, puis responsable du projet, puis propriétaire de l'espace de travail.",
       "pick_agent": "Choisir un agent",
       "pick_member": "Choisir un membre",
       "search_agents": "Rechercher des agents",
@@ -1764,7 +1836,30 @@
       "scope_own": "Seul ce projet utilise ce workflow.",
       "no_handoff_here": "Pas de relais",
       "scope_shared_one": "{{count}} projet utilise ce workflow. Ses transferts s’appliquent à chaque projet qui l’utilise.",
-      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous."
+      "scope_shared_other": "{{count}} projets utilisent ce workflow. Ses transferts s’appliquent à tous.",
+      "graph_label": "Graphe du workflow",
+      "exits_label": "Sorties du workflow",
+      "exit_item": "De {{from}} vers {{to}} quand {{guard}}",
+      "edit": {
+        "title": "Sorties de {{step}}",
+        "pick": "Sélectionnez une étape pour modifier ses sorties.",
+        "empty": "Aucune sortie.",
+        "group": "Sortie {{n}} : {{to}}",
+        "guard": "Condition",
+        "target": "Mène à",
+        "timeout": "Délai",
+        "on_timeout": "À l’expiration",
+        "add": "Ajouter une sortie",
+        "remove": "Supprimer la sortie",
+        "issues": {
+          "too_many_edges": "{{from}} a plus de {{max}} sorties.",
+          "missing_target": "Une sortie de {{from}} mène à une étape absente.",
+          "bad_guard": "Une sortie de {{from}} a une condition inconnue.",
+          "bad_timeout": "Une sortie de {{from}} exige un délai entre 1m et 720h, par ex. 72h.",
+          "bad_on_timeout": "Une sortie de {{from}} exige une étape valide à l’expiration.",
+          "ci_green_source": "{{from}} ne peut pas avancer quand la CI est verte."
+        }
+      }
     },
     "templates": {
       "delivery": {
@@ -1793,5 +1888,51 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "a créé {{created}} · mis à jour {{updated}}"
+  },
+  "decision": {
+    "class": {
+      "reversible": "réversible",
+      "spend": "dépense",
+      "deploy": "déploiement",
+      "publish": "publication",
+      "irreversible": "irréversible",
+      "product_direction": "orientation produit"
+    },
+    "state": {
+      "pending": "En attente",
+      "effective": "En vigueur",
+      "disclaimed": "Retirée",
+      "delivered": "Livrée",
+      "recorded": "Enregistrée"
+    },
+    "via_dm": "via DM",
+    "recorded_by": "Enregistré par {{name}}",
+    "recorded_for": "Enregistrée pour {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Aller à la carte",
+    "answered_in_dm": "Répondu dans le DM",
+    "private_dm": "d'un DM privé",
+    "disclaim_action": "Retirer",
+    "disclaiming": "Retrait…",
+    "disclaim_title": "Retirer cette décision ?",
+    "disclaim_desc": "L'agent est informé que la décision est retirée et la demande est rouverte. Cette action est irréversible.",
+    "keep_action": "Garder la décision",
+    "changed_title": "Cette décision a changé pendant votre lecture.",
+    "changed_body": "Actualisez pour voir l'état actuel avant de la retirer. Rien n'a été retiré.",
+    "refresh_action": "Actualiser",
+    "withdrawn_title": "Déjà retirée.",
+    "withdrawn_body": "Ce clic n'a rien modifié.",
+    "review_action": "Consulter",
+    "failed_notice": "Retrait impossible. La décision est inchangée.",
+    "try_again_action": "Réessayer",
+    "full_message": "Message complet",
+    "agent_note": "Note de l'agent",
+    "timing_disclaimed": "Désavoué le {{time}}",
+    "timing_effective": "En vigueur depuis le {{time}}",
+    "timing_pending_window": "En attente. Prend effet le {{time}} ; {{minutes}} min pour désavouer.",
+    "timing_pending_wake": "En attente. Prend effet dès que l'agent est réveillé."
   }
 }

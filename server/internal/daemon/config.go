@@ -17,6 +17,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -113,9 +114,10 @@ type Config struct {
 	Profile                        string                // profile name (empty = default)
 	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	KeepEnvAfterTask               bool                  // preserve env after task for debugging
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
+	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
 	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
@@ -271,7 +273,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// can re-run the same discovery on a live daemon (MUL-5439).
 	agents := probeAgentCLIs()
 	if len(agents) == 0 && !overrides.AllowNoAgents {
-		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, or zeroclaw and ensure it is on PATH")
+		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, devin, dim, or zeroclaw and ensure it is on PATH")
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
@@ -545,13 +547,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		healthPort = overrides.HealthPort
 	}
 
-	// Keep env after task: env > default (false)
-	keepEnv := os.Getenv("MULTICA_KEEP_ENV_AFTER_TASK") == "true" || os.Getenv("MULTICA_KEEP_ENV_AFTER_TASK") == "1"
-
 	// GC config: env > defaults
 	gcEnabled := true
 	if v := os.Getenv("MULTICA_GC_ENABLED"); v == "false" || v == "0" {
 		gcEnabled = false
+	}
+	sandboxMode, err := sandbox.ParseMode(os.Getenv("MULTICA_SANDBOX_MODE"))
+	if err != nil {
+		return Config{}, fmt.Errorf("MULTICA_SANDBOX_MODE: %w", err)
 	}
 	gcInterval, err := durationFromEnv("MULTICA_GC_INTERVAL", DefaultGCInterval)
 	if err != nil {
@@ -638,7 +641,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Profile:                         profile,
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
-		KeepEnvAfterTask:                keepEnv,
+		SandboxMode:                     sandboxMode,
+		SandboxHomeTemplate:             strings.TrimSpace(os.Getenv("MULTICA_SANDBOX_HOME_TEMPLATE")),
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,
@@ -981,7 +985,7 @@ func isExecutableFile(path string) bool {
 // doesn't require editing this list by hand.
 var defaultAgentCommandNames = append([]string{
 	"claude", "codex", "opencode", "codearts", "deveco", "openclaw", "hermes",
-	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "dim", "zeroclaw",
+	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "muse", "devin", "dim", "zeroclaw",
 }, agent.BuiltinRuntimeCommands()...)
 
 // codexDesktopAppBundlePaths returns candidate macOS app-bundle locations for

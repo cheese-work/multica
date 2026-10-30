@@ -27,7 +27,7 @@ func TestDecisionRequestExplicitNewLane(test *testing.T) {
 			if scenario == "bad_tag" {
 				dbfx.Exec(test, `UPDATE comment SET author_id = $1 WHERE id = $2`, testUserID, fixture.tagID)
 			}
-			request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "new_dm": true, "for": fixture.humanID, "ask": "Choose a new DM", "escalation_class": "reversible"})
+			request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "new_dm": true, "for": fixture.humanID, "ask": fixture.structuredAsk(), "escalation_class": "reversible"})
 			request.Header.Set("X-Actor-Source", "task_token")
 			request.Header.Set("X-Agent-ID", fixture.agentID)
 			request.Header.Set("X-Task-ID", fixture.taskID)
@@ -85,10 +85,10 @@ func TestDecisionRequestConcurrentNewDM(test *testing.T) {
 }
 
 func TestDecisionRequestLaneChoiceRefusals(test *testing.T) {
-	for _, scenario := range []string{"implicit", "both", "new_without_person", "unlisted", "unnamed_person"} {
+	for _, scenario := range []string{"implicit", "both", "new_without_person", "archived", "unnamed_person"} {
 		test.Run(scenario, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
-			body := map[string]any{"issue_id": fixture.issueID, "ask": "Choose explicitly", "escalation_class": "reversible"}
+			body := map[string]any{"issue_id": fixture.issueID, "ask": fixture.structuredAsk(), "escalation_class": "reversible"}
 			want := http.StatusBadRequest
 			switch scenario {
 			case "both":
@@ -98,10 +98,8 @@ func TestDecisionRequestLaneChoiceRefusals(test *testing.T) {
 			case "unnamed_person":
 				body["new_dm"], body["for"] = true, testUserID
 				want = http.StatusForbidden
-			case "unlisted":
-				for index := 0; index < 10; index++ {
-					dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "more recent"})
-				}
+			case "archived":
+				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)
 				body["session_id"] = fixture.sessionID
 				want = http.StatusForbidden
 			}

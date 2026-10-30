@@ -26,6 +26,16 @@ import (
 // locate their config, and disables TTY prompting so auth failures produce
 // clear errors instead of blocking on a non-existent terminal.
 //
+// GIT_TERMINAL_PROMPT=0 does not stop GUI credential helpers: on Windows the
+// Git Credential Manager (credential.helper=manager) opens a login window —
+// for GitLab hosts a browser OAuth page — for every clone/fetch that has no
+// stored credential. Startup runs one sync goroutine per workspace in
+// parallel, so a first open on a fresh machine sprayed dozens of GCM dialogs
+// at once. GCM_INTERACTIVE=never keeps stored-credential lookup working but
+// makes GCM fail fast instead of prompting, so background sync reports a
+// clear error and the user authenticates deliberately once; the next sync
+// cycle picks up the stored credential automatically.
+//
 // safe.directory=* is set via GIT_CONFIG_* env vars so git trusts all
 // directories regardless of ownership. The daemon manages its own bare
 // caches and worktrees, so the ownership check adds no security value
@@ -49,6 +59,7 @@ func gitEnv() []string {
 	idx := strconv.Itoa(existing)
 	return append(base,
 		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=never",
 		"GIT_CONFIG_COUNT="+strconv.Itoa(existing+1),
 		"GIT_CONFIG_KEY_"+idx+"=safe.directory",
 		"GIT_CONFIG_VALUE_"+idx+"=*",
@@ -173,6 +184,7 @@ type Cache struct {
 	// worktree admin dirs) don't tolerate parallel mutations on the same
 	// repo. Separate repos are independent and run concurrently.
 	repoLocks sync.Map // barePath -> *repoLock
+	caMu      sync.Mutex
 }
 
 // ErrRepoBusy means a foreground checkout could not acquire its repository
@@ -379,6 +391,7 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 		if isBareRepo(barePath) {
 			// Already cached — fetch latest.
 			c.logger.Info("repo cache: fetching", "url", repo.URL, "path", barePath)
+			c.configureRepoCABundleLogged(ctx, barePath)
 			if err := gitFetchContext(ctx, barePath); err != nil {
 				c.logger.Warn("repo cache: fetch failed", "url", repo.URL, "error", err)
 				if firstErr == nil {
@@ -593,10 +606,16 @@ func gitCloneBare(url, dest string) error {
 }
 
 func gitCloneBareContext(ctx context.Context, url, dest string) error {
-	if out, err := runGitCombinedOutputContext(ctx, "clone", "--bare", url, dest); err != nil {
+	args := append(caCloneArgs(), "clone", "--bare", url, dest)
+	if out, err := runGitCombinedOutputContext(ctx, args...); err != nil {
 		// Clean up partial clone.
 		os.RemoveAll(dest)
 		return fmt.Errorf("git clone --bare: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	// Record the CA bundle before the refspec migration below fetches again.
+	if err := configureRepoCABundleContext(ctx, dest); err != nil {
+		os.RemoveAll(dest)
+		return err
 	}
 	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
 	// a mirror-style fetch refspec. Convert the bare repo to the standard
@@ -724,6 +743,7 @@ type WorktreeParams struct {
 	Ref                 string // optional branch, tag, or commit to base the worktree on
 	AgentName           string // for branch naming
 	TaskID              string // for branch naming uniqueness
+	IssueIdentifier     string // issue key (e.g. CHE-1988) carried in the branch name so the PR links; empty for non-issue tasks
 	CoAuthoredByEnabled bool   // install prepare-commit-msg hook for Co-authored-by trailer
 	// LockWaitTimeout bounds only the wait for another same-repository
 	// operation. Zero preserves the historical unbounded wait for internal and
@@ -736,6 +756,13 @@ type WorktreeParams struct {
 	// listed as a writable root — on Linux (multica-ai/multica#2925) and on the
 	// Windows native sandbox (multica-ai/multica#6449).
 	IsolatedGitMetadata bool
+	// SharedObjects makes the isolated checkout borrow the cache's objects
+	// through read-only alternates instead of copying them, and pins the
+	// task's base in the cache with a keep-ref (shared_objects.go). The
+	// restricted sandbox profile needs it: the cache's refs and config are not
+	// mounted. It implies IsolatedGitMetadata. A workdir that already holds a
+	// hard-linked isolated checkout keeps that checkout as it is.
+	SharedObjects bool
 	// Fresh discards what an existing checkout at the target path holds —
 	// uncommitted changes, untracked files, its branch position — and starts
 	// over on a new branch from the base ref. It deletes no branch holding
@@ -815,6 +842,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// ultimately succeeds. Stamping only on success would let a repo whose
 	// checkouts keep failing age out from under the tasks still trying to use it.
 	MarkUsed(barePath, c.logger)
+	c.configureRepoCABundleLogged(ctx, barePath)
 
 	// Fetch latest from origin. This also migrates the bare cache's refspec
 	// to the modern remote-tracking layout on first run, so subsequent fetches
@@ -861,8 +889,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
 	}
 
-	// Build branch name: agent/{sanitized-name}/{task-id}
-	branchName := fmt.Sprintf("agent/%s/%s", sanitizeName(params.AgentName), taskKey(params.TaskID))
+	branchName := newTaskBranchName(params.AgentName, params.IssueIdentifier, params.TaskID)
 
 	// Derive directory name from repo URL.
 	dirName := repoNameFromURL(params.RepoURL)
@@ -872,7 +899,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// shape even if a later task comes from an older CLI or a different runtime
 	// that omits the mode hint. This also makes provider transitions on a reused
 	// workdir backward compatible.
-	if params.IsolatedGitMetadata || isIsolatedCheckoutContext(ctx, worktreePath) {
+	if params.IsolatedGitMetadata || params.SharedObjects || isIsolatedCheckoutContext(ctx, worktreePath) {
 		result, err := c.createOrUpdateIsolatedCheckoutContext(
 			ctx,
 			barePath,
@@ -881,6 +908,8 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			branchName,
 			baseRef,
 			params.Fresh,
+			params.SharedObjects,
+			params.TaskID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("create isolated checkout: %w", err)
@@ -1005,17 +1034,32 @@ const (
 // an agent's normal fetch / push commands still target GitHub rather than the
 // daemon-owned bare cache.
 func (c *Cache) createOrUpdateIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef string, fresh bool) (*WorktreeResult, error) {
-	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, fresh)
+	return c.createOrUpdateIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, fresh, false, "")
 }
 
-func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string, fresh bool) (*WorktreeResult, error) {
+// createOrUpdateIsolatedCheckoutContext: sharedRequested asks for a
+// shared-objects checkout; taskID names the keep-refs it pins.
+func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef string, fresh, sharedRequested bool, taskID string) (*WorktreeResult, error) {
 	baseCommit, err := resolveCommitContext(ctx, barePath, baseRef)
 	if err != nil {
 		return nil, err
 	}
 
 	if isIsolatedCheckoutContext(ctx, checkoutPath) {
+		// A checkout that already borrows the cache keeps borrowing, whatever
+		// the caller hints; one that holds its own copy of the objects stays so.
+		if hasAlternates(checkoutPath) {
+			if err := pinKeepRef(ctx, barePath, taskID, "base", baseCommit); err != nil {
+				return nil, err
+			}
+			if err := recordKeepRef(checkoutPath, taskID); err != nil {
+				return nil, err
+			}
+		}
 		if err := setIsolatedCheckoutOriginContext(ctx, checkoutPath, repoURL); err != nil {
+			return nil, err
+		}
+		if err := configureRepoCABundleContext(ctx, checkoutPath); err != nil {
 			return nil, err
 		}
 		// Idempotent, and required for a workdir that was first created while
@@ -1064,6 +1108,17 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		}
 		if state.BranchName != "" && state.UnpushedCommits > 0 {
 			carryBranch = state.BranchName
+			if sharedRequested {
+				// The checkout will only borrow this tip from the cache, whose
+				// maintenance drops branches no worktree uses.
+				tip, err := resolveCommitContext(ctx, barePath, "refs/heads/"+carryBranch)
+				if err != nil {
+					return nil, err
+				}
+				if err := pinKeepRef(ctx, barePath, taskID, "carry", tip); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if err := removeLinkedWorktreeContext(ctx, barePath, checkoutPath); err != nil {
 			return nil, err
@@ -1075,9 +1130,19 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 		return nil, fmt.Errorf("stat checkout path: %w", err)
 	}
 
-	actualBranch, err := createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch)
+	if sharedRequested {
+		if err := pinKeepRef(ctx, barePath, taskID, "base", baseCommit); err != nil {
+			return nil, err
+		}
+	}
+	actualBranch, err := createIsolatedCheckoutContext(ctx, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, sharedRequested)
 	if err != nil {
 		return nil, err
+	}
+	if sharedRequested {
+		if err := recordKeepRef(checkoutPath, taskID); err != nil {
+			return nil, err
+		}
 	}
 	return &WorktreeResult{Path: checkoutPath, BranchName: actualBranch}, nil
 }
@@ -1141,18 +1206,25 @@ func localCloneArgs(goos, barePath, checkoutPath string) []string {
 	return append(args, "--origin", isolatedCacheRemoteName, barePath, checkoutPath)
 }
 
+// sharedCloneArgs seeds a checkout that borrows the cache's objects through
+// objects/info/alternates instead of copying or hard-linking them.
+func sharedCloneArgs(barePath, checkoutPath string) []string {
+	return []string{"clone", "--shared", "--no-checkout", "--no-tags", "--origin", isolatedCacheRemoteName, barePath, checkoutPath}
+}
+
 // createIsolatedCheckout seeds a new isolated checkout from the cache. A
 // non-empty carryBranch names a cache branch to import as a local branch of
 // the same name — the branch of the linked worktree this checkout replaces.
 func createIsolatedCheckout(barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string) (_ string, retErr error) {
-	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch)
+	return createIsolatedCheckoutContext(context.Background(), barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch, false)
 }
 
-func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string) (_ string, retErr error) {
-	if out, err := runGitCombinedOutputContext(
-		ctx,
-		localCloneArgs(runtime.GOOS, barePath, checkoutPath)...,
-	); err != nil {
+func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, checkoutPath, branchName, baseRef, baseCommit, carryBranch string, shared bool) (_ string, retErr error) {
+	cloneArgs := localCloneArgs(runtime.GOOS, barePath, checkoutPath)
+	if shared {
+		cloneArgs = sharedCloneArgs(barePath, checkoutPath)
+	}
+	if out, err := runGitCombinedOutputContext(ctx, cloneArgs...); err != nil {
 		// Do not remove checkoutPath here. A different repository with the
 		// same basename could have won the path race after our pre-check; Git
 		// then fails safely, and deleting the path would destroy its checkout.
@@ -1177,6 +1249,10 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "remote", "add", "origin", repoURL); err != nil {
 		return "", fmt.Errorf("add origin remote: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	// Before the first checkout, which may lazily fetch from origin.
+	if err := configureRepoCABundleContext(ctx, checkoutPath); err != nil {
+		return "", err
 	}
 	if isPartialCloneContext(ctx, barePath) {
 		if err := configurePromisorRemoteContext(ctx, checkoutPath); err != nil {
@@ -1533,7 +1609,9 @@ func updateExistingCheckoutContext(ctx context.Context, path, branchName, baseRe
 // holds uncommitted changes, untracked files, or unpushed commits.
 func keepReason(state *WorktreeResult, branchName string) string {
 	switch {
-	case isTaskBranch(state.BranchName, branchName):
+	case isTaskBranch(state.BranchName, branchName),
+		// A checkout made before branches carried the identifier is not renamed.
+		isTaskBranch(state.BranchName, withoutIssueSegment(branchName)):
 		return KeptTaskBranch
 	case state.UncommittedFiles > 0 || state.UnpushedCommits > 0:
 		return KeptLocalWork
@@ -1580,6 +1658,29 @@ func countUnpushedCommitsContext(ctx context.Context, repoPath, ref string) (int
 		return 0, fmt.Errorf("count unpushed commits on %s: %w", ref, err)
 	}
 	return count, nil
+}
+
+// newTaskBranchName is agent/{name}/{issue-}{task-key}. The PR webhook links a PR
+// to an issue from the identifiers in its branch, so an issue task carries its
+// identifier there and every PR it opens links whatever the title says.
+func newTaskBranchName(agentName, issueIdentifier, taskID string) string {
+	key := taskKey(taskID)
+	if strings.TrimSpace(issueIdentifier) != "" {
+		key = sanitizeName(issueIdentifier) + "-" + key
+	}
+	return fmt.Sprintf("agent/%s/%s", sanitizeName(agentName), key)
+}
+
+// withoutIssueSegment is the name taskBranchName gave the same task before it
+// carried the identifier. A task key holds no "-", so everything after the last
+// one in the final segment is the key.
+func withoutIssueSegment(branchName string) string {
+	slash := strings.LastIndex(branchName, "/")
+	dash := strings.LastIndex(branchName, "-")
+	if dash < slash {
+		return branchName
+	}
+	return branchName[:slash+1] + branchName[dash+1:]
 }
 
 // isTaskBranch reports whether branch is the one CreateWorktree gives the task

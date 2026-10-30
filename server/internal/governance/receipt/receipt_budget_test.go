@@ -78,7 +78,9 @@ func newReceiptBudgetFixture(t *testing.T) *receiptBudgetFixture {
 	return &receiptBudgetFixture{pool: pool, workspaceID: workspaceID, service: service}
 }
 
-// realBudgetBound replaces the production 50ms Budget in these tests. They
+// realBudgetBound replaces the production 50ms Budget in these tests (through
+// Observer.observationBudget; the production clamp on Input.Deadline otherwise
+// caps the observation at Budget and defeats this bound, CHE-1578). They
 // assert reservation identity against a real Postgres budget service, not
 // latency (receipt_test.go and receipt_performance_test.go own the 50ms
 // contract). A cold reserve+settle (new pool connection, first-use statement
@@ -99,6 +101,7 @@ func observeRealBudget(t *testing.T, o *Observer, in Input) Result {
 			t.Fatal("cap-1 gate still held; the previous Observe never released it")
 		}
 	}
+	o.observationBudget = realBudgetBound
 	in.Deadline = time.Now().Add(realBudgetBound)
 	return o.Observe(context.Background(), in)
 }

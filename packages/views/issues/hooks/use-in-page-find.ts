@@ -1,18 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
 import { isImeComposing } from "@multica/core/utils";
-
-// In-page find (Cmd/Ctrl+F) for the issue detail page.
-//
-// The comment timeline is virtualized, so native browser find only sees the
-// handful of comments mounted in the viewport. This hook powers a real
-// find-in-page bar: the host force-renders the timeline flat while find is
-// open (so every comment is in the DOM), and matches are painted with the
-// CSS Custom Highlight API — ranges only, never DOM mutation, so it works
-// over React-rendered markdown AND the contenteditable title/description
-// editors without fighting ProseMirror.
 
 const HIGHLIGHT_NAME = "multica-find";
 const ACTIVE_HIGHLIGHT_NAME = "multica-find-active";
@@ -98,6 +88,32 @@ function scrollRangeIntoView(container: HTMLElement | null, range: Range): void 
   container.scrollTop = Math.max(0, target);
 }
 
+const SETTLE_FRAMES = 60;
+
+// A reveal or table layout below the first scroll can push the match back out
+// of view, because the scroll runs once against the layout of that moment. For
+// about a second, re-scroll each frame while the match is outside the band;
+// any user input on the container ends it. Returns the cancel function.
+function keepRangeInView(container: HTMLElement | null, range: Range): () => void {
+  if (!container) return () => {};
+  let frames = 0;
+  let raf = 0;
+  const stop = () => {
+    cancelAnimationFrame(raf);
+    for (const type of USER_SCROLL_EVENTS) container.removeEventListener(type, stop);
+  };
+  const tick = () => {
+    if (!range.startContainer.isConnected || ++frames > SETTLE_FRAMES) return stop();
+    scrollRangeIntoView(container, range);
+    raf = requestAnimationFrame(tick);
+  };
+  for (const type of USER_SCROLL_EVENTS) container.addEventListener(type, stop, { once: true, passive: true });
+  raf = requestAnimationFrame(tick);
+  return stop;
+}
+
+const USER_SCROLL_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
 export interface UseInPageFindResult {
   open: boolean;
   query: string;
@@ -105,6 +121,7 @@ export interface UseInPageFindResult {
   matchCount: number;
   /** 0-based index of the active match, or -1 when there are none. */
   activeIndex: number;
+  activeDocumentId: string | null;
   /** Whether the CSS Custom Highlight API is available in this browser. */
   supported: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -116,6 +133,8 @@ export interface UseInPageFindResult {
 }
 
 export function useInPageFind(options: {
+  documents?: readonly { id: string; text: string }[];
+  revealDocument?: (id: string) => void;
   /** The scroll container whose text is searched. */
   container: HTMLElement | null;
   /**
@@ -139,7 +158,7 @@ export function useInPageFind(options: {
    */
   isReady?: () => boolean;
 }): UseInPageFindResult {
-  const { container, contentKey, enabled = true, isReady = () => true } = options;
+  const { container, contentKey, enabled = true, isReady = () => true, documents, revealDocument } = options;
   const isReadyRef = useRef(isReady);
   isReadyRef.current = isReady;
 
@@ -155,6 +174,40 @@ export function useInPageFind(options: {
   const activeIndexRef = useRef(activeIndex);
   activeIndexRef.current = activeIndex;
   const supported = highlightApiSupported();
+  const sourceMatches = useMemo(() => {
+    if (!open || !documents || !query.trim()) return [];
+    const needle = query.toLowerCase();
+    return documents.flatMap((entry) => {
+      const text = entry.text.toLowerCase();
+      const matches: { id: string; occurrence: number }[] = [];
+      let offset = text.indexOf(needle);
+      while (offset !== -1) {
+        matches.push({ id: entry.id, occurrence: matches.length });
+        offset = text.indexOf(needle, offset + needle.length);
+      }
+      return matches;
+    });
+  }, [documents, query, open]);
+  const activeSourceMatch = sourceMatches[Math.max(0, Math.min(activeIndex, sourceMatches.length - 1))];
+  const activeSourceId = activeSourceMatch?.id;
+  const activeSourceOccurrence = activeSourceMatch?.occurrence;
+  const revealDocumentRef = useRef(revealDocument);
+  revealDocumentRef.current = revealDocument;
+  const pendingSourceScroll = useRef(false);
+  // The settle re-scroll belongs to one active match. Cancel it whenever that
+  // match ends: find closes, the query changes or clears, or no match is left.
+  const stopSettleRef = useRef<(() => void) | null>(null);
+  const stopSettle = useCallback(() => {
+    stopSettleRef.current?.();
+    stopSettleRef.current = null;
+  }, []);
+  useEffect(() => stopSettle, [stopSettle]);
+  const navigationCountRef = useRef(0);
+  useEffect(() => {
+    if (!open || !activeSourceId) return;
+    pendingSourceScroll.current = true;
+    revealDocumentRef.current?.(activeSourceId);
+  }, [open, query, activeSourceId, activeSourceOccurrence, activeIndex]);
 
   const clearHighlights = useCallback(() => {
     if (!supported) return;
@@ -183,9 +236,14 @@ export function useInPageFind(options: {
           CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
         }
       }
-      if (range && scroll) scrollRangeIntoView(containerRef.current, range);
+      if (!range) stopSettle();
+      if (range && scroll) {
+        stopSettle();
+        scrollRangeIntoView(containerRef.current, range);
+        stopSettleRef.current = keepRangeInView(containerRef.current, range);
+      }
     },
-    [supported],
+    [supported, stopSettle],
   );
 
   // Rebuild the match set from the live DOM. `resetActive` starts navigation
@@ -203,10 +261,37 @@ export function useInPageFind(options: {
     (resetActive: boolean) => {
       const root = containerRef.current;
       if (!open || !root || query.trim().length === 0) {
+        stopSettle();
         rangesRef.current = [];
         clearHighlights();
         setMatchCount(0);
         setActiveIndex(-1);
+        navigationCountRef.current = 0;
+        return;
+      }
+      if (documents) {
+        navigationCountRef.current = sourceMatches.length;
+        setMatchCount(sourceMatches.length);
+        const nextIndex = resetActive || activeIndexRef.current < 0 ? 0 : Math.min(activeIndexRef.current, sourceMatches.length - 1);
+        setActiveIndex(sourceMatches.length ? nextIndex : -1);
+        rangesRef.current = [];
+        clearHighlights();
+        const match = sourceMatches[nextIndex];
+        if (!match || !isReadyRef.current()) return;
+        const element = root.ownerDocument.getElementById(match.id);
+        if (!element || !root.contains(element)) return;
+        const matches = collectTextMatches(element.querySelector<HTMLElement>("[data-comment-content]") ?? element, query);
+        const ranges = matches.map((entry) => {
+          const range = new Range();
+          range.setStart(entry.node, entry.start);
+          range.setEnd(entry.node, entry.end);
+          return range;
+        });
+        rangesRef.current = ranges;
+        if (supported) CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(...ranges));
+        const occurrence = Math.min(match.occurrence, ranges.length - 1);
+        applyActive(ranges, occurrence, pendingSourceScroll.current);
+        if (ranges.length) pendingSourceScroll.current = false;
         return;
       }
       if (!isReadyRef.current()) {
@@ -227,6 +312,7 @@ export function useInPageFind(options: {
         return range;
       });
       rangesRef.current = ranges;
+      navigationCountRef.current = ranges.length;
 
       if (ranges.length === 0) {
         clearHighlights();
@@ -247,7 +333,7 @@ export function useInPageFind(options: {
       // while content mutates underneath a fixed active match.
       applyActive(ranges, nextActive, resetActive);
     },
-    [open, query, supported, clearHighlights, applyActive],
+    [open, query, supported, clearHighlights, applyActive, stopSettle, documents, sourceMatches],
   );
 
   const recomputeRef = useRef(recompute);
@@ -268,7 +354,7 @@ export function useInPageFind(options: {
     if (!open) return;
     const raf = requestAnimationFrame(() => recomputeRef.current(false));
     return () => cancelAnimationFrame(raf);
-  }, [contentKey, open]);
+  }, [contentKey, open, sourceMatches]);
 
   // Re-arm the moment the host's readiness predicate flips to ready. Without
   // this, a recompute rejected above (query/content-key effect fired before
@@ -301,9 +387,11 @@ export function useInPageFind(options: {
     if (readyNowRef.current) return;
     rangesRef.current = [];
     clearHighlights();
-    setMatchCount(0);
-    setActiveIndex(-1);
-  }, [open, isReady, clearHighlights]);
+    if (!documents) {
+      setMatchCount(0);
+      setActiveIndex(-1);
+    }
+  }, [open, isReady, clearHighlights, documents]);
 
   // Async DOM churn (markdown/code highlight settling, streamed replies)
   // invalidates the ranges; re-derive them, coalescing bursts into one frame.
@@ -331,8 +419,12 @@ export function useInPageFind(options: {
   // (Recompute handles the active tint for content-driven changes.)
   useEffect(() => {
     if (!open) return;
+    if (documents) {
+      recomputeRef.current(false);
+      return;
+    }
     applyActive(rangesRef.current, activeIndex, true);
-  }, [activeIndex, open, applyActive]);
+  }, [activeIndex, open, applyActive, documents]);
 
   // Global Cmd/Ctrl+F. The listener is scoped to the mounted issue detail; on
   // desktop, <Activity> cycles this effect with tab visibility, so only the
@@ -360,13 +452,20 @@ export function useInPageFind(options: {
   // Drop highlights on unmount so a stale tint can't linger after navigation.
   useEffect(() => clearHighlights, [clearHighlights]);
 
-  const setQuery = useCallback((value: string) => setQueryState(value), []);
+  const setQuery = useCallback((value: string) => {
+    stopSettle();
+    setActiveIndex(0);
+    setQueryState(value);
+  }, [stopSettle]);
   const openFind = useCallback(() => setOpen(true), []);
-  const closeFind = useCallback(() => setOpen(false), []);
+  const closeFind = useCallback(() => {
+    stopSettle();
+    setOpen(false);
+  }, [stopSettle]);
 
   const goNext = useCallback(() => {
     setActiveIndex((prev) => {
-      const n = rangesRef.current.length;
+      const n = navigationCountRef.current;
       if (n === 0) return -1;
       return prev < 0 ? 0 : (prev + 1) % n;
     });
@@ -374,7 +473,7 @@ export function useInPageFind(options: {
 
   const goPrev = useCallback(() => {
     setActiveIndex((prev) => {
-      const n = rangesRef.current.length;
+      const n = navigationCountRef.current;
       if (n === 0) return -1;
       return prev < 0 ? n - 1 : (prev - 1 + n) % n;
     });
@@ -385,6 +484,7 @@ export function useInPageFind(options: {
     query,
     matchCount,
     activeIndex,
+    activeDocumentId: open ? activeSourceMatch?.id ?? null : null,
     supported,
     inputRef,
     setQuery,

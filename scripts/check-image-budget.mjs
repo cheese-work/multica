@@ -14,6 +14,13 @@
 //
 // Usage:
 //   node scripts/check-image-budget.mjs --base origin/main
+//   node scripts/check-image-budget.mjs --base merge-parent
+//
+// `merge-parent` is for a pull_request job, which checks out GitHub's merge of
+// the PR head into the base branch as it is at that moment. The first parent of
+// that merge commit is the base the merge was made with. The event payload's
+// base.sha can be older, and comparing against it charges the PR for every
+// image the base branch gained in between.
 //
 // Reads PR_BODY from the environment for the exemption escape hatch, and emits
 // GitHub Actions annotations when GITHUB_ACTIONS is set.
@@ -99,9 +106,21 @@ function blobSize(ref, file) {
 
 function readBaseRef() {
   const i = process.argv.indexOf("--base");
+  if (i !== -1 && process.argv[i + 1] === "merge-parent") return mergeParent();
   if (i !== -1 && process.argv[i + 1]) return process.argv[i + 1];
   if (process.env.GITHUB_BASE_REF) return `origin/${process.env.GITHUB_BASE_REF}`;
   throw new Error("no base ref: pass --base <ref> or set GITHUB_BASE_REF");
+}
+
+// First parent of HEAD when HEAD is a merge commit.
+function mergeParent() {
+  const parents = execFileSync("git", ["rev-list", "--parents", "-n", "1", "HEAD"], { encoding: "utf8" })
+    .trim()
+    .split(" ");
+  if (parents.length !== 3) {
+    throw new Error("--base merge-parent needs HEAD to be a merge commit (a pull_request checkout)");
+  }
+  return parents[1];
 }
 
 function kb(bytes) {

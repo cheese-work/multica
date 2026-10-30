@@ -1,89 +1,87 @@
-import { expect, test } from "@playwright/test";
-import { buildSurfaceDocument } from "../packages/views/plugins/surface-document";
+import { expect, test, type Page } from "@playwright/test";
+import { buildSurfaceFrameDocument } from "../packages/views/plugins/surface-document";
 
 /**
- * Real Chromium coverage for behavior jsdom does not implement: executing a
- * sandboxed srcdoc document, reporting errors from a dynamically inserted
- * script, and firing page lifecycle events when the host rewrites srcdoc.
+ * Real Chromium coverage for behavior jsdom does not implement: the trusted
+ * wrapper document loading a sandboxed plugin document, and what the host sees
+ * when the plugin errors or the host rewrites srcdoc.
+ *
+ * The plugin document itself is served by the content origin and built on the
+ * server, so these tests stand in for it with a routed page. The host arms its
+ * listener before it assigns srcdoc (plugin-surface-frame.tsx), and so does the
+ * page below; a message sent before a listener exists is not replayed.
  */
+
+const CONTENT_ORIGIN = "https://plugin-content.example.test";
+
+async function serveContent(page: Page, script: string) {
+  await page.route(`${CONTENT_ORIGIN}/**`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      headers: { "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'" },
+      body: `<!doctype html><script>${script}</script>`,
+    }),
+  );
+}
+
+async function mountHost(page: Page) {
+  await page.setContent("<!doctype html><body></body>");
+  await page.evaluate(() => {
+    const state = { connected: 0, error: 0, navigated: 0, blocked: 0 };
+    (window as unknown as { __surface: typeof state }).__surface = state;
+    window.addEventListener("message", (event) => {
+      const type = (event.data as { type?: string } | null)?.type;
+      if (type === "multica:plugin-bridge-connect" && event.ports[0]) state.connected++;
+      if (type === "multica:plugin-surface-error") state.error++;
+      if (type === "multica:plugin-surface-navigated") state.navigated++;
+      if (type === "multica:plugin-surface-navigation-blocked") state.blocked++;
+    });
+    const frame = document.createElement("iframe");
+    frame.id = "surface";
+    frame.sandbox.add("allow-scripts");
+    document.body.appendChild(frame);
+  });
+}
+
+const surface = (page: Page) =>
+  page.evaluate(
+    () => (window as unknown as { __surface: Record<string, number> }).__surface,
+  );
+
+const load = (page: Page, bridgeToken: string) =>
+  page.evaluate((srcdoc) => {
+    document.querySelector<HTMLIFrameElement>("#surface")!.srcdoc = srcdoc;
+  }, buildSurfaceFrameDocument({ url: `${CONTENT_ORIGIN}/plugin-surfaces/opaque`, bridgeToken }));
 
 test.describe("plugin surface document (real Chromium, sandboxed srcdoc)", () => {
   test("a host-authored srcdoc reload is not reported as hostile navigation", async ({ page }) => {
-    const first = buildSurfaceDocument({
-      code: "parent.postMessage({ type: 'plugin-test-ran' }, '*');",
-      grantedScopes: [],
-      theme: {},
-    });
-    const themed = buildSurfaceDocument({
-      code: "parent.postMessage({ type: 'plugin-test-ran' }, '*');",
-      grantedScopes: [],
-      theme: { "--background": "white" },
-    });
+    await serveContent(
+      page,
+      `const channel = new MessageChannel();
+       parent.postMessage({ type: "multica:plugin-bridge-connect", version: 2, challenge: "proof" }, "*", [channel.port1]);`,
+    );
+    await mountHost(page);
 
-    await page.setContent("<!doctype html><body></body>");
-    await page.evaluate((srcdoc) => {
-      const state = { ran: 0, navigated: 0 };
-      (window as unknown as { __surfaceState: typeof state }).__surfaceState = state;
-      window.addEventListener("message", (event) => {
-        const type = (event.data as { type?: string } | null)?.type;
-        if (type === "plugin-test-ran") state.ran++;
-        if (type === "multica:plugin-surface-navigated") state.navigated++;
-      });
-      const frame = document.createElement("iframe");
-      frame.id = "surface";
-      frame.sandbox.add("allow-scripts");
-      frame.srcdoc = srcdoc;
-      document.body.appendChild(frame);
-    }, first);
+    await load(page, "proof");
+    await expect.poll(async () => (await surface(page)).connected).toBe(1);
 
-    await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceState: { ran: number } }).__surfaceState.ran,
-    )).toBe(1);
+    // The host rewrites srcdoc, for instance to apply a new theme.
+    await load(page, "proof");
+    await expect.poll(async () => (await surface(page)).connected).toBe(2);
 
-    await page.evaluate((srcdoc) => {
-      document.querySelector<HTMLIFrameElement>("#surface")!.srcdoc = srcdoc;
-    }, themed);
-    await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceState: { ran: number } }).__surfaceState.ran,
-    )).toBe(2);
-
-    expect(await page.evaluate(() =>
-      (window as unknown as { __surfaceState: { navigated: number } }).__surfaceState.navigated,
-    )).toBe(0);
+    const seen = await surface(page);
+    expect(seen.navigated).toBe(0);
+    expect(seen.blocked).toBe(0);
+    expect(seen.error).toBe(0);
   });
 
-  test("reports a synchronous plugin error even when the host listener mounts late", async ({ page }) => {
-    const documentWithError = buildSurfaceDocument({
-      code: "throw new Error('plugin failed during bootstrap');",
-      grantedScopes: [],
-      theme: {},
-    });
+  test("reports a synchronous plugin error to a host that is already listening", async ({ page }) => {
+    await serveContent(page, `parent.postMessage({ type: "multica:plugin-surface-error" }, "*");`);
+    await mountHost(page);
 
-    await page.setContent("<!doctype html><body></body>");
-    await page.evaluate((srcdoc) => {
-      const frame = document.createElement("iframe");
-      frame.id = "surface";
-      frame.sandbox.add("allow-scripts");
-      frame.srcdoc = srcdoc;
-      document.body.appendChild(frame);
-    }, documentWithError);
+    await load(page, "proof");
 
-    // The guest has already executed and failed before the host starts
-    // listening. A one-shot postMessage is lost in this ordering.
-    await page.waitForTimeout(300);
-    await page.evaluate(() => {
-      (window as unknown as { __surfaceErrors: number }).__surfaceErrors = 0;
-      window.addEventListener("message", (event) => {
-        if ((event.data as { type?: string } | null)?.type !== "multica:plugin-surface-error") return;
-        const frame = document.querySelector<HTMLIFrameElement>("#surface")!;
-        if (event.source !== frame.contentWindow) return;
-        (window as unknown as { __surfaceErrors: number }).__surfaceErrors++;
-        frame.contentWindow!.postMessage({ type: "multica:plugin-surface-error-ack" }, "*");
-      });
-    });
-
-    await expect.poll(() => page.evaluate(() =>
-      (window as unknown as { __surfaceErrors: number }).__surfaceErrors,
-    )).toBe(1);
+    await expect.poll(async () => (await surface(page)).error).toBe(1);
+    expect((await surface(page)).connected).toBe(0);
   });
 });

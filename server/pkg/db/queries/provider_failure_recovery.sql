@@ -12,10 +12,46 @@ SELECT
 FROM agent_task_queue task
 JOIN autopilot_run run ON run.id = task.autopilot_run_id
     OR (task.autopilot_run_id IS NULL AND run.issue_id = task.issue_id)
+JOIN autopilot ap ON ap.id = run.autopilot_id
 WHERE run.trigger_id = @trigger_id
   AND run.source = 'schedule'
   AND task.status IN ('completed', 'failed', 'cancelled')
   AND COALESCE(run.trigger_payload->>'head_sha', '') = @condition_key::text
+  AND (
+      task.autopilot_run_id IS NOT NULL
+      OR (
+          task.trigger_comment_id IS NULL
+          AND task.delegated_from_task_id IS NULL
+          AND task.rerun_of_task_id IS NULL
+          AND COALESCE(task.originator_source, '') <> 'direct_human'
+          AND COALESCE(task.context->>'wakeup_id', '') = ''
+          AND (
+              (ap.assignee_type = 'agent' AND task.agent_id = ap.assignee_id AND task.squad_id IS NULL)
+              OR (ap.assignee_type = 'squad' AND task.squad_id = COALESCE(run.squad_id, ap.assignee_id) AND task.is_leader_task = TRUE)
+          )
+          AND (task.status = 'completed' OR run.status <> 'completed')
+          AND NOT EXISTS (
+              SELECT 1 FROM agent_task_queue prior
+              WHERE prior.issue_id = run.issue_id
+                AND prior.id <> task.id
+                AND prior.autopilot_run_id IS NULL
+                AND prior.trigger_comment_id IS NULL
+                AND prior.delegated_from_task_id IS NULL
+                AND prior.rerun_of_task_id IS NULL
+                AND COALESCE(prior.originator_source, '') <> 'direct_human'
+                AND COALESCE(prior.context->>'wakeup_id', '') = ''
+                AND (
+                    (ap.assignee_type = 'agent' AND prior.agent_id = ap.assignee_id AND prior.squad_id IS NULL)
+                    OR (ap.assignee_type = 'squad' AND prior.squad_id = COALESCE(run.squad_id, ap.assignee_id) AND prior.is_leader_task = TRUE)
+                )
+                AND prior.status = 'completed'
+                AND (
+                    task.status <> 'completed'
+                    OR (prior.created_at, prior.id) < (task.created_at, task.id)
+                )
+          )
+      )
+  )
 ORDER BY COALESCE(task.completed_at, task.created_at) DESC, task.created_at DESC
 LIMIT 1;
 

@@ -22,6 +22,7 @@ import type {
   ChatPendingTask,
   ChatSession,
   ChatSessionUsage,
+  ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -416,7 +417,7 @@ export const GitHubPullRequestSchema = z.object({
   closed_at: z.string().nullable(),
   pr_created_at: z.string(),
   pr_updated_at: z.string(),
-  link_source: z.enum(["manual", "title", "branch", "auto"]).optional().catch(undefined),
+  link_source: z.enum(["manual", "title", "branch", "reference", "auto"]).optional().catch(undefined),
   mergeable: z.string().nullable().optional(),
   merge_state_status: z.string().nullable().optional(),
   snapshot_available: z.boolean().optional(),
@@ -554,8 +555,20 @@ const IssueWorkflowHandlerSchema = z.object({
 }).loose();
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
 ]);
+
+const IssueWorkflowEdgeSchema = z.object({
+  to: z.string(),
+  guard: z.string(),
+  timeout: z.string().optional(),
+  on_timeout: z.string().optional(),
+});
+
+const IssueWorkflowSubWorkflowSchema = z.object({
+  workflow_id: z.string(),
+  stage: z.number().optional(),
+});
 
 const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
@@ -563,6 +576,9 @@ const IssueWorkflowStepSchema = z.object({
   instructions: z.string().default(""),
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
+  advance_on_ci_green: z.boolean().optional(),
+  edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -571,7 +587,11 @@ export const IssueWorkflowSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   is_default: z.boolean().default(false),
+  owner_id: z.string().nullable().default(null),
   steps: z.array(IssueWorkflowStepSchema).default([]),
+  // Run rules (CHE-2152): null keeps the server default budget.
+  max_runs_per_issue: z.number().nullable().default(null),
+  include_child_prs: z.boolean().default(true),
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
@@ -591,7 +611,10 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   name: "",
   description: "",
   is_default: false,
+  owner_id: null,
   steps: [],
+  max_runs_per_issue: null,
+  include_child_prs: true,
   project_ids: [],
   created_at: "",
   updated_at: "",
@@ -869,6 +892,7 @@ export interface AppConfigResponse {
   analytics_environment?: string;
   daemon_server_url?: string;
   daemon_app_url?: string;
+  daemon_setup_target?: "cloud" | "self_host" | "unknown";
   workspace_creation_disabled?: boolean;
   /** Whether this deployment offers the self-hosted Git provider integration
    * (self-host only; off on the managed cloud). Absent/false hides the whole
@@ -894,8 +918,8 @@ export interface AppConfigResponse {
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
   server_version?: string;
-  version?: string;
-  build?: string;
+  server_build?: string;
+  server_commit?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -946,6 +970,103 @@ const ChatQuickActionSchema = z.object({
   primary: z.boolean().optional(),
 }).loose();
 
+// Every field is required: a half-formed wakeup degrades to a normal bubble
+// (via .catch on the message field) rather than a row with holes.
+const ChatScheduledWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string(),
+  title: z.string().default(""),
+  instruction: z.string(),
+  fire_at: z.string(),
+  created_at: z.string(),
+}).loose();
+
+const DecisionStateSchema = z.enum(["pending", "effective", "disclaimed"]);
+
+// Display-only fields of a decision-stamped comment. Each degrades on its own so
+// a malformed or future value never hides the comment (API Compatibility).
+const decisionCommentShape = {
+  decision_comment_kind: z
+    .enum(["ask", "quote", "disclaim", "delivery", "cancel", "veto"])
+    .nullable()
+    .optional()
+    .catch(undefined),
+  decision_answer_id: z.string().nullable().optional().catch(undefined),
+  decision_human_user_id: z.string().optional().catch(undefined),
+  decision_recorder_agent_id: z.string().optional().catch(undefined),
+  decision_class: z.string().optional().catch(undefined),
+  decision_state: DecisionStateSchema.optional().catch(undefined),
+  decision_delivered: z.boolean().optional().catch(undefined),
+  decision_chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  decision_option_label: z.string().optional().catch(undefined),
+  decision_issue_comment_id: z.string().optional().catch(undefined),
+  decision_receipt_answer_id: z.string().optional().catch(undefined),
+  decision_issue_id: z.string().optional().catch(undefined),
+  decision_issue_identifier: z.string().optional().catch(undefined),
+  effective_at: z.string().nullable().optional().catch(undefined),
+  disclaimed_at: z.string().nullable().optional().catch(undefined),
+  decision_source_session_id: z.string().optional().catch(undefined),
+  decision_source_message_id: z.string().optional().catch(undefined),
+  decision_request_session_id: z.string().optional().catch(undefined),
+  decision_request_message_id: z.string().optional().catch(undefined),
+  decision_answered_label: z.string().optional().catch(undefined),
+  decision_full_message: z.string().optional().catch(undefined),
+  decision_answered_at: z.string().optional().catch(undefined),
+  decision_woken_at: z.string().nullable().optional().catch(undefined),
+};
+
+const DecisionCardSchema = z.object({
+  answer_id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string().default(""),
+  issue_comment_id: z.string(),
+  class: z.string().default(""),
+  state: DecisionStateSchema.catch("pending"),
+  effective_at: z.string().default(""),
+  disclaimed_at: z.string().nullable().optional().catch(undefined),
+  // A card on a forked copy is read-only provenance; clients show no Disclaim.
+  inherited: z.boolean().catch(false).default(false),
+  delivered: z.boolean().optional().catch(undefined),
+  chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  option_label: z.string().optional().catch(undefined),
+  request_session_id: z.string().optional().catch(undefined),
+  request_message_id: z.string().optional().catch(undefined),
+}).loose();
+
+const DecisionRequestCardSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string().default(""),
+  source_comment_id: z.string().nullish().catch(undefined),
+  ask: z.string(),
+  options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
+  state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
+  created_at: z.string(),
+  withdrawn_at: z.string().nullish().catch(undefined),
+  reason: z.string().optional().catch(undefined),
+  record_comment_id: z.string().nullish().catch(undefined),
+  answer: z.object({
+    state: z.enum(["recorded", "delivered", "picked_up", "disclaimed"]).catch("recorded"),
+    run: z.object({ id: z.string(), agent_name: z.string().default("") }).loose().optional().catch(undefined),
+    chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+    option_label: z.string().optional().catch(undefined),
+    answered_at: z.string().default(""),
+  }).loose().optional().catch(undefined),
+}).loose();
+
+export const OpenDecisionRequestListSchema = z.array(z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  asking_agent_id: z.string(),
+  asking_agent_name: z.string().catch(""),
+  ask: z.string(),
+  escalation_class: z.string(),
+  created_at: z.string(),
+  chat_session_id: z.string(),
+  message_id: z.string().nullable().catch(null),
+}).loose());
+
 export const ChatMessageSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -957,9 +1078,14 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference", "decision_request", "decision_cancel_notice"])
     .catch("message")
     .optional(),
+  decision_quotes: z.array(DecisionCardSchema).optional().catch(undefined),
+  decision_ref: DecisionCardSchema.optional().catch(undefined),
+  decision_request: DecisionRequestCardSchema.optional().catch(undefined),
+  decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
+  scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -976,6 +1102,20 @@ export const ChatMessagesPageSchema = z.object({
     created_at: z.string(),
     id: z.string(),
   }).loose().nullable().optional(),
+  has_newer: z.boolean().optional().catch(undefined),
+}).loose();
+
+export const ChatSearchPageSchema = z.object({
+  results: z.array(z.object({
+    session_id: z.string(),
+    title: z.string().default(""),
+    agent_id: z.string(),
+    message_id: z.string().nullable().optional().transform((v) => v ?? null),
+    snippet: z.string().default(""),
+    updated_at: z.string(),
+    archived: z.boolean().default(false),
+  }).loose()).default([]),
+  next_cursor: z.string().nullable().optional().transform((v) => v ?? null),
 }).loose();
 
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
@@ -1073,6 +1213,7 @@ const TimelineEntrySchema = z.object({
   // comment instead of failing the whole timeline.
   deleted_at: z.string().nullable().optional().catch(undefined),
   coalesced_count: z.number().optional(),
+  ...decisionCommentShape,
 }).loose();
 
 // /timeline returns a flat array of TimelineEntry, oldest first. The
@@ -1148,6 +1289,7 @@ export const AppConfigSchema = z.object({
   analytics_environment: OptionalStringSchema,
   daemon_server_url: OptionalStringSchema,
   daemon_app_url: OptionalStringSchema,
+  daemon_setup_target: z.enum(["cloud", "self_host", "unknown"]).optional().catch("unknown"),
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
   vcs_integration_available: BooleanWithDefaultSchema(false).optional(),
   feature_flags: FeatureFlagsSchema,
@@ -1156,8 +1298,8 @@ export const AppConfigSchema = z.object({
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  version: OptionalStringSchema,
-  build: OptionalStringSchema,
+  server_build: OptionalStringSchema,
+  server_commit: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -1168,6 +1310,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   google_client_id: "",
   daemon_server_url: "",
   daemon_app_url: "",
+  daemon_setup_target: "unknown",
   workspace_creation_disabled: false,
   vcs_integration_available: false,
   // Fail closed: an unreadable config must not look like a server that
@@ -1245,12 +1388,8 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
-  decision_answer_id: z.string().nullable().optional().catch(undefined),
-  decision_comment_kind: z
-    .enum(["ask", "quote", "disclaim", "delivery", "cancel", "veto"])
-    .nullable()
-    .optional()
-    .catch(undefined),
+  hints: z.array(z.string()).optional().catch(undefined),
+  ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1474,6 +1613,8 @@ export const IssueSchema = z.object({
   assignee_id: z.string().nullable(),
   creator_type: z.string(),
   creator_id: z.string(),
+  // Additive: older backends do not send it, and nothing breaks without it.
+  requested_by_id: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
   // status_name above, and older backends do not send it at all.
@@ -1483,6 +1624,8 @@ export const IssueSchema = z.object({
     .optional()
     .catch(undefined),
   project_id: z.string().nullable(),
+  // Older backends predate the per-issue workflow override.
+  workflow_id: z.string().nullable().optional().catch(null),
   position: z.number(),
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
@@ -2174,6 +2317,7 @@ const ChatLastMessageSchema = z.object({
     "onboarding_opening",
     "continuation_summary",
     "compact_notice",
+    "decision_reference",
   ]).optional().catch(undefined),
 }).loose();
 
@@ -2186,6 +2330,7 @@ const ChatChannelSourceSchema = z.object({
 export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
+  fork_source_message_id: z.string().uuid().nullable().optional().catch(undefined),
   fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
   id: z.string(),
   continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
@@ -2237,6 +2382,7 @@ export const ChatForkResponseSchema = z.object({
   previous_session_id: z.string().default(""),
   url: z.string().default(""),
   message: ChatMessageSchema.nullable().optional().catch(undefined),
+  attachment_ids: z.array(z.string()).optional().catch(undefined),
 }).loose();
 
 export const ChatSessionUpdatedPayloadSchema = z.object({
@@ -2299,6 +2445,18 @@ export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
   forked_from_session_id: null,
 };
 
+const ChatWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  fire_at: z.string(),
+  instruction: z.string().default(""),
+  status: z.string().default("pending"),
+}).loose();
+
+export const ChatWakeupsSchema = z.array(ChatWakeupSchema);
+
+export const EMPTY_CHAT_WAKEUPS: ChatWakeup[] = [];
+
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,
   previous_session_id: "",
@@ -2360,7 +2518,8 @@ export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
 export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
   message_id: z.string().min(1),
-  task_id: z.string().min(1),
+  // Empty when the send started no task (a decision reply for another agent's ask).
+  task_id: z.string(),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),
@@ -2444,6 +2603,7 @@ export const StoredAgentDraftSchema = z.object({
     .catch("private"),
   member_ids: z.array(z.string()).catch([]),
   team_ids: z.array(z.string()).catch([]),
+  qoder_agent_id: z.string().catch(""),
   applied_message_id: z.string().nullable().catch(null),
   dismissed_message_id: z.string().nullish().catch(null),
 }).loose();
@@ -2590,6 +2750,17 @@ export const DuplicateIssueErrorBodySchema = z.object({
     title: z.string(),
   }).loose(),
 }).loose();
+
+// A destructive confirmation must fail closed on an incomplete plan. Do not
+// default missing arrays to empty or silently discard malformed entries.
+export const RuntimeAccessRevocationPlanSchema = z.object({
+  code: z.enum(["runtime_has_nonowner_dependents", "runtime_access_revocation_plan_changed"]),
+  nonowner_agents: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+  active_task_ids: z.array(z.string().uuid()),
+}).refine((body) =>
+  new Set(body.nonowner_agents.map((agent) => agent.id)).size === body.nonowner_agents.length &&
+  new Set(body.active_task_ids).size === body.active_task_ids.length,
+).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids }));
 
 export interface DuplicateIssueErrorBody {
   code: "active_duplicate_issue";
@@ -3864,6 +4035,7 @@ export const WorkspaceGovernanceConfigSchema = z.object({
     jev_squad_routing_mode: z.string().nullish(),
     jev_squad_routing_enabled: z.boolean().nullish(),
     jev_min_confidence: z.number().nullish(),
+    jev_api_url: z.string().nullish(),
   }),
   // Strict like the rest: a rollback offered from a history that did not parse
   // would be a guess about what it restores.
@@ -3872,7 +4044,12 @@ export const WorkspaceGovernanceConfigSchema = z.object({
 
 // CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
 // be what a malformed response turns into.
-export const JevCredentialPresenceSchema = z.object({ present: z.boolean() });
+// `configurable` is absent from older servers; they are assumed able to store a
+// key, and the 403 on save remains the fallback signal.
+export const JevCredentialPresenceSchema = z.object({
+  present: z.boolean(),
+  configurable: z.boolean().default(true),
+});
 
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),
@@ -3880,8 +4057,16 @@ export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("label"), label_id: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("property"), property_id: z.string(), value: z.unknown() }),
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
-  z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged"]) }),
-  z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review"]), identifier: z.string().optional() }),
+  z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
+  z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
+  z.object({
+    type: z.literal("github_run"),
+    repo: z.string(),
+    run_id: z.number().int().optional(),
+    workflow: z.string().optional(),
+    head_sha: z.string().optional(),
+    state: z.enum(["completed", "waiting"]),
+  }),
 ]);
 
 export const WakeupRunSchema = z.object({

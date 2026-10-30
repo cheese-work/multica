@@ -16,7 +16,7 @@ func TestDecisionCommandsRoundTrip(test *testing.T) {
 	const sessionID = "33333333-3333-4333-8333-333333333333"
 	ask := "  Preserve this ask.\nSecond line.  "
 	askPath := filepath.Join(test.TempDir(), "ask.txt")
-	if err := os.WriteFile(askPath, []byte(ask), 0600); err != nil {
+	if err := os.WriteFile(askPath, []byte(structuredAskJSON(test, ask)), 0600); err != nil {
 		test.Fatal(err)
 	}
 	var posted bool
@@ -30,7 +30,8 @@ func TestDecisionCommandsRoundTrip(test *testing.T) {
 				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 					test.Error(err)
 				}
-				if body["issue_id"] != issueID || body["session_id"] != sessionID || body["ask"] != ask || body["escalation_class"] != "spend" {
+				structured, ok := body["ask"].(map[string]any)
+				if !ok || body["issue_id"] != issueID || body["session_id"] != sessionID || structured["decision"] != ask || body["escalation_class"] != "spend" {
 					test.Errorf("wrong request body: %+v", body)
 				}
 				posted = true

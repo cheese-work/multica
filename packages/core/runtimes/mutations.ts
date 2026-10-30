@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import type { RuntimePauseReason } from "../types";
 import { runtimeKeys } from "./queries";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
@@ -42,6 +43,37 @@ export function useUnbindAgentsAndDeleteRuntime(wsId: string) {
   });
 }
 
+// Confirmed access restriction to private or selected members. Like runtime deletion, this changes
+// runtime rows, agent bindings, and task presence, so every affected server
+// projection is invalidated after the transaction settles.
+export function useRevokeRuntimeWorkspaceAccess(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      expectedNonownerAgentIds,
+      expectedTaskIds,
+      sharedWith,
+    }: {
+      runtimeId: string;
+      expectedNonownerAgentIds: string[];
+      expectedTaskIds: string[];
+      sharedWith?: string[];
+    }) =>
+      api.revokeRuntimeWorkspaceAccess(
+        runtimeId,
+        expectedNonownerAgentIds,
+        expectedTaskIds,
+        sharedWith,
+      ),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });
+    },
+  });
+}
+
 // useUpdateRuntime patches editable fields on a runtime (visibility, custom
 // name). Invalidates the runtime list so the picker disabled-state and
 // display names recompute.
@@ -55,11 +87,41 @@ export function useUpdateRuntime(wsId: string) {
       runtimeId: string;
       patch: {
         visibility?: "private" | "public";
+        shared_with?: string[];
         // Empty string clears the custom name; omit to leave unchanged.
         custom_name?: string;
         apply_to_machine?: boolean;
       };
     }) => api.updateRuntime(runtimeId, patch),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// Machine pause and resume (CHE-2430). The pause lives on the server and
+// applies to the whole machine, so the runtime list is the only projection to
+// refresh; the daemon:register event refreshes other open pages.
+export function usePauseRuntimeMachine(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      reason,
+    }: {
+      runtimeId: string;
+      reason: RuntimePauseReason;
+    }) => api.pauseRuntimeMachine(runtimeId, reason),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+export function useResumeRuntimeMachine(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runtimeId: string) => api.resumeRuntimeMachine(runtimeId),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     },

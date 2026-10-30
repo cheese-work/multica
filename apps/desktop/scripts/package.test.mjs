@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, it, expect } from "vitest";
 import {
   builderArgsForTarget,
+  deriveCliVersion,
   deriveVersion,
   DESCRIBE_ARGS,
   envWithLocalBins,
@@ -165,6 +166,45 @@ describe("deriveVersion (real git describe)", () => {
     );
     expect(version).toBe(deriveVersion(repoRoot));
     expect(version).not.toBe("9.9.9");
+  });
+});
+
+describe("deriveCliVersion (CHE-1985)", () => {
+  const repos = [];
+
+  function initRepo(upstream) {
+    const dir = mkdtempSync(join(tmpdir(), "multica-desktop-cli-ver-"));
+    repos.push(dir);
+    const run = (...args) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf-8" });
+    run("init", "-q");
+    run("config", "user.email", "test@multica.ai");
+    run("config", "user.name", "test");
+    run("config", "commit.gpgsign", "false");
+    if (upstream !== null) writeFileSync(join(dir, "UPSTREAM_VERSION"), upstream);
+    run("add", "-A");
+    return { dir, run };
+  }
+
+  afterEach(() => {
+    while (repos.length) rmSync(repos.pop(), { recursive: true, force: true });
+  });
+
+  it("stamps <upstream>-YYYYMMDD-hhmm in ICT from the commit time", () => {
+    const { dir } = initRepo("0.6.5\n");
+    // 2026-10-22 20:05 UTC is 03:05 ICT the next day: the date must roll over.
+    execFileSync("git", ["commit", "-q", "-m", "x"], {
+      cwd: dir,
+      env: { ...process.env, GIT_COMMITTER_DATE: "2026-10-22T20:05:00Z" },
+    });
+    expect(deriveCliVersion(dir)).toBe("0.6.5-20261023-0305");
+  });
+
+  it("returns null without a valid UPSTREAM_VERSION", () => {
+    expect(deriveCliVersion(initRepo(null).dir)).toBeNull();
+    const bad = initRepo("not-a-version\n");
+    bad.run("commit", "-q", "-m", "x");
+    expect(deriveCliVersion(bad.dir)).toBeNull();
   });
 });
 
@@ -361,7 +401,6 @@ describe("builderArgsForTarget", () => {
       "--publish",
       "always",
       "-c.directories.output=dist/mac-x64",
-      "-c.mac.minimumSystemVersion=12.0.0",
       "-c.publish.channel=latest-x64",
     ]);
   });

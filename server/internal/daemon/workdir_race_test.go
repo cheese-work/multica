@@ -272,6 +272,76 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 	}
 }
 
+// A run that fails after the private temp dir exists must still remove it:
+// the cleanup defer in runTask is the only per-run reclaim, and a failed run
+// is the common way /tmp used to accumulate.
+func TestRunTask_RemovesPrivateTaskTempDirWhenAgentFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script agent fixture is POSIX-only")
+	}
+
+	workspacesRoot := t.TempDir()
+	captureFile := filepath.Join(t.TempDir(), "agent-tmpdir.txt")
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+printf '%s' "$TMPDIR" > "$CAPTURE_FILE"
+echo leftover > "$TMPDIR/scratch.txt"
+IFS= read -r _
+printf '%s\n' '{"type":"system","session_id":"sess-fail-temp"}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fail-temp","result":"API Error: 503 service unavailable"}'
+exit 1
+`
+	writeTestExecutable(t, fakeBin, []byte(script))
+	if err := os.Chmod(fakeBin, 0o755); err != nil {
+		t.Fatalf("chmod fake agent: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		runtimeIndex:   map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		activeEnvRoots: make(map[string]int),
+		cfg: Config{
+			WorkspacesRoot: workspacesRoot,
+			AgentTimeout:   5 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents:         map[string]AgentEntry{"claude": {Path: fakeBin}},
+		},
+	}
+	task := Task{
+		ID:          "task-failing-temp",
+		WorkspaceID: "ws-failing-temp",
+		RuntimeID:   "rt-1",
+		IssueID:     "issue-failing-temp",
+		AgentID:     "agent-failing-temp",
+		AuthToken:   "mat_failing_temp",
+		Agent: &AgentData{
+			ID:        "agent-failing-temp",
+			Name:      "test-agent",
+			CustomEnv: map[string]string{"CAPTURE_FILE": captureFile},
+		},
+	}
+
+	result, _ := d.runTask(context.Background(), task, "claude", 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if result.Status == "completed" {
+		t.Fatalf("runTask status = completed, want a failed run (comment=%q)", result.Comment)
+	}
+
+	raw, err := os.ReadFile(captureFile)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("fake agent did not record TMPDIR: err=%v", err)
+	}
+	if _, err := os.Stat(string(raw)); !os.IsNotExist(err) {
+		t.Fatalf("task temp dir %q must be removed after a failed run, stat err=%v", raw, err)
+	}
+}
+
 // TestTaskTempBaseDir covers the MULTICA_AGENT_TEMP_BASE validation contract:
 // Windows ignores it, while Unix honors a valid absolute directory and reports
 // unusable configured bases from the real task-directory creation instead of

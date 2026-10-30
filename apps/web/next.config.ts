@@ -39,6 +39,15 @@ const allowedDevOrigins = process.env.CORS_ALLOWED_ORIGINS
   : undefined;
 
 const nextConfig: NextConfig = {
+  logging: {
+    incomingRequests: {
+      ignore: [
+        /^\/api\/search\/suggestions(?:\?|$)/,
+        /^\/api\/(?:issues|projects)\/search(?:\?|$)/,
+        /^\/[^/]+\/search(?:\?|$)/,
+      ],
+    },
+  },
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
   outputFileTracingIncludes: {
@@ -63,6 +72,12 @@ const nextConfig: NextConfig = {
       config.cache = Object.freeze({ type: "memory" });
     }
     return config;
+  },
+  // `next dev` drops a compiled page after 60s idle and keeps only a few.
+  // The E2E global setup warms every route once, so keep them all for the run.
+  onDemandEntries: {
+    maxInactiveAge: 60 * 60 * 1000,
+    pagesBufferLength: 50,
   },
   ...(allowedDevOrigins && allowedDevOrigins.length > 0
     ? { allowedDevOrigins }

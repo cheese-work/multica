@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -54,6 +54,9 @@ vi.mock("react-virtuoso", () => ({
     );
   },
 }));
+
+vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => <span data-testid="agent-avatar" /> }));
+vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Terra" }) }));
 
 import { ChatMessageList } from "./chat-message-list";
 
@@ -117,6 +120,106 @@ describe("ChatMessageList continuation announcements", () => {
   it("links forward even when the archived source had no messages", () => {
     renderContinuation({ continuedIntoSessionId: nextSessionId }, []);
     expect(screen.getByRole("link", { name: "Continued in →" })).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
+  });
+});
+
+describe("ChatMessageList predecessor DMs", () => {
+  const [first, second, third] = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+  ] as const;
+  const session = (id: string, overrides: Partial<ChatSession> = {}): ChatSession => ({
+    id, workspace_id: "ws", agent_id: "agent", creator_id: "u", title: `DM ${id.slice(0, 1)}`,
+    status: "archived", has_unread: false, created_at: "2026-10-13T00:00:00Z",
+    updated_at: "2026-10-13T00:00:00Z", ...overrides,
+  });
+  const chain = [
+    session(first, { continued_into_session_id: second }),
+    session(second, { continued_from_session_id: first, continued_into_session_id: third }),
+    session(third, { status: "active", continued_from_session_id: second }),
+  ];
+  const message = (sessionId: string, id: string, role: "user" | "assistant", content: string): ChatMessage => ({
+    id, chat_session_id: sessionId, role, content, task_id: null, created_at: "2026-10-12T00:00:00Z",
+  });
+  const summary: ChatMessage = {
+    id: "sum", chat_session_id: third, role: "assistant", content: "Summary of the past",
+    message_kind: "continuation_summary", task_id: null, created_at: "2026-10-13T00:00:00Z",
+  };
+
+  function renderChain({ onQuoteMessage, sessions = chain }: { onQuoteMessage?: (content: string) => void; sessions?: ChatSession[] | null } = {}) {
+    const qc = new QueryClient();
+    const seed = (id: string, messages: ChatMessage[]) =>
+      qc.setQueryData(chatKeys.messagesPage(id), { pages: [{ messages, limit: 50, has_more: false }], pageParams: [null] });
+    seed(first, [message(first, "a1", "user", "Oldest question"), message(first, "a2", "assistant", "Oldest answer")]);
+    seed(second, [message(second, "b1", "user", "Middle question"), message(second, "b2", "assistant", "Middle **answer**\nsecond line")]);
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <WorkspaceSlugProvider slug="acme">
+          <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
+            <QueryClientProvider client={qc}>
+              <ChatMessageList
+                messages={[summary]} pendingTask={null} availability="online" sessionId={third}
+                continuedFromSessionId={second} sessions={sessions ?? undefined} onQuoteMessage={onQuoteMessage}
+              />
+            </QueryClientProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("shows one collapsed section per earlier DM of a 3-DM chain, oldest first", () => {
+    renderChain();
+    const sections = screen.getAllByRole("button", { name: /^Earlier DM/ });
+    expect(sections.map((b) => b.textContent)).toEqual(["Earlier DM · DM 1", "Earlier DM · DM 2"]);
+    for (const section of sections) expect(section).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Oldest question")).not.toBeInTheDocument();
+    expect(screen.queryByText("Middle question")).not.toBeInTheDocument();
+    // Above the new DM's own messages.
+    expect(sections[1]!.compareDocumentPosition(screen.getByRole("button", { name: "Conversation summary" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("expands a section to its messages, read-only", () => {
+    renderChain();
+    fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 1" }));
+    expect(screen.getByText("Oldest question")).toBeInTheDocument();
+    expect(screen.getByText("Oldest answer")).toBeInTheDocument();
+    expect(screen.queryByText("Middle question")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("quotes the exact text of a predecessor message", () => {
+    const onQuoteMessage = vi.fn();
+    renderChain({ onQuoteMessage });
+    fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
+    const quotes = screen.getAllByRole("button", { name: "Quote" });
+    expect(quotes).toHaveLength(2);
+    fireEvent.click(quotes[1]!);
+    expect(onQuoteMessage).toHaveBeenCalledExactlyOnceWith("Middle **answer**\nsecond line");
+  });
+
+  it("offers no quote action when the host cannot take one", () => {
+    renderChain();
+    fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
+    expect(screen.getByText("Middle question")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Quote" })).not.toBeInTheDocument();
+  });
+
+  it("falls back to the single previous-DM link while the session list is unknown", () => {
+    renderChain({ sessions: null });
+    expect(screen.queryByRole("button", { name: /^Earlier DM/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "previous DM" })).toHaveAttribute("href", `/acme/chat?session=${second}`);
+  });
+
+  it("stops at a chain loop instead of repeating sections", () => {
+    const loop = [
+      session(first, { continued_from_session_id: second }),
+      session(second, { continued_from_session_id: first }),
+      session(third, { status: "active", continued_from_session_id: second }),
+    ];
+    renderChain({ sessions: loop });
+    expect(screen.getAllByRole("button", { name: /^Earlier DM/ })).toHaveLength(2);
   });
 });
 
@@ -267,6 +370,73 @@ describe("ChatMessageList fork links", () => {
       ],
     });
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Branch A", "new DM"]);
+  });
+
+  describe("fork-point rows", () => {
+    const m = (n: number, createdAt: string) => ({
+      ...message(`m${n}`, n % 2 ? "user" : "assistant", `Message ${n}`), created_at: createdAt,
+    });
+    const five = [1, 2, 3, 4, 5].map((n) => m(n, `2026-10-13T00:0${n}:00Z`));
+    const child = (id: string, title: string, extra: Partial<ChatSession>) =>
+      session({ id, title, forked_from_session_id: sourceId, ...extra });
+    const rowOf = (text: string) => screen.getByText(text).closest("[data-row-key]") as HTMLElement;
+    const fork = (overrides: Partial<ChatSession>[]) =>
+      renderFork({
+        sessionId: sourceId,
+        sessions: [session({}), ...overrides.map((o, i) => child(`child-${i}`, `Branch ${i}`, o))],
+      }, five);
+
+    it("renders 'Forked into' under the fork-point message, not at the end", () => {
+      fork([{ fork_source_message_id: "m2", created_at: "2026-10-13T01:00:00Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 2")).toContainElement(link);
+      expect(rowOf("Message 5")).not.toContainElement(link);
+      const order = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+      expect(order(link, screen.getByText("Message 3"))).toBeTruthy();
+    });
+
+    it("stacks several forks from one message oldest first", () => {
+      fork([
+        { fork_source_message_id: "m2", created_at: "2026-10-13T02:00:00Z" },
+        { fork_source_message_id: "m2", created_at: "2026-10-13T01:00:00Z" },
+        { fork_source_message_id: "m4", created_at: "2026-10-13T03:00:00Z" },
+      ]);
+      expect(within(rowOf("Message 2")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 1", "Branch 0"]);
+      expect(within(rowOf("Message 4")).getAllByRole("link").map((l) => l.textContent)).toEqual(["Branch 2"]);
+    });
+
+    it("falls back to created_at when the fork point is not loaded, never the footer", () => {
+      fork([{ fork_source_message_id: "m-older", created_at: "2026-10-13T00:03:30Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 3")).toContainElement(link);
+    });
+
+    it("puts a fork older than the whole loaded page before the first message", () => {
+      fork([{ fork_source_message_id: "m-older", created_at: "2026-10-13T00:00:30Z" }]);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 1")).toContainElement(link);
+      expect(link.compareDocumentPosition(screen.getByText("Message 1")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("anchors on the copied source message, not the child's own copy, past a late-visible queued row", () => {
+      // m3 was queued when the fork copied m1..m2, so it is not copied and
+      // surfaces later with a time before the fork's creation.
+      const withQueued = [m(1, "2026-10-13T00:01:00Z"), m(2, "2026-10-13T00:02:00Z"), m(3, "2026-10-13T00:02:30Z")];
+      renderFork({
+        sessionId: sourceId,
+        sessions: [session({}), child("child-0", "Branch 0", {
+          fork_source_message_id: "m2", fork_last_message_id: "child-copy-of-m2", created_at: "2026-10-13T00:03:00Z",
+        })],
+      }, withQueued);
+      const link = screen.getByRole("link", { name: "Branch 0" });
+      expect(rowOf("Message 2")).toContainElement(link);
+      expect(link.compareDocumentPosition(screen.getByText("Message 3")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps 'Continued in' in the footer", () => {
+      renderFork({ sessionId: sourceId, continuedIntoSessionId: childId, sessions: [session({})] }, five);
+      expect(screen.getByRole("link", { name: /Continued in/ }).closest("[data-row-key]")).toBeNull();
+    });
   });
 });
 
@@ -1023,6 +1193,12 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
 
   const FALLBACK = enChat.message_list.failure.fallback;
 
+  it("explains revoked access with a rebind action rather than a generic retry", async () => {
+    renderFailure("runtime_access_revoked");
+    expect(await screen.findByText(enChat.message_list.failure.runtime_access_revoked)).toBeInTheDocument();
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
   it("renders dedicated copy for a stalled skill bundle download", async () => {
     renderFailure("skill_bundle_unavailable");
     expect(
@@ -1196,5 +1372,43 @@ describe("ChatMessageList compact notice", () => {
     const note = screen.getByRole("note");
     expect(note).toHaveTextContent("Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.");
     expect(note).toHaveClass("text-muted-foreground");
+  });
+});
+
+describe("ChatMessageList message timestamps (CHE-1871)", () => {
+  const at = (iso: string) => new Date(iso);
+  const clock = (iso: string) => new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(at(iso));
+  const msg = (id: string, role: "user" | "assistant", created_at: string): ChatMessage => ({
+    id, chat_session_id: "s1", role, content: `body ${id}`, task_id: null, created_at,
+  });
+
+  function renderStamped(messages: ChatMessage[]) {
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={messages} pendingTask={undefined} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("shows each user and assistant bubble's send time in the client locale", () => {
+    const { container } = renderStamped([
+      msg("u1", "user", "2026-10-20T04:20:00Z"),
+      msg("a1", "assistant", "2026-10-20T04:21:00Z"),
+    ]);
+    const times = Array.from(container.querySelectorAll("time[datetime]"));
+    const bubbleTimes = times.filter((el) => el.hasAttribute("data-message-time"));
+    expect(bubbleTimes.map((el) => el.textContent)).toEqual([clock("2026-10-20T04:20:00Z"), clock("2026-10-20T04:21:00Z")]);
+    expect(bubbleTimes[0]).toHaveAttribute("datetime", "2026-10-20T04:20:00Z");
+  });
+
+  it("puts a day separator between messages from different days only", () => {
+    const { container } = renderStamped([
+      msg("u1", "user", "2020-01-01T04:20:00Z"),
+      msg("u2", "user", "2020-01-01T04:25:00Z"),
+      msg("u3", "user", "2020-01-02T04:20:00Z"),
+    ]);
+    expect(container.querySelectorAll("[data-day-separator]")).toHaveLength(2);
   });
 });

@@ -182,6 +182,66 @@ func TestNormalizeServerVersion(t *testing.T) {
 	}
 }
 
+func TestNormalizeServerBuildInfo(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     string
+		build       string
+		commit      string
+		wantVersion string
+		wantBuild   string
+		wantCommit  string
+	}{
+		{
+			name:        "unstamped_dev_omits_all_three",
+			version:     "dev",
+			build:       "20261021-0856",
+			commit:      "1de8883940587ab1234567890abcdef123456789",
+			wantVersion: "",
+			wantBuild:   "",
+			wantCommit:  "",
+		},
+		{
+			name:        "separate_version_build_and_full_commit",
+			version:     "0.6.3",
+			build:       "20261021-0856",
+			commit:      "1de8883940587ab1234567890abcdef123456789",
+			wantVersion: "0.6.3",
+			wantBuild:   "20261021-0856",
+			wantCommit:  "1de8883",
+		},
+		{
+			name:        "upstream_release_without_build_stamp_and_unknown_commit",
+			version:     "0.6.3",
+			build:       "",
+			commit:      "unknown",
+			wantVersion: "0.6.3",
+			wantBuild:   "",
+			wantCommit:  "",
+		},
+		{
+			name:        "combined_version_splits_when_build_arg_empty",
+			version:     "0.6.3-20261021-0856",
+			build:       "",
+			commit:      "1de8883",
+			wantVersion: "0.6.3",
+			wantBuild:   "20261021-0856",
+			wantCommit:  "1de8883",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotVersion, gotBuild, gotCommit := normalizeServerBuildInfo(tt.version, tt.build, tt.commit)
+			if gotVersion != tt.wantVersion || gotBuild != tt.wantBuild || gotCommit != tt.wantCommit {
+				t.Errorf("normalizeServerBuildInfo(%q, %q, %q) = (%q, %q, %q), want (%q, %q, %q)",
+					tt.version, tt.build, tt.commit,
+					gotVersion, gotBuild, gotCommit,
+					tt.wantVersion, tt.wantBuild, tt.wantCommit)
+			}
+		})
+	}
+}
+
 func TestEnvBool(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -142,9 +142,16 @@ export function resolveIssueWorkflow(
   workflows: readonly IssueWorkflow[] | undefined,
   projects: readonly Project[] | undefined,
   projectId: string | null | undefined,
+  workflowId?: string | null,
 ): IssueWorkflowResolution {
+  const project = projectId ? projects?.find((p) => p.id === projectId) ?? null : null;
+  // The issue's own workflow wins, in a project or not; a missing one is
+  // unresolved, never a fallback to the project's.
+  if (workflowId) {
+    const own = workflows?.find((w) => w.id === workflowId) ?? null;
+    return { project, workflow: own, resolved: !!own && (!projectId || !!project) };
+  }
   if (!projectId) return { project: null, workflow: null, resolved: true };
-  const project = projects?.find((p) => p.id === projectId) ?? null;
   const namedMissing = !!project?.workflow_id && !workflows?.some((w) => w.id === project.workflow_id);
   return {
     project,
@@ -162,12 +169,17 @@ export function resolveIssueWorkflow(
 export function sharedWorkflowStatusKeys(
   workflows: readonly IssueWorkflow[] | undefined,
   projects: readonly Pick<Project, "id" | "workflow_id">[] | undefined,
-  issues: readonly { project_id: string | null }[],
+  issues: readonly { project_id: string | null; workflow_id?: string | null }[],
 ): Set<string> | null {
   let shared = null as Set<string> | null;
   for (const issue of issues) {
     const project = issue.project_id ? projects?.find((p) => p.id === issue.project_id) : undefined;
-    const workflow = resolveProjectWorkflow(workflows, project);
+    // An override the list lacks is unknown, never the project's: no status is
+    // safe to offer, since the server judges the write against that workflow.
+    if (issue.workflow_id && !workflows?.some((w) => w.id === issue.workflow_id)) return new Set();
+    const workflow = issue.workflow_id
+      ? workflows?.find((w) => w.id === issue.workflow_id)
+      : resolveProjectWorkflow(workflows, project);
     if (!workflow || workflow.is_default) continue;
     const keys = new Set(workflow.steps.map((s) => s.status_key));
     shared = shared ? new Set([...shared].filter((key) => keys.has(key))) : keys;

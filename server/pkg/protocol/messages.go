@@ -71,6 +71,22 @@ const (
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
+	// DaemonCapabilityTaskSupplementPREventV1 advertises that this provider run
+	// can accept a typed, system-labelled PR event notice. It is negotiated and
+	// stored apart from task-supplement-v1, so member steering and PR events
+	// coexist on one task and a daemon with only the old capability never
+	// receives a PR event through the mid-run channel.
+	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
+	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
+	// descendant cleanup and explicitly confirms its cancellation outcome.
+	// Persist only at start; old daemons must retain their cancellation contract.
+	DaemonCapabilityPiProcessCleanupV1 = "pi-process-cleanup-v1"
+	// DaemonCapabilityWorkflowStatusRulesV1 advertises that the daemon's
+	// runtime brief drops its built-in in_progress / in_review rules for an
+	// issue whose claim carries a project workflow (MUL-8145). Only then may
+	// the server leave out the workflow brief's lines that override those
+	// rules; an older daemon still states them, so it keeps getting them.
+	DaemonCapabilityWorkflowStatusRulesV1 = "workflow-status-rules-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -255,6 +271,7 @@ type ChatMessagePayload struct {
 	Content       string `json:"content"`
 	TaskID        string `json:"task_id,omitempty"`
 	CreatedAt     string `json:"created_at"`
+	MessageKind   string `json:"message_kind,omitempty"`
 }
 
 // Chat message kinds (chat_message.message_kind). Additive: unknown values
@@ -263,6 +280,9 @@ const (
 	// ChatMessageKindMessage is an ordinary user/assistant message.
 	ChatMessageKindMessage             = "message"
 	ChatMessageKindContinuationSummary = "continuation_summary"
+	// ChatMessageKindCompactionSummary is the agent-written summary that opens a
+	// new compaction epoch inside the same DM.
+	ChatMessageKindCompactionSummary = "compaction_summary"
 	// ChatMessageKindCompactNotice is the server-authored note that a DM was (or
 	// failed to be) automatically compacted. It is an assistant row that never
 	// enters a prompt.
@@ -276,6 +296,11 @@ const (
 	// the runtime receives a normal immutable chat input batch. User-facing
 	// APIs filter it out; clients also ignore the kind defensively.
 	ChatMessageKindOnboardingKickoff = "onboarding_kickoff"
+	// ChatMessageKindDecisionReference is the server-authored note that a
+	// decision was recorded from this DM. Its decision_answer_id names the card.
+	ChatMessageKindDecisionReference    = "decision_reference"
+	ChatMessageKindDecisionRequest      = "decision_request"
+	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this

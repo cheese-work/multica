@@ -6,11 +6,14 @@ Product contracts the runtime brief does not fully encode.
 - [`issue get` has no structured ETA](#issue-get-has-no-structured-eta)
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
+- [Relations graph](#relations-graph)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
 - [Per-issue token usage](#per-issue-token-usage)
+- [Resolve the thread you answered](#resolve-the-thread-you-answered)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
+- [Comments: update, delete, resolve, search, subscribers](#comments-update-delete-resolve-search-subscribers)
 
 To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
 
@@ -151,27 +154,36 @@ multica issue property unset <issue-id> --name Environment
 ```bash
 multica issue list --property "Impact=High" --property "Impact=Medium" --output json
 multica issue list --property "QA Status=__none__" --status in_review --output json
+multica issue list --property "Effort>=3" --property "Due<2026-10-01" --output json
 multica issue list --sort property:Impact --direction desc --output json
 ```
 
 - `--property` takes one `Name=Value` per flag. Repeating the same property
-  matches ANY of its values; different properties must ALL match. Values are
+  matches ANY of its members; different properties must ALL match. Values are
   option names or ids (select types), `true`/`false` (checkbox), a member
-  name/email/id (actor types), or the value itself for text, url, number and
-  date (`YYYY-MM-DD`); for `multi_text` / `multi_url` the value matches any
-  single element of the list exactly. The reserved `__none__` matches issues
-  where the property is unset (every type; not index-backed, so use it for
-  targeted audits rather than a default listing filter). Only `=` is supported
-  today — `>=`, `<=` and `!=` are reserved for comparison filters and rejected.
-- `--sort property:<name-or-id>` orders select properties by option order — an
-  ordinal scale (Low < Medium < High) sorts by meaning — and number/date/text/
-  url by value; issues without the property sort last either way. Archived
-  properties and unordered types (multi_select, checkbox, actor kinds, list
-  types) are rejected up front.
-- `issue list` and `issue get` return `properties` as a map of definition id to
-  stored value. Add `--resolve-properties` in JSON mode for the rows `issue
-  property list` prints (name, type, stored value, display names); the CLI makes
-  at most one catalog request per page, so no `property list` call is needed:
+  name/email/id (actor types), or the value itself for text, url, number,
+  and date (`YYYY-MM-DD`); for `multi_text` / `multi_url` the value matches
+  any single element of the list exactly. The reserved value `__none__` matches
+  issues where the property is unset (works for every type; it is not
+  index-backed, so use it for targeted audits rather than as a default
+  listing filter).
+- Comparisons use the same flag: `>`, `>=`, `<`, `<=` on number; `>` (after)
+  and `<` (before) on date; `~=` (contains, case-insensitive) on text and
+  url. Quote the flag so the shell does not read `<` or `>` as redirection.
+  `!=` is rejected (the server has no not-equal filter); `>=` and `<=` on a
+  date are rejected with an error naming the strict form to use. Two
+  comparisons on one property OR, so they do not form a range. Number and
+  date comparisons are not index-backed.
+- `--sort property:<name-or-id>` orders select properties by option order —
+  an ordinal scale (Low < Medium < High) sorts by meaning — and number/date/
+  text/url by value; issues without the property sort last either way.
+  Archived properties and types without an order (multi_select, checkbox,
+  actor kinds, list types) are rejected up front.
+- `issue list` and `issue get` return `properties` as a map of definition id
+  to stored value. Add `--resolve-properties` in JSON mode to get the rows
+  `issue property list` prints instead (name, type, stored value, display
+  names); the CLI makes at most one catalog request for the whole page, so
+  no `property list` call is needed:
 
 ```bash
 multica issue list --status in_progress --output json --resolve-properties
@@ -269,6 +281,12 @@ claim. The server also suppresses a trusted self-assignment when the exact
 `(issue, agent)` pair already has a non-terminal task, but deliberately keeps
 same-agent handoffs to a fresh issue starting runs — cross-issue serial chains
 and triage batches rely on that.
+## Relations graph
+
+`multica issue relations <id> [--depth 1|2]` prints the issue's sidebar graph as
+JSON: nodes and typed edges in both directions, including issues that wait on
+or mention it. At most 40 nodes; `omitted_count` says how many were left out.
+
 ## Who else is running right now
 
 Nothing about concurrent runs is pushed into your prompt: the answer changes
@@ -383,38 +401,25 @@ prefixed with `>=` is a lower bound, not the real total: one or more terminal
 runs did not report usage (aborted or infra-failed), so the true figure is at
 least that but unknown above it. Do not compare an unprefixed total with a
 `>=`-prefixed one without checking which you have.
+## Resolve the thread you answered
+
+An answered thread left open keeps reading as pending work. When your reply
+settles the thread, post it with `--resolve-thread`:
+
+```bash
+multica issue comment add <issue-id> --parent <comment-id> --content-file ./reply.md --resolve-thread
+```
+
+- It needs `--parent`: it resolves the thread that reply belongs to.
+- Leave it off while the thread still waits on someone: a question to the
+  asker, a pending review, follow-up work.
+- The comment is posted first. If resolving then fails, the CLI says so; run
+  `multica issue comment resolve <comment-id>` and do not repost.
+
 ## Charts and files in a comment
 
-Where content goes decides how it shows:
-
-- **In the body, rendered in place** — a fenced ` ```html ` or ` ```mermaid `
-  block in the comment content. It renders inside the comment with a title
-  bar (Preview / Source, fullscreen, copy) and takes its content's height;
-  anything taller than 480px collapses behind "Show all". Name it with
-  `title="..."` on the fence line. HTML runs in a scripts-only sandbox (no
-  cookies, storage or parent access; CDN `<script src>` works).
-- **An attached file** — `--attachment <path>`. Every non-image file shows as
-  a file card that opens in the viewer, **HTML included**: an uploaded
-  `report.html` is a deliverable to open, not an inline chart. Use it for
-  something the reader keeps or downloads.
-
-For HTML that should follow light / dark mode, style it with the page's theme
-variables: `var(--background)`, `var(--foreground)`, `var(--muted)`,
-`var(--muted-foreground)`, `var(--border)`, `var(--primary)`,
-`var(--chart-1)` … `var(--chart-5)`, `var(--font-sans)`. Using any of them opts
-the block into the app's color scheme, so also set the page background
-(`body { background: var(--background); color: var(--foreground) }`). HTML
-that uses none keeps its own look. Size to the content, not the viewport:
-`100vh` heights have no fixed viewport to fill here.
-
-````markdown
-```html title="p95 latency, last 7 days"
-<canvas id="c"></canvas>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>/* draw with getComputedStyle(document.documentElement)
-  .getPropertyValue("--chart-1") so it follows the theme */</script>
-```
-````
+Fenced `html` / `mermaid` blocks render in place; `--attachment` adds a file
+card. See [charts.md](charts.md).
 
 ## Incorrect to correct
 
@@ -439,6 +444,40 @@ multica issue create --title "Step 1" --parent <issue-id> --assignee <agent> --s
 multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --stage 2 --status backlog
 multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --stage 3 --status backlog
 ```
+
+## Comments: update, delete, resolve, search, subscribers
+
+```bash
+multica issue comment update <comment-id> --expected-revision <n> --content-file ./body.md
+multica issue comment delete <comment-id>
+multica issue comment resolve <comment-id> [--known-as-of <RFC3339Nano>]
+multica issue comment unresolve <comment-id>
+multica issue search "<query>" [--include-closed] [--limit 20] --output json
+multica issue subscriber list <issue-id>
+multica issue subscriber add <issue-id> [--user <name> | --user-id <uuid>]
+multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
+```
+
+- **Update** needs the comment's current `revision` from `comment list`. If
+  another editor got there first the write is rejected: read the latest body
+  and merge into it; do not just resend with the newer revision. A changed
+  body is a new trigger: runs the old body started that are still in flight
+  are cancelled and every agent the new body mentions is queued again.
+  Attachments stay as they are.
+- **Delete** keeps replies: a comment that has replies stays as an empty
+  placeholder so they keep their place.
+- **Resolve** folds a whole thread away. Pass `--known-as-of` (the newest
+  `created_at` you loaded) so the server rejects the resolve with a
+  `thread_changed` conflict if a reply landed since, instead of folding an
+  unread reply away. `unresolve` reopens it.
+- **Search** matches titles, descriptions and comment bodies, so a conclusion
+  that only lives in a thread is findable. `match_source` is a display hint,
+  not a filter. A bare number or identifier-shaped query matches by number and
+  ranks first, whatever the prefix, so an id pasted from another tracker can
+  top the results with an unrelated local issue. Closed issues are excluded
+  unless `--include-closed`.
+- **Subscribers** default to the caller. `--user` is a fuzzy name match;
+  prefer `--user-id`, which cannot match the wrong person.
 
 ## Issue wakeups
 

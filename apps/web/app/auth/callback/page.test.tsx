@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { SupportedLocale } from "@multica/core/i18n";
@@ -268,6 +269,19 @@ describe("CallbackPage", () => {
     ).toBeInTheDocument();
     expect(mockLoginWithGoogle).toHaveBeenCalledTimes(1);
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("exchanges the single-use code once under React Strict Mode", async () => {
+    render(
+      <StrictMode>
+        <I18nProvider locale="en" resources={RESOURCES}>
+          <CallbackPage />
+        </I18nProvider>
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(mockPush).toHaveBeenCalled());
+    expect(mockLoginWithGoogle).toHaveBeenCalledTimes(1);
   });
 
   // The response matrix lives in callback-error.test.ts; this covers page wiring.

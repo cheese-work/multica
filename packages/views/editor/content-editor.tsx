@@ -73,6 +73,7 @@ import { EditorBubbleMenu } from "./bubble-menu";
 import { posFromAnchor, type TextAnchor } from "./text-anchor";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
+import { PersistedEditorMediaProvider } from "../media/media-context";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 
@@ -114,9 +115,19 @@ function hasUploadingNode(editor: Editor): boolean {
   return found;
 }
 
+/** Inside a NodeView's own controls, which handle their clicks. The editable
+ *  content a NodeView hosts (a table's cells) is not: its links are the
+ *  editor's, unless they sit in a NodeView of their own (a mention). */
+function isInNodeViewChrome(target: HTMLElement): boolean {
+  const wrapper = target.closest("[data-node-view-wrapper]");
+  const content = target.closest("[data-node-view-content-react]");
+  return wrapper !== null && !(content !== null && wrapper.contains(content));
+}
+
 // Types
 
 interface ContentEditorBaseProps {
+  persistedMediaMarkdown?: string;
   /**
    * `baseMarkdown` is the last authoritative controlled value this editor
    * actually adopted before producing `markdown`. A dirty-editor realtime
@@ -191,6 +202,13 @@ interface ContentEditorBaseProps {
   enableSlashCommands?: boolean;
   enableRenameCommand?: boolean;
   enableForkCommand?: boolean;
+  /** DM commands the owner handles itself; each is off unless switched on. */
+  enableStatisticCommand?: boolean;
+  enableArchiveCommand?: boolean;
+  enablePinCommand?: boolean;
+  enableUnarchiveCommand?: boolean;
+  /** `/compact` is offered by default; an archived DM turns it off. */
+  enableCompactCommand?: boolean;
   /**
    * Which `/` menu to show when enableSlashCommands is true: "skill" (default)
    * lists the active agent's skills (chat); "command" shows the fixed built-in
@@ -359,6 +377,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     {
       defaultValue,
       value,
+      persistedMediaMarkdown,
       onUpdate,
       placeholder: placeholderText = "",
       className,
@@ -377,6 +396,11 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableSlashCommands = false,
       enableRenameCommand = false,
       enableForkCommand = false,
+      enableStatisticCommand = false,
+      enableArchiveCommand = false,
+      enablePinCommand = false,
+      enableUnarchiveCommand = false,
+      enableCompactCommand = true,
       slashCommandMode = "skill",
       quickActionMenu,
       attachments,
@@ -418,10 +442,25 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     enableRenameCommandRef.current = enableRenameCommand;
     const enableForkCommandRef = useRef(enableForkCommand);
     enableForkCommandRef.current = enableForkCommand;
+    const dmCommandsRef = useRef({
+      statistic: enableStatisticCommand,
+      archive: enableArchiveCommand,
+      pin: enablePinCommand,
+      unarchive: enableUnarchiveCommand,
+    });
+    dmCommandsRef.current = {
+      statistic: enableStatisticCommand,
+      archive: enableArchiveCommand,
+      pin: enablePinCommand,
+      unarchive: enableUnarchiveCommand,
+    };
+    const enableCompactCommandRef = useRef(enableCompactCommand);
+    enableCompactCommandRef.current = enableCompactCommand;
     // Kept in a ref for the same reason as mentionContextItems: the extension
     // set is built once at mount, so a directly-captured options object would
     // freeze whatever closures existed then and stop seeing new quick actions.
     const quickActionMenuRef = useRef<BuiltinCommandSuggestionOptions | undefined>(quickActionMenu);
+    const quickActionMenuListeners = useRef(new Set<() => void>());
     const lastEmittedRef = useRef<string | null>(null);
     // `content` already consumes the initial synchronized value when Tiptap
     // mounts. Track later changes separately so the sync effect does not parse
@@ -637,9 +676,15 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         enableSlashCommands,
         canRename: () => enableRenameCommandRef.current,
         canFork: () => enableForkCommandRef.current,
+        canUseCommand: (command) => dmCommandsRef.current[command],
+        canCompact: () => enableCompactCommandRef.current,
         slashCommandMode,
         quickActionMenu: {
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],
+          subscribeQuickActions: (refresh) => {
+            quickActionMenuListeners.current.add(refresh);
+            return () => { quickActionMenuListeners.current.delete(refresh); };
+          },
           renderQuickAction: (id: string) =>
             quickActionMenuRef.current?.renderQuickAction?.(id) ?? Promise.resolve(""),
           onRenderError: (error: unknown) =>
@@ -673,7 +718,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           click(_view, event) {
             const target = event.target as HTMLElement;
             // Skip links inside NodeView wrappers — they handle their own clicks
-            if (target.closest("[data-node-view-wrapper]")) return false;
+            if (isInNodeViewChrome(target)) return false;
 
             const link = target.closest("a");
             const href = link?.getAttribute("href");
@@ -694,7 +739,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           auxclick(_view, event) {
             if (event.button !== 1) return false;
             const target = event.target as HTMLElement;
-            if (target.closest("[data-node-view-wrapper]")) return false;
+            if (isInNodeViewChrome(target)) return false;
             const href = target.closest("a")?.getAttribute("href");
             if (!href || isMentionHref(href)) return false;
             event.preventDefault();
@@ -712,6 +757,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         },
       },
     });
+
+    // Catalog queries can settle after the last keystroke. Refresh the active
+    // popup without changing the document, selection or editor instance.
+    useEffect(() => {
+      quickActionMenuListeners.current.forEach((refresh) => refresh());
+    }, [quickActionMenu]);
 
     // Signal hosts that the deferred editor instance now exists. Fired from a
     // passive effect (not `onCreate`) so it runs after the commit in which
@@ -1062,17 +1113,19 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
 
     return (
       <AttachmentDownloadProvider attachments={providerAttachments}>
-        <div
-          ref={wrapperRef}
-          className="relative flex flex-1 min-h-full flex-col"
-          onMouseDown={handleContainerMouseDown}
-        >
-          <EditorContent className="flex flex-1 flex-col" editor={editor} />
-          {showBubbleMenu && (
-            <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
-          )}
-          <LinkHoverCard {...hover} />
-        </div>
+        <PersistedEditorMediaProvider value={persistedMediaMarkdown}>
+          <div
+            ref={wrapperRef}
+            className="relative flex flex-1 min-h-full flex-col"
+            onMouseDown={handleContainerMouseDown}
+          >
+            <EditorContent className="flex flex-1 flex-col" editor={editor} />
+            {showBubbleMenu && (
+              <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
+            )}
+            <LinkHoverCard {...hover} />
+          </div>
+        </PersistedEditorMediaProvider>
       </AttachmentDownloadProvider>
     );
   },

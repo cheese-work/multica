@@ -33,6 +33,7 @@ export function useChatSessionsRealtime() {
         // Cancellation may delete a queued prompt or append "Stopped.", both
         // of which change the session preview.
         ws.on("task:cancelled", invalidateSessions),
+        ws.on("chat:cancel_finalized", invalidateSessions),
         // chat:session_read clears the unread flag (could be triggered from
         // web/desktop on the same account).
         ws.on("chat:session_read", invalidateSessions),
@@ -47,6 +48,9 @@ export function useChatSessionsRealtime() {
           const payload = p as {
             chat_session_id: string;
             title?: string;
+            pinned?: boolean;
+            status?: "active" | "archived";
+            continued_into_session_id?: string;
             updated_at?: string;
           };
           patchSessionListAfterRename(qc, wsId, payload);

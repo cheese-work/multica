@@ -1,5 +1,25 @@
 # Migration runner operations
 
+## Upstream v0.7.1 migrations renumbering
+
+Upstream v0.7.1 migrations 593 and 594 collide with the fork's
+`593_chat_continuation` and `594_chat_message_auth_provenance`.
+The fork files keep their names. A refreshed live open-PR check found that
+PR #484 reserves numbers through 736, so the new upstream migrations use the next free numbers:
+
+- `593_runtime_profile_add_devin` becomes `737_runtime_profile_add_devin`.
+- `594_agent_task_process_cleanup_index` becomes `738_agent_task_process_cleanup_index`.
+
+Both up and down files are byte-identical to upstream tag
+`v0.7.1` (`aec9b0b1699939a6d993da9ca2ebd2c62900a8e0`).
+The migration runner registers invalid-index cleanup under the new 738
+version. These upstream versions have not previously run on the fork, so
+there is no historical version-row mapping or replay requirement.
+
+The 737 rollback rejects new Devin runtime profiles but retains existing
+rows. The 738 rollback drops only the process-cleanup lookup index.
+Agents do not run production migrations or deploy this sync.
+
 ## Squad leader failure marker renumbering
 
 Migration `614_squad_leader_failure_marker` replaces the later-merged
@@ -281,3 +301,51 @@ depend on `630_agent_task_queue_context`. Numbers 631 to 649 are claimed by open
 wakeup and inbox pull requests, 650 to 652 by the DM reply record, 653 by the
 unpin migration and 654 by the chat message `sent_via` validation, so 655 is the
 next free number on 2026-10-17. Production deployment remains gated on Cheese.
+
+## Upstream v0.6.4 migration renumbering
+
+Upstream v0.6.4 ships two migrations whose prefixes (583, 584) collide with
+fork migrations already applied on deployed databases. The fork files keep their
+names. The two upstream files are new to this fork, so no database has recorded
+them, and they take the next free numbers after `main`'s `670` (CHE-1900; they were 669 and 670, then 670 and 671, until main took 669 for `chat_fork_source_message` and 670 for `run_gate_event` on 21 Oct 2026):
+
+- `583_runtime_profile_add_muse` is now `671_runtime_profile_add_muse`
+- `584_quick_action_optional_target` is now `672_quick_action_optional_target`
+
+The SQL bytes are unchanged. `allowedForkCollisions` gains no entry. A later
+upstream sync must delete these two upstream filenames when it re-adds them, or
+the `muse` runtime profile and the optional quick-action target would be applied
+twice. Open pull requests that claim 671 or later renumber after this one merges.
+
+## Upstream v0.7.0 migration renumbering
+
+Upstream v0.7.0 adds eight migrations with prefixes 585 through 592. Those
+prefixes already belong to shipped fork migrations. The fork files retain
+their names. The upstream migrations take 678 through 685, after the fork's
+677, in their original order (CHE-2005):
+
+- `585_issue_workflow_owner` is now `678_issue_workflow_owner`
+- `586_cloud_agent_connection` is now `679_cloud_agent_connection`
+- `587_cloud_agent_connection_provider_index` is now `680_cloud_agent_connection_provider_index`
+- `588_daemon_token_owner` is now `681_daemon_token_owner`
+- `589_member_delegation_day` is now `682_member_delegation_day`
+- `590_member_delegation_day_unique_index` is now `683_member_delegation_day_unique_index`
+- `591_member_delegation_day_primary_key` is now `684_member_delegation_day_primary_key`
+- `592_runtime_shared_with` is now `685_runtime_shared_with`
+
+The up and down SQL bytes are unchanged. The runner's concurrent-index name
+map uses the new prefixes. No collision exception is added. A later sync
+must not reintroduce these upstream filenames under their original prefixes.
+
+## Chat migration renumbering
+
+PR 315 added `678_chat_message_decision_answer` and `679_chat_message_lineage`
+after `main` already held `678_issue_workflow_owner` and
+`679_cloud_agent_connection`. The chat migrations take the next free prefixes
+(CHE-2028):
+
+- `678_chat_message_decision_answer` is now `687_chat_message_decision_answer`
+- `679_chat_message_lineage` is now `688_chat_message_lineage`
+
+The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
+so a database that already applied the old names re-runs them safely.

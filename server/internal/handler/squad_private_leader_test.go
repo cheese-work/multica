@@ -471,10 +471,10 @@ func TestComment_SquadPrivateLeader_AgentActorAllowed(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
 	})
 
-	// Agent posts a comment with an explicit squad mention.
+	// Agent posts a comment with an explicit leader mention.
 	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
-		"content": "[@Squad](mention://squad/" + squadID + ") agent reporting in",
+		"content": "[@Leader](mention://agent/" + agentID + ") agent reporting in",
 	})
 	r.Header.Set("X-Agent-ID", otherAgentID)
 	r.Header.Set("X-Task-ID", taskID)

@@ -11,6 +11,7 @@ describe("resolveJevGovernance", () => {
       version: 3,
       routing_mode: "shadow",
       min_confidence: 0.8,
+      api_url: "",
       history: [],
     });
     expect(at({ jev_squad_routing_mode: "on" }).routing_mode).toBe("on");
@@ -27,7 +28,7 @@ describe("resolveJevGovernance", () => {
   });
 
   it("is off with no confidence for a workspace that never saved", () => {
-    expect(at({}, 0)).toEqual({ version: 0, routing_mode: "off", min_confidence: null, history: [] });
+    expect(at({}, 0)).toEqual({ version: 0, routing_mode: "off", min_confidence: null, api_url: "", history: [] });
   });
 });
 

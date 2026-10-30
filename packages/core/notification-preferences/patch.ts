@@ -5,6 +5,7 @@ import type {
 } from "../types";
 
 const NOTIFICATION_GROUP_KEYS: readonly NotificationGroupKey[] = [
+  "unassigned_activity",
   "assignments",
   "status_changes",
   "comments",

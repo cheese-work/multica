@@ -10,7 +10,11 @@ const DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgres://multica:multica@localhost:5432/multica?sslmode=disable";
 
-test("renders assistant quick actions and sends the hidden prompt", async ({
+// A late workspace list puts the chat page's mount in the same commit as the
+// workspace layout's publication of the workspace, so the chat store rehydrates
+// after the deep link was applied. The delayed variant pins that ordering.
+for (const workspaceListDelayMs of [0, 3000]) {
+test(`renders assistant quick actions and sends the hidden prompt${workspaceListDelayMs ? ` when the workspace list arrives ${workspaceListDelayMs} ms late` : ""}`, async ({
   page,
 }) => {
   const api: TestApiClient = await createTestApi();
@@ -105,6 +109,13 @@ test("renders assistant quick actions and sends the hidden prompt", async ({
       { authToken: token, activeSessionId: sessionId },
     );
 
+    if (workspaceListDelayMs) {
+      await page.route("**/api/workspaces", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, workspaceListDelayMs));
+        await route.continue();
+      });
+    }
+
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto(`/${workspace.slug}/chat?session=${sessionId}`, {
       waitUntil: "domcontentloaded",
@@ -150,3 +161,4 @@ test("renders assistant quick actions and sends the hidden prompt", async ({
     await api.cleanup();
   }
 });
+}

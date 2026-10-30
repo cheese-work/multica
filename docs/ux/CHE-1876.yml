@@ -1,0 +1,34 @@
+# DM agent-message comments (annotation), web and desktop. Mobile is a follow-up.
+# Design gate: Cheese approved "A rev-2" in CHE-1876 comment 01a158bb-f730-7463-9aeb-280e116f5323 (decision
+# 35a9320c-61b7-4424-ad86-9a97db7c282f). The approval is a recorded Multica decision, not a design-PR merge:
+# CHE-1876 comment 01a1583e-6179-7136-8513-77e98c546b53 allows one PR (#312) for design and code. The SHA below
+# is the rev-2 revision commit, not a merge commit.
+# Locales: machine-drafted zh-Hans, ja, ko and fr ship now. Native review is NOT-RUN.
+issue: CHE-1876
+design: design/dm-agent-message-annotation/rev-2/A.html @ bd60e95b42eb26b15cc0164b07bf8a20d050b155   # approved by recorded decision, see above
+pages:
+  - id: chat-page
+    url: /<workspace-slug>/chat   # agent reply, composer chip and sent bubble; the floating chat window shares the same components
+    keep:
+      - assistant-message-copy
+      - chat-send-button
+    change:
+      - annotation-add: "new floating Add comment button over a selection inside an agent reply; Tab from the selection reaches it"
+      - annotation-note: "new note box with the Comment N label; Enter adds, Esc cancels"
+      - annotation-marker: "new numbered marker on the reply; sits in reading order right after the reply text, named Edit comment N with the note"
+      - chat-annotation-chip: "new N comments button above the composer; opens the list"
+      - chat-annotation-scroll: "new scroll area in the list; a tab stop; keeps all 20 comments reachable"
+      - chat-annotation-range: "new Comments a-b of N caption under the list"
+      - chat-annotation-row: "new row: marker number, quote, note; hover or focus lights the matching marker and quote"
+      - chat-annotation-edit: "new Edit N button on each row"
+      - chat-annotation-remove: "new Remove N button on each row; focus moves to the next row, or the chip"
+      - chat-user-message: "a sent message with comments shows > quotes with notes above the typed text (plain Markdown, no new element)"
+    remove: []
+  - id: chat-page-phone
+    url: /<workspace-slug>/chat   # 390 px; the list is 248 px high and shows four rows
+    keep:
+      - assistant-message-copy
+      - chat-send-button
+    change:
+      - chat-annotation-chip: "same chip; the open list covers the reply near it, as drawn in rev-2 frame 3"
+    remove: []

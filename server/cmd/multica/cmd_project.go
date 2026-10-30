@@ -148,8 +148,8 @@ func init() {
 	// payload works without further CLI changes. github_repo is supported via
 	// dedicated shortcuts; for that type, a non-JSON --ref value is treated as
 	// the default checkout ref.
-	projectResourceAddCmd.Flags().String("type", "github_repo", "Resource type (e.g. github_repo, local_directory — see docs)")
-	projectResourceAddCmd.Flags().String("url", "", "Shortcut: the repo URL (only used when --type github_repo)")
+	projectResourceAddCmd.Flags().String("type", "github_repo", "Resource type (github_repo, local_directory, url)")
+	projectResourceAddCmd.Flags().String("url", "", "Shortcut: the repo URL (github_repo) or HTTPS link (url)")
 	projectResourceAddCmd.Flags().String("default-branch-hint", "", "Shortcut: optional default branch hint (only used when --type github_repo)")
 	projectResourceAddCmd.Flags().String("local-path", "", "Shortcut: absolute path to the working directory (only used when --type local_directory)")
 	projectResourceAddCmd.Flags().String("daemon-id", "", "Shortcut: id of the daemon that owns the local path (only used when --type local_directory)")
@@ -161,7 +161,7 @@ func init() {
 
 	// project resource update — mirrors `add` flags, but every field is
 	// optional so the caller can edit one thing at a time.
-	projectResourceUpdateCmd.Flags().String("url", "", "Shortcut: new repo URL (github_repo)")
+	projectResourceUpdateCmd.Flags().String("url", "", "Shortcut: new repo URL (github_repo) or HTTPS link (url)")
 	projectResourceUpdateCmd.Flags().String("default-branch-hint", "", "Shortcut: new default branch hint (github_repo)")
 	projectResourceUpdateCmd.Flags().String("local-path", "", "Shortcut: new absolute local path (local_directory)")
 	projectResourceUpdateCmd.Flags().String("daemon-id", "", "Shortcut: new daemon id (local_directory)")
@@ -584,13 +584,13 @@ func runProjectResourceAdd(cmd *cobra.Command, args []string) error {
 		body["resource_ref"] = ref
 	} else {
 		switch resourceType {
-		case "github_repo":
+		case "github_repo", "url":
 			ref, has, err := buildResourceRefFromFlags(cmd, resourceType, nil)
 			if err != nil {
 				return err
 			}
 			if !has {
-				return fmt.Errorf("github_repo requires --url (or pass a JSON payload via --ref)")
+				return fmt.Errorf("%s requires --url (or pass a JSON payload via --ref)", resourceType)
 			}
 			body["resource_ref"] = ref
 		case "local_directory":
@@ -793,6 +793,15 @@ func looksLikeJSONPayload(raw string) bool {
 // required fields are still rejected.
 func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existingRef map[string]any) (map[string]any, bool, error) {
 	switch resourceType {
+	case "url":
+		if !cmd.Flags().Changed("url") {
+			return nil, false, nil
+		}
+		link := strings.TrimSpace(mustString(cmd, "url"))
+		if link == "" {
+			return nil, false, fmt.Errorf("--url cannot be empty")
+		}
+		return map[string]any{"url": link}, true, nil
 	case "github_repo":
 		urlSet := cmd.Flags().Changed("url")
 		hintSet := cmd.Flags().Changed("default-branch-hint")

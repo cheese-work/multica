@@ -15,7 +15,7 @@ builds:
     binary: multica
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}{{if index .Env "RELEASE_BUILD_STAMP"}}-{{index .Env "RELEASE_BUILD_STAMP"}}{{end}}
+      - -X main.version={{if index .Env "UPSTREAM_VERSION"}}{{index .Env "UPSTREAM_VERSION"}}{{else}}{{.Version}}{{end}}{{if index .Env "RELEASE_BUILD_STAMP"}}-{{index .Env "RELEASE_BUILD_STAMP"}}{{end}}
       - -X main.commit={{.ShortCommit}}
       - -X main.buildCommit={{.FullCommit}}
       - -X main.date={{.Date}}

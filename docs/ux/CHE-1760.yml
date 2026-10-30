@@ -1,0 +1,61 @@
+# L4 of the DM archive, statistics and back-stack work (CHE-1755): the mobile app. A real more menu,
+# the statistics sheet, archive and unarchive, the Archived section of the chat list and the
+# archived-DM send alert. Session-only statistics: the whole-conversation chain total belongs to
+# CHE-1782. Mobile slash commands (/archive, /pin, /unarchive) are C2 CHE-1763 and the chat/[id]
+# back stack is L5a CHE-1761; neither is in this sheet. The mobile list IA is L5b CHE-1783.
+#
+# Predecessor sources, verified on main at 70c7a33835b65108dd4cbd7e26ba3b60551617e3:
+#   L1  PR 266, merge 6d857ef388251af34b78c225116be3e37ff3b781 (GET /api/chat/sessions/{id}/usage).
+#       Final head c3843ade8e74b44850d7fb48db3be425a4e7fe73 equals the merged file contents.
+#       Signed PASS and OCR receipt: CHE-1757 comment 01a1410e-4987-7a25-b2ba-14b7e456a782.
+#   L1c PR 275, merge 74f406fca427ddeb6a757bee70127f3f667a670a (archived DMs are unpinned).
+#       Reviewed head a55221e86f43a8546dfbb4d7c8d7465fe4f41783; the merged head c6c76a452c86dc88761c68694f6e7f5e5dd6b8ec
+#       adds one merge-only commit of main (same 8 files, 217 insertions, 9 deletions).
+#       APPROVE: CHE-1801 comment 01a1418f-9920-7ea5-8c33-a5c27622cee5. OCR: 01a14188-c5ed-7944-90e9-2cb2301f25d0.
+#       Disposition: 01a1423c-4ca6-7e38-a466-c058d9467474.
+#   Usability on main: the 8 TestChatSessionUsage tests and the 6 archived-unpinned tests pass on a
+#   throwaway Postgres 17 migrated through 668. Merge is not review; this sheet claims no new PASS.
+# Element ids are testID values. No device capture exists; Android device work needs the Android
+# device squad's separate live admission, which this sheet does not grant.
+issue: CHE-1760
+design: design/dm-stats-archive-menu/rev-2/C.html @ 70c7a33835b65108dd4cbd7e26ba3b60551617e3
+pages:
+  - id: mobile-chat-more-menu
+    url: /[workspace]/(tabs)/chat   # Expo Router route; the more button in the chat header
+    keep:
+      - mobile-chat-delete-confirm
+    change:
+      - mobile-chat-more-menu: "replaces the Delete-only alert with one menu component; 48 dp rows; order Statistics, Pin, Rename, Archive, Delete"
+      - mobile-chat-more-statistics: "new first item; opens the statistics sheet"
+      - mobile-chat-more-pin: "new Pin or Unpin for active DMs only; hidden on archived DMs"
+      - mobile-chat-more-archive: "new Archive on an active DM and Unarchive on an archived DM; 5 s undo toast on Archive; guarded per session id"
+      - mobile-chat-more-delete: "Delete moves into the menu; keeps its confirmation alert"
+    remove:
+      - mobile-chat-more-delete-only-alert: "the Delete-only alert behind the more button; Delete stays reachable in the menu"
+  - id: mobile-statistics-sheet
+    url: /[workspace]/chat-statistics   # new formSheet route, name set by the implementation PR; absent on base
+    keep: []
+    change:
+      - mobile-stats-sheet: "new formSheet with the same order and copy as the web dialog; cost labelled Estimated, Partial when usage is missing; 44 pt targets"
+      - mobile-stats-state-loading: "new skeleton"
+      - mobile-stats-state-empty: "new: cost shows a dash, never zero"
+      - mobile-stats-state-error: "new: could-not-load message with Retry; never zeros"
+      - mobile-stats-state-offline: "new: last numbers dimmed with the time in ICT and Retry"
+    remove: []
+  - id: mobile-chat-list
+    url: /[workspace]/chat-sessions   # existing formSheet; also the chat list
+    keep:
+      - mobile-chat-session-row
+      - mobile-chat-session-delete
+    change:
+      - mobile-chat-list-pinned: "pinned-first order for active DMs"
+      - mobile-chat-list-archived: "new 'Archived - N' section from a status=all fetch; sorted by last activity only; no pin icon and no pinned category"
+    remove: []
+  - id: mobile-archived-send-alert
+    url: /[workspace]/(tabs)/chat   # archived DM
+    keep: []
+    change:
+      - mobile-chat-composer: "stays available on an archived DM instead of the disabled archived state"
+      - mobile-archived-send-alert: "new native alert: 'This DM is archived. Unarchive it and send?' with Unarchive and send, and Cancel. Confirm awaits the unarchive, then sends once. Cancel keeps the draft. A failed unarchive keeps the draft and shows the error"
+      - mobile-open-newer-dm: "new primary alert action when the DM was continued: Open the newer DM pushes the newer DM; Unarchive and send stays secondary"
+    remove: []

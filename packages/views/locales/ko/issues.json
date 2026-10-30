@@ -1,4 +1,35 @@
 {
+  "relations": {
+    "graph": "그래프",
+    "list": "목록",
+    "sub_issues": "하위 이슈",
+    "parent_summary": "상위 이슈",
+    "parent_filter": "상위 / 하위 이슈",
+    "done_count": "완료",
+    "in_progress_count": "진행 중",
+    "todo_count": "할 일",
+    "closed_count": "종료",
+    "no_parent": "상위 이슈 없음",
+    "mentions_hint": "켜면 불러옵니다",
+    "navigation_hint": "카드를 클릭하여 열기 · 마우스를 올려 전체 제목 보기 · ← → ↑ ↓ 포커스 이동 · Esc 닫기",
+    "title": "관계 그래프",
+    "direction": "화살표는 부모에서 하위 태스크로, 감시 대상에서 재개할 태스크로, 멘션에서 참조 대상으로 향합니다. 현재 태스크는 굵은 테두리로 표시됩니다.",
+    "depth": "깊이",
+    "loading": "관계 불러오는 중…",
+    "load_failed": "관계를 불러오지 못했습니다.",
+    "render_failed": "그래프를 표시하지 못했습니다.",
+    "filter_label": "표시할 관계 유형",
+    "retry": "다시 시도",
+    "empty": "관련 태스크가 없습니다.",
+    "omitted": "{{count}}개 더 표시되지 않음 (최대 40개 노드).",
+    "parent": "부모 → 하위",
+    "duplicate": "중복 대상",
+    "wakeup": "재개",
+    "children_done": "하위 완료 → 재개",
+    "mention": "멘션",
+    "shared_pr": "공유 PR",
+    "unknown": "관련"
+  },
   "inline_run": {
     "label": "{{name}} 실행",
     "stop": "중지",
@@ -202,6 +233,8 @@
     "grouping_section": "그룹화",
     "ordering_section": "정렬",
     "card_properties_section": "카드 속성",
+    "columns_section": "열",
+    "columns_locked_by_filter": "열을 표시하거나 숨기려면 상태 필터를 해제하세요.",
     "ascending_title": "오름차순",
     "descending_title": "내림차순",
     "newest_first": "최신순",
@@ -359,18 +392,13 @@
     "toggle_collapse": "레인 접기/펼치기"
   },
   "board": {
-    "hidden_columns_label": "숨긴 열",
     "hide_column": "열 숨기기",
-    "show_column": "열 표시",
     "add_issue_tooltip": "태스크 추가",
     "empty_column": "태스크 없음",
     "empty_grouping": "일치하는 태스크가 없습니다",
     "no_value": "값 없음",
     "ordered_by": "{{field}} 기준으로 정렬된 보드",
-    "manual_reorder_hint": "열 안의 순서를 바꾸려면 정렬을 '수동'으로 전환하세요.",
-    "filter_to_status": "이 상태로 필터",
-    "outside_workflow": "이 보드의 워크플로에 없음",
-    "workflow_columns_note": "보드의 열은 워크플로가 정합니다. 프로젝트 밖의 보기는 Default를 사용합니다."
+    "manual_reorder_hint": "열 안의 순서를 바꾸려면 정렬을 '수동'으로 전환하세요."
   },
   "peek": {
     "panel_label": "태스크 미리보기",
@@ -380,6 +408,14 @@
     "close": "미리보기 닫기"
   },
   "detail": {
+    "metadata_close": "메타데이터 닫기",
+    "metadata_copy": "메타데이터 복사",
+    "metadata_view": "메타데이터 확대 보기",
+    "metadata_expand": "대화상자 확대",
+    "metadata_restore": "대화상자 크기 복원",
+    "metadata_copy_failed": "메타데이터를 복사하지 못했습니다",
+    "metadata_description": "에이전트와 연동 기능이 작업 흐름을 이어가기 위해 기록하는 키와 값 데이터입니다.",
+    "section_load_failed_retry": "불러오지 못했습니다. 다시 시도",
     "not_found": "이 워크스페이스에 해당 태스크가 없거나 삭제되었습니다.",
     "breadcrumb_project_unknown": "알 수 없는 프로젝트",
     "back": "뒤로",
@@ -402,6 +438,7 @@
     "section_parent_issue": "상위 태스크",
     "section_pull_requests": "Pull requests",
     "section_metadata": "메타데이터",
+    "status_summary_label": "상태 요약",
     "section_details": "세부 정보",
     "section_quick_actions": "퀵 액션",
     "quick_actions_more": "{{count}}개 더 보기",
@@ -446,6 +483,7 @@
     "prop_labels": "라벨",
     "add_property_action": "속성 추가",
     "prop_created_by": "생성자",
+    "prop_requested_by": "요청자",
     "prop_created": "생성일",
     "prop_updated": "수정일",
     "activity_section": "활동",
@@ -467,9 +505,14 @@
     "archive_tooltip": "보관",
     "pin_tooltip": "사이드바에 고정",
     "unpin_tooltip": "사이드바 고정 해제",
+    "quick_jump_label": "빠른 탐색",
+    "description_nav_label": "태스크 설명",
+    "sub_issues_nav_progress": "{{done}}/{{total}} 완료",
     "thread_nav_label": "스레드로 이동",
     "thread_nav_resolved_label": "{{title}} (해결됨)",
     "thread_nav_reply_label": "{{author}}: {{title}}",
+    "thread_nav_show_replies_other": "답글 {{count}}개 펼치기",
+    "thread_nav_hide_replies": "답글 접기",
     "sidebar_tooltip": "오른쪽 사이드바 열기/닫기",
     "find": {
       "placeholder": "태스크에서 찾기...",
@@ -516,6 +559,7 @@
     "squad_leader_no_action_reason": "평가 완료: 필요한 작업 없음({{reason}})",
     "squad_leader_failed": "평가 실패",
     "squad_leader_failed_reason": "평가 실패: {{reason}}",
+    "stop_not_confirmed": "실행 {{taskId}}의 중지가 확인되지 않음",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "활동 {{count}}개",
     "show_more_activities_other": "활동 {{count}}개 더 보기",
@@ -529,6 +573,7 @@
     "pr_auto_complete_disabled": "이 태스크가 PR 병합 시 상태를 유지하도록 설정했습니다",
     "pr_auto_complete_enabled": "이 태스크의 PR 병합 후 상태 변경을 다시 켰습니다",
     "wakeup_created": "깨우기를 추가했습니다: {{condition}} · {{agent}} 깨우기",
+    "wakeup_created_scheduled": "{{agent}} 깨우기를 추가했습니다: {{condition}}",
     "wakeup_triggered": "{{condition}} · {{agent}}을(를) 깨웠습니다",
     "wakeup_triggered_merged": "{{condition}} · {{agent}}의 대기 중인 실행에 합쳤습니다",
     "wakeup_triggered_acknowledged": "{{condition}} · {{agent}} 자신의 작업이라 다시 깨우지 않았습니다",
@@ -561,6 +606,8 @@
     "wakeup_link_run": "실행 보기"
   },
   "comment": {
+    "show_full": "전체 댓글 보기",
+    "you": "나",
     "add_reaction": "반응 추가",
     "collapse_thread": "스레드 접기",
     "expand_thread": "스레드 펼치기",
@@ -719,6 +766,7 @@
     "retry_failed": "실행을 다시 시도하지 못했습니다",
     "retry_blocked": "다시 시도되지 않음 — 이 에이전트를 사용할 권한이 없습니다",
     "transcript_tooltip": "트랜스크립트 보기",
+    "jump_to_run": "실행으로 이동",
     "cancel_failed": "실행을 취소하지 못했습니다",
     "trigger_retry": "다시 시도",
     "trigger_retry_attempt": "{{attempt}}번째 다시 시도",
@@ -753,7 +801,7 @@
     "summary_runs_other": "실행 {{count}}회",
     "latest": "최근",
     "open_timeline": "타임라인 열기",
-    "more_runs_other": "{{count}}개 더",
+    "more_runs_other": "{{count}}개 더 보기",
     "strip_aria": "실행별 비용 — 실행 타임라인 열기",
     "strip_no_usage": "사용량 기록 없음",
     "sparkline_now": "지금"
@@ -850,6 +898,7 @@
     "updated_ago": "{{time}} 수정됨"
   },
   "actions": {
+    "rename_issue": "태스크 이름 변경",
     "status": "상태",
     "priority": "우선순위",
     "assignee": "담당자",
@@ -1090,7 +1139,7 @@
     "wake_agent": "{{agent}} 깨우기",
     "needs_attention": "확인 필요",
     "turn_off": "끄기",
-    "ended": "깨우기 기록 {{count}}",
+    "ended": "깨우기 기록 · {{count}}",
     "waiting_event": "트리거 대기 중",
     "triggered_by_wakeup": "자동 깨우기로 시작됨",
     "upcoming": "활성 깨우기 규칙 {{count}}개",
@@ -1274,12 +1323,14 @@
       "children_stage": "{{stage}}단계",
       "pr_checks": "CI 종료",
       "pr_merged": "병합",
+      "pr_conflicts": "병합 충돌 발생",
       "choose_issue": "태스크 선택",
       "pick_issue_title": "지켜볼 태스크",
       "pick_issue_description": "이 태스크가 선택한 상태가 되면 에이전트를 깨웁니다.",
       "other_done": "완료",
       "other_ended": "완료 또는 취소",
       "other_in_review": "검토 중으로 바뀜",
+      "other_blocked": "막힘으로 바뀜",
       "max_fires": "최대",
       "max_fires_times_other": "{{count}}회",
       "missing_value": "값을 선택하세요.",
@@ -1329,9 +1380,15 @@
       "children_stage": "{{stage}}단계 하위 태스크가 모두 끝나면",
       "pr_checks": "연결된 PR의 CI가 끝나면",
       "pr_merged": "연결된 PR이 병합되면",
+      "pr_conflicts": "연결된 PR에 병합 충돌이 생기면",
       "other_done": "{{issue}}이(가) 완료되면",
       "other_ended": "{{issue}}이(가) 완료되거나 취소되면",
       "other_in_review": "{{issue}}이(가) 검토 중으로 바뀌면",
+      "gh_run_id": "{{repo}}의 실행 {{id}}",
+      "gh_run_sha": "{{repo}}의 {{workflow}}({{sha}})",
+      "gh_run_completed": "{{run}}이(가) 끝나면",
+      "gh_run_waiting": "{{run}}이(가) 승인 게이트에서 대기하면",
+      "other_blocked": "{{issue}}이(가) 막힘으로 바뀌면",
       "another_issue": "다른 태스크",
       "unknown_label": "삭제된 레이블",
       "unknown_property": "삭제된 속성",
@@ -1351,9 +1408,13 @@
       "children_stage": "{{stage}}단계 대기",
       "pr_checks": "CI 대기",
       "pr_merged": "PR 병합 대기",
+      "pr_conflicts": "병합 충돌 감시 중",
       "other_done": "{{issue}} 완료 대기",
       "other_ended": "{{issue}} 종료 대기",
       "other_in_review": "{{issue}} 검토 대기",
+      "gh_run_completed": "{{run}} 종료 대기",
+      "gh_run_waiting": "{{run}} 승인 게이트 대기",
+      "other_blocked": "{{issue}} 막힘 대기",
       "time": "{{time}}에 {{agent}} 깨우기",
       "header": "{{agent}}: {{what}}",
       "paused": "깨우기 일시중지됨",
@@ -1423,6 +1484,7 @@
     "not_merged": "{{prs}}이(가) 병합되지 않고 닫혔습니다",
     "not_merged_action": "제거",
     "all_merged_to": "PR이 모두 병합되었습니다. 다음 PR이 병합되면 {{status}}(으)로 변경합니다.",
+    "workflow_owned": "PR이 병합되면 워크플로가 이 태스크를 이동합니다",
     "issue_disabled": "이 태스크는 PR 병합 시 상태를 바꾸지 않음",
     "issue_disabled_action": "다시 켜기"
   },
@@ -1474,7 +1536,8 @@
       "member": "멤버",
       "project_lead": "프로젝트 리드",
       "creator": "태스크 작성자",
-      "project_lead_named": "{{name}} (프로젝트 리드)"
+      "project_lead_named": "{{name}} (프로젝트 리드)",
+      "human_by_role": "역할별 담당자"
     },
     "settings": {
       "title": "워크플로",
@@ -1517,7 +1580,7 @@
       "instructions": "인계 지침",
       "instructions_placeholder": "이 단계에서 무엇을 해야 하나요?",
       "next": "완료 후 이동",
-      "back": "수정이 필요하면 되돌릴 단계",
+      "back": "반려 시 되돌릴 단계",
       "none_option": "지정 안 함",
       "save": "저장",
       "create": "만들기",
@@ -1531,6 +1594,7 @@
       "copy_name": "{{name}} 사본",
       "more": "더 보기",
       "steps_hint": "드래그해 가운데 열의 순서를 바꿉니다. Backlog와 Blocked는 선택 사항입니다. 새 상태는 저장할 때 만들어집니다.",
+      "status_needs_admin": "{{names}}은(는) 새 상태가 됩니다. 상태는 워크스페이스 관리자만 추가할 수 있습니다. 이 열을 제거하거나 먼저 관리자에게 상태 추가를 요청하세요.",
       "reorder": "{{name}} 순서 변경",
       "card_hand_to": "인계 대상",
       "card_then": "완료 후 → {{status}}",
@@ -1544,7 +1608,8 @@
       "target_squad": "스쿼드 · 리더가 배분",
       "target_member": "멤버",
       "instructions_hint": "이번 실행의 지침으로 처리자에게 전달되며, 태스크 설명·댓글과 함께 맥락이 됩니다.",
-      "next_hint": "처리자가 받는 설명에 적혀 다음에 어떤 상태로 바꿀지 알려 줍니다. 실행이 끝나도 시스템이 상태를 자동으로 넘기지 않습니다.",
+      "advance_on_ci_green": "연결된 PR의 검사가 통과하면 다음 열로 이동",
+      "next_hint": "상태는 처리자가 직접 바꿉니다. 반려는 다시 해야 할 때만 쓰고, 막힌 경우에는 쓰지 않습니다. 실행이 끝나도 상태는 자동으로 바뀌지 않습니다.",
       "preview_brief": "에이전트가 받는 설명 미리 보기",
       "preview_title": "“{{status}}” 단계 설명",
       "preview_description": "태스크가 이 단계에 들어오면 처리자의 실행이 받는 내용입니다. 미리 보기에는 저장이 필요 없습니다.",
@@ -1565,8 +1630,7 @@
       "step_off": "꺼짐: 이 워크플로는 이 상태를 쓰지 않습니다. 왼쪽 목록에서 켜면 사용할 수 있습니다.",
       "status_new_hint": "새 상태입니다. 저장할 때 상태 라이브러리에 추가됩니다.",
       "no_other_status": "모든 상태가 이미 단계입니다.",
-      "no_handoff_step": "이 단계는 인계하지 않습니다. 들어와도 담당자는 그대로이고 실행도 시작되지 않습니다.",
-      "new_step_handoff": "먼저 워크플로를 저장하세요. 저장한 뒤 새 상태의 인계를 설정할 수 있습니다."
+      "no_handoff_step": "이 단계는 인계하지 않습니다. 들어와도 담당자는 그대로이고 실행도 시작되지 않습니다."
     },
     "mapping": {
       "title": "{{name}}(으)로 태스크 이동",
@@ -1602,6 +1666,7 @@
     },
     "picker": {
       "header": "{{workflow}} · 프로젝트 “{{project}}” 기준",
+      "header_no_project": "{{workflow}} 상태 · 프로젝트 없음",
       "footer": "이 태스크 워크플로의 상태만 표시합니다. 오른쪽은 해당 상태에 들어갈 때의 처리자입니다."
     },
     "confirm": {
@@ -1645,8 +1710,13 @@
     },
     "detail": {
       "follows_project": "(프로젝트 기준)",
+      "follows_override": "(이 이슈에 설정됨)",
+      "override_title": "이 이슈의 워크플로",
+      "override_follow_project": "프로젝트 워크플로 따르기",
+      "override_error": "워크플로를 변경할 수 없습니다",
+      "no_workflow": "워크플로 없음",
       "card_title": "“{{workflow}}” · “{{project}}” 기준",
-      "card_hint": "이 열과 인계는 프로젝트의 워크플로가 정합니다."
+      "flowchart": "플로차트"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1655,7 +1725,7 @@
       "next_default": "다음 열 ({{status}})",
       "saved": "인계를 저장했습니다",
       "error": "인계를 저장하지 못했습니다",
-      "read_only": "인계는 워크플로에 속하며 워크스페이스 관리자가 변경합니다.",
+      "read_only": "인계는 워크플로에 속하며 워크플로 소유자와 워크스페이스 관리자가 변경합니다.",
       "to": "넘길 대상",
       "members": "멤버",
       "mode_none": "넘기지 않음",
@@ -1665,6 +1735,7 @@
       "mode_member": "멤버에게 넘기기",
       "mode_member_hint": "담당자만 바뀌고 자동으로 실행되지 않습니다",
       "project_lead_hint": "프로젝트 리드가 에이전트라면 실행을 시작합니다.",
+      "human_by_role_hint": "요청자, 프로젝트 리드, 워크스페이스 소유자 순서입니다.",
       "pick_agent": "에이전트 선택",
       "pick_member": "멤버 선택",
       "search_agents": "에이전트 검색",
@@ -1693,7 +1764,30 @@
       "title": "“{{workflow}}” 워크플로",
       "scope_own": "이 워크플로는 이 프로젝트만 사용합니다.",
       "no_handoff_here": "인계 없음",
-      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다."
+      "scope_shared_other": "프로젝트 {{count}}개가 이 워크플로를 사용합니다. 인계는 모두에 적용됩니다.",
+      "graph_label": "워크플로 그래프",
+      "exits_label": "워크플로 출구",
+      "exit_item": "{{guard}} 일 때 {{from}}에서 {{to}}로",
+      "edit": {
+        "title": "{{step}}의 전이",
+        "pick": "단계를 선택하면 전이를 편집할 수 있습니다.",
+        "empty": "전이가 없습니다.",
+        "group": "전이 {{n}}: {{to}}",
+        "guard": "조건",
+        "target": "이동 대상",
+        "timeout": "타임아웃",
+        "on_timeout": "타임아웃 시",
+        "add": "전이 추가",
+        "remove": "전이 삭제",
+        "issues": {
+          "too_many_edges": "{{from}}의 전이가 {{max}}개를 넘습니다.",
+          "missing_target": "{{from}}의 전이가 없는 단계로 향합니다.",
+          "bad_guard": "{{from}}의 전이에 알 수 없는 조건이 있습니다.",
+          "bad_timeout": "{{from}}의 전이에는 1m~720h 사이의 타임아웃이 필요합니다(예: 72h).",
+          "bad_on_timeout": "{{from}}의 전이에는 올바른 타임아웃 시 단계가 필요합니다.",
+          "ci_green_source": "{{from}}은(는) CI 성공으로 진행할 수 없습니다."
+        }
+      }
     },
     "templates": {
       "delivery": {
@@ -1722,5 +1816,51 @@
         }
       }
     }
+  },
+  "hover_card": {
+    "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
+  },
+  "decision": {
+    "class": {
+      "reversible": "되돌릴 수 있음",
+      "spend": "지출",
+      "deploy": "배포",
+      "publish": "게시",
+      "irreversible": "되돌릴 수 없음",
+      "product_direction": "제품 방향"
+    },
+    "state": {
+      "pending": "대기 중",
+      "effective": "적용됨",
+      "disclaimed": "철회됨",
+      "delivered": "전달됨",
+      "recorded": "기록됨"
+    },
+    "via_dm": "DM 경유",
+    "recorded_by": "{{name}} 기록",
+    "recorded_for": "{{issue}}에 기록됨",
+    "option_n": "선택지 {{number}}",
+    "jump_to_card": "카드로 이동",
+    "answered_in_dm": "DM에서 답변",
+    "private_dm": "비공개 DM에서",
+    "disclaim_action": "철회",
+    "disclaiming": "철회 중…",
+    "disclaim_title": "이 결정을 철회할까요?",
+    "disclaim_desc": "에이전트에 결정이 철회되었음이 전달되고 요청이 다시 열립니다. 이 작업은 되돌릴 수 없습니다.",
+    "keep_action": "결정 유지",
+    "changed_title": "읽는 동안 이 결정이 변경되었습니다.",
+    "changed_body": "철회하기 전에 새로고침하여 현재 상태를 확인하세요. 철회된 것은 없습니다.",
+    "refresh_action": "새로고침",
+    "withdrawn_title": "이미 철회되었습니다.",
+    "withdrawn_body": "이번 클릭으로 변경된 것은 없습니다.",
+    "review_action": "확인",
+    "failed_notice": "철회하지 못했습니다. 결정은 그대로입니다.",
+    "try_again_action": "다시 시도",
+    "full_message": "전체 메시지",
+    "agent_note": "에이전트 메모",
+    "timing_disclaimed": "{{time}}에 철회됨",
+    "timing_effective": "{{time}}부터 유효",
+    "timing_pending_window": "대기 중. {{time}}에 효력 발생, 철회 가능 시간 {{minutes}}분.",
+    "timing_pending_wake": "대기 중. 에이전트가 깨어나는 즉시 효력이 발생합니다."
   }
 }

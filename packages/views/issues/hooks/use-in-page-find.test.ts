@@ -1,5 +1,5 @@
-import { act, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { collectTextMatches, useInPageFind } from "./use-in-page-find";
 
 function makeRoot(html: string): HTMLElement {
@@ -127,6 +127,137 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     await flushFrames();
     expect(result.current.matchCount).toBe(0);
     expect(result.current.activeIndex).toBe(-1);
+  });
+
+  it("reveals and scrolls a new query in the same source document", async () => {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>first match then a distant second match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, this.startOffset === 0 ? 600 : 1200, 100, 20)] as unknown as DOMRectList;
+    };
+    const revealDocument = vi.fn();
+    const documents = [{ id: "comment-long", text: "first match then a distant second match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument }));
+    act(() => { result.current.openFind(); result.current.setQuery("first"); });
+    await flushFrames();
+    expect(result.current.activeIndex).toBe(0);
+    expect(container.scrollTop).toBeGreaterThan(0);
+    container.scrollTop = 0;
+    revealDocument.mockClear();
+
+    act(() => result.current.setQuery("second"));
+    await flushFrames();
+    expect(result.current.matchCount).toBe(1);
+    expect(result.current.activeIndex).toBe(0);
+    expect(result.current.activeDocumentId).toBe("comment-long");
+    expect(container.scrollTop).toBeGreaterThan(0);
+    expect(revealDocument).toHaveBeenCalledWith("comment-long");
+  });
+
+  it("re-scrolls the active match when layout shifts after the first scroll", async () => {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    let documentY = 1200;
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
+    };
+    const documents = [{ id: "comment-long", text: "one distant match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
+    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
+    await flushFrames();
+    expect(container.scrollTop).toBeGreaterThan(0);
+
+    // A table or fold lays out below the first scroll and pushes the match away.
+    documentY = 7200;
+    await flushFrames(4);
+    const top = documentY - container.scrollTop;
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top + 20).toBeLessThanOrEqual(400);
+  });
+
+  // A settled-layout re-scroll must stop with the match it was started for.
+  // Drives a scroll (which starts the settle window), ends the match via
+  // `endMatch`, then shifts layout again and asserts nothing scrolls the view.
+  async function expectNoSettleScrollAfter(
+    endMatch: (result: { current: ReturnType<typeof useInPageFind> }) => void,
+  ): Promise<void> {
+    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
+    let documentY = 1200;
+    Range.prototype.getClientRects = function () {
+      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
+    };
+    const documents = [{ id: "comment-long", text: "one distant match" }];
+    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
+    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
+    await flushFrames();
+    expect(container.scrollTop).toBeGreaterThan(0);
+
+    act(() => endMatch(result));
+    await flushFrames(1);
+    // The host restores its own scroll position after find ends.
+    container.scrollTop = 0;
+    documentY = 7200;
+    await flushFrames(4);
+    expect(container.scrollTop).toBe(0);
+  }
+
+  it("stops the settle re-scroll when find closes", async () => {
+    await expectNoSettleScrollAfter((result) => result.current.closeFind());
+  });
+
+  it("stops the settle re-scroll when the query is cleared", async () => {
+    await expectNoSettleScrollAfter((result) => result.current.setQuery(""));
+  });
+
+  it("does not reveal an unchanged match after a timeline refresh", async () => {
+    const revealDocument = vi.fn();
+    const documents = [{ id: "first", text: "needle needle" }];
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: 0, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
+    await waitFor(() => expect(result.current.matchCount).toBe(2));
+    revealDocument.mockClear();
+    rerender({ entries: [...documents.map(entry => ({ ...entry })), { id: "new", text: "unrelated" }] });
+    await flushFrames();
+    expect(revealDocument).not.toHaveBeenCalled();
+    act(() => result.current.goNext());
+    expect(revealDocument).toHaveBeenCalledWith("first");
+  });
+
+  it("counts off-screen source occurrences, wraps navigation and updates after edits", async () => {
+    const revealDocument = vi.fn();
+    const documents = [
+      { id: "first", text: "Needle needle" },
+      { id: "offscreen", text: "A hidden needle" },
+    ];
+    const walker = vi.spyOn(document, "createTreeWalker");
+    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
+      container, contentKey: 0, documents: entries, revealDocument,
+    }), { initialProps: { entries: documents } });
+    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
+    await waitFor(() => expect(result.current.matchCount).toBe(3));
+    expect(result.current.activeDocumentId).toBe("first");
+    expect(walker).not.toHaveBeenCalled();
+
+    act(() => result.current.goPrev());
+    expect(result.current.activeIndex).toBe(2);
+    expect(result.current.activeDocumentId).toBe("offscreen");
+    expect(revealDocument).toHaveBeenLastCalledWith("offscreen");
+    act(() => result.current.goNext());
+    expect(result.current.activeIndex).toBe(0);
+
+    rerender({ entries: [{ id: "offscreen", text: "One needle" }] });
+    await waitFor(() => expect(result.current.matchCount).toBe(1));
+    expect(result.current.activeDocumentId).toBe("offscreen");
+    act(() => result.current.setQuery("absent"));
+    await waitFor(() => expect(result.current.matchCount).toBe(0));
+    expect(result.current.activeDocumentId).toBeNull();
+    walker.mockRestore();
   });
 });
 

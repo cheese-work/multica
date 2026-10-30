@@ -2,7 +2,7 @@ import "./env";
 
 import { expect, test } from "@playwright/test";
 import pg from "pg";
-import { createTestApi } from "./helpers";
+import { clickWhenHydrated, createTestApi } from "./helpers";
 
 // Steering matrices live in the Go handler and composer tests. This browser
 // regression covers the real path: a reply in a running agent's thread goes
@@ -60,7 +60,7 @@ test("a reply steers the thread agent's running turn and shows its receipt", asy
     // The empty box makes no claim about who a reply goes to; the chip says
     // so once there is text and the recipient is known.
     await expect(shell).toHaveText("Leave a reply...");
-    await shell.click();
+    await clickWhenHydrated(shell);
     const placeholder = "Leave a reply...";
     const editor = page.locator(`.ProseMirror[data-placeholder="${placeholder}"], .ProseMirror:has([data-placeholder="${placeholder}"])`).first();
     await editor.fill("This PR only fixes web; leave the desktop login page alone.");

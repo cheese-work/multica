@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -23,6 +25,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	issueID := fixture.Issue(test, "Decision HTTP roundtrip", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := fixture.Task(test, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "running"})
 	sessionID := fixture.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Decisions"})
+	fixture.Insert(test, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "see [issue](mention://issue/" + issueID + ")"})
 	fixture.Cleanup(test, `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM decision_request WHERE issue_id = $1`, issueID)
 	fixture.Cleanup(test, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
@@ -59,7 +62,9 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task could not open intent: status=%d body=%+v", response.StatusCode, body)
 	}
 	response.Body.Close()
-	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": "[@Human](mention://member/" + testUserID + ") Approve spend?", "escalation_class": "spend"}
+	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Checks completed.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": ask, "escalation_class": "spend"}
 	response = call(http.MethodPost, "/api/decisions", input, testToken, true)
 	if response.StatusCode != http.StatusForbidden {
 		test.Fatalf("forged task provenance admitted: status=%d", response.StatusCode)
@@ -73,7 +78,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task request failed: status=%d body=%+v", response.StatusCode, body)
 	}
 	readJSON(test, response, &created)
-	if !created.PingNotifiedAt.Valid || created.Ask != input["ask"] {
+	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
 		test.Fatalf("missing receipt or wrong ask: %+v", created)
 	}
 	var requestID string
@@ -84,7 +89,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var fetched db.DecisionRequest
 	readJSON(test, response, &fetched)
-	if fetched != created {
+	if !reflect.DeepEqual(fetched, created) {
 		test.Fatal("get did not roundtrip the committed request")
 	}
 	response = call(http.MethodGet, "/api/decisions?issue="+issueID, nil, token, false)
@@ -93,7 +98,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	var requests []db.DecisionRequest
 	readJSON(test, response, &requests)
-	if len(requests) != 1 || requests[0] != created {
+	if len(requests) != 1 || !reflect.DeepEqual(requests[0], created) {
 		test.Fatalf("wrong list: %+v", requests)
 	}
 	if count := fixture.Count(test, `SELECT count(*) FROM inbox_item WHERE issue_id = $1 AND recipient_id = $2`, issueID, testUserID); count != 1 {
@@ -104,6 +109,17 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	if _, err := db.New(testPool).ListDecisionPingRetries(context.Background(), 100); err != nil {
 		test.Fatal(err)
+	}
+	response = call(http.MethodPost, "/api/decisions/"+requestID+"/withdraw", map[string]any{"reason": "Superseded."}, token, false)
+	if response.StatusCode != http.StatusOK {
+		var body map[string]any
+		readJSON(test, response, &body)
+		test.Fatalf("task withdrawal route: status=%d body=%+v", response.StatusCode, body)
+	}
+	var withdrawn db.DecisionRequest
+	readJSON(test, response, &withdrawn)
+	if withdrawn.Status != "cancelled" || withdrawn.Ask != created.Ask || withdrawn.WithdrawnByTaskID != toPgUUID(test, taskID) {
+		test.Fatalf("wrong authenticated withdrawal: %+v", withdrawn)
 	}
 }
 

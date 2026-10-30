@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -22,37 +20,28 @@ import (
 	"github.com/multica-ai/multica/server/internal/selfexec"
 )
 
-// Fork update source (CHE-1012). On Linux and macOS the daemon and
-// `multica update` take their binary from the daemon artifact that
-// cheese-work/multica's ci.yml uploads on a push to main, never from upstream
-// release binaries. An artifact is a candidate only when it belongs to the
-// newest CI run that completed successfully for a push to main in this exact
-// repository, and its digest (read from the authenticated API, not from the
-// zip) matches the bytes downloaded.
-
-// ForkRepo is the only repository an update may come from.
-const ForkRepo = "cheese-work/multica"
+// Fork update source (CHE-1012, CHE-1980). On Linux and macOS the daemon and
+// `multica update` take their binary from the Multica server they already talk
+// to, never from GitHub or upstream release binaries. The server image carries
+// daemon builds made from the server's own commit; the daemon follows the
+// deployed server. The sha256 in the metadata is verified against the bytes
+// before install and a probe checks the candidate runs and reports the
+// commit. The digest detects corruption in transit, not a compromised server.
 
 const (
-	forkWorkflowFile  = "ci.yml"
-	forkWorkflowPath  = ".github/workflows/" + forkWorkflowFile
-	forkBranch        = "main"
-	forkBinaryName    = "multica"
-	forkMaxBytes      = 256 << 20
-	forkAPITimeout    = 15 * time.Second
-	forkProbeTimeout  = 10 * time.Second
-	forkTokenEnv      = "MULTICA_UPDATE_GITHUB_TOKEN"
-	forkArtifactStem  = "multica-daemon-"
-	forkMacOSPausedBy = "macOS daemon CI is paused (no free macOS runners), so no macOS artifact is published"
+	forkBinaryName   = "multica"
+	forkMaxBytes     = 256 << 20
+	forkAPITimeout   = 15 * time.Second
+	forkProbeTimeout = 10 * time.Second
+	forkMetadataPath = "/api/daemon/update"
+	forkBinaryPath   = "/api/daemon/update/binary"
 )
 
 var (
-	// ErrForkUpToDate: the running commit is the newest eligible main build.
-	ErrForkUpToDate = errors.New("already on the latest successful main build")
-	// ErrForkNotNewer: the newest eligible build is behind or diverged from the running commit.
-	ErrForkNotNewer = errors.New("newest successful main build is not ahead of the running commit")
-	// ErrForkNoArtifact: no usable artifact for this platform. The installed daemon is kept.
-	ErrForkNoArtifact = errors.New("no eligible fork artifact")
+	// ErrForkUpToDate: the running commit is the server's build commit.
+	ErrForkUpToDate = errors.New("already on the server's build")
+	// ErrForkNoArtifact: the server has no usable build for this platform. The installed daemon is kept.
+	ErrForkNoArtifact = errors.New("no daemon build available from the server")
 )
 
 // ClientCommit is the build commit stamped into this binary (set from main).
@@ -60,232 +49,92 @@ var ClientCommit = "unknown"
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
-// ValidCommit reports whether c can anchor an ordering check against the fork.
+// ValidCommit reports whether c can anchor a comparison with the server's build commit.
 func ValidCommit(c string) bool { return commitPattern.MatchString(c) }
 
-// ForkUpdateSupported reports whether goos takes updates from the fork source.
+// ForkUpdateSupported reports whether goos takes updates from the server.
 // Windows keeps its existing behaviour (out of scope for CHE-1012).
 func ForkUpdateSupported(goos string) bool { return goos == "linux" || goos == "darwin" }
 
-// ForkArtifactName is the CI artifact name for a platform.
-func ForkArtifactName(goos, goarch string) string {
-	return forkArtifactStem + goos + "-" + goarch
-}
-
-// ForkUpdate is a fully qualified update candidate.
+// ForkUpdate is a fully qualified update candidate on one server.
 type ForkUpdate struct {
-	RunID      int64
-	RunURL     string
-	HeadSHA    string
-	ArtifactID int64
-	Name       string
-	Digest     string // lowercase hex sha256 of the artifact zip
+	ServerURL string // HTTP(S) base URL of the server that offered it
+	Token     string // credential for ServerURL; never printed
+	HeadSHA   string // the server's build commit
+	Version   string
+	Name      string // platform key, e.g. linux-amd64
+	Digest    string // lowercase hex sha256 of the binary
+	Size      int64
 }
 
 func (u *ForkUpdate) String() string {
-	return fmt.Sprintf("%s (commit %s, CI run %d, artifact %d, sha256 %s)", u.Name, u.HeadSHA, u.RunID, u.ArtifactID, u.Digest)
+	return fmt.Sprintf("%s %s (commit %s, sha256 %s)", u.Name, u.Version, u.HeadSHA, u.Digest)
 }
 
-type forkRepoRef struct {
-	FullName string `json:"full_name"`
+type forkMetadata struct {
+	Commit   string `json:"commit"`
+	Version  string `json:"version"`
+	Binaries map[string]struct {
+		SHA256 string `json:"sha256"`
+		Size   int64  `json:"size"`
+	} `json:"binaries"`
 }
 
-type forkRun struct {
-	ID             int64       `json:"id"`
-	HTMLURL        string      `json:"html_url"`
-	Path           string      `json:"path"`
-	Status         string      `json:"status"`
-	Conclusion     string      `json:"conclusion"`
-	Event          string      `json:"event"`
-	HeadBranch     string      `json:"head_branch"`
-	HeadSHA        string      `json:"head_sha"`
-	Repository     forkRepoRef `json:"repository"`
-	HeadRepository forkRepoRef `json:"head_repository"`
-}
-
-type forkArtifact struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Expired     bool   `json:"expired"`
-	Digest      string `json:"digest"`
-	WorkflowRun struct {
-		ID               int64  `json:"id"`
-		HeadBranch       string `json:"head_branch"`
-		HeadSHA          string `json:"head_sha"`
-		RepositoryID     int64  `json:"repository_id"`
-		HeadRepositoryID int64  `json:"head_repository_id"`
-	} `json:"workflow_run"`
-}
-
-// ineligible reports why r may not be an update source, or "" when it may.
-func (r *forkRun) ineligible() string {
-	switch {
-	case r.Status != "completed" || r.Conclusion != "success":
-		return fmt.Sprintf("status %q conclusion %q", r.Status, r.Conclusion)
-	case r.Event != "push" || r.HeadBranch != forkBranch:
-		return fmt.Sprintf("event %q branch %q", r.Event, r.HeadBranch)
-	case r.Path != forkWorkflowPath:
-		return fmt.Sprintf("workflow path %q", r.Path)
-	case !strings.EqualFold(r.Repository.FullName, ForkRepo) || !strings.EqualFold(r.HeadRepository.FullName, ForkRepo):
-		return fmt.Sprintf("repository %q head repository %q", r.Repository.FullName, r.HeadRepository.FullName)
-	case len(r.HeadSHA) != 40 || !ValidCommit(r.HeadSHA):
-		return fmt.Sprintf("head sha %q", r.HeadSHA)
+// forkGet performs an authenticated GET against the server. The default client
+// drops the Authorization header on a redirect to another host.
+func forkGet(ctx context.Context, serverURL, token, path string, timeout time.Duration) (*http.Response, error) {
+	base, err := url.Parse(strings.TrimRight(serverURL, "/"))
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return nil, fmt.Errorf("server URL %q is not an http(s) URL", serverURL)
 	}
-	return ""
-}
-
-// forkAPIBase is the only origin fork updates read metadata from or send
-// credentials to. It is deliberately not configurable from the environment:
-// MULTICA_RELEASE_API_BASE_URL belongs to the upstream-release mirror path and
-// is ignored here, because a mirror could answer with forged run/artifact
-// metadata and would receive the token. Tests reassign it to a fake server.
-var forkAPIBase = "https://api.github.com"
-
-// forkGet performs a GET against the API, authenticated only when rawURL is on
-// the pinned origin. Credentials never follow a redirect to another origin,
-// and a redirect away from HTTPS is refused.
-func forkGet(ctx context.Context, rawURL string, timeout time.Duration) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String()+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	if forkOriginMatches(req.URL, forkAPIBase) {
-		if tok := forkToken(); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
-		}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: timeout, CheckRedirect: forkCheckRedirect}
-	resp, err := client.Do(req)
-	if err != nil {
-		// url.Error carries only the URL; the token is a header and never appears here.
-		return nil, err
-	}
-	return resp, nil
+	return (&http.Client{Timeout: timeout}).Do(req)
 }
 
-func forkOriginMatches(u *url.URL, base string) bool {
-	b, err := url.Parse(base)
-	return err == nil && u.Scheme == b.Scheme && u.Host == b.Host
-}
-
-func forkCheckRedirect(next *http.Request, via []*http.Request) error {
-	if len(via) >= 5 {
-		return errors.New("too many redirects")
-	}
-	first := via[0].URL
-	if first.Scheme == "https" && next.URL.Scheme != "https" {
-		return fmt.Errorf("refusing redirect to non-HTTPS URL %s://%s", next.URL.Scheme, next.URL.Host)
-	}
-	if next.URL.Scheme != first.Scheme || next.URL.Host != first.Host {
-		next.Header.Del("Authorization")
-	}
-	return nil
-}
-
-func forkToken() string {
-	for _, k := range []string{forkTokenEnv, "GH_TOKEN", "GITHUB_TOKEN"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func forkGetJSON(ctx context.Context, path string, out any) (int, error) {
-	resp, err := forkGet(ctx, forkAPIBase+"/repos/"+ForkRepo+path, forkAPITimeout)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		hint := ""
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
-			hint = fmt.Sprintf(" (private repository? set %s to a token with actions:read)", forkTokenEnv)
-		}
-		return resp.StatusCode, fmt.Errorf("GitHub API %s returned %d%s", path, resp.StatusCode, hint)
-	}
-	return resp.StatusCode, json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
-}
-
-// ResolveForkUpdate finds the update candidate for goos/goarch and checks it is
-// ahead of currentCommit. It never falls back to any other source.
-func ResolveForkUpdate(ctx context.Context, goos, goarch, currentCommit string) (*ForkUpdate, error) {
+// ResolveForkUpdate asks the server which build to run and checks it differs
+// from currentCommit. There is no ordering check: a server rolled back to an
+// older commit takes its daemons back with it.
+func ResolveForkUpdate(ctx context.Context, serverURL, token, goos, goarch, currentCommit string) (*ForkUpdate, error) {
 	if !ValidCommit(currentCommit) {
 		return nil, fmt.Errorf("running binary has no usable build commit (%q); reinstall it with scripts/install-cli-from-ref.sh once", currentCommit)
 	}
-
-	var runs struct {
-		Runs []forkRun `json:"workflow_runs"`
-	}
-	q := url.Values{"branch": {forkBranch}, "event": {"push"}, "status": {"success"}, "per_page": {"1"}}
-	if _, err := forkGetJSON(ctx, "/actions/workflows/"+forkWorkflowFile+"/runs?"+q.Encode(), &runs); err != nil {
-		return nil, fmt.Errorf("list CI runs: %w", err)
-	}
-	// Only the newest successful run is considered: a newer main commit without
-	// an artifact means "unavailable", not "install something older".
-	if len(runs.Runs) == 0 {
-		return nil, fmt.Errorf("%w: no successful CI run on %s", ErrForkNoArtifact, forkBranch)
-	}
-	run := runs.Runs[0]
-	if why := run.ineligible(); why != "" {
-		return nil, fmt.Errorf("%w: newest CI run %d is not eligible (%s)", ErrForkNoArtifact, run.ID, why)
-	}
-
-	name := ForkArtifactName(goos, goarch)
-	var arts struct {
-		Artifacts []forkArtifact `json:"artifacts"`
-	}
-	if _, err := forkGetJSON(ctx, fmt.Sprintf("/actions/runs/%d/artifacts?name=%s", run.ID, url.QueryEscape(name)), &arts); err != nil {
-		return nil, fmt.Errorf("list artifacts for CI run %d: %w", run.ID, err)
-	}
-	var art *forkArtifact
-	for i := range arts.Artifacts {
-		a := &arts.Artifacts[i]
-		w := a.WorkflowRun
-		if a.Name == name && !a.Expired && w.ID == run.ID && w.HeadSHA == run.HeadSHA && w.HeadBranch == forkBranch &&
-			w.RepositoryID != 0 && w.RepositoryID == w.HeadRepositoryID {
-			art = a
-			break
-		}
-	}
-	if art == nil {
-		reason := fmt.Sprintf("CI run %d (commit %s) has no unexpired %s artifact", run.ID, run.HeadSHA, name)
-		if goos == "darwin" {
-			reason += "; " + forkMacOSPausedBy
-		}
-		return nil, fmt.Errorf("%w: %s", ErrForkNoArtifact, reason)
-	}
-	hexSum, ok := strings.CutPrefix(art.Digest, "sha256:")
-	if !ok || len(hexSum) != 64 {
-		return nil, fmt.Errorf("%w: artifact %d has no sha256 digest in the API (%q)", ErrForkNoArtifact, art.ID, art.Digest)
-	}
-	if _, err := hex.DecodeString(hexSum); err != nil {
-		return nil, fmt.Errorf("%w: artifact %d digest is not hex", ErrForkNoArtifact, art.ID)
-	}
-	u := &ForkUpdate{RunID: run.ID, RunURL: run.HTMLURL, HeadSHA: run.HeadSHA, ArtifactID: art.ID, Name: name, Digest: strings.ToLower(hexSum)}
-
-	if strings.HasPrefix(run.HeadSHA, currentCommit) {
-		return nil, ErrForkUpToDate
-	}
-	var cmp struct {
-		Status string `json:"status"`
-	}
-	code, err := forkGetJSON(ctx, "/compare/"+currentCommit+"..."+run.HeadSHA, &cmp)
+	resp, err := forkGet(ctx, serverURL, token, forkMetadataPath, forkAPITimeout)
 	if err != nil {
-		if code == http.StatusNotFound {
-			return nil, fmt.Errorf("running commit %s is not in %s history; reinstall once with scripts/install-cli-from-ref.sh: %w", currentCommit, ForkRepo, err)
-		}
-		return nil, fmt.Errorf("compare commits: %w", err)
+		return nil, fmt.Errorf("fetch update metadata: %w", err)
 	}
-	switch cmp.Status {
-	case "ahead":
-		return u, nil
-	case "identical":
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: server answered HTTP %d for %s", ErrForkNoArtifact, resp.StatusCode, forkMetadataPath)
+	}
+	var meta forkMetadata
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
+		return nil, fmt.Errorf("decode update metadata: %w", err)
+	}
+	if len(meta.Commit) != 40 || !ValidCommit(meta.Commit) {
+		return nil, fmt.Errorf("%w: server build commit %q", ErrForkNoArtifact, meta.Commit)
+	}
+	name := goos + "-" + goarch
+	bin, ok := meta.Binaries[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: server has no %s build", ErrForkNoArtifact, name)
+	}
+	if _, err := hex.DecodeString(bin.SHA256); err != nil || len(bin.SHA256) != 64 {
+		return nil, fmt.Errorf("%w: %s build has no valid sha256", ErrForkNoArtifact, name)
+	}
+	if bin.Size <= 0 || bin.Size > forkMaxBytes {
+		return nil, fmt.Errorf("%w: %s build size %d out of range", ErrForkNoArtifact, name, bin.Size)
+	}
+	if strings.HasPrefix(meta.Commit, currentCommit) {
 		return nil, ErrForkUpToDate
-	default:
-		return nil, fmt.Errorf("%w (compare status %q)", ErrForkNotNewer, cmp.Status)
 	}
+	return &ForkUpdate{ServerURL: serverURL, Token: token, HeadSHA: meta.Commit, Version: meta.Version,
+		Name: name, Digest: strings.ToLower(bin.SHA256), Size: bin.Size}, nil
 }
 
 // ApplyForkUpdate downloads u, verifies it, and atomically replaces the running
@@ -298,32 +147,30 @@ func ApplyForkUpdate(ctx context.Context, u *ForkUpdate, timeout time.Duration) 
 	if exePath, err = filepath.EvalSymlinks(exePath); err != nil {
 		return "", fmt.Errorf("resolve symlink: %w", err)
 	}
-	return applyForkUpdateTo(ctx, u, timeout, exePath)
+	return ApplyForkUpdateTo(ctx, u, timeout, exePath)
 }
 
-func applyForkUpdateTo(ctx context.Context, u *ForkUpdate, timeout time.Duration, exePath string) (string, error) {
-	resp, err := forkGet(ctx, fmt.Sprintf("%s/repos/%s/actions/artifacts/%d/zip", forkAPIBase, ForkRepo, u.ArtifactID), updateDownloadTimeoutOrDefault(timeout))
+// ApplyForkUpdateTo is ApplyForkUpdate for an explicit executable path.
+func ApplyForkUpdateTo(ctx context.Context, u *ForkUpdate, timeout time.Duration, exePath string) (string, error) {
+	goos, goarch, _ := strings.Cut(u.Name, "-")
+	q := url.Values{"os": {goos}, "arch": {goarch}}
+	resp, err := forkGet(ctx, u.ServerURL, u.Token, forkBinaryPath+"?"+q.Encode(), updateDownloadTimeoutOrDefault(timeout))
 	if err != nil {
-		return "", fmt.Errorf("download artifact: %w", err)
+		return "", fmt.Errorf("download binary: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download artifact: HTTP %d (artifact expired or token lacks actions:read)", resp.StatusCode)
+		return "", fmt.Errorf("download binary: HTTP %d from the server", resp.StatusCode)
 	}
-	zipData, err := io.ReadAll(io.LimitReader(resp.Body, forkMaxBytes+1))
+	bin, err := io.ReadAll(io.LimitReader(resp.Body, forkMaxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("download artifact: %w", err)
+		return "", fmt.Errorf("download binary: %w", err)
 	}
-	if len(zipData) > forkMaxBytes {
-		return "", fmt.Errorf("artifact exceeds %d bytes", forkMaxBytes)
+	if len(bin) > forkMaxBytes {
+		return "", fmt.Errorf("binary exceeds %d bytes", forkMaxBytes)
 	}
-	if err := verifyAssetSHA256(zipData, u.Digest, u.Name); err != nil {
+	if err := verifyAssetSHA256(bin, u.Digest, u.Name); err != nil {
 		return "", fmt.Errorf("verify download: %w", err)
-	}
-
-	bin, err := extractForkBinary(zipData)
-	if err != nil {
-		return "", fmt.Errorf("extract binary: %w", err)
 	}
 	if err := probeForkBinary(ctx, bin, u.HeadSHA); err != nil {
 		return "", fmt.Errorf("probe binary: %w", err)
@@ -332,38 +179,6 @@ func applyForkUpdateTo(ctx context.Context, u *ForkUpdate, timeout time.Duration
 		return "", err
 	}
 	return fmt.Sprintf("Installed %s over %s", u, exePath), nil
-}
-
-// extractForkBinary returns the single regular file named "multica" from zipData,
-// rejecting any other entry shape (traversal, symlinks, extras, oversize).
-func extractForkBinary(zipData []byte) ([]byte, error) {
-	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
-	if err != nil {
-		return nil, fmt.Errorf("zip reader: %w", err)
-	}
-	if len(zr.File) != 1 {
-		return nil, fmt.Errorf("expected exactly one entry, got %d", len(zr.File))
-	}
-	f := zr.File[0]
-	if f.Name != forkBinaryName || !f.Mode().IsRegular() {
-		return nil, fmt.Errorf("unexpected entry %q (mode %v)", f.Name, f.Mode())
-	}
-	if f.UncompressedSize64 == 0 || f.UncompressedSize64 > forkMaxBytes {
-		return nil, fmt.Errorf("entry size %d out of range", f.UncompressedSize64)
-	}
-	rc, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	data, err := io.ReadAll(io.LimitReader(rc, forkMaxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if uint64(len(data)) != f.UncompressedSize64 {
-		return nil, errors.New("entry size mismatch")
-	}
-	return data, nil
 }
 
 var probeCommitPattern = regexp.MustCompile(`\(commit: ([0-9a-f]+),`)

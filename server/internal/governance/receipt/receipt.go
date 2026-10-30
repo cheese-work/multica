@@ -272,6 +272,12 @@ type Observer struct {
 	// value must set it before the first Observe call starts the writer).
 	WriteBudget time.Duration
 
+	// observationBudget replaces Budget as the cap on one observation. Zero
+	// (every production value) keeps Budget. It is unexported so only this
+	// package's tests can lift the cap, for real-database tests that assert
+	// reservation identity rather than latency (CHE-1578).
+	observationBudget time.Duration
+
 	busy atomic.Bool
 
 	stats statCounters
@@ -402,7 +408,11 @@ func (o *Observer) Observe(_ context.Context, in Input) Result {
 	}
 
 	// Clamp: a caller-supplied deadline never extends Budget (see Input.Deadline).
-	deadline := time.Now().Add(Budget)
+	budget := Budget
+	if o.observationBudget > 0 {
+		budget = o.observationBudget
+	}
+	deadline := time.Now().Add(budget)
 	if !in.Deadline.IsZero() && in.Deadline.Before(deadline) {
 		deadline = in.Deadline
 	}

@@ -5,8 +5,8 @@
 //
 // The package has three layers:
 //   - Client (this file): GitHub App auth — App JWT → installation access
-//     token (cached per installation, refreshed early) → GraphQL/REST calls.
-//   - snapshot.go: the single GraphQL query, contexts pagination, and
+//     token (cached per installation, refreshed early) → REST calls.
+//   - snapshot.go: PR / Checks / Statuses queries, pagination, and
 //     normalization into a flat per-check snapshot.
 //   - refresh.go: the outbound work queue (dedup, single in-flight per PR,
 //     bounded concurrency, Retry-After backoff), the head-SHA-guarded atomic
@@ -18,7 +18,6 @@
 package ghsnapshot
 
 import (
-	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -43,6 +42,15 @@ const (
 	// one hour.
 	tokenRenewSkew = 5 * time.Minute
 )
+
+// InstallationGoneError means GitHub no longer knows the installation: minting
+// its token returned 404. Every call for that installation fails the same way
+// until the App is reinstalled.
+type InstallationGoneError struct{ InstallationID int64 }
+
+func (e *InstallationGoneError) Error() string {
+	return "github installation token: unexpected status 404"
+}
 
 // RateLimitError signals that GitHub asked us to back off. RetryAfter is how
 // long to wait before retrying; it is derived from the Retry-After header, or
@@ -106,19 +114,19 @@ func NewClientFromEnv() (*Client, error) {
 }
 
 // Enabled reports whether the App API is configured. A nil client is disabled.
-func (c *Client) Enabled() bool { return c != nil && c.privateKey != nil }
+func (client *Client) Enabled() bool { return client != nil && client.privateKey != nil }
 
 // signAppJWT mints the short-lived RS256 JWT GitHub requires for
 // App-authenticated calls. iat is back-dated 60s to absorb clock skew and exp
 // is capped at 9 minutes (GitHub's ceiling is 10).
-func (c *Client) signAppJWT(now time.Time) (string, error) {
+func (client *Client) signAppJWT(now time.Time) (string, error) {
 	claims := jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(),
 		"exp": now.Add(9 * time.Minute).Unix(),
-		"iss": c.appID,
+		"iss": client.appID,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	signed, err := tok.SignedString(c.privateKey)
+	signed, err := tok.SignedString(client.privateKey)
 	if err != nil {
 		return "", errors.New("sign App JWT failed")
 	}
@@ -129,16 +137,16 @@ func (c *Client) signAppJWT(now time.Time) (string, error) {
 // one via POST /app/installations/{id}/access_tokens when the cache is empty or
 // within the renew skew of expiry. Concurrent callers for the same installation
 // are collapsed by singleflight, so a cold cache under N workers mints once.
-func (c *Client) installationToken(ctx context.Context, installationID int64) (string, error) {
-	if tok, ok := c.cachedToken(installationID); ok {
+func (client *Client) installationToken(ctx context.Context, installationID int64) (string, error) {
+	if tok, ok := client.cachedToken(installationID); ok {
 		return tok, nil
 	}
-	v, err, _ := c.sf.Do(strconv.FormatInt(installationID, 10), func() (any, error) {
+	v, err, _ := client.sf.Do(strconv.FormatInt(installationID, 10), func() (any, error) {
 		// A concurrent caller may have minted while we waited for the flight.
-		if tok, ok := c.cachedToken(installationID); ok {
+		if tok, ok := client.cachedToken(installationID); ok {
 			return tok, nil
 		}
-		return c.mintInstallationToken(ctx, installationID)
+		return client.mintInstallationToken(ctx, installationID)
 	})
 	if err != nil {
 		return "", err
@@ -147,11 +155,11 @@ func (c *Client) installationToken(ctx context.Context, installationID int64) (s
 }
 
 // cachedToken returns a cached token that is still outside the renew skew.
-func (c *Client) cachedToken(installationID int64) (string, bool) {
-	now := c.now()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if t, ok := c.tokens[installationID]; ok && now.Add(tokenRenewSkew).Before(t.expiry) {
+func (client *Client) cachedToken(installationID int64) (string, bool) {
+	now := client.now()
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if t, ok := client.tokens[installationID]; ok && now.Add(tokenRenewSkew).Before(t.expiry) {
 		return t.token, true
 	}
 	return "", false
@@ -159,13 +167,13 @@ func (c *Client) cachedToken(installationID int64) (string, bool) {
 
 // mintInstallationToken exchanges the App JWT for a fresh installation token and
 // caches it. Called under singleflight, so only one runs per installation.
-func (c *Client) mintInstallationToken(ctx context.Context, installationID int64) (string, error) {
-	now := c.now()
-	appJWT, err := c.signAppJWT(now)
+func (client *Client) mintInstallationToken(ctx context.Context, installationID int64) (string, error) {
+	now := client.now()
+	appJWT, err := client.signAppJWT(now)
 	if err != nil {
 		return "", err
 	}
-	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", strings.TrimRight(c.apiBase, "/"), installationID)
+	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", strings.TrimRight(client.apiBase, "/"), installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return "", err
@@ -173,16 +181,19 @@ func (c *Client) mintInstallationToken(ctx context.Context, installationID int64
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		return "", rateLimitFromResponse(resp, c.now())
+	if isRateLimited(resp, body) {
+		return "", rateLimitFromResponse(resp, client.now())
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return "", &InstallationGoneError{InstallationID: installationID}
+		}
 		// Never echo the body — a token-mint failure body can contain sensitive
 		// hints; the status code is enough to diagnose.
 		return "", fmt.Errorf("github installation token: unexpected status %d", resp.StatusCode)
@@ -203,70 +214,67 @@ func (c *Client) mintInstallationToken(ctx context.Context, installationID int64
 			expiry = t
 		}
 	}
-	c.mu.Lock()
-	c.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
-	c.mu.Unlock()
+	client.mu.Lock()
+	client.tokens[installationID] = cachedToken{token: parsed.Token, expiry: expiry}
+	client.mu.Unlock()
 	return parsed.Token, nil
 }
 
-// graphQL runs a single GraphQL query as the given installation and returns the
-// raw `data` object. GitHub returns HTTP 200 even for query-level errors, so we
-// inspect the `errors` array too, mapping a RATE_LIMITED error type to a
-// RateLimitError.
-func (c *Client) graphQL(ctx context.Context, installationID int64, query string, variables map[string]any) (json.RawMessage, error) {
-	token, err := c.installationToken(ctx, installationID)
+// restGet authenticates against a fixed API path. Response bodies and tokens
+// never appear in errors; permission failures must not pause an installation.
+func (client *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
+	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
-	if err != nil {
-		return nil, err
-	}
-	endpoint := strings.TrimRight(c.apiBase, "/") + "/graphql"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	endpoint := strings.TrimRight(client.apiBase, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := c.httpClient.Do(req)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		return nil, rateLimitFromResponse(resp, c.now())
+	const maxBody = 8 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err != nil {
+		return nil, errors.New("github REST: failed to read response")
+	}
+	if isRateLimited(resp, body) {
+		return nil, rateLimitFromResponse(resp, client.now())
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github graphql: unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("github REST: unexpected status %d", resp.StatusCode)
 	}
-	var envelope struct {
-		Data   json.RawMessage `json:"data"`
-		Errors []struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"errors"`
+	if len(body) > maxBody {
+		return nil, errors.New("github REST: response exceeds size limit")
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, errors.New("github graphql: malformed response")
+	return body, nil
+}
+
+func isRateLimited(resp *http.Response, body []byte) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
 	}
-	if len(envelope.Errors) > 0 {
-		for _, e := range envelope.Errors {
-			if e.Type == "RATE_LIMITED" {
-				return nil, &RateLimitError{RetryAfter: time.Minute}
-			}
-		}
-		// Surface the message but nothing else; GraphQL error messages do not
-		// contain credentials.
-		return nil, fmt.Errorf("github graphql error: %s", envelope.Errors[0].Message)
+	if resp.StatusCode != http.StatusForbidden {
+		return false
 	}
-	if len(envelope.Data) == 0 {
-		return nil, errors.New("github graphql: empty data")
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != "" {
+		return true
 	}
-	return envelope.Data, nil
+	var failure struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &failure) != nil {
+		return false
+	}
+	message := strings.ToLower(failure.Message)
+	return strings.Contains(message, "secondary rate limit") || strings.Contains(message, "abuse detection")
 }
 
 // rateLimitFromResponse builds a RateLimitError from GitHub's throttling

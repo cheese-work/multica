@@ -33,6 +33,20 @@ issue; NOWAIT task/member/source rows; intent; targets; request; answer. The
 queries do not authorize a caller or validate its task status, assignee,
 mentions, expiry or source authorship. Those checks belong to later slices.
 
+Structured requests retain their original source comment ID and text snapshot.
+Their task-scoped content fingerprint makes retries return the original request
+without creating another ask or ping. Explicit withdrawal uses the request's
+existing cancellation state and records its reason and authenticated task or
+human identity. It only accepts an open unanswered ask.
+
+Asked records can quote an attested message from another DM of the named human,
+or one member comment by that human. A DM record locks its actual source session
+so the existing hard-delete retention fence remains effective. An issue-comment
+record has `source_comment_id`, no source session, and an empty message array.
+The quote is immutable application provenance; later source edits do not change
+it, and source deletion follows the existing answer-retraction path. Request and
+answer transactions serialize their final state change on the request row.
+
 Calling tasks use `FOR SHARE NOWAIT`, delivery tasks `FOR UPDATE NOWAIT`, asking
 agents `FOR SHARE NOWAIT`, and members/source messages `FOR KEY SHARE NOWAIT`.
 Task and source-message scope joins lock only the selected task/message, not
@@ -175,7 +189,7 @@ worker finalization, delivery and source checks invoked by CHE-1550.
 The request core performs no post-commit side effect. The public request handler calls
 it before the inbox consumer or any subscriber/mention/realtime event.
 `POST /api/decisions` accepts `issue_id`, `session_id`, `ask`, and
-`escalation_class`. Only the running issue-task provenance admitted by the core
+`escalation_class`, plus the single-call fields described below. Only the running issue-task provenance admitted by the core
 can request a decision. `GET /api/decisions/{id}` and
 `GET /api/decisions?issue=<UUID-or-identifier>` require workspace membership and
 an existing issue in that workspace. They expose request metadata, never DM
@@ -191,8 +205,8 @@ The CLI provides `multica decision request --issue <id> --session <id>
 whitespace and newlines are preserved. Each command supports JSON and table
 output. A ping never enqueues a DM turn.
 
-`decisiontx.NotifyPing` is shared by the request handler and the later decision
-worker. It locks workspace, issue, then request. A NULL receipt is re-checked
+`decisiontx.NotifyPing` is shared by the legacy request path and the later
+decision worker; it wraps `NotifyPingTx` in its own transaction. It locks workspace, issue, then request. A NULL receipt is re-checked
 under the request lock. The `mentioned` inbox item and `ping_notified_at`
 commit in one transaction; cancellation writes only the receipt. Concurrent
 consumers, repeated retries, or a failed receipt write cannot leave duplicate
@@ -334,6 +348,13 @@ individually without repeating the group wake. Group inputs retain every quote, 
 request and unasked target in the task's handoff; queued merges preserve the
 normal attribution and overlay recalculation.
 
+Taskless decision-card quotes retain the asking agent as their visible author.
+Run attribution resolves the named human from the workspace-scoped decision
+request only when the answer points back to that exact quote, issue and asking
+agent. Agent-recorded answers still use their source task's delegation chain.
+This preserves the human originator for follow-up actions such as registering
+an issue wakeup without borrowing the runtime owner's permissions.
+
 Member and unassigned recipients receive one `delivery` comment per live answer,
 each replying to that answer's quote. The per-answer comment key makes retries
 idempotent. These rules include Cheese's approved R1: B and C: A amendments to
@@ -364,3 +385,82 @@ issue status and the asking agent's archive state under the same locks.
 Member and unassigned recipients need no extra comment. Every dispatch and
 acknowledgement is atomic; deferral keeps the acknowledgement NULL. There is
 no automatic ping, new request, or server-created DM on these paths.
+
+## CHE-1890 single-call request
+
+`POST /api/decisions` with `for` (a person's user ID) and no pending intent
+for the calling task writes the ask without a separate intent comment. A
+pending intent (unconsumed, unclosed, unsealed) keeps the two-step path above,
+with `parent_id` refused. Otherwise `createSingleCallDecisionTx` locks, in the
+order workspace, lane session, thread, issue and NOWAIT calling task, and member.
+`authorizeDecisionTask` and `checkDecisionTarget` are the same checks the intent
+comment runs (`prepareDecisionIntent`), with the target taken from `for`, never
+from content. A still-pending intent of the task is closed as `superseded`.
+
+One transaction then creates the new intent (anchored on the ask comment's
+pre-allocated ID), its single target, the request, the ask comment, the DM
+message, records the ping (`NotifyPingTx`: inbox item and `ping_notified_at`),
+and consumes and seals the intent. A ping failure rolls back the whole call; the
+handler returns a 5xx and nothing is written. The ask comment carries
+`decision_request_id`, `decision_comment_kind = ask` and `decision_intent_id`;
+migration 617 already allows that combination. `locateDecisionRecordContext`
+resolves the request ID before the intent stamp, so a record under the ask binds
+and a record under an intent-only comment still refuses. The comment is
+`ask` plus `\n\n` plus the optional `footer`; the DM message is `ask` only. The
+API checks the 64 KiB limit against that composed comment, separator included.
+
+Lane choice without a window: an explicit `session_id` (must be a listed lane of
+the person) or `new_dm` wins; otherwise `defaultDecisionLane` picks the listed
+lane of the latest request to that person on the issue, then the newest listed
+lane whose messages mention the issue, then a new `Decisions: <agent>` DM.
+`ListDecisionLanes` already excludes channel and intro lanes, so a Briefs DM is
+never chosen.
+
+The ask comment is inserted directly and does not run `triggerTasksForComment`,
+so handoff lines in `footer` dispatch no agent; continuation stays with
+wakeups. One call asks one person, so each ask owns its intent and the shared
+`group_woken_at` group wake does not apply. Both are accepted limits.
+
+## Stale asks and expiry digests
+
+The existing decision worker expires unanswered `asked` requests after 168
+elapsed hours, inclusive at the boundary. Seven days is the implementation
+default proposed for CHE-2089, not a previously observed workspace policy.
+Lifecycle cancellation uses `cancel_reason = expired`; the request card shows
+the original ask as withdrawn with the expiry explanation. Expiry is not an
+answer or permission to execute, does not evaluate the ask's proposed default,
+and does not create a decision answer, re-ask or execution wake.
+
+Expiry takes the same locks as other lifecycle cancellations and rechecks the
+request inside the transaction. An answer or withdrawal that wins those locks
+is preserved. If expiry wins, a subsequent answer or withdrawal is refused.
+Issue closure, member removal and asking-agent archival retain their existing
+precedence over expiry.
+
+There is no individual expiry DM. One inbox digest per workspace and recipient
+per ICT day groups up to 100 expired asks, with their source issue/comment
+references. The inbox body remains plain text on existing clients. The worker
+uses the existing `mentioned` inbox type and notification path; this adds no
+new outbound notification channel or preference. The recipient must still be
+a workspace member. Digests never aggregate private asks into another agent's
+DM lane.
+
+The daily receipt, inbox item and request associations commit together.
+`Asia/Bangkok` defines the date, independently of the server or database session
+timezone. Worker restarts, retries and deletion of an inbox item cannot resend
+a receipted digest. Asks that expire after that day's digest, or exceed its
+100-request bound, stay pending until a later ICT day. These are implementation
+defaults, not permission to change a person's notification preferences.
+
+## Decision-bound writes
+
+A governed write by an agent is approved by a card whose ask is built with
+`BoundWriteDecision(field, before_sha256, after_sha256)` and whose options
+include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server
+(`verifyDecisionBinding`) accepts only a live answer, by a workspace owner,
+that is exactly that label, after its veto window and within 7 days, for an ask
+whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
+locks the request, then the answer, in the same order as a withdrawal.
+Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
+Orphan cleanup deletes a request's `decision_bound_write` row before the request,
+because the table has no foreign key to cascade from.

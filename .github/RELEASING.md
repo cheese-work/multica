@@ -10,9 +10,9 @@ formulae, and container images.
 The verification job runs the Go tests and `govulncheck` before any publishing
 job starts. The vulnerability scan is fail-closed by default.
 
-CI and release jobs require Go `~1.26.9`: at least 1.26.9, while accepting
-newer 1.26 patches. This security floor is independent of the development
-minimum in `server/go.mod`. A plain `1.26.x` can resolve to an older patch
+CI and release jobs require Go `~1.27.3`: at least 1.27.3, while accepting
+newer 1.27 patches. This security floor is independent of the development
+minimum in `server/go.mod`. A plain `1.27.x` can resolve to an older patch
 while the `setup-go` version manifest catches up with an official Go release.
 When raising the security floor, update all Go workflows and the pinned
 Go builder image in `Dockerfile` together so shipped binaries also receive
@@ -43,28 +43,43 @@ use `go version -m <binary>` when auditing a downloaded release artifact.
 
 ## Release build stamps
 
-The verification job computes one ICT (`Asia/Ho_Chi_Minh`, UTC+7) stamp in
-`YYYYMMDD-hhmm` format. The publishing jobs reuse that output for CLI ldflags,
-backend and web image builds, and an additional stamped image tag. Existing
-semantic-version, SHA, and stable `latest` image tags stay unchanged.
+`UPSTREAM_VERSION` at the repository root tracks the latest synced plain upstream
+semver (without a `v` prefix, for example `0.6.3`). Every upstream sync PR updates
+`UPSTREAM_VERSION` to the synced upstream tag.
 
-`scripts/release-stamp.sh` is the byte-identical shared helper from
-`cheese-work/multica-dotfiles` at published revision
-`5dafb3d959466df589353a8de1da0def15102a62` (CHE-1308). This pinned vendored copy
-lets release jobs call the shared implementation without adding a credential
-for cross-repository access to that private repository. Refresh the copy and
-its checksum test together when the shared helper changes.
+`scripts/release-stamp.sh` formats a timestamp in ICT (`Asia/Ho_Chi_Minh`, UTC+7)
+as `YYYYMMDD-hhmm`. When given a commit ISO timestamp (`git show -s --format=%cI`),
+it derives the stamp deterministically from that commit time; with no timestamp
+argument it falls back to the current ICT time.
 
-The joined `<upstream>-<stamp>` string is display-only. `multica version
---output json` returns plain `version`, separate `build`, and `display_version`.
-Self-hosted `/api/config` adds `version` and `build` while retaining
-`server_version` as the display string for installed clients. Official cloud
-config still omits server build information.
+The verification job and CD qualification build compute the ICT commit-time stamp
+from `scripts/release-stamp.sh` and read the plain upstream semver from
+`UPSTREAM_VERSION`:
+- Backend Docker builds pass `VERSION=<upstream>`, `BUILD=<stamp>`, and
+  `COMMIT=<sha>`.
+- Web Docker builds pass `NEXT_PUBLIC_APP_VERSION=<upstream>`,
+  `NEXT_PUBLIC_APP_BUILD=<stamp>`, `NEXT_PUBLIC_APP_COMMIT=<sha>`, and
+  `NEXT_PUBLIC_BUILD_DATE=<commit-iso>`.
+- Daemon/CLI artifacts and GoReleaser stamp `<upstream>-<stamp>` into
+  `main.version` so `buildinfo.Split` separates `version` and `build`, while
+  keeping the commit SHA in `main.commit` / `main.buildCommit`.
+- Existing semantic-version, `sha-<GITHUB_SHA>`, and stable `latest` image tags
+  stay unchanged.
+
+The joined `<upstream>-<stamp>` string is display-only:
+- `multica version --output json` returns plain `version`, separate `build`, and
+  `display_version`.
+- Self-hosted `/api/config` returns separate `server_version` (plain upstream
+  semver), `server_build` (`YYYYMMDD-hhmm`, omitted when unstamped), and
+  `server_commit` (7-char short SHA, omitted when unknown). The Help popover joins
+  `server_version` and `server_build` for display (`0.6.3-20261021-0856`, or plain
+  `0.6.3` when `server_build` is absent) and hides the row when `server_version`
+  is empty. Official cloud config omits all three server build fields.
 
 Runtime update comparisons accept release stamps and `+` metadata, but do not
 treat git-describe, dirty, or prerelease versions as stable releases. CLI
 minimum-version gates retain their existing parsing and dev-build policy.
 Local builds, PR artifacts, release tags, and archive names are unchanged.
 For an unpublished GoReleaser snapshot, leave `RELEASE_BUILD_STAMP` unset; for
-a release outside the workflow, set it once with
-`export RELEASE_BUILD_STAMP="$(sh scripts/release-stamp.sh)"` before GoReleaser.
+a release outside the workflow, set `UPSTREAM_VERSION` and `RELEASE_BUILD_STAMP`
+before running GoReleaser.

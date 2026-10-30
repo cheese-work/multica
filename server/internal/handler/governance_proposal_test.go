@@ -305,12 +305,16 @@ func TestGovernanceProposalTokenBindingAndResultReplay(t *testing.T) {
 		r.Post("/heartbeat", testHandler.HeartbeatGovernanceProposalAttempt)
 		r.Post("/result", testHandler.SubmitGovernanceProposalResult)
 	})
-	request := func(method, path, body string) *httptest.ResponseRecorder {
+	request := func(method, path, body string, workspaceOverride ...string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+rawToken)
 		req.Header.Set("X-Actor-Source", "member")
 		req.Header.Set("X-Task-Token-Purpose", "agent_task")
-		req.Header.Set("X-Workspace-ID", uuid.NewString())
+		workspaceID := fixture.workspaceID
+		if len(workspaceOverride) > 0 {
+			workspaceID = workspaceOverride[0]
+		}
+		req.Header.Set("X-Workspace-ID", workspaceID)
 		req.Header.Set("X-Agent-ID", uuid.NewString())
 		req.Header.Set("X-Task-ID", uuid.NewString())
 		req.Header.Set("X-Governance-Case-ID", uuid.NewString())
@@ -322,6 +326,9 @@ func TestGovernanceProposalTokenBindingAndResultReplay(t *testing.T) {
 		return recorder
 	}
 	basePath := "/api/governance/proposals/" + fixture.caseID + "/attempts/" + fixture.attemptID
+	if response := request(http.MethodGet, basePath+"/evidence", "", uuid.NewString()); response.Code != http.StatusForbidden {
+		t.Fatalf("cross-workspace proposal evidence = %d: %s", response.Code, response.Body.String())
+	}
 	fixture.fx.Exec(t, `UPDATE governance_case SET state = 'parked' WHERE workspace_id = $1 AND id = $2`, fixture.workspaceID, fixture.caseID)
 	for _, requestCase := range []struct {
 		method string

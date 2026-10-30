@@ -1,4 +1,46 @@
 {
+  "plan_revision": {
+    "added": "追加：",
+    "removed": "削除：",
+    "revision": "リビジョン {{number}}",
+    "readonly": "読み取り専用",
+    "issue": "元のタスク",
+    "diff": "差分",
+    "split": "左右表示",
+    "unify": "統合表示",
+    "compare": "比較対象",
+    "choose_base": "基準のリビジョンを選択",
+    "change": "変更 {{current}} / {{total}}",
+    "previous": "前の変更",
+    "next": "次の変更",
+    "download": "ダウンロード",
+    "close": "閉じる",
+    "more": "その他のオプション",
+    "base": "基準",
+    "current": "現在",
+    "loading_revisions": "リビジョンを読み込み中…",
+    "revisions_error": "リビジョンを読み込めませんでした",
+    "no_earlier": "以前のリビジョンはありません",
+    "loading": "文書を読み込み中…",
+    "current_error": "文書を読み込めませんでした",
+    "loading_diff": "比較を読み込み中…",
+    "comparison_error": "比較を読み込めませんでした",
+    "too_large": "比較対象が大きすぎます。ファイルをダウンロードしてローカルで比較してください。",
+    "identical": "リビジョン間に変更はありません",
+    "empty": "この文書は空です",
+    "unchanged": "変更のない {{count}} 行",
+    "retry": "再試行"
+  },
+  "media": {
+    "title": "メディア",
+    "more": "その他",
+    "open_in_new_window": "新しいウィンドウで開く",
+    "open_failed": "メディアページを開けませんでした",
+    "loading": "メディアを読み込み中…",
+    "load_failed": "メディアを読み込めませんでした",
+    "offline": "オフライン — 最後に読み込んだ内容を表示しています。",
+    "retry": "再試行"
+  },
   "bubble_menu": {
     "bold": "太字",
     "italic": "斜体",
@@ -110,6 +152,7 @@
   },
   "code_block": {
     "html_preview": "HTML プレビュー",
+    "close_preview": "閉じる",
     "copy_code": "コードをコピー",
     "show_preview": "プレビューを表示",
     "show_source": "ソースを表示",
@@ -160,6 +203,7 @@
   },
   "slash_command": {
     "client_command": "Multica",
+    "runs_the_agent": "エージェントを実行",
     "focus_hint": "[focus]",
     "title_hint": "[タイトル]",
     "message_hint": "[メッセージ]",
@@ -169,7 +213,27 @@
       "note": "メモを追加 — エージェントをトリガーしません",
       "compact": "この DM を要約して新しい DM で続ける",
       "rename": "エージェントを実行せずにこの DM の名前を変更",
-      "fork": "この DM を新しい DM にコピー（任意のメッセージは新しい DM に送信）"
+      "fork": "この DM を新しい DM にコピー（任意のメッセージは新しい DM に送信）",
+      "statistic": "この DM の使用量とコストを表示",
+      "archive": "エージェントを実行せずにこの DM をアーカイブ",
+      "pin": "この DM をピン留め、または解除",
+      "unarchive": "この DM のアーカイブを解除。エージェントには何も送信されません。"
     }
+  },
+  "table": {
+    "reset_widths": "列幅をリセット",
+    "expand": "表を展開",
+    "copy_markdown": "Markdown としてコピー",
+    "copy_csv": "CSV としてコピー",
+    "copied": "コピーしました",
+    "resize_column": "「{{name}}」列の幅を変更",
+    "expanded_title": "表",
+    "filter_placeholder": "行を絞り込む",
+    "clear_filter": "絞り込みを解除",
+    "no_matches": "一致する行がありません",
+    "close": "閉じる"
+  },
+  "next_self_mention": {
+    "label": "次の自分へのメンション"
   }
 }

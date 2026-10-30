@@ -33,7 +33,7 @@
       "key_hint": "API と CLI では {{key}} として参照されます。",
       "created": "ステータスを作成しました。API と CLI では {{key}} として参照されます。",
       "category": "カテゴリ",
-      "category_locked": "ステータスの作成後はカテゴリを変更できません。",
+      "category_change_hint": "カテゴリを変更すると、このステータスのすべてのタスクの動作が変わります。保存前に確認があります。",
       "description": "説明",
       "description_placeholder": "チームにとってこのステータスが意味すること",
       "color": "色",
@@ -52,6 +52,12 @@
       "save": "保存",
       "saving": "保存中…",
       "save_failed": "ステータスを保存できませんでした。"
+    },
+    "category_change_dialog": {
+      "title": "カテゴリを変更しますか？",
+      "description_other": "このステータスの {{count}} 件のタスクが「{{from}}」から「{{to}}」に変わります。",
+      "cancel": "キャンセル",
+      "confirm": "カテゴリを変更"
     },
     "archive_dialog": {
       "retry": "アーカイブを再試行",
@@ -157,6 +163,18 @@
     "tab_history": "履歴 {{count}}",
     "key_set": "キー設定済み",
     "key_not_set": "キー未設定",
+    "api_url": {
+      "label": "API URL",
+      "hint": "空の場合は {{default}} を使用します。ブラウザ専用の Tailscale URL ではなく、バックエンドコンテナから到達できる必要があります。例: http://sub2api:8080/v1",
+      "invalid": "ホストを含む http:// または https:// の URL を入力してください。",
+      "save": "URL を保存",
+      "clear": "URL を消去",
+      "default_value": "{{url}}（デフォルト）",
+      "save_failed": "URL を保存できませんでした。変更はありません。",
+      "conflict": "設定が別の場所で変更されました。ページを再読み込みして、もう一度お試しください。",
+      "saved": "URL を保存しました",
+      "cleared": "URL を消去しました"
+    },
     "credential": {
       "title": "プロバイダーキー",
       "set": "設定済み",
@@ -267,6 +285,8 @@
     "field_name": "名前",
     "field_name_placeholder": "コードレビュー",
     "field_target": "実行者",
+    "no_target": "対象なし",
+    "no_target_hint": "誰もメンションせずにメッセージを投稿します。",
     "field_prompt": "プロンプト",
     "field_prompt_placeholder": "このタスクに関連するコードをレビューし、正確性とエッジケースを重点的に確認してください。",
     "prompt_hint": "そのまま送られます。タスクの内容は既に読めます。",
@@ -290,7 +310,8 @@
     "language": {
       "title": "言語",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -381,6 +402,10 @@
       "archiveInboxItem": {
         "label": "通知をアーカイブ",
         "description": "開いているインボックス通知をアーカイブします。アーカイブ表示中はアーカイブを解除します。"
+      },
+      "searchChat": {
+        "label": "チャットを検索",
+        "description": "チャットページの検索欄にフォーカスします。"
       },
       "send": {
         "label": "送信",
@@ -772,6 +797,7 @@
     "toast_profile_failed": "プロフィールを更新できませんでした"
   },
   "notifications": {
+    "focused_delivery": "決定事項と自分に割り当てられた課題のみ",
     "title": "インボックス通知",
     "description": "通知をオフにしても、タスク上で履歴を確認できます。",
     "toast_failed": "通知設定を更新できませんでした",
@@ -803,8 +829,7 @@
     },
     "system": {
       "title": "システム通知",
-      "description": "Multica がバックグラウンドにあるときにシステム通知を表示します。",
-      "label": "システム通知を表示"
+      "label": "Multica がバックグラウンドにあるときにシステム通知を表示"
     },
     "browser": {
       "label": "ブラウザ通知",
@@ -1382,6 +1407,15 @@
     "tabs": {
       "updates": "アップデート"
     },
+    "tab_bar": {
+      "pin": "タブをピン留め",
+      "unpin": "タブのピン留めを解除",
+      "close": "タブを閉じる",
+      "close_others": "他のタブを閉じる",
+      "open_window": "新しいウィンドウで開く",
+      "new": "新しいタブ",
+      "pinned_name": "{{title}}（ピン留め）"
+    },
     "updates": {
       "title": "アップデート",
       "current_version": "現在のバージョン",
@@ -1555,6 +1589,20 @@
     "status_not_connected": "未接続",
     "status_loading": "確認中...",
     "status_unknown": "状態を取得できません"
+  },
+  "github_review": {
+    "section_title": "GitHub レビュー",
+    "members_label": "レビュアー",
+    "members_description": "GitHub ユーザー ID を、レビューが有効になるワークスペースメンバーに対応付けます。",
+    "members_key": "GitHub ユーザー ID",
+    "members_value": "メンバー",
+    "authors_label": "プルリクエストの作成者",
+    "authors_description": "プルリクエストを作成したエージェントに固定します。固定しない場合はブランチ名で判断します。",
+    "authors_key": "プルリクエスト",
+    "authors_value": "エージェント",
+    "add": "追加",
+    "remove": "削除",
+    "toast_failed": "対応付けを保存できませんでした"
   },
   "pr_merge_status": {
     "label": "PR マージ後のタスクのステータス",

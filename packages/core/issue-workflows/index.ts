@@ -22,11 +22,26 @@ export {
   workflowHandoffPreviewOptions,
   handoffStepCount,
 } from "./queries";
+export { workflowEdges, type WorkflowGraphEdge } from "./graph";
+export {
+  EDITABLE_GUARDS,
+  MAX_EDGES_PER_STEP,
+  addStepEdge,
+  canAdvanceOnCIGreen,
+  guardNeedsTimeout,
+  removeStepEdge,
+  stepEdges,
+  updateStepEdge,
+  validateWorkflowGraph,
+  type GraphIssue,
+  type GraphIssueCode,
+} from "./graph-edit";
 export { useIssueWorkflows, useProjectWorkflow, useProjectWithWorkflow } from "./hooks";
 export {
   useCreateIssueWorkflow,
   useUpdateIssueWorkflow,
   useDeleteIssueWorkflow,
+  useSetIssueWorkflow,
   useSetProjectWorkflow,
   useSetWorkflowHandoff,
 } from "./mutations";

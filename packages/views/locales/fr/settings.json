@@ -33,7 +33,7 @@
       "key_hint": "Désigné par {{key}} dans l'API et la CLI.",
       "created": "Statut créé. L'API et le CLI le désignent par {{key}}.",
       "category": "Catégorie",
-      "category_locked": "La catégorie ne peut plus être modifiée après la création du statut.",
+      "category_change_hint": "Changer la catégorie modifie le comportement de chaque ticket ayant ce statut. Une confirmation sera demandée avant l’enregistrement.",
       "description": "Description",
       "description_placeholder": "Ce que cet état signifie pour votre équipe",
       "color": "Couleur",
@@ -52,6 +52,13 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "save_failed": "L'état n'a pas pu être enregistré."
+    },
+    "category_change_dialog": {
+      "title": "Changer la catégorie ?",
+      "description_one": "{{count}} ticket de ce statut passera de {{from}} à {{to}}.",
+      "description_other": "{{count}} tickets de ce statut passeront de {{from}} à {{to}}.",
+      "cancel": "Annuler",
+      "confirm": "Changer la catégorie"
     },
     "archive_dialog": {
       "retry": "Réessayer l'archivage",
@@ -159,6 +166,18 @@
     "tab_history": "Historique {{count}}",
     "key_set": "clé définie",
     "key_not_set": "clé non définie",
+    "api_url": {
+      "label": "URL de l'API",
+      "hint": "Vide, {{default}} est utilisé. Doit être joignable depuis le conteneur du backend, par exemple http://sub2api:8080/v1, et non une URL Tailscale réservée au navigateur.",
+      "invalid": "Saisissez une URL http:// ou https:// avec un hôte.",
+      "save": "Enregistrer l'URL",
+      "clear": "Effacer l'URL",
+      "default_value": "{{url}} (par défaut)",
+      "save_failed": "Impossible d'enregistrer l'URL. Rien n'a été modifié.",
+      "conflict": "Les paramètres ont changé ailleurs. Rechargez la page, puis réessayez.",
+      "saved": "URL enregistrée",
+      "cleared": "URL effacée"
+    },
     "credential": {
       "title": "Clé du fournisseur",
       "set": "Définie",
@@ -270,6 +289,8 @@
     "field_name": "Nom",
     "field_name_placeholder": "Relecture de code",
     "field_target": "S'exécute en tant que",
+    "no_target": "Aucune cible",
+    "no_target_hint": "Publie un message sans mentionner personne.",
     "field_prompt": "Invite",
     "field_prompt_placeholder": "Relire le code lié à cette tâche. Se concentrer sur la justesse et les cas limites.",
     "prompt_hint": "Envoyée telle quelle. L'agent voit déjà la tâche.",
@@ -293,7 +314,8 @@
     "language": {
       "title": "Langue",
       "english": "English",
-      "chinese": "中文",
+      "chinese": "简体中文",
+      "chinese_traditional": "繁體中文",
       "korean": "한국어",
       "japanese": "日本語",
       "french": "Français",
@@ -384,6 +406,10 @@
       "archiveInboxItem": {
         "label": "Archiver la notification",
         "description": "Archiver la notification ouverte, ou la restaurer lors de la consultation des archives."
+      },
+      "searchChat": {
+        "label": "Rechercher dans les discussions",
+        "description": "Placer le focus sur le champ de recherche de la page Chat."
       },
       "send": {
         "label": "Envoyer",
@@ -778,6 +804,7 @@
     "toast_profile_failed": "Échec de la mise à jour du profil"
   },
   "notifications": {
+    "focused_delivery": "Uniquement les décisions et les issues qui me sont attribuées",
     "title": "Notifications de la boîte de réception",
     "description": "Les événements désactivés restent visibles dans la tâche.",
     "toast_failed": "Échec de la mise à jour des réglages de notification",
@@ -809,8 +836,7 @@
     },
     "system": {
       "title": "Notifications système",
-      "description": "Afficher les notifications système lorsque Multica est en arrière-plan.",
-      "label": "Afficher les notifications système"
+      "label": "Afficher les notifications système lorsque Multica est en arrière-plan"
     },
     "browser": {
       "label": "Notifications du navigateur",
@@ -967,8 +993,8 @@
     "connect_opening": "Ouverture…",
     "disconnect": "Déconnecter",
     "disconnecting": "Déconnexion…",
-    "disconnect_confirm_title": "Déconnecter la GitHub App",
-    "disconnect_confirm_description": "Multica cessera de recevoir les webhooks de cette installation. Les copies de PR et les liens existants sont conservés ; reconnectez à tout moment pour reprendre les mises à jour.",
+    "disconnect_confirm_title": "Déconnecter {{login}} ?",
+    "disconnect_confirm_description": "Multica cessera de recevoir les webhooks de {{login}}. Les copies de PR et les liens existants sont conservés ; reconnectez à tout moment pour reprendre les mises à jour.",
     "disconnect_confirm_cancel": "Annuler",
     "disconnect_confirm_action": "Déconnecter",
     "not_configured": "L'intégration GitHub n'est pas configurée pour ce déploiement. Les opérateurs doivent définir",
@@ -1389,6 +1415,15 @@
     "tabs": {
       "updates": "Mises à jour"
     },
+    "tab_bar": {
+      "pin": "Épingler l'onglet",
+      "unpin": "Désépingler l'onglet",
+      "close": "Fermer l'onglet",
+      "close_others": "Fermer les autres onglets",
+      "open_window": "Ouvrir dans une nouvelle fenêtre",
+      "new": "Nouvel onglet",
+      "pinned_name": "{{title}} (épinglé)"
+    },
     "updates": {
       "title": "Mises à jour",
       "current_version": "Version actuelle",
@@ -1566,6 +1601,20 @@
     "status_not_connected": "Non connecté",
     "status_loading": "Vérification...",
     "status_unknown": "État indisponible"
+  },
+  "github_review": {
+    "section_title": "Revues GitHub",
+    "members_label": "Relecteurs",
+    "members_description": "Associe un ID utilisateur GitHub au membre de l’espace de travail dont la revue compte.",
+    "members_key": "ID utilisateur GitHub",
+    "members_value": "Membre",
+    "authors_label": "Auteurs des pull requests",
+    "authors_description": "Associe une pull request à l’agent qui l’a écrite. Sans association, le nom de la branche décide.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Ajouter",
+    "remove": "Retirer",
+    "toast_failed": "Échec de l’enregistrement de l’association"
   },
   "pr_merge_status": {
     "label": "Après la fusion des PR, passer la tâche à",

@@ -65,6 +65,19 @@ export function useDeleteIssueWorkflow() {
   });
 }
 
+/** Sets or clears one issue's workflow override; the issue event refreshes its caches. */
+export function useSetIssueWorkflow() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ issueId, workflowId }: { issueId: string; workflowId: string | null }) =>
+      api.setIssueWorkflow(issueId, workflowId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+    },
+  });
+}
+
 export function useSetProjectWorkflow() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

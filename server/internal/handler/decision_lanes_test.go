@@ -71,10 +71,10 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 			test.Fatalf("wrong lanes: %+v", lanes)
 		}
 		for _, lane := range lanes {
-			if len(lane) != 4 {
-				test.Fatalf("lane must expose only four bounded metadata fields: %+v", lane)
+			if len(lane) != 5 {
+				test.Fatalf("lane must expose only five bounded metadata fields: %+v", lane)
 			}
-			for _, key := range []string{"id", "title", "issue_mentions", "updated_at"} {
+			for _, key := range []string{"id", "title", "issue_mentions", "updated_at", "eligible"} {
 				if _, exists := lane[key]; !exists {
 					test.Fatalf("missing metadata field %s: %+v", key, lane)
 				}
@@ -97,7 +97,7 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 }
 
 func TestDecisionLanesRefusals(test *testing.T) {
-	for _, refusal := range []string{"missing", "expired", "closed", "sealed", "consumed", "target_consumed", "tag_tombstone", "tag_delete", "other_run", "other_agent", "other_issue", "stopped", "chat", "non_assignee", "terminal", "missing_member", "private_agent", "archived_agent", "unnamed_target", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "invalid_target", "pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped"} {
+	for _, refusal := range []string{"missing", "expired", "closed", "sealed", "consumed", "target_consumed", "tag_tombstone", "tag_delete", "other_run", "other_agent", "other_issue", "stopped", "chat", "terminal", "missing_member", "private_agent", "archived_agent", "unnamed_target", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "invalid_target", "pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped"} {
 		test.Run(refusal, func(test *testing.T) {
 			fixture := newIntentFixture(test)
 			intentID, commentID := openLaneIntent(test, fixture, fixture.mention())
@@ -129,8 +129,6 @@ func TestDecisionLanesRefusals(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
 			case "chat":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET chat_session_id = $1 WHERE id = $2`, createHandlerTestChatSession(test, fixture.agentID), fixture.taskID)
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_id = NULL, assignee_type = NULL WHERE id = $1`, fixture.issueID)
 			case "terminal":
 				dbfx.Exec(test, `UPDATE issue SET status = 'done' WHERE id = $1`, fixture.issueID)
 			case "missing_member":
@@ -188,7 +186,7 @@ func TestDecisionLanesSquadAndAuthProvenance(test *testing.T) {
 		})
 	}
 	dbfx.Exec(test, `DELETE FROM squad_member WHERE squad_id = $1 AND member_id = $2`, squadID, fixture.agentID)
-	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusForbidden)
+	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusOK)
 }
 
 type laneWindowFenceDB struct {

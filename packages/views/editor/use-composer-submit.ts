@@ -50,7 +50,8 @@ export interface ComposerSubmitOptions {
    * (the composer then clears via `onAccepted`); resolve `false` to keep the
    * draft in place for retry. Throwing is treated as `false`.
    */
-  onSubmit: (content: string) => Promise<boolean>;
+  /** `raw` is the markdown before `normalize`, read in the same tick, for a surface that derives per-send state from it. */
+  onSubmit: (content: string, raw: string) => Promise<boolean>;
   /**
    * Run once after an accepted submit: clear the editor, attachments, and the
    * persisted draft. Not run on rejection.
@@ -158,7 +159,7 @@ export function useComposerSubmit(opts: ComposerSubmitOptions): ComposerSubmit {
     inFlight.current = true;
     setSubmitting(true);
     try {
-      const accepted = await o.onSubmit(content);
+      const accepted = await o.onSubmit(content, raw);
       if (accepted) {
         o.onAccepted?.();
         runAfterAccepted();

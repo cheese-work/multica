@@ -1,0 +1,49 @@
+{
+  "phase": "before",
+  "results": [
+    {
+      "theme": "light",
+      "width": 1440,
+      "mentions": 12,
+      "selfMentions": 0,
+      "contrast": null,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-light-1440-before.png",
+      "errors": []
+    },
+    {
+      "theme": "light",
+      "width": 390,
+      "mentions": 12,
+      "selfMentions": 0,
+      "contrast": null,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-light-390-before.png",
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "mentions": 12,
+      "selfMentions": 0,
+      "contrast": null,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-dark-1440-before.png",
+      "errors": []
+    },
+    {
+      "theme": "dark",
+      "width": 390,
+      "mentions": 12,
+      "selfMentions": 0,
+      "contrast": null,
+      "overflow": false,
+      "screenshot": "../evidence/self-mention-dark-390-before.png",
+      "errors": []
+    }
+  ],
+  "mermaidValidation": {
+    "parsed": true,
+    "rendered": true
+  }
+}

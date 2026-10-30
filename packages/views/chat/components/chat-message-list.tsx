@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -30,7 +30,9 @@ import {
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RichContent } from "../../rich-content";
+import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { AttachmentList } from "../../issues/components/comment-card";
 import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
@@ -58,13 +60,25 @@ import {
   splitTimeline,
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
+import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
+import { AnnotatableAnswer } from "./annotatable-answer";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
+import { DecisionAnswerContent, noteAfterOption } from "./decision-answer-content";
+import { DecisionDmCard } from "./decision-dm-card";
+import { DecisionRequestCard } from "./decision-request-card";
+import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
+import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
+import { stripWakeupHeader } from "@multica/core/chat/wakeup";
+import { PredecessorDms } from "./predecessor-dms";
+import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
 
 interface ChatMessageListProps {
+  /** Pause bottom-stick effects while a closing floating window fades out. */
+  active?: boolean;
   messages: ChatMessage[];
   continuedFromSessionId?: string | null;
   continuedIntoSessionId?: string | null;
@@ -74,6 +88,8 @@ interface ChatMessageListProps {
   /** Last message copied from the source DM; the "Forked from" divider sits below it. */
   forkLastMessageId?: string | null;
   forkMessageCount?: number | null;
+  /** Puts a predecessor DM's message into the composer as a quote. Without it, earlier DMs have no quote action. */
+  onQuoteMessage?: (content: string) => void;
   /**
    * Session list cache (includes archived), the title source for fork links.
    * Leave undefined while it is loading so a source isn't mistaken for deleted.
@@ -108,7 +124,19 @@ interface ChatMessageListProps {
    * that reply until chat:quick_actions resolves it.
    */
   quickActionsPendingMessageId?: string | null;
+  /**
+   * Message to bring into view and flash (a DM decision card's jump link).
+   * Older pages are requested until it is loaded or nothing older is left.
+   */
+  jumpToMessageId?: string | null;
+  /** Fires once per target: "landed" after the scroll, "missing" if it cannot be found. */
+  onJumpSettled?: (outcome: "landed" | "missing") => void;
 }
+
+/** How long a jumped-to message keeps its highlight. */
+const FLASH_MS = 1500;
+/** How long the jump keeps re-aiming while Virtuoso measures rows. */
+const JUMP_AIM_MS = 1000;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -125,13 +153,19 @@ interface ChatMessageListProps {
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
   continuedFromSessionId?: string | null;
+  /** Earlier DMs of the continuation chain, oldest first; empty while the session list is unknown. */
+  predecessors: ChatSession[];
+  onQuoteMessage?: (content: string) => void;
   continuedIntoSessionId?: string | null;
-  forkChildren: ChatSession[];
   showForkHint: boolean;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
   availability: AgentAvailability | undefined;
+  /** Agent behind each fired-wakeup task, so its running pill joins the rail. */
+  wakeupAgentByTask: ReadonlyMap<string, string>;
+  /** The live assistant row is showing, so it owns the reply avatar. */
+  hasLive: boolean;
 }
 
 /**
@@ -142,7 +176,14 @@ interface ChatListContext {
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
 type ChatRenderItem =
-  | { key: string; kind: "message"; message: ChatMessage; taskId: string | null }
+  | {
+      key: string;
+      kind: "message";
+      message: ChatMessage;
+      taskId: string | null;
+      /** First message of its (local) calendar day — gets a day separator. */
+      dayStart: boolean;
+    }
   | { key: string; kind: "live"; taskId: string };
 
 /**
@@ -162,6 +203,9 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
     <div className={cn(CHAT_COLUMN, "pt-4")}>
       {context?.continuedFromSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
+      )}
+      {context && context.predecessors.length > 0 && (
+        <PredecessorDms sessions={context.predecessors} onQuoteMessage={context.onQuoteMessage} />
       )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
@@ -186,21 +230,24 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
       {context?.continuedIntoSessionId && (
         <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
       )}
-      {context?.forkChildren.map((child) => (
-        <ForkedIntoAnnouncement key={child.id} child={child} />
-      ))}
       {context?.showForkHint && (
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
       )}
       {context?.showStatusPill && context.pendingTask ? (
-        <TaskStatusPill
-          pendingTask={context.pendingTask}
-          taskMessages={context.liveTaskMessages ?? []}
-          availability={context.availability}
-        />
+        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")} avatar={!context.hasLive}>
+          <TaskStatusPill
+            pendingTask={context.pendingTask}
+            taskMessages={context.liveTaskMessages ?? []}
+            availability={context.availability}
+          />
+        </WithWakeupRail>
       ) : null}
     </div>
   );
+}
+
+function WithWakeupRail({ agentId, avatar = true, children }: { agentId?: string; avatar?: boolean; children: ReactNode }) {
+  return agentId ? <WakeupReplyRail agentId={agentId} avatar={avatar}>{children}</WakeupReplyRail> : <>{children}</>;
 }
 
 function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
@@ -281,12 +328,37 @@ function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
   );
 }
 
+/**
+ * Groups fork children under the source message they copied up to, oldest
+ * first. A child whose source message is not in `messages` (older page, or a
+ * fork made before the pointer existed) goes under the last message created at
+ * or before it, or in `before` — rendered above the first message — when it
+ * predates them all.
+ */
+function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
+  const after = new Map<string, ChatSession[]>();
+  const before: ChatSession[] = [];
+  if (messages.length === 0) return { before, after };
+  const loaded = new Set(messages.map((m) => m.id));
+  const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  for (const child of sorted) {
+    const pointed = child.fork_source_message_id;
+    const anchor = pointed && loaded.has(pointed)
+      ? pointed
+      : messages.findLast((m) => m.created_at <= child.created_at)?.id;
+    if (anchor) after.set(anchor, [...(after.get(anchor) ?? []), child]);
+    else before.push(child);
+  }
+  return { before, after };
+}
+
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Header: ChatListHeader,
   Footer: ChatListFooter,
 };
 
 export function ChatMessageList({
+  active = true,
   messages,
   continuedFromSessionId,
   continuedIntoSessionId,
@@ -294,6 +366,7 @@ export function ChatMessageList({
   forkedFromSessionId,
   forkLastMessageId,
   forkMessageCount,
+  onQuoteMessage,
   sessions,
   pendingTask,
   availability,
@@ -306,6 +379,8 @@ export function ChatMessageList({
   quickActionsDisabled = false,
   onRegenerateQuickActions,
   quickActionsPendingMessageId = null,
+  jumpToMessageId = null,
+  onJumpSettled,
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
@@ -320,9 +395,10 @@ export function ChatMessageList({
   const pinToLiveEnd = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, []);
-  const { isFollowing, onContentHeightChanged, hasReachedLiveEnd } = useStickToBottom(
+  const { isFollowing, onContentHeightChanged, disengage, hasReachedLiveEnd } = useStickToBottom(
     scrollContainerEl,
     pinToLiveEnd,
+    active,
   );
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
@@ -382,12 +458,19 @@ export function ChatMessageList({
   // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
     const items: ChatRenderItem[] = messages
-      .filter((message) => message.message_kind !== "onboarding_kickoff")
-      .map((message) => ({
+      .filter(
+        (message) =>
+          message.message_kind !== "onboarding_kickoff" &&
+          // The quote card replaces the plain "Decision recorded" line; one
+          // without a card (legacy row) still renders as text.
+          !(message.message_kind === "decision_reference" && message.decision_ref),
+      )
+      .map((message, i, visible) => ({
         key: messageRowKey(message),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,
+        dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
@@ -395,21 +478,104 @@ export function ChatMessageList({
     return items;
   }, [messages, hasLive, pendingTaskId]);
 
+  // Jump to a message: scroll once it is loaded, ask for older pages until it
+  // is, and settle "missing" when none are left. The target is settled once so
+  // a re-render (or the caller clearing it) never re-scrolls or re-flashes.
+  const [flashId, setFlashId] = useState<string | null>(null);
+  // Set once a jump has landed: the list is shown where it landed rather than
+  // staying hidden until the newest message is in view.
+  const [jumped, setJumped] = useState(false);
+  const settledJumpRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpToMessageId) {
+      settledJumpRef.current = null;
+      return;
+    }
+    // Virtuoso mounts only once the scroll container exists.
+    if (settledJumpRef.current === jumpToMessageId || !scrollContainerEl) return;
+    const index = renderItems.findIndex(
+      (item) => item.kind === "message" && item.message.id === jumpToMessageId,
+    );
+    if (index >= 0) {
+      settledJumpRef.current = jumpToMessageId;
+      const reduceMotion =
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // The live-end follow would pull the list straight back to the newest
+      // message; and while the list is still hidden waiting for that, the jump
+      // is the first thing the reader should see, so it lands without animation.
+      disengage();
+      virtuosoRef.current?.scrollToIndex({
+        index,
+        align: "center",
+        behavior: reduceMotion || !hasReachedLiveEnd ? "auto" : "smooth",
+      });
+      setJumped(true);
+      setFlashId(jumpToMessageId);
+      onJumpSettled?.("landed");
+    } else if (hasOlderMessages) {
+      if (!isFetchingOlderMessages) onLoadOlderMessages?.();
+    } else {
+      settledJumpRef.current = jumpToMessageId;
+      onJumpSettled?.("missing");
+    }
+  }, [jumpToMessageId, scrollContainerEl, renderItems, hasOlderMessages, isFetchingOlderMessages, onLoadOlderMessages, onJumpSettled, disengage, hasReachedLiveEnd]);
+  useEffect(() => {
+    if (!flashId) return;
+    const timer = setTimeout(() => setFlashId(null), FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [flashId]);
+  // Virtuoso re-positions as it measures rows, and the open-at-newest scroll
+  // can land after the jump. Re-aim until the target sits inside the viewport,
+  // for a short window, and give up the moment the reader scrolls.
+  useEffect(() => {
+    if (!flashId || !scrollContainerEl) return;
+    const target = renderItems.findIndex(
+      (item) => item.kind === "message" && item.message.id === flashId,
+    );
+    if (target < 0) return;
+    let frame = 0;
+    let cancelled = false;
+    const stop = () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+    const deadline = performance.now() + JUMP_AIM_MS;
+    const aim = () => {
+      if (cancelled || performance.now() > deadline) return;
+      const row = scrollContainerEl.querySelector(`[data-message-id="${CSS.escape(flashId)}"]`);
+      const view = scrollContainerEl.getBoundingClientRect();
+      const rect = row?.getBoundingClientRect();
+      const inView = !!rect && rect.height > 0 && rect.top >= view.top && rect.bottom <= view.bottom;
+      if (!inView) virtuosoRef.current?.scrollToIndex({ index: target, align: "center", behavior: "auto" });
+      frame = requestAnimationFrame(aim);
+    };
+    frame = requestAnimationFrame(aim);
+    scrollContainerEl.addEventListener("wheel", stop, { passive: true });
+    scrollContainerEl.addEventListener("touchstart", stop, { passive: true });
+    return () => {
+      stop();
+      scrollContainerEl.removeEventListener("wheel", stop);
+      scrollContainerEl.removeEventListener("touchstart", stop);
+    };
+  // renderItems is read once at landing; later rows must not restart the aim.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flashId, scrollContainerEl]);
+
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
+  const firstItem = renderItems[0];
+  const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
 
   const forkSource = forkedFromSessionId && sessions
     ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
     : undefined;
-  // Oldest first, so a new branch lands under the earlier ones.
-  const forkChildren = useMemo(
-    () =>
-      sessionId && sessions
-        ? sessions
-            .filter((s) => s.forked_from_session_id === sessionId)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at))
-        : [],
-    [sessionId, sessions],
+  const { before: forksBeforeFirst, after: forksByMessageId } = useMemo(
+    () => forkChildrenByMessage(
+      messages.filter((m) => m.message_kind !== "onboarding_kickoff"),
+      sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : [],
+    ),
+    [messages, sessionId, sessions],
   );
   // Idle hint until a user message follows the fork point. A fork point that
   // is not loaded sits above everything loaded, so all loaded rows follow it.
@@ -417,16 +583,46 @@ export function ChatMessageList({
   const showForkHint = !!forkLastMessageId
     && !messages.slice(forkPointIndex + 1).some((m) => m.role === "user");
 
+  // Earlier DMs sit above the oldest loaded message, like the link to them.
+  const predecessors = useMemo(
+    () => (!hasOlderMessages && continuedFromSessionId && sessions
+      ? predecessorChain(sessions, continuedFromSessionId)
+      : []),
+    [hasOlderMessages, sessions, continuedFromSessionId],
+  );
+
+  // Per row, from the data: Virtuoso mounts only the visible window.
+  const mentionsViewer = useMentionsViewer();
+  const selfMentionFlags = useMemo(
+    () => renderItems.map((item) => item.kind === "message" && mentionsViewer(item.message.content)),
+    [renderItems, mentionsViewer],
+  );
+  const jumpToSelfMention = useCallback(
+    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
+    [],
+  );
+
+  const wakeupAgentByTask = useMemo(() => {
+    const byTask = new Map<string, string>();
+    for (const m of messages) {
+      if (m.scheduled_wakeup && m.task_id) byTask.set(m.task_id, m.scheduled_wakeup.agent_id);
+    }
+    return byTask;
+  }, [messages]);
+
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
+    predecessors,
+    onQuoteMessage,
     continuedIntoSessionId,
-    forkChildren,
     showForkHint,
     showStatusPill,
     pendingTask,
     liveTaskMessages,
     availability,
+    wakeupAgentByTask,
+    hasLive,
   };
 
   // Every previewable file in this session, in message order, so opening one
@@ -449,7 +645,9 @@ export function ChatMessageList({
   );
 
   return (
+    <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
+    <div className="relative flex min-h-0 flex-1 flex-col">
     <div
       ref={setScrollContainerRef}
       data-tab-scroll-root
@@ -461,7 +659,7 @@ export function ChatMessageList({
       // container paints nothing for that whole window anyway — the rows are
       // not measured yet — so this costs no visible time and spares the
       // reader a frame of the wrong messages (see stick-to-bottom.ts).
-      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && "invisible")}
+      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && !jumped && "invisible")}
     >
       {/* Already inside the gutter + column, so this pre-mount frame renders the
        *  skeleton BODY rather than <ChatMessageSkeleton>, which brings its own
@@ -515,12 +713,29 @@ export function ChatMessageList({
         components={LIST_COMPONENTS}
         itemContent={(_, item) => (
           <div
-            className={cn(CHAT_COLUMN, "py-2")}
+            className={cn(
+              CHAT_COLUMN,
+              "py-2 transition-colors duration-700",
+              item.kind === "message" && item.message.id === flashId && "bg-primary/10",
+            )}
+            {...(item.kind === "message" ? { "data-message-id": item.message.id } : {})}
+            {...(item.kind === "message" && item.message.id === flashId ? { "data-flash": "" } : {})}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
+            {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
+            {item.kind === "message" && item.dayStart && (
+              <div data-day-separator="" className="mb-3 flex justify-center">
+                <span className="rounded-full bg-muted px-2.5 py-0.5 text-caption text-muted-foreground">
+                  {formatDayLabel(item.message.created_at)}
+                </span>
+              </div>
+            )}
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
+              wakeupAgentId={item.taskId ? wakeupAgentByTask.get(item.taskId) : undefined}
               transformContent={transformContent}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
@@ -532,13 +747,26 @@ export function ChatMessageList({
             {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
               <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
             )}
+            {item.kind === "message" && forksByMessageId.get(item.message.id)?.map((child) => (
+              <ForkedIntoAnnouncement key={child.id} child={child} />
+            ))}
           </div>
         )}
       />
       </RichContentScrollRootProvider>
       )}
     </div>
+    <NextSelfMention
+      scrollEl={scrollContainerEl}
+      enabled={active}
+      flags={selfMentionFlags}
+      firstItemIndex={firstIndex}
+      onJump={jumpToSelfMention}
+      positionClassName="absolute bottom-4 right-6 z-20"
+    />
+    </div>
     </PreviewSequenceProvider>
+    </MediaSourceProvider>
   );
 }
 
@@ -589,6 +817,7 @@ function ChatSkeletonBody() {
 const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
+  wakeupAgentId,
   transformContent,
   onQuickAction,
   quickActionsDisabled,
@@ -599,6 +828,7 @@ const MessageBubble = memo(function MessageBubble({
 }: {
   item: ChatRenderItem;
   isPending: boolean;
+  wakeupAgentId?: string;
   transformContent?: (content: string) => string;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
@@ -612,17 +842,27 @@ const MessageBubble = memo(function MessageBubble({
   // so React reconciles rather than remounts at task completion.
   if (item.kind === "live") {
     return (
-      <AssistantMessage
-        taskId={item.taskId}
-        isPending={isPending}
-        transformContent={transformContent}
-        onQuickAction={onQuickAction}
-        quickActionsDisabled={quickActionsDisabled}
-      />
+      <WithWakeupRail agentId={wakeupAgentId}>
+        <AssistantMessage
+          taskId={item.taskId}
+          isPending={isPending}
+          transformContent={transformContent}
+          onQuickAction={onQuickAction}
+          quickActionsDisabled={quickActionsDisabled}
+        />
+      </WithWakeupRail>
     );
   }
 
   const { message } = item;
+
+  if (message.decision_requests?.length) {
+    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionWithdrawalCard key={card.id} card={card} />)}</div>;
+  }
+
+  if (message.decision_request) {
+    return <DecisionRequestCard card={message.decision_request} />;
+  }
 
   if (message.message_kind === "continuation_summary") {
     return <ContinuationSummary message={message} />;
@@ -638,44 +878,64 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
+  // A fired wakeup is a system event, not something the member typed.
+  if (message.scheduled_wakeup) {
+    return <WakeupEventRow wakeup={message.scheduled_wakeup} />;
+  }
+
   if (message.role === "user") {
+    // Without structured wakeup data (malformed or older server) the model-facing
+    // header is still dropped; the instruction shows as an ordinary bubble.
+    const userContent = stripWakeupHeader(message.content);
+    const chosenOption = message.decision_quotes?.find((quote) => quote.option_label)?.option_label;
+    const asChoice = chosenOption !== undefined && noteAfterOption(userContent, chosenOption) !== undefined;
     return (
-      <div className="flex justify-end">
-        <div className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
+      <div className="flex flex-col items-end">
+        <div data-testid="chat-user-message" className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
           {/* User messages are authored as markdown in ContentEditor, so they
            * render through the SAME RichContent as assistant replies and as
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
            * too. `compact` trims the leading/trailing block margins so a
            * single-line bubble stays as tight as the plain-text version. */}
-          <RichContent
-            content={message.content}
-            attachments={message.attachments}
-            density="compact"
-            phase="settled"
-          />
+          {asChoice ? (
+            <DecisionAnswerContent content={userContent} optionLabel={chosenOption} />
+          ) : (
+            <RichContent
+              content={userContent}
+              attachments={message.attachments}
+              density="compact"
+              phase="settled"
+            />
+          )}
           <AttachmentList
             attachments={message.attachments}
-            content={message.content}
+            content={userContent}
             className="mt-1.5"
           />
         </div>
+        <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
+        {message.decision_quotes?.map((card) => (
+          <DecisionDmCard key={card.answer_id} card={card} />
+        ))}
       </div>
     );
   }
 
   return (
-    <AssistantMessage
-      taskId={message.task_id ?? null}
-      message={message}
-      isPending={isPending}
-      transformContent={transformContent}
-      onQuickAction={onQuickAction}
-      quickActionsDisabled={quickActionsDisabled}
-      onRegenerateQuickActions={onRegenerateQuickActions}
-      canRegenerateQuickActions={message.id === latestAssistantMessageId}
-      quickActionsPending={quickActionsPendingMessageId === message.id}
-      showStarterCards={message.id === starterCardsMessageId}
-    />
+    <WithWakeupRail agentId={wakeupAgentId}>
+      <AssistantMessage
+        taskId={message.task_id ?? null}
+        message={message}
+        isPending={isPending}
+        transformContent={transformContent}
+        onQuickAction={onQuickAction}
+        quickActionsDisabled={quickActionsDisabled}
+        onRegenerateQuickActions={onRegenerateQuickActions}
+        canRegenerateQuickActions={message.id === latestAssistantMessageId}
+        quickActionsPending={quickActionsPendingMessageId === message.id}
+        showStarterCards={message.id === starterCardsMessageId}
+      />
+    </WithWakeupRail>
   );
 });
 
@@ -689,7 +949,9 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
         {t(($) => $.message_list.continuation_summary)}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent content={message.content} attachments={message.attachments} density="compact" />
+        </AnnotatableAnswer>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -795,18 +1057,21 @@ function AssistantMessage({
           phase={phase}
           isStreaming={!message}
           settledContent={canonicalAnswer}
+          annotateMessageId={message?.id}
         />
       )}
       {isNoResponse ? (
         <NoResponseNotice />
       ) : message && timeline.length === 0 ? (
-        <RichContent
-          content={settledContent ?? message.content}
-          attachments={message.attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer messageId={message.id}>
+          <RichContent
+            content={settledContent ?? message.content}
+            attachments={message.attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       ) : null}
       {message && (
         <>
@@ -1053,7 +1318,6 @@ function MessageFooter({
   const isNoResponse = message.message_kind === "no_response";
   const copyContent = extractCopyText(message, timeline, transformContent);
   const showCopy = !isPending && !isNoResponse && copyContent.trim().length > 0;
-  if (message.elapsed_ms == null && !showCopy) return null;
   return (
     <div className="flex items-center gap-1.5">
       {message.elapsed_ms != null && (
@@ -1062,10 +1326,26 @@ function MessageFooter({
           elapsedMs={message.elapsed_ms}
         />
       )}
+      <MessageTime iso={message.created_at} />
       {showCopy && (
         <MessageCopyButton content={copyContent} />
       )}
     </div>
+  );
+}
+
+// Send time in the browser's locale/zone; the full date + time is the native
+// hover title.
+function MessageTime({ iso, className }: { iso: string; className?: string }) {
+  return (
+    <time
+      data-message-time=""
+      dateTime={iso}
+      title={formatMessageDateTime(iso)}
+      className={cn("text-caption text-muted-foreground", className)}
+    >
+      {formatMessageTime(iso)}
+    </time>
   );
 }
 
@@ -1090,6 +1370,7 @@ function MessageCopyButton({
             variant="ghost"
             size="icon-xs"
             className="text-faint-foreground hover:text-foreground"
+            data-testid="assistant-message-copy"
             onClick={handleCopy}
             aria-label={t(($) => $.message_list.copy_action)}
           />
@@ -1170,6 +1451,7 @@ function FailureBubble({
     codex_semantic_inactivity: t(($) => $.message_list.failure.codex_semantic_inactivity),
     runtime_offline: t(($) => $.message_list.failure.runtime_offline),
     runtime_access_denied: t(($) => $.message_list.failure.runtime_access_denied),
+    runtime_access_revoked: t(($) => $.message_list.failure.runtime_access_revoked),
     runtime_recovery: t(($) => $.message_list.failure.runtime_recovery),
     manual: t(($) => $.message_list.failure.manual),
     cancelled: t(($) => $.message_list.failure.manual),
@@ -1252,12 +1534,15 @@ function TimelineView({
   attachments,
   phase = "settled",
   settledContent,
+  annotateMessageId,
 }: {
   items: ChatTimelineItem[];
   isStreaming?: boolean;
   attachments?: import("@multica/core/types").Attachment[];
   phase?: "streaming" | "settled";
   settledContent?: string;
+  /** Persisted message whose settled answer readers can annotate. */
+  annotateMessageId?: string;
 }) {
   if (phase === "settled" && settledContent !== undefined) {
     const { preface, middle } = splitTimeline(items);
@@ -1274,14 +1559,15 @@ function TimelineView({
             stepCount={middle.length}
           />
         )}
-        <RichContent
-          key="answer"
-          content={settledContent}
-          attachments={attachments}
-          density="compact"
-          phase="settled"
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer" messageId={annotateMessageId}>
+          <RichContent
+            content={settledContent}
+            attachments={attachments}
+            density="compact"
+            phase="settled"
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       </>
     );
   }
@@ -1310,14 +1596,15 @@ function TimelineView({
         />
       )}
       {final.length > 0 && (
-        <RichContent
-          key="answer"
-          content={final.map((t) => t.content ?? "").join("")}
-          attachments={attachments}
-          density="compact"
-          phase={phase}
-          className="leading-relaxed"
-        />
+        <AnnotatableAnswer key="answer">
+          <RichContent
+            content={final.map((t) => t.content ?? "").join("")}
+            attachments={attachments}
+            density="compact"
+            phase={phase}
+            className="leading-relaxed"
+          />
+        </AnnotatableAnswer>
       )}
     </>
   );

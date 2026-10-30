@@ -210,6 +210,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	orphans, err := handler.Queries.ListDecisionActionsAwaitingPostCommit(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, action := range orphans {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.completeDecisionActionPostCommit(ctx, action)
+		}))
+	}
 	wakes, err := handler.Queries.ListDecisionWakeCandidates(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -237,7 +246,16 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
-	return failures
+	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, recipient := range recipients {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
+		}))
+	}
+	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
 func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
@@ -246,6 +264,9 @@ func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
 		worker.handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
 	worker.handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	if result.Answer.DisclaimedAt.Valid {
+		worker.handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	}
 }
 
 func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
@@ -272,6 +293,12 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 		return err
 	}
 	for _, requestID := range requests {
+		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
 		if err := queries.DeleteDecisionOrphanRequest(ctx, db.DeleteDecisionOrphanRequestParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}

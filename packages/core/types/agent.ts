@@ -48,12 +48,24 @@ export interface AgentInvocationTargetInput {
 
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
-// only the runtime owner can bind agents to it — workspace admins included,
-// and only the owner may flip the flag (MUL-6126); "public" opens binding to
+// the runtime owner and shared_with members can bind agents to it;
+// only the owner may edit access (MUL-6126); "public" opens binding to
 // any workspace member. Older backends that haven't shipped MUL-2062 omit the
 // field; the consumer must default to "private" so the strictest behavior is
 // the fallback.
 export type RuntimeVisibility = "private" | "public";
+
+/** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+
+/** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
+export interface RuntimePause {
+  reason: RuntimePauseReason;
+  paused_by: string | null;
+  paused_at: string;
+  /** When the pause lifts by itself. Empty when the server sent no usable time. */
+  expires_at: string;
+}
 
 export interface RuntimeDevice {
   id: string;
@@ -76,6 +88,8 @@ export interface RuntimeDevice {
   owner_id: string | null;
   /** Defaults to "private" when the backend predates the visibility flag. */
   visibility: RuntimeVisibility;
+  /** Workspace user IDs granted access while visibility is private. */
+  shared_with?: string[];
   /**
    * The custom runtime profile this registered runtime was launched from,
    * or `null` for a built-in protocol family. The UI uses this to stamp a
@@ -84,6 +98,13 @@ export interface RuntimeDevice {
    * a missing value as `null` (built-in).
    */
   profile_id?: string | null;
+  /** Live machine pause, or null/absent when the machine takes work. */
+  pause?: RuntimePause | null;
+  /**
+   * Dispatched, running and waiting tasks across the machine's runtimes.
+   * Null/absent when the runtime has no daemon or the server predates pause.
+   */
+  daemon_running_tasks?: number | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -128,6 +149,8 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "qwen",
   "qwenpaw",
   "mcode",
+  "muse",
+  "devin",
   "zeroclaw",
 ] as const;
 
@@ -194,6 +217,7 @@ export type TaskFailureReason =
   | "timeout"
   | "codex_semantic_inactivity"
   | "runtime_offline"
+  | "runtime_access_revoked"
   | "runtime_reconnect_timeout"
   | "runtime_recovery"
   | "manual";
@@ -456,7 +480,7 @@ export interface AgentTask {
  *
  * Field names deliberately match {@link RuntimeUsage} so the same
  * `estimateCost` / `estimateCostBreakdown` / `estimateCacheSavings` helpers in
- * `packages/views/runtimes/utils.ts` price a run and a runtime-day identically
+ * `packages/core/runtimes/pricing.ts` price a run and a runtime-day identically
  * — there is exactly one cost formula in the product.
  *
  * `cost_usd_ticks` is the provider's own price for this slice (1e-10 USD),
@@ -713,6 +737,7 @@ export type AgentPermissionScope = "private" | "workspace" | "members";
  * over edits the user made after it.
  */
 export interface StoredAgentDraft {
+  qoder_agent_id?: string;
   name: string;
   description: string;
   instructions: string;
@@ -951,7 +976,7 @@ export interface IssueUsageSummary {
 // optional because a backend older than the split omits them — `undefined`
 // there means "estimate from the full token counts", which is not the same as
 // a real 0 ("nothing left to estimate"). See estimateCost in
-// packages/views/runtimes/utils.ts.
+// packages/core/runtimes/pricing.ts.
 export interface RuntimeUsage {
   runtime_id: string;
   date: string;

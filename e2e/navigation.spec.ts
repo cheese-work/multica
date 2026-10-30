@@ -1,12 +1,14 @@
 import { test, expect } from "@playwright/test";
-import { loginAsDefault, waitForPageText } from "./helpers";
+import { loginAsDefault, waitForHydrated, waitForPageText } from "./helpers";
 
 const ROUTE_CHANGE_TIMEOUT = 30000;
 
 test.describe("Navigation", () => {
   test.beforeEach(async ({ page }) => {
     await loginAsDefault(page);
-    await page.waitForLoadState("networkidle");
+    // "networkidle" never arrives: the app keeps polling and holding realtime
+    // connections. Wait for the sidebar the tests click instead.
+    await waitForHydrated(page.getByRole("link", { name: "Inbox" }));
   });
 
   test("sidebar navigation works", async ({ page }) => {
@@ -32,8 +34,8 @@ test.describe("Navigation", () => {
     await expect(page).toHaveURL(/\/settings/, { timeout: ROUTE_CHANGE_TIMEOUT });
     await waitForPageText(page, "Settings");
 
-    await expect(page.getByRole("tab", { name: "General" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Members" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "General" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Members" })).toBeVisible();
   });
 
   test("agents page shows agent list", async ({ page }) => {

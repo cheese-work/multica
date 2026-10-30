@@ -1,0 +1,42 @@
+[
+ {
+  "variant": "as-retained",
+  "family": "system-ui, -apple-system, \"Segoe UI\", sa",
+  "fontSize": "14px",
+  "innerWidth": 340,
+  "chipWidth": 224,
+  "sentenceNeeds": 350.9,
+  "lastWordOnFirstLine": false,
+  "paragraphHeight": 46
+ },
+ {
+  "variant": "bubble-chrome-removed",
+  "family": "system-ui, -apple-system, \"Segoe UI\", sa",
+  "fontSize": "14px",
+  "innerWidth": 366,
+  "chipWidth": 224,
+  "sentenceNeeds": 350.9,
+  "lastWordOnFirstLine": true,
+  "paragraphHeight": 23.3
+ },
+ {
+  "variant": "inter-font",
+  "family": "\"Inter Variable\"",
+  "fontSize": "14px",
+  "innerWidth": 340,
+  "chipWidth": 224,
+  "sentenceNeeds": 353,
+  "lastWordOnFirstLine": false,
+  "paragraphHeight": 45.9
+ },
+ {
+  "variant": "bubble-chrome-removed+inter",
+  "family": "\"Inter Variable\"",
+  "fontSize": "14px",
+  "innerWidth": 366,
+  "chipWidth": 224,
+  "sentenceNeeds": 353,
+  "lastWordOnFirstLine": true,
+  "paragraphHeight": 23.2
+ }
+]

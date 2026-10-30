@@ -128,14 +128,14 @@ describe("useRealtimeSync — ws instance change", () => {
 
     // Should have called invalidateQueries for all workspace-scoped keys
     // (17 workspace-scoped [incl. property definitions and workflows] + 6
-    // per-issue prefixes + the workspace working-agents projection + 5
+    // per-issue prefixes + the workspace working-agents projection + 6
     // per-chat prefixes + 1 workspaceKeys.list() + 1 cross-workspace inbox
     // unread summary = 32 calls).
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(32));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(33));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -217,6 +217,23 @@ describe("useRealtimeSync — ws instance change", () => {
     }
   });
 
+  it("refetches the runtime list on a drain refresh from another workspace's task", () => {
+    vi.useFakeTimers();
+    try {
+      const ws = createMockWs();
+      renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+      const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+
+      invalidateSpy.mockClear();
+      onAny({ type: "daemon:register", payload: { action: "drain" } } as never);
+      vi.advanceTimersByTime(100);
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeKeys.all("ws-1") });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("invalidates per-issue caches (no wsId in key) on ws instance change", () => {
     // These keys are not under the ["issues", wsId] prefix, so they need
     // their own invalidation on recovery — otherwise events missed while
@@ -279,6 +296,7 @@ describe("useRealtimeSync — ws instance change", () => {
     expect(calls).toContainEqual(chatKeys.messagesAll());
     expect(calls).toContainEqual(chatKeys.messagesPageAll());
     expect(calls).toContainEqual(chatKeys.pendingTaskAll());
+    expect(calls).toContainEqual(chatKeys.wakeupsAll());
   });
 
   it("invalidates one issue attachment cache after detached channel media binds", () => {
@@ -323,6 +341,31 @@ describe("useRealtimeSync — ws instance change", () => {
     // connected client. (MUL-6458)
     expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: issueKeys.all("ws-1"),
+    });
+  });
+
+  it("refetches cached issue rows when a status changes category", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    onAny!({
+      type: "issue_status:changed",
+      payload: { action: "updated", category_changed: true },
+    } as never);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // Rows carry the server-resolved status_category (and category-bucketed
+    // groups and facets), so a category move leaves every cached projection
+    // stale. issueKeys.all covers lists, detail, table groups and facets.
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: issueKeys.all("ws-1"),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: issueStatusKeys.all("ws-1"),
     });
   });
 
