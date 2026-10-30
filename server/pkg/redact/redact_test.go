@@ -487,3 +487,29 @@ func TestRedactMultipleSecrets(t *testing.T) {
 		t.Fatal("GitHub token not redacted in multi-secret text")
 	}
 }
+
+// TestProviderTokenParity runs the fixture the TypeScript display fallback also
+// runs (packages/views/common/task-transcript/redact.test.ts), so both
+// implementations stay on the same provider rules.
+func TestProviderTokenParity(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("testdata/provider-tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name  string
+		Parts []string
+		Want  string
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			if got := Text(strings.Join(testCase.Parts, "")); got != testCase.Want {
+				t.Fatalf("got %q, want %q", got, testCase.Want)
+			}
+		})
+	}
+}

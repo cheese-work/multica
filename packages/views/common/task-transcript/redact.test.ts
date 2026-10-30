@@ -7,6 +7,18 @@ const genericCredentialCases: { name: string; input: string; want: string }[] = 
   readFileSync(new URL("../../../../server/pkg/redact/testdata/generic-credentials.json", import.meta.url), "utf8"),
 );
 
+const providerTokenCases: { name: string; parts: string[]; want: string }[] = JSON.parse(
+  readFileSync(new URL("../../../../server/pkg/redact/testdata/provider-tokens.json", import.meta.url), "utf8"),
+);
+
+describe("redactSecrets provider parity with server", () => {
+  for (const { name, parts, want } of providerTokenCases) {
+    it(name, () => {
+      expect(redactSecrets(parts.join(""))).toBe(want);
+    });
+  }
+});
+
 describe("redactSecrets", () => {
   it("redacts AWS access key", () => {
     const result = redactSecrets("key: AKIAIOSFODNN7EXAMPLE");
