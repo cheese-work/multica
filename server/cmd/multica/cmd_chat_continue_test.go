@@ -122,3 +122,34 @@ func TestChatContinueForkRejectsSummaryWithoutHTTP(t *testing.T) {
 		t.Fatalf("fork with a summary = %v", err)
 	}
 }
+
+func TestChatContinueTablePrefersWebURL(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	summaryFile := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(summaryFile, []byte("Goal: continue the DM."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ body, want string }{
+		"web_url present": {`{"url":"/ws/chat?session=x","web_url":"https://app.test/ws/chat?session=x","session":{"id":"x"}}`, "https://app.test/ws/chat?session=x"},
+		"web_url absent":  {`{"url":"/ws/chat?session=x","session":{"id":"x"}}`, "/ws/chat?session=x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.Header().Set("Content-Type", "application/json")
+				_, _ = response.Write([]byte(tc.body))
+			}))
+			t.Cleanup(server.Close)
+			setCLITestServerEnv(t, server.URL)
+			command := chatContinueTestCommand(summaryFile)
+			_ = command.Flags().Set("output", "table")
+			var output bytes.Buffer
+			command.SetOut(&output)
+			if err := runChatContinue(command, nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(output.String()); got != tc.want {
+				t.Fatalf("table output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

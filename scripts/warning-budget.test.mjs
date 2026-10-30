@@ -37,6 +37,18 @@ test("PID and ANSI noise do not turn an existing warning into a new one", () => 
   assert.deepEqual(warningRegressions(baseline, current), [])
 })
 
+test("the shed-load counter does not turn an existing warning into a new one", () => {
+  const line = (n) => ({ name: "backend-tests", log: `time=2026-10-29T10:00:00.000Z level=WARN msg="plugins: event dispatch queue full, dropping event" event_type=issue:created dropped_total=${n}`, annotations: [] })
+  const baseline = warningCounts([line(729)])
+  assert.equal(Object.keys(baseline).length, 1)
+  assert.deepEqual(warningRegressions(baseline, warningCounts([line(856)])), [])
+})
+
+test("a byte-order mark at a GitHub log chunk boundary does not expose a timestamped application event", () => {
+  const log = "\ufeff2026-10-29T20:35:34.2427295Z 2026/10/29 20:35:34 WARN plugins: event dispatch queue full, dropping event event_type=issue.created dropped_total=970"
+  assert.deepEqual(warningCounts([{ name: "backend-tests", log, annotations: [] }]), {})
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
@@ -68,6 +80,16 @@ test("timestamped application events are not compiler or test-harness diagnostic
   assert.deepEqual(warningRegressions(baseline, current), [])
   assert.deepEqual(current, {})
   assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log: "warning: C compiler diagnostic\n2026/10/28 06:00:22.123456 WARN expected negative-control event", annotations: [] }])).length, 1)
+})
+
+test("a leading BOM does not defeat the runtime WARN exclusion, and a new warning is still counted", () => {
+  const expected = "2026/10/28 06:00:22 WARN plugins: event dispatch queue full, dropping event"
+  const count = (log) => warningCounts([{ name: "backend-tests", log, annotations: [] }])
+  assert.deepEqual(count(`﻿${expected}`), {})
+  assert.deepEqual(count(`2026-10-28T06:00:22.1234567Z ﻿${expected}`), {})
+  assert.deepEqual(count(`﻿2026-10-28T06:00:22.1234567Z ${expected}`), {})
+  assert.deepEqual(count("﻿Warning: fixture diagnostic"), { "backend-tests: Warning: fixture diagnostic": 1 })
+  assert.deepEqual(count("﻿Warning: fixture diagnostic"), count("Warning: fixture diagnostic"))
 })
 
 test("eslint warnings follow file and rule rather than line numbers", () => {

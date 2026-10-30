@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5/pgtype"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -63,6 +66,45 @@ func pushHead(t *testing.T, prID, head string) {
 	t.Helper()
 	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2, pr_updated_at = now() WHERE id = $1`, prID, head)
 	testHandler.supersedeStaleReviews(context.Background(), parseUUID(prID))
+}
+
+// webhookPushHead delivers a signed pull_request "synchronize" webhook that
+// moves the fixture PR to head. It runs the production mirror path and stops
+// there: the API snapshot is not fetched, so the cancel callback never runs.
+func webhookPushHead(t *testing.T, prID, head string) {
+	t.Helper()
+	const secret = "review-supersede-webhook-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	var owner, repo string
+	var number int32
+	dbfx.QueryRow(t, `SELECT repo_owner, repo_name, pr_number FROM github_pull_request WHERE id = $1`, prID).Scan(&owner, &repo, &number)
+	installationID := int64(1_000_000 + number)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(context.Background(), db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID, AccountLogin: owner, AccountType: "Organization",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
+	})
+	now := time.Now().Add(time.Minute).UTC().Format(time.RFC3339) // newer than the stored row, or the upsert ignores it
+	postSignedGitHubWebhook(t, secret, map[string]any{
+		"action": "synchronize",
+		"pull_request": map[string]any{
+			"number": number, "html_url": "https://github.com/" + owner + "/" + repo + "/pull/" + strconv.Itoa(int(number)),
+			"title": "review PR", "body": "", "state": "open", "draft": false, "merged": false,
+			"created_at": now, "updated_at": now,
+			"head": map[string]any{"ref": "review/head", "sha": head, "repo": githubRepositoryForTest(owner, repo)},
+			"user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"id": 424242, "name": repo, "owner": map[string]any{"login": owner}},
+		"installation": map[string]any{"id": installationID},
+	}, "")
+	var stored string
+	dbfx.QueryRow(t, `SELECT head_sha FROM github_pull_request WHERE id = $1`, prID).Scan(&stored)
+	if stored != head {
+		t.Fatalf("webhook stored head %q, want %q", stored, head)
+	}
 }
 
 type queuedRun struct{ id, head, step string }
@@ -168,7 +210,7 @@ func TestReviewSupersede_LateFinishOfOldReviewIsRefusedAsStale(t *testing.T) {
 // review. A verdict in that window is for a commit that is no longer the head.
 func TestReviewSupersede_VerdictRefusedWhenWebhookStoredNewHeadBeforeCancellation(t *testing.T) {
 	f := reviewIssue(t)
-	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2, pr_updated_at = now() WHERE id = $1`, f.prID, reviewHeadB)
+	webhookPushHead(t, f.prID, reviewHeadB)
 
 	body := agentUpdateIssue(t, f.issueID, f.agentID, f.review, map[string]any{"status": "blocked"}).Want(http.StatusConflict).Map()
 	if body["code"] != "review_verdict_stale" {
@@ -205,7 +247,7 @@ func TestReviewSupersede_AuthorRunOnOldHeadIsNotRefusedAsStale(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, f.review)
 	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issueID)
 	author := reviewRun(t, f.agentID, f.runtimeID, f.issueID, f.prID, "in_progress", reviewHeadA)
-	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha = $2, pr_updated_at = now() WHERE id = $1`, f.prID, reviewHeadB)
+	webhookPushHead(t, f.prID, reviewHeadB)
 
 	agentUpdateIssue(t, f.issueID, f.agentID, author, map[string]any{"status": "in_review"}).Want(http.StatusOK)
 }

@@ -46,7 +46,10 @@
     "change_project_context": "プロジェクトコンテキストを変更",
     "remove_project_context": "プロジェクトコンテキストを削除",
     "no_projects": "プロジェクトがまだありません",
-    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です"
+    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です",
+    "placeholder_archived_send": "この DM はアーカイブされています。送信するとまずアーカイブを解除します…",
+    "command_no_arguments": "/{{command}} は引数を受け取りません。単独で送信するか、先頭の / を削除してください。",
+    "command_no_attachments": "/{{command}} は添付ファイルと一緒に送信できません。/{{command}} を実行する前に添付ファイルを削除してください。"
   },
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",
@@ -270,7 +273,12 @@
     "archive": "アーカイブ",
     "unarchive": "アーカイブ解除",
     "archived_title": "アーカイブ済み",
-    "row_actions_aria": "チャットの操作"
+    "row_actions_aria": "チャットの操作",
+    "archived_toast": "チャットをアーカイブしました",
+    "archive_failed": "このチャットをアーカイブできませんでした",
+    "unarchive_failed": "このチャットのアーカイブを解除できませんでした",
+    "pin_failed": "ピン留めを更新できませんでした",
+    "undo": "元に戻す"
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
@@ -281,7 +289,19 @@
     "rename": "名前を変更",
     "delete": "チャットを削除",
     "archive": "チャットをアーカイブ",
-    "unarchive": "アーカイブを解除"
+    "unarchive": "アーカイブを解除",
+    "statistics": "統計",
+    "pin": "チャットをピン留め",
+    "unpin": "チャットのピン留めを解除"
+  },
+  "scheduled": {
+    "chip": "予約済み {{count}}",
+    "title": "{{name}} が予約",
+    "title_unknown_agent": "予約済みのフォローアップ",
+    "cancel": "キャンセル",
+    "cancel_label": "{{time}} に予約されたフォローアップをキャンセル",
+    "cancel_failed": "フォローアップをキャンセルできませんでした",
+    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行"
   },
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
@@ -303,10 +323,56 @@
     "source_changed": "原文が変更されたか、利用できません。保存した引用は保持されます。",
     "removed": "コメント {{number}} を削除しました"
   },
+  "stats": {
+    "title": "統計",
+    "scope": "この DM のみ",
+    "estimated": "概算",
+    "partial": "一部のみ",
+    "tokens": "{{tokens}} トークン",
+    "usage_missing_other": "完了した {{count}} 件の実行で使用量が未記録",
+    "in_progress_other": "実行中 {{count}} 件 — 完了すると合計が更新されます",
+    "runs": "実行",
+    "runs_value": "完了 {{completed}} 件 · 失敗 {{failed}} 件",
+    "runs_cancelled": " · キャンセル {{cancelled}} 件",
+    "run_time": "Agent の実行時間",
+    "messages": "メッセージ",
+    "messages_value": "あなた {{user}} · Agent {{agent}}",
+    "by_model": "モデル別",
+    "col_model": "モデル",
+    "col_input": "入力",
+    "col_output": "出力",
+    "col_cache_read": "キャッシュ読み取り",
+    "col_cache_write": "キャッシュ書き込み",
+    "col_cost": "コスト",
+    "no_value": "—",
+    "no_cost": "コスト情報なし",
+    "no_runs": "実行はまだありません。",
+    "related": "関連する DM",
+    "continued_from": "継続元",
+    "continued_into": "継続先",
+    "forked_from": "コピー元",
+    "error": "統計を読み込めませんでした。0 として記録されたものはありません。",
+    "offline": "オフラインです。この数値は {{time}} に統計を開いた時点のものです。再接続すると更新されます。",
+    "retry": "再試行",
+    "close": "閉じる",
+    "less_than_a_minute": "1分未満"
+  },
+  "archived_send": {
+    "title": "この DM はアーカイブされています",
+    "question": "アーカイブを解除して送信しますか？",
+    "kept": "メッセージは保持されます。アーカイブ解除後に送信されます。",
+    "newer": "新しい DM がこの会話を続けています：{{title}}。",
+    "confirm": "解除して送信",
+    "cancel": "キャンセル",
+    "open_newer": "新しい DM を開く"
+  },
   "decision": {
     "request_title": "判断の依頼",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み" },
+    "picked_up_by": "{{agent}} が着手",
+    "not_picked_up": "回答の記録後に実行が開始されていません。",
+    "open_issue": "{{issue}} を開く",
     "answer_options": "選択肢",
     "answer_text": "または回答を入力",
     "answer_send": "送信",
@@ -318,10 +384,43 @@
     "answer_discard": "下書きを破棄",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
+    "receipt_recorded": "{{issue}} に記録",
+    "receipt_option": "選択肢 {{number}}",
+    "jump_to_card": "カードへ移動",
     "withdrawn_in": "{{issue}} で取り下げ済み",
     "recorded_on": "{{issue}} に記録",
     "from_original_dm": "元の DM から",
     "inherited": "継承",
     "message_unavailable": "このメッセージは利用できなくなりました"
+  },
+  "search": {
+    "label": "チャットを検索",
+    "placeholder": "チャットを検索",
+    "shortcut_hint": "/",
+    "clear": "検索をクリア",
+    "results_label": "検索結果",
+    "count_other": "{{count}} 件",
+    "searching": "検索中…",
+    "empty": "「{{query}}」に一致するチャットはありません",
+    "failed": "検索に失敗しました。もう一度お試しください。",
+    "timed_out": "検索に時間がかかりすぎました。より短い、または具体的な語句をお試しください。",
+    "disconnected": "オフラインです。検索には接続が必要です。",
+    "retry": "再試行",
+    "too_long": "検索は {{max}} 文字までです。",
+    "show_more": "さらに表示",
+    "loading_more": "読み込み中…",
+    "archived_badge": "アーカイブ済み",
+    "title_match": "タイトル一致",
+    "actions_aria": "{{title}} の操作"
+  },
+  "wakeup": {
+    "node_label": "予約された起動が実行されました",
+    "scheduled_at": "予約 {{time}}",
+    "set_by": "{{agent}} が {{time}} に設定",
+    "show_instruction": "指示を表示",
+    "hide_instruction": "指示を隠す",
+    "instruction_region": "エージェントへの指示",
+    "instruction_note": "エージェントへの指示（原文）。エージェントはこの内容をすべて受け取ります。",
+    "issue_fallback": "課題"
   }
 }

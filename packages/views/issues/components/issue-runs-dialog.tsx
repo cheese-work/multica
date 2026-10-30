@@ -21,11 +21,13 @@ import { Segmented } from "../../dashboard/components/dashboard-shared";
 import { formatDuration } from "../../dashboard/utils";
 import { useLocale, useT } from "../../i18n";
 import {
-  collectUnmappedModels,
   formatTokens,
   formatUsd,
-  type CostBreakdown,
 } from "../../runtimes/utils";
+import {
+  collectUnmappedModels,
+  type CostBreakdown,
+} from "@multica/core/runtimes/pricing";
 import { AttributionBadge } from "./attribution-badge";
 import {
   buildRunTimeline,

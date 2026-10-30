@@ -1,34 +1,41 @@
 /**
- * Right-side actions for the Chat tab header. Two buttons:
- *   - ⋯ (session menu): only when an active session exists.
+ * Right-side actions for the Chat tab header. Two controls:
+ *   - ⋯ (`ChatMoreMenu`): shown when an active session exists.
  *   - + (new chat): always shown.
- *
- * Both are RNR `<Button variant="ghost" size="icon">` via IconButton, so
- * touch feedback / sizing / dark-mode tinting are all consistent with the
- * rest of the header toolbar.
  */
+import type { ChatSession } from "@multica/core/types";
+import {
+  ChatMoreMenu,
+  type ChatMoreMenuProps,
+} from "@/components/chat/chat-more-menu";
 import { IconButton } from "@/components/ui/icon-button";
 import { useT } from "@/lib/i18n";
 
-interface Props {
-  showMore: boolean;
-  onMorePress: () => void;
+interface Props extends Omit<ChatMoreMenuProps, "session"> {
+  session: ChatSession | null;
   onNewPress: () => void;
 }
 
 export function ChatSessionActions({
-  showMore,
-  onMorePress,
+  session,
+  onOpenStatistics,
+  onTogglePin,
+  onArchive,
+  onUnarchive,
+  onDelete,
   onNewPress,
 }: Props) {
   const { t } = useT("chat");
   return (
     <>
-      {showMore ? (
-        <IconButton
-          name="ellipsis-horizontal"
-          onPress={onMorePress}
-          accessibilityLabel={t("a11y.session_actions")}
+      {session ? (
+        <ChatMoreMenu
+          session={session}
+          onOpenStatistics={onOpenStatistics}
+          onTogglePin={onTogglePin}
+          onArchive={onArchive}
+          onUnarchive={onUnarchive}
+          onDelete={onDelete}
         />
       ) : null}
       <IconButton

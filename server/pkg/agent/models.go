@@ -2100,7 +2100,7 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	}
 	cmd := runtimeCmd.exec(runCtx, cmdArgs...)
 	hideAgentWindow(cmd)
-	childEnv := append(os.Environ(), p.extraEnv...)
+	childEnv := append(BaseEnviron(), p.extraEnv...)
 	if isolatedStateDir != "" {
 		childEnv = replaceEnvValue(childEnv, p.isolatedStateEnv, isolatedStateDir)
 	}

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, CornerUpLeft, ListChevronsDownUp, Copy, Link2, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
@@ -31,6 +31,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useTimeAgo } from "../../i18n";
+import { RichTableDeferContext } from "../../rich-content";
+import { bodyPrefix } from "../../rich-content/body-prefix";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -692,6 +694,38 @@ function CommentRevisionConflict({
   );
 }
 
+// CHE-2191: a body over this many chars mounts only a block-aligned prefix
+// until opened — the synchronous rich-content mount of a ~33 KB comment cost
+// 0.75-1.1 s on a minimap jump through the overscan.
+const LONG_BODY_CHARS = 16_000;
+const BODY_PREFIX_CHARS = 2_000;
+
+/**
+ * Comment body that defers the full rich-content mount for oversized text.
+ * `forceOpen` (deep-link target, find) opens it and stays open once opened, so
+ * the body does not collapse again when the target highlight fades.
+ * An oversized body mounts its tables only near the viewport (CHE-2272)
+ * unless find owns the thread (`findOpen`): find walks mounted text.
+ */
+function CommentBody({ entry, forceOpen, findOpen }: { entry: TimelineEntry; forceOpen: boolean; findOpen: boolean }) {
+  const { t } = useT("issues");
+  const [expanded, setExpanded] = useState(false);
+  if (forceOpen && !expanded) setExpanded(true);
+  const content = entry.content ?? "";
+  const deferred = content.length > LONG_BODY_CHARS && !expanded && !forceOpen;
+  const prefix = useMemo(() => (deferred ? bodyPrefix(content, BODY_PREFIX_CHARS) : ""), [deferred, content]);
+  return (
+    <RichTableDeferContext.Provider value={content.length > LONG_BODY_CHARS && !findOpen}>
+      <ReadonlyContent content={deferred ? prefix : content} attachments={entry.attachments} />
+      {deferred && (
+        <Button type="button" size="sm" variant="ghost" className="mt-1 text-muted-foreground" onClick={() => setExpanded(true)}>
+          {t(($) => $.comment.show_full)}
+        </Button>
+      )}
+    </RichTableDeferContext.Provider>
+  );
+}
+
 // Single comment row (used for both parent and replies within the same Card)
 
 function CommentRow({
@@ -704,6 +738,7 @@ function CommentRow({
   canModerate = false,
   isResolution = false,
   isHighlighted = false,
+  findManualCollapseDisabled = false,
   hasReplies = false,
   onEdit,
   onDelete,
@@ -726,6 +761,8 @@ function CommentRow({
   hasReplies?: boolean;
   /** True when this row is the deep-link target currently being highlighted. */
   isHighlighted?: boolean;
+  /** True while in-page find owns this thread: the body must mount in full. */
+  findManualCollapseDisabled?: boolean;
   onEdit: (commentId: string, content: string, attachmentIds: string[], suppressAgentIds?: string[], contentBase?: string) => Promise<void>;
   onDelete: (commentId: string) => void;
   onToggleReaction: (commentId: string, emoji: string) => void;
@@ -991,7 +1028,12 @@ function CommentRow({
             ) : entry.decision_comment_kind === "disclaim" ? (
               <DecisionWithdrawalLine entry={entry} />
             ) : (
-              <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+              <>
+                <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                {entry.decision_receipt_answer_id && (
+                  <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+                )}
+              </>
             )}
           </div>
           <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-12 pr-4 max-md:pl-3 max-md:pr-3" />
@@ -1548,7 +1590,12 @@ function CommentCardImpl({
                   ) : entry.decision_comment_kind === "disclaim" ? (
                     <DecisionWithdrawalLine entry={entry} />
                   ) : (
-                    <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                    <>
+                      <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                      {entry.decision_receipt_answer_id && (
+                        <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
+                      )}
+                    </>
                   )}
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-8 max-md:pl-0" />
@@ -1638,6 +1685,7 @@ function CommentCardImpl({
                       canModerate={canModerate}
                       isResolution
                       isHighlighted={highlightedCommentId === resolutionReply.id}
+                      findManualCollapseDisabled={findManualCollapseDisabled}
                       hasReplies={repliedToIds.has(resolutionReply.id)}
                       onEdit={onEdit}
                       onDelete={onDelete}
@@ -1748,6 +1796,7 @@ function CommentCardImpl({
                       canModerate={canModerate}
                       isResolution={slot.comment.id === replyResolutionId}
                       isHighlighted={highlightedCommentId === slot.comment.id}
+                      findManualCollapseDisabled={findManualCollapseDisabled}
                       hasReplies={repliedToIds.has(slot.comment.id)}
                       replyTo={replyTarget && <ReplyToQuote entry={replyTarget} onJump={onJumpToComment} />}
                       onEdit={onEdit}

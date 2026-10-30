@@ -207,6 +207,24 @@ export interface HasPendingChatTasksResponse {
   has_pending: boolean;
 }
 
+/**
+ * The wakeup that produced a user-role DM message when it fired. Present only
+ * on list/page payloads; the realtime `chat:message` event does not carry it.
+ * Clients render such a message as a system event row, never a user bubble.
+ */
+export interface ChatScheduledWakeup {
+  id: string;
+  agent_id: string;
+  /** Human one-liner set with --title; "" when none. */
+  title: string;
+  /** Verbatim instruction the agent receives (without the model-facing header). */
+  instruction: string;
+  /** RFC3339 */
+  fire_at: string;
+  /** RFC3339 */
+  created_at: string;
+}
+
 export interface ChatMessage {
   id: string;
   chat_session_id: string;
@@ -253,6 +271,8 @@ export interface ChatMessage {
   decision_ref?: import("./decision").DecisionCard;
   decision_request?: import("./decision").DecisionRequestCard;
   decision_requests?: import("./decision").DecisionRequestCard[];
+  /** Set when this message is a fired chat wakeup; absent on older servers. */
+  scheduled_wakeup?: ChatScheduledWakeup | null;
 }
 
 export interface ChatMessagesCursor {
@@ -267,6 +287,23 @@ export interface ChatMessagesPage {
   next_cursor?: ChatMessagesCursor | null;
   /** Set on `?around=` windows: messages exist after the window. */
   has_newer?: boolean;
+}
+
+/** One DM search hit (`GET /api/chat/search`). `message_id` is null for a title hit. */
+export interface ChatSearchHit {
+  session_id: string;
+  title: string;
+  agent_id: string;
+  message_id: string | null;
+  /** Plain-text window that starts about 40 characters before the first match. */
+  snippet: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+export interface ChatSearchPage {
+  results: ChatSearchHit[];
+  next_cursor: string | null;
 }
 
 export interface SendChatMessageResponse {
@@ -391,4 +428,14 @@ export interface ChatPendingTask {
    * database status `queued` before claim, but is never duplicated here.
    */
   queued_tasks?: ChatQueuedTask[];
+}
+
+/** `GET /api/chat/sessions/{id}/wakeups`: a pending one-shot turn an agent scheduled in this DM. */
+export interface ChatWakeup {
+  id: string;
+  agent_id: string;
+  /** RFC 3339 instant the turn fires. */
+  fire_at: string;
+  instruction: string;
+  status: string;
 }

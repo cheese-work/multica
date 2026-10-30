@@ -245,4 +245,14 @@ describe("TranscriptButton", () => {
       expect(screen.getAllByTestId("event")).toHaveLength(2),
     );
   });
+
+  it("loads a terminal run's messages when a parent opens it with no click", async () => {
+    listTaskMessages.mockResolvedValue([msg(1, "Bash")]);
+    renderWith(
+      newClient(),
+      <TranscriptButton task={{ ...baseTask, status: "completed" }} agentName="Codex" renderButton={false} open />,
+    );
+    await waitFor(() => expect(listTaskMessages).toHaveBeenCalledWith(LIVE_TASK_ID));
+    await waitFor(() => expect(screen.getAllByTestId("event")).toHaveLength(1));
+  });
 });

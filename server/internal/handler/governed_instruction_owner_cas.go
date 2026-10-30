@@ -13,7 +13,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -242,7 +241,7 @@ func (h *Handler) instructionTokenLimitOK(w http.ResponseWriter, r *http.Request
 		if c.kind == "agent.instructions" {
 			limit = 4000
 		}
-		newTokens := jev.EstimateInstructionTokens(content)
+		newTokens := util.EstimateInstructionTokens(content)
 		if newTokens > limit {
 			var existingContent string
 			wsUUID, _ := util.ParseUUID(workspaceID)
@@ -253,7 +252,7 @@ func (h *Handler) instructionTokenLimitOK(w http.ResponseWriter, r *http.Request
 				return false
 			}
 			if err == nil {
-				existingTokens := jev.EstimateInstructionTokens(existingContent)
+				existingTokens := util.EstimateInstructionTokens(existingContent)
 				if content != existingContent && (existingTokens <= limit || newTokens > existingTokens) {
 					writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("%s exceed limit of %d tokens (estimated: %d tokens)", c.field, limit, newTokens))
 					return false

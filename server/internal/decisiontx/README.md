@@ -348,6 +348,13 @@ individually without repeating the group wake. Group inputs retain every quote, 
 request and unasked target in the task's handoff; queued merges preserve the
 normal attribution and overlay recalculation.
 
+Taskless decision-card quotes retain the asking agent as their visible author.
+Run attribution resolves the named human from the workspace-scoped decision
+request only when the answer points back to that exact quote, issue and asking
+agent. Agent-recorded answers still use their source task's delegation chain.
+This preserves the human originator for follow-up actions such as registering
+an issue wakeup without borrowing the runtime owner's permissions.
+
 Member and unassigned recipients receive one `delivery` comment per live answer,
 each replying to that answer's quote. The per-answer comment key makes retries
 idempotent. These rules include Cheese's approved R1: B and C: A amendments to
@@ -444,3 +451,16 @@ timezone. Worker restarts, retries and deletion of an inbox item cannot resend
 a receipted digest. Asks that expire after that day's digest, or exceed its
 100-request bound, stay pending until a later ICT day. These are implementation
 defaults, not permission to change a person's notification preferences.
+
+## Decision-bound writes
+
+A governed write by an agent is approved by a card whose ask is built with
+`BoundWriteDecision(field, before_sha256, after_sha256)` and whose options
+include one labelled exactly `ApproveWriteLabel` ("Approve write"). The server
+(`verifyDecisionBinding`) accepts only a live answer, by a workspace owner,
+that is exactly that label, after its veto window and within 7 days, for an ask
+whose `before_sha256:` and `after_sha256:` lines are the write's hashes. It
+locks the request, then the answer, in the same order as a withdrawal.
+Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
+Orphan cleanup deletes a request's `decision_bound_write` row before the request,
+because the table has no foreign key to cascade from.
