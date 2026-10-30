@@ -34,7 +34,8 @@ export function warningCounts(jobs) {
     const eslintDetails = new Set()
     let eslintFile = ""
     let commandHeader = false
-    for (const line of stripVTControlCharacters(job.log).split("\n")) {
+    // Go test output can carry a U+FEFF byte-order mark that defeats the anchored runtime-WARN exclusion below.
+    for (const line of stripVTControlCharacters(job.log).replaceAll("\uFEFF", "").split("\n")) {
       if (/##\[group\]Run /.test(line)) {
         commandHeader = true
         eslintFile = ""
