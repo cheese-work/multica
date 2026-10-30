@@ -23,16 +23,17 @@ LEFT JOIN LATERAL (
     FROM decision_answer answer WHERE answer.decision_request_id = request.id
     ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
 ) last_answer ON true
--- The run that resumed the issue: one that carries the record, else the first run on the issue after it.
+-- The run that resumed the issue: one that started and carries the record, else the first started run on the issue after it.
 LEFT JOIN LATERAL (
     SELECT task.id, agent.name AS agent_name
     FROM agent_task_queue task
     JOIN agent ON agent.id = task.agent_id AND agent.workspace_id = request.workspace_id
-    WHERE task.issue_id = request.issue_id AND last_answer.id IS NOT NULL
+    WHERE task.issue_id = request.issue_id AND last_answer.id IS NOT NULL AND task.started_at IS NOT NULL
         AND (task.trigger_comment_id = last_answer.issue_comment_id
             OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)
             OR task.created_at >= last_answer.created_at)
-    ORDER BY (task.trigger_comment_id = last_answer.issue_comment_id) DESC NULLS LAST, task.created_at, task.id
+    ORDER BY (task.trigger_comment_id = last_answer.issue_comment_id OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)) DESC NULLS LAST,
+        task.created_at, task.id
     LIMIT 1
 ) pickup ON true
 WHERE request.workspace_id = sqlc.arg('workspace_id')

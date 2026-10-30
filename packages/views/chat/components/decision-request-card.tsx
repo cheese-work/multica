@@ -168,7 +168,11 @@ function useNow(card: RequestCard) {
   const waiting = card.state === "answered" && !!card.answer && card.answer.state !== "picked_up" && card.answer.state !== "disclaimed";
   const deadline = waiting ? new Date(card.answer!.answered_at).getTime() + PICKUP_GRACE_MS : NaN;
   useEffect(() => {
-    if (!(deadline > Date.now())) return;
+    if (!(deadline > Date.now())) {
+      // A receipt that arrives after its grace: the clock kept from mount is stale.
+      if (deadline <= Date.now()) setNow(Date.now());
+      return;
+    }
     const timer = setTimeout(() => {
       qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
@@ -271,7 +275,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
           )
         )}
         {shown === "picked_up" && card.answer?.run && (
-          <AppLink href={issueHref} data-testid="decision-request-run" className="inline-flex min-h-9 items-center text-label hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          <AppLink href={`${issueHref}?run=${encodeURIComponent(card.answer.run.id)}`} data-testid="decision-request-run" className="inline-flex min-h-9 items-center text-label hover:underline focus-visible:outline-2 focus-visible:outline-ring">
             {t(($) => $.decision.picked_up_by, { agent: card.answer.run.agent_name })}
           </AppLink>
         )}

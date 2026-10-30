@@ -189,6 +189,15 @@ export function applyDecisionAnswerUpdated(
 }
 
 /**
+ * An issue run started. A decision card in a DM shows the run that picked its
+ * answer up, and that run has no message of its own to push, so refresh them.
+ */
+export function applyIssueRunStarted(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
  * Apply a chat:message event: write the turn's USER message into the message
  * caches, then reconcile authoritatively (MUL-5711).
  *
@@ -1725,7 +1734,10 @@ export function useRealtimeSync(
     // would stay parked even after the daemon resumed work.
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
-      if (!payload.chat_session_id) return;
+      if (!payload.chat_session_id) {
+        if (payload.issue_id) applyIssueRunStarted(qc);
+        return;
+      }
       qc.setQueryData<ChatPendingTask>(
         chatKeys.pendingTask(payload.chat_session_id),
         (old) => promotePendingChatTask(old, payload.task_id, "running"),

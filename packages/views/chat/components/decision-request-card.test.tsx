@@ -92,14 +92,14 @@ describe("DecisionRequestCard accessibility", () => {
     const view = (next: RequestCard) => renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={next} /></WorkspaceSlugProvider></QueryClientProvider>);
     const at = (iso: string) => vi.useFakeTimers({ now: new Date(iso), toFake: ["Date", "setTimeout", "clearTimeout"] });
 
-    it("shows Picked up with the agent and a link to the issue once a run exists", () => {
+    it("shows Picked up with the agent and a link to that run once a run exists", () => {
       at("2026-10-26T23:31:30Z");
       view(answered({ state: "picked_up", run: { id: "task-1", agent_name: "Sol" } }));
       expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "picked_up");
       expect(screen.getByRole("region", { name: "Decision request: Picked up" })).toBeInTheDocument();
       const link = screen.getByTestId("decision-request-run");
       expect(link).toHaveTextContent("Picked up by Sol");
-      expect(link).toHaveAttribute("href", expect.stringMatching(/\/issue$/));
+      expect(link).toHaveAttribute("href", expect.stringMatching(/\/issue\?run=task-1$/));
     });
 
     it("moves from Recorded to Not picked up once 2 minutes pass with no run", () => {
@@ -122,6 +122,16 @@ describe("DecisionRequestCard accessibility", () => {
       view({ ...answered({ state: "disclaimed" }), state: "open" });
       expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "disclaimed");
       expect(screen.queryByTestId("decision-request-not-picked-up")).toBeNull();
+    });
+
+    it("shows Not picked up when an old answered receipt arrives on an already-mounted card", () => {
+      at("2026-10-26T23:31:00Z");
+      const client = new QueryClient();
+      const tree = (next: RequestCard) => <QueryClientProvider client={client}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={next} /></WorkspaceSlugProvider></QueryClientProvider>;
+      const { rerender } = renderWithI18n(tree(card));
+      act(() => { vi.advanceTimersByTime(3 * 60_000); });
+      rerender(tree(answered()));
+      expect(screen.getByTestId("decision-request-card")).toHaveAttribute("data-state", "not_picked_up");
     });
   });
 

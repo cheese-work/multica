@@ -38,6 +38,7 @@ func TestDecisionRequestCardShowsTheRunThatPickedUpTheAnswer(test *testing.T) {
 	}
 
 	runID := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, runID)
 	card = pickupCard(test, fixture, result.Request)
 	if card.Answer.State != "picked_up" || card.Answer.Run == nil || card.Answer.Run.ID != runID || card.Answer.Run.AgentName == "" {
 		test.Fatalf("run on the issue not shown: %+v", card.Answer)
@@ -46,5 +47,31 @@ func TestDecisionRequestCardShowsTheRunThatPickedUpTheAnswer(test *testing.T) {
 	dbfx.Exec(test, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE id = $1`, result.Answer.ID)
 	if card = pickupCard(test, fixture, result.Request); card.Answer.State != "disclaimed" {
 		test.Fatalf("a disclaimed answer shows %q", card.Answer.State)
+	}
+}
+
+// A run that never started is not a pickup, and a run that carries the record
+// beats an earlier unrelated one.
+func TestDecisionRequestPickupNeedsAStartedRunAndPrefersTheOneCarryingTheRecord(test *testing.T) {
+	fixture := newCardFixture(test)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	runtime := handlerTestRuntimeID(test)
+
+	for _, status := range []string{"queued", "cancelled"} {
+		dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": status, "runtime_id": runtime})
+	}
+	if card := pickupCard(test, fixture, result.Request); card.Answer.Run != nil || card.Answer.State == "picked_up" {
+		test.Fatalf("a run that never started counted: %+v", card.Answer)
+	}
+
+	unrelated := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": runtime})
+	carrying := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": runtime})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = ANY($1::uuid[])`, []string{unrelated, carrying})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET coalesced_comment_ids = ARRAY[(SELECT issue_comment_id FROM decision_answer WHERE id = $2)] WHERE id = $1`, carrying, result.Answer.ID)
+	if card := pickupCard(test, fixture, result.Request); card.Answer.Run == nil || card.Answer.Run.ID != carrying {
+		test.Fatalf("the run carrying the record lost to %v: %+v", unrelated, card.Answer.Run)
 	}
 }
