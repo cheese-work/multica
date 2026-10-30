@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -21,18 +22,20 @@ const (
 	MaxPendingChatWakeups          = 3
 	MaxChatWakeupDelay             = 24 * time.Hour
 	MaxChatWakeupInstruction       = 4000
+	MaxChatWakeupTitle             = 120
 	chatWakeupTickBatch      int32 = 50
 	chatWakeupSentVia              = "system"
 )
 
 var (
-	ErrChatWakeupNotOwner = errors.New("chat wakeup: only a running task of this web DM can manage its wakeups")
-	ErrChatWakeupLimit    = errors.New("chat wakeup: too many pending wakeups in this DM")
-	ErrChatWakeupTooFar   = errors.New("chat wakeup: fire time is more than 24h away")
-	ErrChatWakeupPast     = errors.New("chat wakeup: fire time must be in the future")
-	ErrChatWakeupEmpty    = errors.New("chat wakeup: instruction is required")
-	ErrChatWakeupTooLong  = errors.New("chat wakeup: instruction is too long")
-	ErrChatWakeupNotFound = errors.New("chat wakeup: no such pending wakeup")
+	ErrChatWakeupNotOwner     = errors.New("chat wakeup: only a running task of this web DM can manage its wakeups")
+	ErrChatWakeupLimit        = errors.New("chat wakeup: too many pending wakeups in this DM")
+	ErrChatWakeupTooFar       = errors.New("chat wakeup: fire time is more than 24h away")
+	ErrChatWakeupPast         = errors.New("chat wakeup: fire time must be in the future")
+	ErrChatWakeupEmpty        = errors.New("chat wakeup: instruction is required")
+	ErrChatWakeupTooLong      = errors.New("chat wakeup: instruction is too long")
+	ErrChatWakeupTitleTooLong = errors.New("chat wakeup: title is too long")
+	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
 )
 
 // ChatWakeupService schedules one-shot turns an agent asks for in its own web
@@ -45,6 +48,7 @@ type ChatWakeupService struct {
 type ChatWakeupInput struct {
 	TaskID      pgtype.UUID
 	At          time.Time
+	Title       string
 	Instruction string
 }
 
@@ -78,12 +82,15 @@ func (s *ChatWakeupService) session(ctx context.Context, q *db.Queries, taskID p
 
 func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.ChatWakeup, error) {
 	instruction := strings.TrimSpace(in.Instruction)
+	title := strings.TrimSpace(in.Title)
 	now := time.Now()
 	switch {
 	case instruction == "":
 		return db.ChatWakeup{}, ErrChatWakeupEmpty
 	case len(instruction) > MaxChatWakeupInstruction:
 		return db.ChatWakeup{}, ErrChatWakeupTooLong
+	case utf8.RuneCountInString(title) > MaxChatWakeupTitle:
+		return db.ChatWakeup{}, ErrChatWakeupTitleTooLong
 	case !in.At.After(now):
 		return db.ChatWakeup{}, ErrChatWakeupPast
 	case in.At.After(now.Add(MaxChatWakeupDelay)):
@@ -116,6 +123,7 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 			WorkspaceID:     session.WorkspaceID,
 			ChatSessionID:   session.ID,
 			AgentID:         session.AgentID,
+			Title:           title,
 			Instruction:     instruction,
 			FireAt:          pgtype.Timestamptz{Time: in.At, Valid: true},
 			CreatedByTaskID: in.TaskID,

@@ -207,6 +207,24 @@ export interface HasPendingChatTasksResponse {
   has_pending: boolean;
 }
 
+/**
+ * The wakeup that produced a user-role DM message when it fired. Present only
+ * on list/page payloads; the realtime `chat:message` event does not carry it.
+ * Clients render such a message as a system event row, never a user bubble.
+ */
+export interface ChatScheduledWakeup {
+  id: string;
+  agent_id: string;
+  /** Human one-liner set with --title; "" when none. */
+  title: string;
+  /** Verbatim instruction the agent receives (without the model-facing header). */
+  instruction: string;
+  /** RFC3339 */
+  fire_at: string;
+  /** RFC3339 */
+  created_at: string;
+}
+
 export interface ChatMessage {
   id: string;
   chat_session_id: string;
@@ -253,6 +271,8 @@ export interface ChatMessage {
   decision_ref?: import("./decision").DecisionCard;
   decision_request?: import("./decision").DecisionRequestCard;
   decision_requests?: import("./decision").DecisionRequestCard[];
+  /** Set when this message is a fired chat wakeup; absent on older servers. */
+  scheduled_wakeup?: ChatScheduledWakeup | null;
 }
 
 export interface ChatMessagesCursor {

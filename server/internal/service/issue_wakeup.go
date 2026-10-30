@@ -1441,6 +1441,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
 		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: taskID, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, HeadSha: pgtype.Text{String: headSHA, Valid: headSHA != ""}, AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		if err == nil {
+			noteRunInserted(ctx, q, w.IssueID)
+		}
 	}
 	if err != nil {
 		return err
@@ -1635,7 +1638,7 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 		}
 		if config != nil && config.Eff.Config.Target.Set {
 			// A named target is asked again whether its writer may use it.
-			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+			target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 			if err != nil {
 				return err
 			}
@@ -1740,7 +1743,7 @@ func (s *IssueWakeupService) checkJoinedAtStart(ctx context.Context, task db.Age
 		}
 	}
 	if config != nil && config.Eff.Config.Target.Set {
-		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config)
+		target, err := builtinTarget(ctx, s, s.Tasks.Queries, issue, config, w)
 		if err != nil {
 			return err
 		}

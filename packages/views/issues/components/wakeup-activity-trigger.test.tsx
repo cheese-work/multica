@@ -72,6 +72,16 @@ describe("wakeup_triggered rows name what fired and who woke", () => {
     expect(rows[1]).toContain("woke Emacs");
   });
 
+  it("does not call a member FYI a wakeup", () => {
+    const format = read();
+    expect(format(entry("wakeup_triggered", { wakeup: prRule, rule: "pr_needs_attention", ...pr, target_type: "member", target_id: "u", outcome: "notified" }))).toBe(
+      "PR #252 needs attention · notified Jiayuan",
+    );
+    expect(format(entry("wakeup_triggered", { wakeup: prRule, rule: "pr_checks_failed", ...pr, target_type: "member", target_id: "u", outcome: "none" }))).toBe(
+      "PR #252 checks failed",
+    );
+  });
+
   it("keeps the child_done sentence", () => {
     expect(read()(entry("wakeup_triggered", { rule: "child_done", stage: 1, total: 2, target_type: "agent", target_id: "a", outcome: "woke" }))).toBe(
       "Stage 1's 2 sub-issues all finished · woke Emacs",

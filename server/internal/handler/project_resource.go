@@ -80,9 +80,26 @@ func validateAndNormalizeResourceRef(resourceType string, ref json.RawMessage) (
 		return validateGithubRepoRef(ref)
 	case "local_directory":
 		return validateLocalDirectoryRef(ref)
+	case "url":
+		return validateURLResourceRef(ref)
 	default:
 		return nil, fmt.Errorf("unknown resource_type %q", resourceType)
 	}
+}
+
+func validateURLResourceRef(ref json.RawMessage) (json.RawMessage, error) {
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(ref, &payload); err != nil {
+		return nil, fmt.Errorf("invalid url payload: %w", err)
+	}
+	payload.URL = strings.TrimSpace(payload.URL)
+	parsed, err := url.Parse(payload.URL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return nil, errors.New("url: url must be a valid HTTPS link")
+	}
+	return json.Marshal(payload)
 }
 
 type githubRepoRef struct {

@@ -513,6 +513,15 @@ case "$command" in
       exit 1
     fi
 
+    # Released compose files (CHE-2396): the deployed copies are replaced by
+    # the verified bundle's before anything renders, so a stale compose dir
+    # can never configure the candidate. Still under the deploy lock.
+    echo "==> syncing released compose files into $compose_dir"
+    if ! node "$script_dir/drift-receipt.mjs" sync --source-root "$root_dir" --compose-dir "$compose_dir"; then
+      echo "!! could not sync the released compose files; refusing to cut over" >&2
+      exit 1
+    fi
+
     # Port-collision preflight: the base (un-scaled) "frontend" service
     # publishes 127.0.0.1:${FRONTEND_PORT:-3000}, the same host port the
     # router's own frontend listener binds (docker-compose.router.yml,
@@ -729,6 +738,21 @@ case "$command" in
     echo "==> verifying candidate /health identity"
     if ! verify_health_identity "$candidate_port" "$source_sha"; then
       recover_incumbent "candidate colour=$to_colour /health identity mismatch"
+    fi
+
+    # Deploy drift receipt (CHE-2396): deployed compose bytes, env key names
+    # (never values) and running image digests must equal the released
+    # source and manifest. Any difference fails the deploy before traffic moves.
+    echo "==> deploy drift receipt"
+    drift_services=()
+    for svc in "backend-${to_colour}" "frontend-${to_colour}"; do
+      drift_services+=(--service "${svc}=$(compose ps -q "$svc" | head -1)")
+    done
+    # The interpolated render holds secrets: stream it, never write it to disk.
+    if ! compose config --format json | node "$script_dir/drift-receipt.mjs" check \
+      --source-root "$root_dir" --compose-dir "$compose_dir" --config /dev/stdin --manifest "$manifest" \
+      "${drift_services[@]}" --output "$state_dir/drift-receipt.json"; then
+      recover_incumbent "deploy drift receipt: candidate colour=$to_colour differs from the released source (see $state_dir/drift-receipt.json)"
     fi
 
     # Activate the complete router generation. router.sh's own `nginx -t`

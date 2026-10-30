@@ -288,9 +288,8 @@ WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
 -- refresh pipeline — NOT the legacy suite-level webhook aggregation, which is
 -- removed. The `issue_prs` CTE narrows to this issue's PR ids first so the
 -- aggregation only touches check rows for those PRs. Rows for an OLD head are
--- excluded by the snapshot_head_sha filter. Every link row is a delivery PR:
--- the webhook links an identifier it read from the PR title or branch name, and
--- a member can link one by hand (linked_by_type = 'member'). MUL-7429.
+-- excluded by the snapshot_head_sha filter. Both closing and reference links
+-- remain visible; only closing links participate in merge automation.
 WITH issue_prs AS (
     SELECT pr.id, pr.snapshot_head_sha
     FROM github_pull_request pr
@@ -329,6 +328,7 @@ SELECT
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(ipr.linked_by_type, 'system')::text AS linked_by_type,
+    ipr.link_kind,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
     COALESCE(c.failed, 0)::bigint  AS checks_failed,
@@ -372,22 +372,26 @@ LIMIT 1;
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1;
 
+-- name: ListClosingIssueIDsForPullRequest :many
+SELECT issue_id FROM issue_pull_request
+WHERE pull_request_id = $1 AND link_kind = 'closing';
+
 -- =====================
 -- Issue ↔ Pull Request link
 -- =====================
 
 -- name: LinkIssueToPullRequest :execrows
--- Automatic link from a PR title, branch, or closing keyword. Returns 1 only
--- when the link is new, so the webhook evaluates the merge automation on the
--- link event and not on every redelivery. An existing link (automatic or
--- manual) is left untouched. close_intent is no longer read or written
--- (MUL-7726).
+-- Automatic link from a PR title, branch, or keyword. Returns 1 when the link
+-- is new or its kind changes. Manual links are left untouched.
 INSERT INTO issue_pull_request (
-    issue_id, pull_request_id, linked_by_type, linked_by_id
+    issue_id, pull_request_id, linked_by_type, linked_by_id, link_kind
 ) VALUES (
-    $1, $2, 'system', NULL
+    $1, $2, 'system', NULL, COALESCE(sqlc.narg('link_kind')::text, 'closing')
 )
-ON CONFLICT (issue_id, pull_request_id) DO NOTHING;
+ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
+    link_kind = EXCLUDED.link_kind
+WHERE COALESCE(issue_pull_request.linked_by_type, 'system') <> 'member'
+  AND issue_pull_request.link_kind IS DISTINCT FROM EXCLUDED.link_kind;
 
 -- name: LinkIssueToPullRequestManually :execrows
 -- A member linked this PR by hand. Marking an existing automatic link as
@@ -400,8 +404,10 @@ INSERT INTO issue_pull_request (
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
     linked_by_type = 'member',
-    linked_by_id = EXCLUDED.linked_by_id
-WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member';
+    linked_by_id = EXCLUDED.linked_by_id,
+    link_kind = 'closing'
+WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member'
+   OR issue_pull_request.link_kind <> 'closing';
 
 -- name: ListAutoLinkedIssueIDsForPullRequest :many
 -- Issues this PR is linked to automatically. Manual links are not listed: the

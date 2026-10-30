@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你決定",
+    "loading": "正在載入待處理請求…",
+    "error": "無法載入待處理請求。",
+    "retry": "重試",
+    "empty": "沒有待處理請求。"
+  },
   "page": {
     "title": "聊天",
     "select_prompt": "選擇一個對話，或點 + 新建",
@@ -311,14 +318,39 @@
     "request_state": {
       "open": "待答復",
       "answered": "已答復",
-      "withdrawn": "已撤回"
+      "withdrawn": "已撤回",
+      "recorded": "已記錄",
+      "delivered": "已送達",
+      "disclaimed": "已撤銷"
     },
+    "answer_options": "選項",
+    "answer_text": "或輸入回答",
+    "answer_send": "傳送",
+    "answer_error": "傳送失敗，請重試。",
+    "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
+    "answer_hint": "Enter 傳送 · Shift+Enter 換行",
+    "answer_offline": "你已離線。回答已保留，重新連線後即可傳送。",
+    "answer_conflict": "此卡片已無法接收你的回答，例如已被先回答。你的草稿未被發佈。你的草稿：",
+    "answer_discard": "捨棄草稿",
     "source_comment": "來源評論",
     "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",
+    "receipt_recorded": "已記錄到 {{issue}}",
+    "receipt_option": "選項 {{number}}",
+    "jump_to_card": "跳到卡片",
     "withdrawn_in": "已在 {{issue}} 撤回",
     "from_original_dm": "來自原始私信",
     "inherited": "繼承",
     "message_unavailable": "該消息已不可用"
+  },
+  "wakeup": {
+    "node_label": "定時喚醒已觸發",
+    "scheduled_at": "定時 {{time}}",
+    "set_by": "{{agent}} 於 {{time}} 設定",
+    "show_instruction": "查看指令",
+    "hide_instruction": "收合指令",
+    "instruction_region": "給智慧體的指令",
+    "instruction_note": "給智慧體的指令（原文）。智慧體會收到全部內容。",
+    "issue_fallback": "事項"
   }
 }

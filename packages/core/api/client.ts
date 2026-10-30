@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
@@ -271,6 +272,7 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
+  OpenDecisionRequestListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -4059,6 +4061,17 @@ export class ApiClient {
 
   async disclaimDecisionAnswer(answerId: string): Promise<void> {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
+  }
+
+  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
+    const raw: unknown = await this.fetch("/api/decisions/open");
+    return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
+      endpoint: "GET /api/decisions/open",
+    });
   }
 
   async listChatMessagesPage(

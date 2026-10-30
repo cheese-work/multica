@@ -29,12 +29,50 @@ describe("ApiClient decision cards", () => {
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
+  it("lists open decisions without a caller-supplied human ID or message-page cursor", async () => {
+    const row = {
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
+      asking_agent_name: "Alpha", ask: "Approve?", escalation_class: "future-class",
+      created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", message_id: "ping",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json([row]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([row]);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decisions/open");
+  });
+
+  it("safely degrades malformed open-decision responses", async () => {
+    for (const body of [null, {}, [{ id: 7 }]]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body)));
+      expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([]);
+    }
+  });
+
+  it("keeps asks with missing optional jump metadata", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
+      ask: "Approve?", escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm",
+    }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
+      { id: "ask", asking_agent_name: "", message_id: null },
+    ]);
+  });
+
   it("disclaims a decision answer with a POST to its disclaim route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(json({}));
     vi.stubGlobal("fetch", fetchMock);
     await new ApiClient("https://api.example.test").disclaimDecisionAnswer("answer-1");
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-answers/answer-1/disclaim");
     expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+  });
+
+  it("answers a decision request with a POST of the option and text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").answerDecisionRequest("req-1", { option: "B", text: "now" });
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-requests/req-1/answer");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ option: "B", text: "now" });
   });
 
   it("asks for an anchored window with ?around= and no cursor", async () => {
@@ -257,13 +295,13 @@ describe("ApiClient pull-request response schema", () => {
     );
   }
 
-  it("parses the auto-complete decision and link source", async () => {
+  it.each(["title", "reference"])("parses the auto-complete decision and %s link source", async (linkSource) => {
     stubPullRequests({
-      pull_requests: [{ ...validPR, link_source: "title" }],
+      pull_requests: [{ ...validPR, link_source: linkSource }],
       auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true, target_status: "in_review" },
     });
     const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
-    expect(result.pull_requests[0]?.link_source).toBe("title");
+    expect(result.pull_requests[0]?.link_source).toBe(linkSource);
     expect(result.auto_complete).toEqual({
       state: "waiting",
       pull_request_ids: ["pr-1"],

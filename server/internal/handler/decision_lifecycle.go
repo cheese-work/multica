@@ -87,8 +87,15 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	}
 	cancelled := decisionCancelIssueFor(issue, workspace, closedAt.Time)
 	content := decisionCancelComment(reason, cancelled, current)
+	actionPending, err := decisiontx.EndAction(ctx, queries, current, reason)
+	if err != nil {
+		return result, err
+	}
 	if reason == "expired" {
 		content = decisionExpiryExplanation
+		if actionPending {
+			content = decisionActionExpiryExplanation
+		}
 	}
 	created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: current.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: current.AskingAgentID, Type: "comment", Content: content, DecisionRequestID: current.ID, DecisionCommentKind: pgtype.Text{String: "cancel", Valid: true}})
 	if err != nil {
@@ -150,7 +157,7 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 		return decisiontx.Withdrawal{}, err
 	}
 	if note.ID.Valid {
-		handler.publishChat(protocol.EventChatMessage, uuidToString(workspaceID), "agent", uuidToString(current.AskingAgentID), uuidToString(session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(note.ID), Role: note.Role, Content: note.Content, CreatedAt: note.CreatedAt.Time.Format(time.RFC3339Nano)})
+		handler.publishChat(protocol.EventChatMessage, uuidToString(workspaceID), "agent", uuidToString(current.AskingAgentID), uuidToString(session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(note.ID), Role: note.Role, Content: note.Content, CreatedAt: note.CreatedAt.Time.Format(time.RFC3339Nano), MessageKind: note.MessageKind})
 	}
 	return result, nil
 }

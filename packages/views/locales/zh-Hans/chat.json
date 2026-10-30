@@ -1,4 +1,11 @@
 {
+  "needs_you": {
+    "title": "待你决定",
+    "loading": "正在加载待处理请求…",
+    "error": "无法加载待处理请求。",
+    "retry": "重试",
+    "empty": "没有待处理请求。"
+  },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
     "interactive_login_action": "登录",
@@ -308,13 +315,35 @@
   "decision": {
     "request_title": "决策请求",
     "request_label": "决策请求：{{state}}",
-    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回" },
+    "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "disclaimed": "已撤销" },
+    "answer_options": "选项",
+    "answer_text": "或输入回答",
+    "answer_send": "发送",
+    "answer_error": "发送失败，请重试。",
+    "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
+    "answer_hint": "Enter 发送 · Shift+Enter 换行",
+    "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
+    "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
+    "answer_discard": "丢弃草稿",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
+    "receipt_recorded": "已记录到 {{issue}}",
+    "receipt_option": "选项 {{number}}",
+    "jump_to_card": "跳到卡片",
     "withdrawn_in": "已在 {{issue}} 撤回",
     "recorded_on": "已记录到 {{issue}}",
     "from_original_dm": "来自原始私信",
     "inherited": "继承",
     "message_unavailable": "该消息已不可用"
+  },
+  "wakeup": {
+    "node_label": "定时唤醒已触发",
+    "scheduled_at": "定时 {{time}}",
+    "set_by": "{{agent}} 于 {{time}} 设置",
+    "show_instruction": "查看指令",
+    "hide_instruction": "收起指令",
+    "instruction_region": "给智能体的指令",
+    "instruction_note": "给智能体的指令（原文）。智能体会收到全部内容。",
+    "issue_fallback": "事项"
   }
 }

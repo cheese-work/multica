@@ -417,7 +417,7 @@ export const GitHubPullRequestSchema = z.object({
   closed_at: z.string().nullable(),
   pr_created_at: z.string(),
   pr_updated_at: z.string(),
-  link_source: z.enum(["manual", "title", "branch", "auto"]).optional().catch(undefined),
+  link_source: z.enum(["manual", "title", "branch", "reference", "auto"]).optional().catch(undefined),
   mergeable: z.string().nullable().optional(),
   merge_state_status: z.string().nullable().optional(),
   snapshot_available: z.boolean().optional(),
@@ -565,6 +565,11 @@ const IssueWorkflowEdgeSchema = z.object({
   on_timeout: z.string().optional(),
 });
 
+const IssueWorkflowSubWorkflowSchema = z.object({
+  workflow_id: z.string(),
+  stage: z.number().optional(),
+});
+
 const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
   handler: IssueWorkflowHandlerSchema.default({ type: "none" }),
@@ -573,6 +578,7 @@ const IssueWorkflowStepSchema = z.object({
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
 export const IssueWorkflowSchema = z.object({
@@ -964,6 +970,17 @@ const ChatQuickActionSchema = z.object({
   primary: z.boolean().optional(),
 }).loose();
 
+// Every field is required: a half-formed wakeup degrades to a normal bubble
+// (via .catch on the message field) rather than a row with holes.
+const ChatScheduledWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string(),
+  title: z.string().default(""),
+  instruction: z.string(),
+  fire_at: z.string(),
+  created_at: z.string(),
+}).loose();
+
 const DecisionStateSchema = z.enum(["pending", "effective", "disclaimed"]);
 
 // Display-only fields of a decision-stamped comment. Each degrades on its own so
@@ -979,7 +996,13 @@ const decisionCommentShape = {
   decision_recorder_agent_id: z.string().optional().catch(undefined),
   decision_class: z.string().optional().catch(undefined),
   decision_state: DecisionStateSchema.optional().catch(undefined),
+  decision_delivered: z.boolean().optional().catch(undefined),
+  decision_chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  decision_option_label: z.string().optional().catch(undefined),
   decision_issue_comment_id: z.string().optional().catch(undefined),
+  decision_receipt_answer_id: z.string().optional().catch(undefined),
+  decision_issue_id: z.string().optional().catch(undefined),
+  decision_issue_identifier: z.string().optional().catch(undefined),
   effective_at: z.string().nullable().optional().catch(undefined),
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   decision_source_session_id: z.string().optional().catch(undefined),
@@ -999,6 +1022,11 @@ const DecisionCardSchema = z.object({
   disclaimed_at: z.string().nullable().optional().catch(undefined),
   // A card on a forked copy is read-only provenance; clients show no Disclaim.
   inherited: z.boolean().catch(false).default(false),
+  delivered: z.boolean().optional().catch(undefined),
+  chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+  option_label: z.string().optional().catch(undefined),
+  request_session_id: z.string().optional().catch(undefined),
+  request_message_id: z.string().optional().catch(undefined),
 }).loose();
 
 const DecisionRequestCardSchema = z.object({
@@ -1007,12 +1035,32 @@ const DecisionRequestCardSchema = z.object({
   issue_identifier: z.string().default(""),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
+  options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
   state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
   created_at: z.string(),
   withdrawn_at: z.string().nullish().catch(undefined),
   reason: z.string().optional().catch(undefined),
   record_comment_id: z.string().nullish().catch(undefined),
+  answer: z.object({
+    state: z.enum(["recorded", "delivered", "disclaimed"]).catch("recorded"),
+    chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
+    option_label: z.string().optional().catch(undefined),
+    answered_at: z.string().default(""),
+  }).loose().optional().catch(undefined),
 }).loose();
+
+export const OpenDecisionRequestListSchema = z.array(z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  asking_agent_id: z.string(),
+  asking_agent_name: z.string().catch(""),
+  ask: z.string(),
+  escalation_class: z.string(),
+  created_at: z.string(),
+  chat_session_id: z.string(),
+  message_id: z.string().nullable().catch(null),
+}).loose());
 
 export const ChatMessageSchema = z.object({
   id: z.string(),
@@ -1032,6 +1080,7 @@ export const ChatMessageSchema = z.object({
   decision_ref: DecisionCardSchema.optional().catch(undefined),
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
+  scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -3991,6 +4040,14 @@ export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
   z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
   z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
+  z.object({
+    type: z.literal("github_run"),
+    repo: z.string(),
+    run_id: z.number().int().optional(),
+    workflow: z.string().optional(),
+    head_sha: z.string().optional(),
+    state: z.enum(["completed", "waiting"]),
+  }),
 ]);
 
 export const WakeupRunSchema = z.object({
