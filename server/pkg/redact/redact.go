@@ -3,9 +3,20 @@
 package redact
 
 import (
+	_ "embed"
+	"encoding/json"
 	"regexp"
 	"strings"
 )
+
+// providerRulesJSON is the provider-token rule list shared with the
+// TypeScript display fallback (packages/views/common/task-transcript/redact.ts
+// imports the same file). Keep patterns in the RE2 / ECMAScript common subset.
+// flags is a subset of "is": Go prefixes it as an inline (?flags) group and
+// TypeScript passes it to RegExp.
+//
+//go:embed provider-rules.json
+var providerRulesJSON []byte
 
 // secretPattern pairs a compiled regex with its replacement text.
 type secretPattern struct {
@@ -14,59 +25,26 @@ type secretPattern struct {
 }
 
 // Patterns are checked in order; first match wins per position.
-var patterns = []secretPattern{
-	// AWS access key IDs (always start with AKIA)
-	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), "[REDACTED AWS KEY]"},
+var patterns = loadProviderPatterns()
 
-	// AWS secret access keys (40 char base64-ish, preceded by a common separator)
-	{regexp.MustCompile(`(?i)(?:aws_secret_access_key|secret_?access_?key)\s*[=:]\s*[A-Za-z0-9/+=]{40}`), "[REDACTED AWS SECRET]"},
-
-	// PEM private keys (multi-line)
-	{regexp.MustCompile(`(?s)-----BEGIN[A-Z\s]*PRIVATE KEY-----.*?-----END[A-Z\s]*PRIVATE KEY-----`), "[REDACTED PRIVATE KEY]"},
-
-	// GitHub tokens (classic PAT, OAuth, user-to-server, server-to-server, refresh)
-	{regexp.MustCompile(`\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}\b`), "[REDACTED GITHUB TOKEN]"},
-
-	// GitHub fine-grained personal access tokens use the github_pat_ prefix,
-	// which the classic ghp_/gho_/... pattern above does not cover. Without
-	// this line a fine-grained PAT emitted in agent output leaks unredacted
-	// to the database and WebSocket broadcast.
-	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,255}\b`), "[REDACTED GITHUB TOKEN]"},
-
-	// OpenAI / Anthropic API keys
-	{regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`), "[REDACTED API KEY]"},
-
-	// Slack bot/user/legacy tokens. The char class includes 'e' so the
-	// newer xoxe- config/refresh tokens are covered alongside xoxb/p/o/r/a/s.
-	{regexp.MustCompile(`\bxox[bporase]-[A-Za-z0-9\-]{10,}\b`), "[REDACTED SLACK TOKEN]"},
-
-	// Slack app-level tokens use the xapp- prefix, which the xox*- rule above
-	// does not match. Without this an app-level token echoed in agent output
-	// leaks unredacted to the DB / WebSocket broadcast.
-	{regexp.MustCompile(`\bxapp-[A-Za-z0-9-]{10,}\b`), "[REDACTED SLACK TOKEN]"},
-
-	// GitLab personal access tokens
-	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`), "[REDACTED GITLAB TOKEN]"},
-
-	// Google API keys always start with the AIza prefix and are 39 chars total
-	// (AIza + 35). Capture and restore the trailing delimiter so keys ending in
-	// a non-word character such as '-' are still redacted.
-	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}([^0-9A-Za-z_-]|$)`), "[REDACTED GOOGLE API KEY]$1"},
-
-	// Stripe secret / restricted live keys (sk_live_ / rk_live_). The sk-
-	// rule above only matches the hyphen form used by OpenAI/Anthropic; Stripe
-	// uses an underscore, so live keys are not covered without this. Publishable
-	// keys (pk_live_) are intentionally excluded — they are not secret.
-	{regexp.MustCompile(`\b(?:sk|rk)_live_[0-9A-Za-z]{16,}\b`), "[REDACTED STRIPE KEY]"},
-
-	// JWT tokens (three base64url segments)
-	{regexp.MustCompile(`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`), "[REDACTED JWT]"},
-
-	// Generic "Bearer <token>" in output
-	{regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b`), "Bearer [REDACTED]"},
-
-	// Connection strings with embedded passwords
-	{regexp.MustCompile(`(?i)(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@`), "[REDACTED CONNECTION STRING]@"},
+func loadProviderPatterns() []secretPattern {
+	var rules []struct {
+		Pattern     string `json:"pattern"`
+		Flags       string `json:"flags"`
+		Replacement string `json:"replacement"`
+	}
+	if err := json.Unmarshal(providerRulesJSON, &rules); err != nil {
+		panic("redact: invalid provider-rules.json: " + err.Error())
+	}
+	out := make([]secretPattern, len(rules))
+	for i, rule := range rules {
+		expr := rule.Pattern
+		if rule.Flags != "" {
+			expr = "(?" + rule.Flags + ")" + expr
+		}
+		out[i] = secretPattern{regexp.MustCompile(expr), rule.Replacement}
+	}
+	return out
 }
 
 var genericCredentialPattern = regexp.MustCompile(`(?i)(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*`)
@@ -136,8 +114,9 @@ func redactGenericCredentials(text string) string {
 		if literal == "" || isCredentialReference(value) {
 			continue
 		}
-		result.WriteString(text[end:match[0]])
-		result.WriteString("[REDACTED CREDENTIAL]")
+		// Keep "KEY=" so a reader can see which credential was masked.
+		result.WriteString(text[end:match[1]])
+		result.WriteString("[REDACTED]")
 		end = match[1] + len(literal)
 	}
 	if end == 0 {
@@ -238,8 +217,16 @@ func redactValue(v any, depth int) any {
 // running the agent. Transcript visibility is an authorization concern and is
 // handled at that layer, not by string replacement here.
 func Text(s string) string {
+	return redactGenericCredentials(Prose(s))
+}
+
+// Prose applies only the provider-token rules. Use it for text an agent wrote
+// for people to read (replies, summaries, comments): the generic keyword rule
+// in Text reads label words such as "Token:" in a table cell as a credential
+// and deletes the text after them (CHE-2587). Use Text for machine output.
+func Prose(s string) string {
 	for _, p := range patterns {
 		s = p.re.ReplaceAllString(s, p.replacement)
 	}
-	return redactGenericCredentials(s)
+	return s
 }

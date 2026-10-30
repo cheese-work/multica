@@ -3,11 +3,11 @@ import type { IssueRelations } from "../types";
 import { api } from "../api";
 import { issueKeys } from "./queries";
 
-export function issueRelationsOptions(workspaceId: string, issueId: string, depth: 1 | 2) {
+export function issueRelationsOptions(workspaceId: string, issueId: string, depth: 1 | 2, includeMentions = false) {
   return queryOptions({
-    queryKey: [...issueKeys.all(workspaceId), "relations", issueId, depth],
-    queryFn: ({ signal }) => api.getIssueRelations(workspaceId, issueId, depth, signal),
-    staleTime: 0,
+    queryKey: [...issueKeys.all(workspaceId), "relations", issueId, depth, includeMentions],
+    queryFn: ({ signal }) => api.getIssueRelations(workspaceId, issueId, depth, signal, includeMentions),
+    staleTime: 30_000,
   });
 }
 

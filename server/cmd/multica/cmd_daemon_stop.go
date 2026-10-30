@@ -143,7 +143,7 @@ func stopDaemonAndWait(profile string, port int, health map[string]any, grace, k
 	if err != nil {
 		return err
 	}
-	defer process.Release()
+	defer func() { _ = process.Release() }()
 	if err := process.Kill(); err != nil {
 		if stopped, probeErr := daemonStopComplete(profile); probeErr == nil && stopped {
 			return confirmDaemonCleanup(profile, pidAtStop)

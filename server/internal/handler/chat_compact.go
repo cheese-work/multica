@@ -107,7 +107,7 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
 		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant",
-		Content:     strings.TrimSpace(redact.Text(request.Summary)),
+		Content:     strings.TrimSpace(redact.Prose(request.Summary)),
 		TaskID:      task.ID,
 		MessageKind: pgtype.Text{String: protocol.ChatMessageKindCompactionSummary, Valid: true},
 	})

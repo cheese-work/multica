@@ -120,7 +120,7 @@ func NewSecureHTTPClient(endpoint *url.URL) *http.Client {
 	// the guard after the connection was approved.
 	devOrigin := isDevOrigin(endpoint)
 	dialer := &net.Dialer{Timeout: ConnectTimeout, KeepAlive: 30 * time.Second}
-	transport := httptransport.CloneDefault().(*http.Transport)
+	transport := httptransport.CloneDefault().(*http.Transport) //nolint:errcheck // CloneDefault returns an *http.Transport
 	transport.Proxy = nil
 	if devOrigin {
 		// Trust an extra CA for this origin, never skip verification: a plugin

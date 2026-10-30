@@ -33,6 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
+import { ReadonlyContent } from "../../editor/readonly-content";
 import { WakeupInstructionEditor } from "./wakeup-instruction-editor";
 import { WakeupControl } from "./wakeup-control";
 import { WakeupsPausedBanner } from "./wakeups-paused-banner";
@@ -258,9 +259,7 @@ function WakeupRow({
             <p className="text-caption font-medium">{t(($) => $.wakeups.instruction_title)}</p>
             <WakeupInstructionEditor workspaceId={workspaceId} issueId={wakeup.issue_id} wakeupId={wakeup.id} />
           </div>
-          <p className="whitespace-pre-wrap break-words text-caption">
-            {wakeup.instruction}
-          </p>
+          <ReadonlyContent content={wakeup.instruction} className="break-words text-caption" />
           {wakeup.kind === "event" && !wakeup.condition && (
             <p className="break-words text-caption text-muted-foreground">
               {t(($) => $.wakeups.any_event)}:{" "}

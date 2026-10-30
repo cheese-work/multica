@@ -148,11 +148,11 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// ACP streams tool starts, which the daemon needs to tell a long tool from
 	// a hang; see opencode_acp.go. Everything below is the run transport, kept
 	// as the fallback.
-	if useACP, reason := opencodeUsesACP(b.cfg, opts); useACP {
+	useACP, reason := opencodeUsesACP(b.cfg, opts)
+	if useACP {
 		return b.executeACP(ctx, execPath, prompt, opts)
-	} else {
-		b.cfg.Logger.Info("opencode: using the run transport", "reason", reason)
 	}
+	b.cfg.Logger.Info("opencode: using the run transport", "reason", reason)
 
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)

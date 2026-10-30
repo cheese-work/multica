@@ -1,11 +1,23 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { redactSecrets } from "./redact-secrets";
+import { redactForType, redactProse, redactSecrets } from "./redact-secrets";
 
 const genericCredentialCases: { name: string; input: string; want: string }[] = JSON.parse(
   readFileSync(new URL("../../../server/pkg/redact/testdata/generic-credentials.json", import.meta.url), "utf8"),
 );
+
+const providerTokenCases: { name: string; parts: string[]; want: string }[] = JSON.parse(
+  readFileSync(new URL("../../../server/pkg/redact/testdata/provider-tokens.json", import.meta.url), "utf8"),
+);
+
+describe("redactSecrets provider parity with server", () => {
+  for (const { name, parts, want } of providerTokenCases) {
+    it(name, () => {
+      expect(redactSecrets(parts.join(""))).toBe(want);
+    });
+  }
+});
 
 describe("redactSecrets", () => {
   it("redacts AWS access key", () => {
@@ -89,7 +101,7 @@ describe("redactSecrets", () => {
   it("redacts generic credential env vars", () => {
     for (const key of ["PASSWORD", "SECRET", "TOKEN", "DATABASE_URL", "API_KEY"]) {
       const result = redactSecrets(`${key}=supersecretvalue123`);
-      expect(result).toContain("[REDACTED CREDENTIAL]");
+      expect(result).toBe(`${key}=[REDACTED]`);
       expect(result).not.toContain("supersecretvalue123");
     }
   });
@@ -125,5 +137,22 @@ describe("redactSecrets", () => {
     for (const input of inputs) {
       expect(redactSecrets(input)).toBe(input);
     }
+  });
+});
+
+describe("redactProse and redactForType", () => {
+  const cell = "| Token: input, output, cache read, cache write, chi phí | Có. |";
+  const githubToken = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c3`;
+
+  it("redactProse keeps keyword labels and masks provider tokens", () => {
+    expect(redactProse(cell)).toBe(cell);
+    expect(redactProse(`${cell} ${githubToken}`)).not.toContain(githubToken);
+  });
+
+  it("redactForType uses prose rules only for text and thinking", () => {
+    expect(redactForType("text", cell)).toBe(cell);
+    expect(redactForType("thinking", cell)).toBe(cell);
+    expect(redactForType("tool_result", "DB_PASSWORD=hunter2")).toBe("DB_PASSWORD=[REDACTED]");
+    expect(redactForType("tool_use", "DB_PASSWORD=hunter2")).toBe("DB_PASSWORD=[REDACTED]");
   });
 });

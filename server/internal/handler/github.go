@@ -1409,7 +1409,8 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		}
 	}
 	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
-		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
+		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") &&
+		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{

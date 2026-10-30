@@ -17,6 +17,8 @@ type coalesceFixture struct {
 	refresh func()
 	sweep   func()
 	runs    func() int
+	issueID string
+	agentID string
 }
 
 func newCoalesceFixture(t *testing.T, installationID int64, prNumber int32, head string) coalesceFixture {
@@ -49,6 +51,7 @@ func newCoalesceFixture(t *testing.T, installationID int64, prNumber int32, head
 				finish()
 			}
 		},
+		issueID: fx.child.ID, agentID: agentID,
 		runs: func() int {
 			return prRuleWakeups(t, fx.child.ID, agentID, "pr_needs_attention") + prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_failed")
 		},

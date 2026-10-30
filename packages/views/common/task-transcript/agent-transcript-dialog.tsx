@@ -57,7 +57,7 @@ import type { AgentTask, Agent, AgentRuntime } from "@multica/core/types/agent";
 import { resolveWorkdirCopyTarget } from "@multica/core/issues";
 import { runtimeDisplayName, providerDisplayName } from "@multica/core/runtimes";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
-import { redactSecrets } from "./redact";
+import { redactForType } from "./redact";
 import {
   createLiveEndFollow,
   FOLLOW_EDGE_THRESHOLD,
@@ -703,7 +703,7 @@ export function AgentTranscriptDialog({
       }
       events.push(row.item);
     }
-    const text = events.map((event) => redactSecrets(traceEventCopyText(event))).join("\n\n");
+    const text = events.map((event) => redactForType(event.type, traceEventCopyText(event))).join("\n\n");
     void copyText(text).then((ok) => {
       if (!ok) return;
       showCopied();
@@ -1722,12 +1722,12 @@ function StepInspector({
   const handleCopy = useCallback(() => {
     const parts: string[] = [];
     if (call) {
-      if (call.call) parts.push(traceEventCopyText(call.call));
-      if (call.result) parts.push(traceEventCopyText(call.result));
+      if (call.call) parts.push(redactForType(call.call.type, traceEventCopyText(call.call)));
+      if (call.result) parts.push(redactForType(call.result.type, traceEventCopyText(call.result)));
     } else if (message) {
-      parts.push(traceEventCopyText(message.item));
+      parts.push(redactForType(message.item.type, traceEventCopyText(message.item)));
     }
-    void copyText(redactSecrets(parts.join("\n\n"))).then((ok) => {
+    void copyText(parts.join("\n\n")).then((ok) => {
       if (!ok) return;
       showCopied();
     });
@@ -1800,7 +1800,7 @@ function StepInspector({
           </>
         ) : (
           <InspectorSection label={title}>
-            <ToolDetailSurface text={redactSecrets(message?.item.content ?? "")} />
+            <ToolDetailSurface text={redactForType(message?.item.type ?? "text", message?.item.content ?? "")} />
           </InspectorSection>
         )}
       </div>
@@ -1866,8 +1866,8 @@ export function StepBody({ item }: { item: TimelineItem }) {
       const clip = item.type === "tool_result" ? null : DISPLAY_CLIP_CHARS;
       const clipped =
         clip !== null && text.length > clip
-          ? `${redactSecrets(text.slice(0, clip))}\n${t(($) => $.transcript.display_clipped)}`
-          : redactSecrets(text);
+          ? `${redactForType(item.type, text.slice(0, clip))}\n${t(($) => $.transcript.display_clipped)}`
+          : redactForType(item.type, text);
       const path = item.type === "tool_use" ? readPathFromInput(item.input) : undefined;
       return (
         <ToolDetailSurface

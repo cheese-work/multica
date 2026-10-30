@@ -5376,7 +5376,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					} else {
 						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
 						// must never reach the issue thread, even as a clipped excerpt.
-						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+						content := truncateFallbackCommentBody(redact.Prose(body), maxSynthesizedFallbackCommentRunes)
 						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
 					}
 				}
@@ -5529,7 +5529,7 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	}
 	switch {
 	case !isEmpty:
-		params.Content = redact.Text(body)
+		params.Content = redact.Prose(body)
 		// message_kind left NULL → COALESCE defaults to 'message'.
 		//
 		// The one exception is now a deploy-window case. The server writes the
@@ -6153,12 +6153,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 // that did download is already cached on disk — a retry resumes from there
 // instead of re-fetching the whole set (MUL-5370).
 var retryableReasons = map[string]bool{
-	string(taskfailure.ReasonRuntimeOffline):         true,
-	string(taskfailure.ReasonRuntimeRecovery):        true,
-	string(taskfailure.ReasonTimeout):                true,
-	"codex_semantic_inactivity":                      true,
-	string(taskfailure.ReasonAgentProviderNetwork):   true,
-	string(taskfailure.ReasonSkillBundleUnavailable): true,
+	string(taskfailure.ReasonRuntimeOffline):                   true,
+	string(taskfailure.ReasonRuntimeRecovery):                  true,
+	string(taskfailure.ReasonTimeout):                          true,
+	"codex_semantic_inactivity":                                true,
+	string(taskfailure.ReasonAgentProviderNetwork):             true,
+	string(taskfailure.ReasonAgentProviderCapacityOrRateLimit): true,
+	string(taskfailure.ReasonSkillBundleUnavailable):           true,
 }
 
 // runtime_offline retries start deferred, not queued: their positive fire_at
@@ -6178,6 +6179,9 @@ const (
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
 	providerNetworkFinalRetryWait = 5 * time.Second
+	// providerCapacityRetryWait defers the one retry of a 429 / concurrency-limit
+	// failure so it does not fire back into the saturated provider.
+	providerCapacityRetryWait = 10 * time.Minute
 )
 
 // retryAttemptCeiling reports how many attempts the auto-retry path allows for
@@ -6204,8 +6208,9 @@ func retryAttemptCeiling(reason string, taskMaxAttempts int32) int32 {
 // retryDelayForAttempt reports how long to defer the NEXT attempt after a
 // failure at failedAttempt. runtime_offline always gets a positive fire_at so
 // it waits for the health-gated promotion path. provider_network's final
-// attempt is deferred ~5s; every other retry remains immediate (zero delay →
-// the child is created 'queued', claimable at once). Callers pass the returned
+// attempt is deferred ~5s; provider_capacity_or_rate_limit's single retry is
+// deferred providerCapacityRetryWait; every other retry remains immediate
+// (zero delay → the child is created 'queued', claimable at once). Callers pass the returned
 // delay to CreateRetryTask via fire_at.
 func retryDelayForAttempt(reason string, failedAttempt int32) time.Duration {
 	if reason == string(taskfailure.ReasonRuntimeOffline) {
@@ -6214,6 +6219,9 @@ func retryDelayForAttempt(reason string, failedAttempt int32) time.Duration {
 	if reason == string(taskfailure.ReasonAgentProviderNetwork) &&
 		failedAttempt >= providerNetworkMaxAttempts-1 {
 		return providerNetworkFinalRetryWait
+	}
+	if reason == string(taskfailure.ReasonAgentProviderCapacityOrRateLimit) {
+		return providerCapacityRetryWait
 	}
 	return 0
 }

@@ -73,6 +73,19 @@ describe("task transcript timeline", () => {
     ]);
   });
 
+  it("keeps keyword labels in agent prose but masks them in tool output", () => {
+    const cell = "| Token: input, output, cache read, cache write, chi phí | Có. |";
+    const githubToken = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c3`;
+    const items = buildTimeline([
+      message(1, "text", `${cell} ${githubToken}`),
+      message(2, "tool_use", undefined),
+      { ...message(3, "tool_result", undefined), output: "DB_PASSWORD=hunter2" },
+    ]);
+    expect(items[0]?.content).toContain(cell);
+    expect(items[0]?.content).not.toContain(githubToken);
+    expect(items.at(-1)?.output).toBe("DB_PASSWORD=[REDACTED]");
+  });
+
   it("redacts secrets after adjacent chunks are coalesced", () => {
     const items = buildTimeline([
       message(1, "text", "Authorization: Bearer abc123xyz."),

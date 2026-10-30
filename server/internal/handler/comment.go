@@ -127,8 +127,6 @@ type CommentTriggerOutcome struct {
 	ReasonCode DispatchReasonCode `json:"reason_code"`
 }
 
-var ErrJevRouted = errors.New("jev routed")
-
 func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments []AttachmentResponse) CommentResponse {
 	if reactions == nil {
 		reactions = []ReactionResponse{}
@@ -2134,7 +2132,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		}
 	}
 	routingActorType, routingActorID := commentTriggerActor(comment, actorType, actorID)
-	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
+	triggers, targets := computeCommentTriggers(h, ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
@@ -2178,6 +2176,11 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
 	return outcomes
 }
+
+// computeCommentTriggers resolves a posted comment's triggers. Tests swap it to
+// reach trigger states no current route produces, such as a rate-limited
+// trigger without a mention target.
+var computeCommentTriggers = (*Handler).computeCommentAgentTriggers
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
 // unusable runtime, whoever authored the trigger — see noteRuntimeUnusable for
@@ -2445,9 +2448,6 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 		}
 		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
 		if err != nil {
-			if errors.Is(err, ErrJevRouted) {
-				return DispatchQueued, ReasonJevRouted
-			}
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2864,7 +2864,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 			return true
 		}
 		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
-		if err == nil || errors.Is(err, ErrJevRouted) {
+		if err == nil {
 			return true
 		}
 		if !errors.Is(err, service.ErrDuplicatePendingTask) {
@@ -2929,20 +2929,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" && !trigger.NonLeaderAgentReply {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -2964,20 +2951,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		}
 	case commentTriggerSourceMentionSquadLeader:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -3105,7 +3079,11 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		if actorType == "agent" && wakePolicyEnabled {
 			return h.resolveAgentCommentMentions(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 		}
-		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
+		triggers, targets := h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
+		if actorType == "member" {
+			triggers = h.withBlockedAssignee(ctx, issue, triggers, actorType, actorID, opts)
+		}
+		return triggers, targets
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -3140,11 +3118,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
-	// A member comment on a blocked squad-assigned issue is the input the squad
-	// is waiting on, wherever it sits in the thread tree, so it always reaches
-	// the leader once (CHE-1418: CHE-1048 waited 6.5h on a reply under a worker
-	// comment). Explicit mentions are routed above and keep their meaning.
-	return h.withBlockedSquadLeader(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
+	// Member input on a blocked issue reaches its assignee as well as the
+	// thread's existing recipients, wherever the comment sits in the tree.
+	return h.withBlockedAssignee(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
 }
 
 const agentCommentWakePolicySetting = "agent_comment_wake_policy_enabled"
@@ -3255,22 +3231,27 @@ func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue
 	return nil
 }
 
-// withBlockedSquadLeader adds the assigned squad's leader to a member comment's
-// triggers while the issue is blocked, unless the leader is already there.
-func (h *Handler) withBlockedSquadLeader(ctx context.Context, issue db.Issue, triggers []commentAgentTrigger, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
-	if issue.Status != "blocked" || !issue.AssigneeType.Valid || issue.AssigneeType.String != "squad" {
+// withBlockedAssignee adds the current assignee (or squad leader) once while
+// keeping the thread's existing recipients and their routing sources.
+func (h *Handler) withBlockedAssignee(ctx context.Context, issue db.Issue, triggers []commentAgentTrigger, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
+	if issue.Status != "blocked" {
 		return triggers
 	}
-	leader, ok := h.routeAssignedSquadLeaderFallback(ctx, issue, actorType, actorID, opts)
+	assignee, ok := h.routeAssigneeFallback(ctx, issue, actorType, actorID, opts)
 	if !ok {
 		return triggers
 	}
-	for _, trigger := range triggers {
-		if trigger.Agent.ID == leader.Agent.ID {
+	for i, trigger := range triggers {
+		if trigger.Agent.ID == assignee.Agent.ID {
+			// Keep the routing source, but carry the assignment's leader role
+			// so the reply can fold into an already queued leader run.
+			if trigger.Squad == nil && assignee.Squad != nil {
+				triggers[i].Squad = assignee.Squad
+			}
 			return triggers
 		}
 	}
-	return append(triggers, leader)
+	return append(triggers, assignee)
 }
 
 func filterCommentAuthorTriggers(triggers []commentAgentTrigger, targets []commentMentionTarget, authorType, authorID string) ([]commentAgentTrigger, []commentMentionTarget) {

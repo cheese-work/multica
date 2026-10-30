@@ -95,7 +95,7 @@ function DecisionAnswerForm({
         </fieldset>
       )}
       <label htmlFor={textId} className="block text-label font-medium">
-        {t(($) => $.decision.answer_text)}
+        {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
       </label>
       <textarea
         id={textId}

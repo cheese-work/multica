@@ -9,6 +9,7 @@ import { DashboardGuard } from "./dashboard-guard";
 import { NavigationProgress } from "./navigation-progress";
 import { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 import { GlobalShortcuts } from "./global-shortcuts";
+import { MachinePauseBanner } from "./machine-pause-banner";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -40,6 +41,7 @@ export function DashboardLayout({
         <AppSidebar searchSlot={searchSlot} />
         <SidebarInset className="relative overflow-hidden">
           <NavigationProgress />
+          <MachinePauseBanner />
           {children}
           <ModalRegistry />
           <SourceBackfillModal />
