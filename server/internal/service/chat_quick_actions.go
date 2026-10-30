@@ -244,8 +244,8 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 	}
 	actions := parseChatQuickActionsOutput(raw)
 	for i := range actions {
-		actions[i].Label = redact.Text(actions[i].Label)
-		actions[i].Prompt = redact.Text(actions[i].Prompt)
+		actions[i].Label = redact.Prose(actions[i].Label)
+		actions[i].Prompt = redact.Prose(actions[i].Prompt)
 	}
 
 	var msg db.ChatMessage
