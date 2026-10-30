@@ -938,6 +938,19 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ElevatedOp struct {
+	OpID        pgtype.UUID        `json:"op_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	Epoch       int64              `json:"epoch"`
+	Scope       string             `json:"scope"`
+	InputHash   string             `json:"input_hash"`
+	State       string             `json:"state"`
+	LeaseUntil  pgtype.Timestamptz `json:"lease_until"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Feedback struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`
@@ -2409,6 +2422,19 @@ type SysCronExecution struct {
 	ErrorMsg     pgtype.Text        `json:"error_msg"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type TaskElevation struct {
+	TaskID              pgtype.UUID        `json:"task_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	GrantIds            []pgtype.UUID      `json:"grant_ids"`
+	Scopes              []string           `json:"scopes"`
+	Epoch               int64              `json:"epoch"`
+	State               string             `json:"state"`
+	LaunchScopesEndedAt pgtype.Timestamptz `json:"launch_scopes_ended_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TaskMessage struct {

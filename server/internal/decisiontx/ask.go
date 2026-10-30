@@ -33,9 +33,27 @@ type Ask struct {
 	HumanSteps       []HumanStep `json:"human_steps"`
 	Probes           []string    `json:"probes"`
 	AfterDone        string      `json:"after_done"`
+	Subject          string      `json:"subject,omitempty"`
+	Artifacts        []Artifact  `json:"artifacts,omitempty"`
 	// AskedBy is the asking agent's name, set by the server for a new request;
 	// it is not caller input, so it is never decoded or fingerprinted.
 	AskedBy string `json:"-"`
+}
+
+// Artifact is a file the human approves. The server checks that it is an
+// attachment of the source issue and that its stored bytes hash to SHA256.
+type Artifact struct {
+	AttachmentID           string             `json:"attachment_id"`
+	Label                  string             `json:"label"`
+	SHA256                 string             `json:"sha256"`
+	SupersedesAttachmentID string             `json:"supersedes_attachment_id,omitempty"`
+	SignedBy               *ArtifactSignature `json:"signed_by,omitempty"`
+}
+
+// ArtifactSignature names the reviewer agent and the signed review comment.
+type ArtifactSignature struct {
+	Reviewer  string `json:"reviewer"`
+	CommentID string `json:"comment_id"`
 }
 
 // AskError carries a fixed, field-named message. It never echoes decoder text,
@@ -47,7 +65,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
@@ -71,7 +89,7 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
-		{"after_done", &ask.AfterDone},
+		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
@@ -84,6 +102,9 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		return ask, err
 	}
 	if err := decodeStrings("ask.probes", fields["probes"], &ask.Probes); err != nil {
+		return ask, err
+	}
+	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
 		return ask, err
 	}
 	return ask, ask.Validate()
@@ -232,7 +253,10 @@ func (ask Ask) Validate() error {
 	if err := ask.validateReadable(); err != nil {
 		return err
 	}
-	return ask.validateHumanSteps()
+	if err := ask.validateHumanSteps(); err != nil {
+		return err
+	}
+	return ask.validateArtifacts()
 }
 
 func (ask Ask) Content(workspaceSlug string) string {
@@ -247,8 +271,8 @@ func (ask Ask) Content(workspaceSlug string) string {
 		}
 		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }
 
 func (ask Ask) askedByLine() string {
@@ -265,4 +289,17 @@ var askSourceTail = regexp.MustCompile(`\n\nInvestigate in issue: [^\n]*$`)
 // decision from different source comments compare equal.
 func WithoutSourceTail(content string) string {
 	return askSourceTail.ReplaceAllString(content, "")
+}
+
+// artifactsContent lists each artifact before the source link, so the re-ask
+// check, which compares the text without that link, tells two files apart.
+func (ask Ask) artifactsContent() string {
+	if len(ask.Artifacts) == 0 {
+		return ""
+	}
+	lines := make([]string, len(ask.Artifacts))
+	for index, artifact := range ask.Artifacts {
+		lines[index] = fmt.Sprintf("- %s · `%s` · sha256 `%s`", artifact.Label, artifact.AttachmentID, artifact.SHA256)
+	}
+	return "\n\n**Artifacts**\n" + strings.Join(lines, "\n")
 }
