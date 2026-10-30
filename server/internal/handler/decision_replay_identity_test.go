@@ -40,13 +40,6 @@ func (fixture requestCoreFixture) prepare(test *testing.T, singleCall bool) {
 	}
 }
 
-func (fixture requestCoreFixture) agentName(test *testing.T) string {
-	test.Helper()
-	var name string
-	dbfx.QueryRow(test, `SELECT name FROM agent WHERE id = $1`, fixture.agentID).Scan(&name)
-	return name
-}
-
 func (fixture requestCoreFixture) comment(test *testing.T, workspaceID, issueID, content string) string {
 	test.Helper()
 	return dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": workspaceID, "issue_id": issueID, "author_type": "member", "author_id": fixture.humanID, "content": content})
@@ -68,7 +61,7 @@ func TestDecisionAskNamesTheAskingAgent(test *testing.T) {
 	fixture.prepare(test, false)
 	var created db.DecisionRequest
 	testutil.Call(test, testHandler.RequestDecision, fixture.apiRequest()).Want(http.StatusCreated).JSON(&created)
-	askedBy := "**Asked by** " + fixture.agentName(test)
+	askedBy := "**Asked by** " + fixture.agentName
 	details, did := strings.Index(created.Ask, "<summary>Details</summary>"), strings.Index(created.Ask, "**Agent did**")
 	line := strings.Index(created.Ask, askedBy+"\n\n")
 	if details < 0 || line < details || line > did || strings.Contains(created.Ask, fixture.agentID) {
@@ -82,7 +75,7 @@ func TestDecisionAskNamesTheAskingAgent(test *testing.T) {
 	var pingID pgtype.UUID
 	dbfx.QueryRow(test, `SELECT ping_message_id FROM decision_request WHERE id = $1`, created.ID).Scan(&pingID)
 	cards := testHandler.decisionRequestsForMessages(context.Background(), testWorkspaceID, []db.ChatMessage{{ID: pingID}})
-	if card := cards[uuidToString(pingID)]; len(card) != 1 || card[0].AskingAgentName != fixture.agentName(test) {
+	if card := cards[uuidToString(pingID)]; len(card) != 1 || card[0].AskingAgentName != fixture.agentName {
 		test.Fatalf("card lacks the asking agent name: %+v", card)
 	}
 }
@@ -158,7 +151,7 @@ func TestDecisionNewRequestAfterRenameShowsNewName(test *testing.T) {
 	fixture.prepare(test, true)
 	var first, second db.DecisionRequest
 	testutil.Call(test, testHandler.RequestDecision, fixture.askFor(test, fixture.structuredAsk(), true)).Want(http.StatusCreated).JSON(&first)
-	oldName := fixture.agentName(test)
+	oldName := fixture.agentName
 	dbfx.Exec(test, `UPDATE agent SET name = name || ' renamed' WHERE id = $1`, fixture.agentID)
 	other := fixture.structuredAsk()
 	other.Decision = "Ship the other change now?"
