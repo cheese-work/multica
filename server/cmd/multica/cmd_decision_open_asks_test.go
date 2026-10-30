@@ -53,3 +53,24 @@ func TestWaitingSectionStaysWithinLineBudget(test *testing.T) {
 		test.Fatalf("no old asks must print nothing, got %q", got)
 	}
 }
+
+func TestBriefWithWaitingSectionStaysWithinThirtyLines(test *testing.T) {
+	now := time.Date(2026, 10, 31, 15, 0, 0, 0, time.UTC)
+	asks := openAsksAt(now, 12)
+	for _, used := range []int{0, 20, 25, 27, 28, 29, 30, 35} {
+		section := waitingSectionInBrief(asks, now, 24*time.Hour, 10, used)
+		got := used
+		if section != "" {
+			got += len(strings.Split(strings.TrimSuffix(section, "\n"), "\n"))
+		}
+		if used <= briefLineLimit && got > briefLineLimit {
+			test.Fatalf("used=%d: brief is %d lines, max %d\n%s", used, got, briefLineLimit, section)
+		}
+		if used >= briefLineLimit-1 && section != "" {
+			test.Fatalf("used=%d: no room for header plus count, got\n%s", used, section)
+		}
+	}
+	if section := waitingSectionInBrief(asks, now, 24*time.Hour, 10, 25); !strings.Contains(section, "+") || !strings.Contains(section, "omitted") {
+		test.Fatalf("a squeezed section must say how many it omitted:\n%s", section)
+	}
+}

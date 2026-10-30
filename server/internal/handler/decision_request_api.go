@@ -268,10 +268,10 @@ type openAskResponse struct {
 }
 
 // ListOpenDecisionAsks returns one member's open requests, oldest first. A
-// member reads only their own; a task token reads any member's, because the
-// evening brief runs as an agent.
+// member (JWT or PAT, including a cloud PAT) reads only their own; only a task
+// token reads any member's, because the evening brief runs as an agent.
 func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request *http.Request) {
-	member, ok := handler.requireWorkspaceMember(writer, request, ctxWorkspaceID(request.Context()), "workspace not found")
+	member, ok := handler.requireWorkspaceMember(writer, request, handler.resolveWorkspaceID(request), "workspace not found")
 	if !ok {
 		return
 	}
@@ -279,7 +279,7 @@ func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request
 	if !ok {
 		return
 	}
-	if humanID != member.UserID && !isMachineCredentialActor(request) {
+	if humanID != member.UserID && request.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(writer, http.StatusForbidden, "members read only their own open asks")
 		return
 	}

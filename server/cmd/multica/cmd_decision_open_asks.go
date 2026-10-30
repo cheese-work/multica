@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const waitingSectionHeader = "## Đang chờ anh"
+const (
+	waitingSectionHeader = "## Đang chờ anh"
+	briefLineLimit       = 30
+)
 
 // openAsk mirrors the open-asks read. It has no answer or quote fields.
 type openAsk struct {
@@ -45,7 +48,8 @@ func runDecisionListOpenAsks(command *cobra.Command, memberID string) error {
 	if section, _ := command.Flags().GetBool("section"); section {
 		olderThanHours, _ := command.Flags().GetInt("older-than-hours")
 		maxLines, _ := command.Flags().GetInt("max-lines")
-		_, err := fmt.Fprint(os.Stdout, waitingSection(asks, time.Now(), time.Duration(olderThanHours)*time.Hour, maxLines))
+		linesUsed, _ := command.Flags().GetInt("brief-lines-used")
+		_, err := fmt.Fprint(os.Stdout, waitingSectionInBrief(asks, time.Now(), time.Duration(olderThanHours)*time.Hour, maxLines, linesUsed))
 		return err
 	}
 	if output, _ := command.Flags().GetString("output"); output == "table" {
@@ -60,6 +64,12 @@ func runDecisionListOpenAsks(command *cobra.Command, memberID string) error {
 		asks = []openAsk{}
 	}
 	return cli.PrintJSON(os.Stdout, asks)
+}
+
+// waitingSectionInBrief caps the section by what is left of the brief's
+// 30-line maximum, so the whole brief stays within it however many asks are open.
+func waitingSectionInBrief(asks []openAsk, now time.Time, olderThan time.Duration, maxLines, linesUsed int) string {
+	return waitingSection(asks, now, olderThan, min(maxLines, briefLineLimit-linesUsed))
 }
 
 // waitingSection renders the evening brief's "Đang chờ anh" section: asks open

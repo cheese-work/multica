@@ -41,6 +41,7 @@ func init() {
 	decisionListCmd.Flags().Bool("section", false, "With --for: print the evening brief section (Markdown) instead of JSON")
 	decisionListCmd.Flags().Int("older-than-hours", 24, "With --section: only asks open at least this long (24 is PROPOSED, not agreed)")
 	decisionListCmd.Flags().Int("max-lines", 5, "With --section: line budget for the section, header and omitted count included")
+	decisionListCmd.Flags().Int("brief-lines-used", 0, "With --section: brief lines already used above this section; the section also stays within the 30-line brief maximum")
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue; must be eligible (it discussed this issue)")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Create a DM for this issue only, when no listed lane discussed it")
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
