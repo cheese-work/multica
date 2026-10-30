@@ -18,7 +18,9 @@ func rerunTaskSource(t *testing.T, title string) (issueID, sourceID string) {
 	agentID, runtimeID, _ := createRuntimeGuardAgent(t, context.Background())
 	issueID = dbfx.Issue(t, title, testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	sourceID = dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID, "status": "completed"})
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
 	return issueID, sourceID
 }
 
