@@ -22,14 +22,14 @@ const wakeup = (id: string, instruction: string, fireAt: string): ChatWakeup => 
   status: "pending",
 });
 
-function renderChip() {
+function renderChip(timeZone?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={{ en: { chat: enChat } }}>{children}</I18nProvider>
     </QueryClientProvider>
   );
-  return render(<ScheduledWakeupsChip sessionId="s1" agentName="Sol" />, { wrapper });
+  return render(<ScheduledWakeupsChip sessionId="s1" agentName="Sol" timeZone={timeZone} />, { wrapper });
 }
 
 describe("ScheduledWakeupsChip", () => {
@@ -65,6 +65,16 @@ describe("ScheduledWakeupsChip", () => {
     expect(screen.getByText("Ping Cheese")).toBeInTheDocument();
     expect(screen.getByText("Scheduled by Sol")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Cancel scheduled follow-up/ })).toHaveLength(3);
+  });
+
+  it("shows fire time as HH:MM ZONE in the viewer's zone, like the fired row", async () => {
+    mocks.list.mockResolvedValue([wakeup("w1", "Check the deploy", "2026-10-29T10:00:00Z")]);
+    renderChip("Asia/Ho_Chi_Minh");
+    fireEvent.click(await screen.findByRole("button", { name: "Scheduled 1" }));
+    expect(await screen.findByText("17:00 ICT")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Cancel scheduled follow-up at 17:00 ICT" }),
+    ).toBeInTheDocument();
   });
 
   it("removes a cancelled row without a reload", async () => {
