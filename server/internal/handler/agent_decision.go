@@ -163,7 +163,7 @@ func agentDecisionBlock(body, info string) (string, error) {
 	found, inside, closed := false, false, false
 	for _, raw := range lines {
 		line := strings.TrimSuffix(raw, "\n")
-		if fence := agentDecisionFencePattern.FindStringSubmatch(line); fence != nil && fence[2] == info && line != "```"+info {
+		if fence := agentDecisionFencePattern.FindStringSubmatch(line); len(fence) == 3 && fence[2] == info && line != "```"+info {
 			return "", agentDecisionRefusal("use an exact triple-backtick " + info + " fence")
 		}
 		if line == "```"+info {
@@ -327,10 +327,10 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 		return err
 	}
 	var proposal agentDecisionProposal
-	if err = decodeAgentDecisionJSON(raw, &proposal); err != nil {
+	if err := decodeAgentDecisionJSON(raw, &proposal); err != nil {
 		return err
 	}
-	if err = validateAgentDecisionProposal(proposal, author.AgentID); err != nil {
+	if err := validateAgentDecisionProposal(proposal, author.AgentID); err != nil {
 		return err
 	}
 	scope := agentDecisionScope{Proposal: proposal, Author: author}
@@ -393,7 +393,7 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 	}
 	// The instance key is single-use across every workspace and issue.
 	var exists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM decision_request WHERE id=$1)`, line.instance).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM decision_request WHERE id=$1)`, line.instance).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
@@ -533,7 +533,7 @@ func prepareAgentDecision(ctx context.Context, tx pgx.Tx, params db.CreateCommen
 		return nil, err
 	}
 	var scope agentDecisionScope
-	if err = json.Unmarshal(encoded, &scope); err != nil {
+	if err := json.Unmarshal(encoded, &scope); err != nil {
 		return nil, err
 	}
 	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate) {
