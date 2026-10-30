@@ -1,6 +1,15 @@
 import { z } from "zod";
 import type { AgentRuntime } from "../types";
 
+export const RuntimePauseSchema = z.object({
+  // An unknown reason from a newer server still means "paused"; keep it paused
+  // so Resume stays reachable, with the server default as the label.
+  reason: z.enum(["maintenance", "incident", "suspended"]).catch("maintenance"),
+  paused_by: z.string().nullable().catch(null),
+  paused_at: z.string().catch(""),
+  expires_at: z.string().catch(""),
+}).loose();
+
 export const AgentRuntimeSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -17,6 +26,8 @@ export const AgentRuntimeSchema = z.object({
   visibility: z.enum(["private", "public"]).catch("private"),
   shared_with: z.array(z.string().uuid()).catch([]),
   profile_id: z.string().nullable().catch(null),
+  pause: RuntimePauseSchema.nullable().catch(null),
+  daemon_running_tasks: z.number().int().nonnegative().nullable().catch(null),
   last_seen_at: z.string().nullable().catch(null),
   created_at: z.string().catch(""),
   updated_at: z.string().catch(""),
@@ -36,6 +47,8 @@ export const EMPTY_RUNTIME: AgentRuntime = {
   owner_id: null,
   visibility: "private",
   shared_with: [],
+  pause: null,
+  daemon_running_tasks: null,
   last_seen_at: null,
   created_at: "",
   updated_at: "",

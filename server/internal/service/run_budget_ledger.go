@@ -168,5 +168,9 @@ func debitRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) e
 	if err != nil {
 		return err
 	}
-	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1, 0)
+	windowID := runBudgetWindowID(usage.Since)
+	if err := recordRunBudgetEntry(ctx, q, issue, windowID, runBudgetKindRun, runBudgetKindRun+":"+util.UUIDToString(taskID), -1, 0); err != nil {
+		return err
+	}
+	return reserveRunTokens(ctx, q, issue, windowID, taskID)
 }

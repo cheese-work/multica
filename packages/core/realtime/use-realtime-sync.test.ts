@@ -9,6 +9,7 @@ import type { ApiClient } from "../api/client";
 import { chatKeys, chatWakeupsOptions } from "../chat/queries";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
+import { runtimeKeys } from "../runtimes/queries";
 import { notificationPreferenceKeys } from "../notification-preferences/queries";
 import { workspaceKeys } from "../workspace/queries";
 import type {
@@ -33,6 +34,7 @@ import {
   handleInboxNew,
   invalidateChatMessageQueries,
   refetchPendingChatAggregate,
+  refreshRuntimesWhilePaused,
   resolveInboxSourceSlug,
 } from "./use-realtime-sync";
 
@@ -1396,5 +1398,35 @@ describe("applyIssueRunStarted", () => {
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toContainEqual(chatKeys.messagesAll());
     expect(keys).toContainEqual(chatKeys.messagesPageAll());
+  });
+});
+
+describe("refreshRuntimesWhilePaused", () => {
+  const wsId = "ws-1";
+  const pause = {
+    reason: "maintenance",
+    paused_by: null,
+    paused_at: "2026-10-30T10:00:00Z",
+    expires_at: "2026-10-30T12:00:00Z",
+  };
+
+  it("refetches the runtime list while a machine is paused, so 'N tasks left' reaches zero", () => {
+    const qc = createQueryClient();
+    qc.setQueryData(runtimeKeys.list(wsId), [{ id: "rt-1", pause, daemon_running_tasks: 3 }]);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    refreshRuntimesWhilePaused(qc, wsId);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: runtimeKeys.list(wsId) });
+  });
+
+  it("leaves the runtime list alone when no machine is paused", () => {
+    const qc = createQueryClient();
+    qc.setQueryData(runtimeKeys.list(wsId), [{ id: "rt-1", pause: null, daemon_running_tasks: 3 }]);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    refreshRuntimesWhilePaused(qc, wsId);
+
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

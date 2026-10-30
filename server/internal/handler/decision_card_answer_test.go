@@ -41,7 +41,7 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id IN (SELECT id FROM decision_request WHERE issue_id = $1)`, fixture.issueID); count != 1 {
 		test.Fatalf("answers on the issue = %d, want 1", count)
 	}
-	if result.Comment.DecisionCommentKind.String != "quote" || result.Comment.ParentID != parseUUID(fixture.parentID) || !strings.Contains(result.Comment.Content, "> Option B") || !strings.Contains(result.Comment.Content, "/chat?session="+fixture.sessionID) {
+	if result.Comment.DecisionCommentKind.String != "quote" || result.Comment.ParentID != parseUUID(fixture.parentID) || !strings.Contains(result.Comment.Content, "> Chose: Option B") || !strings.Contains(result.Comment.Content, "/chat?session="+fixture.sessionID) {
 		test.Fatalf("quote lacks the option or the card link: %+v", result.Comment)
 	}
 	var role, sentVia string
@@ -82,6 +82,9 @@ func TestCardOptionPlusTextRecordsBoth(test *testing.T) {
 	both, err := newCardFixture(test).answerOnCard(decisionCardAnswerInput{Option: "Option A", Text: "but wait a day"})
 	if err != nil || both.Answer.ContentSnapshot != "Option A\n\nbut wait a day" {
 		test.Fatalf("option plus text = %+v, %v", both.Answer, err)
+	}
+	if !strings.Contains(both.Comment.Content, "> Chose: Option A\n> \n> Note: but wait a day") {
+		test.Fatalf("quote does not label both parts: %q", both.Comment.Content)
 	}
 }
 
