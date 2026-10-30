@@ -118,6 +118,22 @@ If a conversation is bound to an external channel (such as Slack), archiving bre
 Deleting a conversation cannot be undone and stops any runs in it that haven't finished. Archive instead when you just don't need it for now.
 </Callout>
 
+## Built-in slash commands
+
+Type `/` at the start of the chat composer to run built-in Multica commands alongside agent skills:
+
+| Command | Availability | Description |
+|---|---|---|
+| `/statistic` | Active DM | Show token usage and cost for the current DM (also matches `stats`, `statistics`, and `usage`). |
+| `/archive` | Active DM | Archive the current DM without starting an agent turn. |
+| `/pin` | Active DM | Pin or unpin the current DM. |
+| `/unarchive` | Archived DM | Unarchive the current DM immediately without sending a message to the agent. |
+| `/compact [focus]` | Active DM | Summarize the current DM and continue in a new one (runs the agent). |
+| `/rename <title>` | Active DM | Rename the current DM without starting an agent turn. |
+| `/fork [message]` | Active DM | Copy the current DM into a new one and optionally send a message there. |
+
+Client commands (`/statistic`, `/archive`, `/pin`, `/unarchive`, and `/rename`) take effect immediately without starting an agent turn and cannot be sent with attachments; `/statistic`, `/archive`, `/pin`, and `/unarchive` take no arguments.
+
 ## Next steps
 
 - [Assign issues to agents](/assigning-issues) — turn a discussion into trackable work.

@@ -140,7 +140,10 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 	agent, targetID, err := handler.decisionLaneWindow(request, handler.Queries, issue, requestedTarget)
 	if err == nil {
 		var rows []db.ListDecisionLanesRow
-		rows, err = handler.Queries.ListDecisionLanes(request.Context(), db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, CreatorID: targetID, IssueID: issue.ID})
+		var topic decisionTopic
+		if topic, err = resolveDecisionTopic(request.Context(), handler.Queries, issue); err == nil {
+			rows, err = handler.Queries.ListDecisionLanes(request.Context(), db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agent.ID, TopicID: topic.ID, CreatorID: targetID, IssueID: issue.ID})
+		}
 		response := make([]decisionLaneResponse, 0, len(rows))
 		if err == nil {
 			sessionIDs := make([]pgtype.UUID, 0, len(rows))
@@ -165,8 +168,9 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 				}
 				lane := decisionLaneResponse{ID: uuidToString(row.ID), Title: row.Title, UpdatedAt: timestampToString(row.UpdatedAt), IssueMentions: issueMentions}
 				if row.ReferencedAt.Valid {
-					lane.Eligible, lane.ReferencedAt = true, row.ReferencedAt.Time.UTC().Format(time.RFC3339Nano)
+					lane.ReferencedAt = row.ReferencedAt.Time.UTC().Format(time.RFC3339Nano)
 				}
+				lane.Eligible = row.ReferencedAt.Valid || row.DecisionTopicID == topic.ID
 				response = append(response, lane)
 			}
 		}
