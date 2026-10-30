@@ -323,9 +323,12 @@
       "answered": "已答復",
       "withdrawn": "已撤回",
       "recorded": "已記錄",
-      "delivered": "已送達",
+      "delivered": "已送達", "picked_up": "已接手", "not_picked_up": "未接手",
       "disclaimed": "已撤銷"
     },
+    "picked_up_by": "{{agent}} 已接手",
+    "not_picked_up": "答復記錄後沒有執行啟動。",
+    "open_issue": "開啟 {{issue}}",
     "answer_options": "選項",
     "answer_text": "或輸入回答",
     "answer_send": "傳送",
