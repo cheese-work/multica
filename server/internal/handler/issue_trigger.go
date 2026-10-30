@@ -128,23 +128,29 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 	return false
 }
 
-// taintPendingRunsBeforeWrite gives the runs already pending on the issue the
-// taint of the task making this request. It runs before the issue write: a
-// claim that read the issue after the write must already hold the taint, and
-// one that read it before the write never saw the write. If the requesting
-// task's taint cannot be read, the write does not happen.
-func (h *Handler) taintPendingRunsBeforeWrite(w http.ResponseWriter, r *http.Request, issueID pgtype.UUID) bool {
-	ctx := h.actingTaskContext(r)
-	taint, err := service.ActingTaskTaint(ctx, h.Queries)
-	if err == nil && len(taint) > 0 {
-		err = h.Queries.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issueID})
-	}
+// withIssueWriteTaint reads the taint of the task making this assignment or
+// handoff and puts it on the write's context. updateIssueStoppingWakeups gives
+// it to every run pending on the issue in the same transaction as the write, so
+// no claim can read the committed write and miss it. If the requesting task's
+// taint cannot be read, the write does not happen.
+func (h *Handler) withIssueWriteTaint(w http.ResponseWriter, r *http.Request, ctx context.Context) (context.Context, bool) {
+	taint, err := service.ActingTaskTaint(h.actingTaskContext(r), h.Queries)
 	if err != nil {
-		slog.Error("could not record requesting task taint on pending runs", "issue_id", uuidToString(issueID), "error", err)
+		slog.Error("could not read requesting task taint", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update issue")
-		return false
+		return ctx, false
 	}
-	return true
+	if len(taint) == 0 {
+		return ctx, true
+	}
+	return context.WithValue(ctx, issueWriteTaintKey{}, taint), true
+}
+
+type issueWriteTaintKey struct{}
+
+func issueWriteTaint(ctx context.Context) []string {
+	taint, _ := ctx.Value(issueWriteTaintKey{}).([]string)
+	return taint
 }
 
 // queuedRunCarriesWrite reports whether a queued run of the agent can stand in

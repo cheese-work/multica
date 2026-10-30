@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -179,4 +181,63 @@ func TestClaimResponseCarriesTaintWrittenAfterDispatch(t *testing.T) {
 	dbfx.Task(t, agentID, testutil.Cols{"status": "queued", "runtime_id": runtimeID, "issue_id": issueID})
 
 	claimRestrictedWithTaint(t, runtimeID, []string{"t1"})
+}
+
+// raceTxStarter runs onBegin when the first transaction opens and onCommit
+// right after it commits: the two points where another request can interleave
+// with an issue write, which a test cannot pause inside the handler for.
+type raceTxStarter struct {
+	inner    txStarter
+	onBegin  func()
+	onCommit func()
+	begun    bool
+}
+
+type raceTx struct {
+	pgx.Tx
+	starter *raceTxStarter
+}
+
+func (s *raceTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	if !s.begun && s.onBegin != nil {
+		s.begun = true
+		s.onBegin()
+	}
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return raceTx{Tx: tx, starter: s}, nil
+}
+
+func (t raceTx) Commit(ctx context.Context) error {
+	if err := t.Tx.Commit(ctx); err != nil {
+		return err
+	}
+	if cb := t.starter.onCommit; cb != nil {
+		t.starter.onCommit = nil
+		cb()
+	}
+	return nil
+}
+
+// A clean run for the target is enqueued after the request began and before
+// its issue write, and is claimed the moment the write commits, before the
+// assignment's own enqueue collides with it. The run was never tainted by
+// anything else, so only the write itself can taint it: the claim reads the
+// committed assignment and must come back restricted.
+func TestAgentAssignmentTaintsRunEnqueuedBeforeTheWriteAndClaimedAfterIt(t *testing.T) {
+	chain, targetID, runtimeID := taintedAssigner(t)
+	insertGrant(t, chain.IssueY, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+	prev := testHandler.TxStarter
+	testHandler.TxStarter = &raceTxStarter{
+		inner: prev,
+		onBegin: func() {
+			dbfx.Task(t, targetID, testutil.Cols{"status": "queued", "runtime_id": runtimeID, "issue_id": chain.IssueY})
+		},
+		onCommit: func() { claimRestrictedWithTaint(t, runtimeID, []string{"t1"}) },
+	}
+	t.Cleanup(func() { testHandler.TxStarter = prev })
+
+	agentAssigns(t, chain.CoordinatorID, chain.TaskA, chain.IssueY, targetID).Want(http.StatusOK)
 }

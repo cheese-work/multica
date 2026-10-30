@@ -289,7 +289,7 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, error) {
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -323,6 +323,13 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	// Same transaction as the write: a claim that reads the committed write
+	// finds this taint on its run.
+	if taint := issueWriteTaint(ctx); len(taint) > 0 {
+		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
 	}
 	var cancelled []db.AgentTaskQueue
 	if params.Status.Valid {
@@ -4222,8 +4229,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
-	if (assigneeSupplied || handoff != nil) && !h.taintPendingRunsBeforeWrite(w, r, prevIssue.ID) {
-		return
+	if assigneeSupplied || handoff != nil {
+		var ok bool
+		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
+			return
+		}
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -5106,8 +5116,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
-		if (assigneeSupplied || handoff != nil) && !h.taintPendingRunsBeforeWrite(w, r, prevIssue.ID) {
-			return
+		if assigneeSupplied || handoff != nil {
+			var ok bool
+			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
+				return
+			}
 		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
