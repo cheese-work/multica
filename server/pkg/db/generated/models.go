@@ -135,6 +135,15 @@ type AgentSkill struct {
 	Enabled   bool               `json:"enabled"`
 }
 
+type AgentTaskEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	Kind        string             `json:"kind"`
+	At          pgtype.Timestamptz `json:"at"`
+}
+
 type AgentTaskQueue struct {
 	ID                    pgtype.UUID        `json:"id"`
 	AgentID               pgtype.UUID        `json:"agent_id"`
@@ -2076,6 +2085,50 @@ type NotificationPreference struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Preferences []byte             `json:"preferences"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type OpsSnapshot struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	DaemonID         string             `json:"daemon_id"`
+	BucketTs         pgtype.Timestamptz `json:"bucket_ts"`
+	Queued           int32              `json:"queued"`
+	Dispatched       int32              `json:"dispatched"`
+	WaitingDir       int32              `json:"waiting_dir"`
+	Running          int32              `json:"running"`
+	AgentsUnbound    int32              `json:"agents_unbound"`
+	AgentsOffline    int32              `json:"agents_offline"`
+	AgentsBusy       int32              `json:"agents_busy"`
+	AgentsWaitingDir int32              `json:"agents_waiting_dir"`
+	AgentsAvailable  int32              `json:"agents_available"`
+	OldestUnstartedS pgtype.Int4        `json:"oldest_unstarted_s"`
+}
+
+type OpsSnapshot5m struct {
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	DaemonID             string             `json:"daemon_id"`
+	BucketTs             pgtype.Timestamptz `json:"bucket_ts"`
+	QueuedMax            int32              `json:"queued_max"`
+	QueuedLast           int32              `json:"queued_last"`
+	DispatchedMax        int32              `json:"dispatched_max"`
+	DispatchedLast       int32              `json:"dispatched_last"`
+	WaitingDirMax        int32              `json:"waiting_dir_max"`
+	WaitingDirLast       int32              `json:"waiting_dir_last"`
+	RunningMax           int32              `json:"running_max"`
+	RunningLast          int32              `json:"running_last"`
+	AgentsUnboundMax     int32              `json:"agents_unbound_max"`
+	AgentsUnboundLast    int32              `json:"agents_unbound_last"`
+	AgentsOfflineMax     int32              `json:"agents_offline_max"`
+	AgentsOfflineLast    int32              `json:"agents_offline_last"`
+	AgentsBusyMax        int32              `json:"agents_busy_max"`
+	AgentsBusyLast       int32              `json:"agents_busy_last"`
+	AgentsWaitingDirMax  int32              `json:"agents_waiting_dir_max"`
+	AgentsWaitingDirLast int32              `json:"agents_waiting_dir_last"`
+	AgentsAvailableMax   int32              `json:"agents_available_max"`
+	AgentsAvailableLast  int32              `json:"agents_available_last"`
+	OldestUnstartedSMax  pgtype.Int4        `json:"oldest_unstarted_s_max"`
+	OldestUnstartedSLast pgtype.Int4        `json:"oldest_unstarted_s_last"`
+	SampleCount          int32              `json:"sample_count"`
+	ExpectedCount        int32              `json:"expected_count"`
 }
 
 type PasskeyAssertionChallenge struct {

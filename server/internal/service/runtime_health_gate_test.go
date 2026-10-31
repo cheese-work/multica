@@ -217,7 +217,7 @@ func TestRuntimeHealthGatesClaimsAndStaleDispatchRecovery(t *testing.T) {
 			t.Fatalf("reset stale dispatch: %v", err)
 		}
 	}
-	reclaimOne := func() (db.AgentTaskQueue, error) {
+	reclaimOne := func() (db.ReclaimStaleDispatchedTaskForRuntimeRow, error) {
 		return q.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
 			RuntimeID:         util.MustParseUUID(runtimeID),
 			PrepareLeaseSecs:  60,
