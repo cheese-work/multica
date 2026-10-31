@@ -39,6 +39,52 @@ describe("api.deleteComment", () => {
   });
 });
 
+describe("api.getCommentPreview", () => {
+  const body = {
+    comment_id: "c1",
+    issue_id: "i1",
+    issue_identifier: "CHE-1",
+    author_type: "agent",
+    author_id: "a1",
+    author_name: "Luna",
+    preview: "hello",
+  };
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("GETs /api/comments/{id}/preview and returns the parsed body", async () => {
+    fetchMock.mockResolvedValue(Response.json(body));
+
+    await expect(api.getCommentPreview("c1")).resolves.toMatchObject(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/comments/c1/preview",
+      expect.anything(),
+    );
+  });
+
+  it("returns null on 404 (unreadable or unknown comment)", async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: "not found" }, { status: 404 }));
+
+    await expect(api.getCommentPreview("c1")).resolves.toBeNull();
+  });
+
+  it("returns null on a malformed body instead of a half-filled chip", async () => {
+    fetchMock.mockResolvedValue(Response.json({ issue_id: "i1" }));
+
+    await expect(api.getCommentPreview("c1")).resolves.toBeNull();
+  });
+});
+
 describe("api chat DM stats, pin, and archive endpoints", () => {
   const fetchMock = vi.fn();
 

@@ -7,6 +7,7 @@ export {
   isIssueIdentifier,
   ISSUE_IDENTIFIER_PATTERN,
 } from './issue-identifiers'
+export { preprocessCommentIds, COMMENT_ID_PATTERN } from './comment-ids'
 export { preprocessMentionShortcodes } from './mentions'
 export { markdownSanitizeSchema, markdownUrlTransform } from './sanitize'
 export {

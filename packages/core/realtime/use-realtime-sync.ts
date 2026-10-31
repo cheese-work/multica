@@ -1311,6 +1311,7 @@ export function useRealtimeSync(
       invalidateTimeline(comment.issue_id);
       const wsId = getCurrentWsId();
       if (wsId) {
+        qc.invalidateQueries({ queryKey: issueKeys.commentPreview(wsId, comment.id) });
         invalidateLastActivitySortedIssueLists(qc, wsId);
         if (issue_revision) {
           onIssueAuxiliaryRevision(qc, wsId, comment.issue_id, issue_revision);
@@ -1321,11 +1322,12 @@ export function useRealtimeSync(
     });
 
     const unsubCommentDeleted = ws.on("comment:deleted", (p) => {
-      const { issue_id, issue_revision } = p as CommentDeletedPayload;
+      const { comment_id, issue_id, issue_revision } = p as CommentDeletedPayload;
       if (!issue_id) return;
       invalidateTimeline(issue_id);
       const wsId = getCurrentWsId();
       if (wsId) {
+        qc.invalidateQueries({ queryKey: issueKeys.commentPreview(wsId, comment_id) });
         invalidateLastActivitySortedIssueLists(qc, wsId);
         if (issue_revision) {
           onIssueAuxiliaryRevision(qc, wsId, issue_id, issue_revision);

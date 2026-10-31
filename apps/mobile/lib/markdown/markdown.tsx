@@ -40,20 +40,30 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
+import { useQueries } from "@tanstack/react-query";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import type { Attachment } from "@multica/core/types";
+import type { Attachment, CommentPreview } from "@multica/core/types";
 import { useAuthStore } from "@/data/auth-store";
+import { commentPreviewOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import {
+  findCommentIds,
+  findSegmentCommentIds,
+  linkifySegments,
+  parseCommentMention,
+} from "./comment-ids";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
 import { SELF_MENTION_COLORS, emphasizeSelfMentionSegments, selfMentionLinkVariants } from "./self-mention";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
+
+const COMMENT_CHIP_WAIT_MS = 1500;
 
 interface Props {
   content: string;
@@ -139,10 +149,62 @@ export function Markdown({
       : style;
   }, [baseStyle, compact, viewerId, isDarkColorScheme]);
 
-  const segments = useMemo(() => {
-    const processed = preprocessMobileMarkdown(content);
-    return emphasizeSelfMentionSegments(splitMarkdown(processed), viewerId);
-  }, [content, viewerId]);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const linkCtx = useMemo(
+    () => ({ webOrigin: process.env.EXPO_PUBLIC_WEB_URL ?? null, slug: wsSlug }),
+    [wsSlug],
+  );
+  const split = useMemo(
+    () => splitMarkdown(preprocessMobileMarkdown(content)),
+    [content],
+  );
+  const commentIds = useMemo(
+    () => findSegmentCommentIds(split, linkCtx),
+    [split, linkCtx],
+  );
+  // Only ids the server resolved become chips; the rest stay as written. A
+  // failed refetch drops the retained preview rather than showing a stale one.
+  const { resolved: resolvedComments, loading: loadingComments } = useQueries({
+    queries: commentIds.map((id) => commentPreviewOptions(wsId, id)),
+    combine: (results) => {
+      const resolved = new Map<string, CommentPreview>();
+      const loading = new Set<string>();
+      results.forEach((r, i) => {
+        if (r.data && !r.isError) resolved.set(r.data.comment_id, r.data);
+        if (r.isLoading) loading.add(commentIds[i]!);
+      });
+      return { resolved, loading };
+    },
+  });
+  // Native prose cannot pin a chip's width, so the UUID -> chip swap would
+  // visibly reflow. Hide prose that holds a still-loading id until it settles,
+  // but never longer than COMMENT_CHIP_WAIT_MS (slow network: show the id).
+  const [waited, setWaited] = useState(false);
+  const anyLoading = loadingComments.size > 0;
+  useEffect(() => {
+    if (!anyLoading) return;
+    const t = setTimeout(() => setWaited(true), COMMENT_CHIP_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [anyLoading]);
+
+  const segments = useMemo(
+    () =>
+      emphasizeSelfMentionSegments(
+        linkifySegments(split, resolvedComments, linkCtx),
+        viewerId,
+      ),
+    [split, resolvedComments, linkCtx, viewerId],
+  );
+  // Same indices as `split`: linkify and emphasize map segments one to one.
+  const holdBack = (i: number) => {
+    const seg = split[i];
+    return (
+      !waited &&
+      anyLoading &&
+      seg?.type === "prose" &&
+      findCommentIds(seg.content, linkCtx).some((id) => loadingComments.has(id))
+    );
+  };
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
@@ -154,12 +216,30 @@ export function Markdown({
       //
       //   mention://issue/<uuid>   → navigate to that issue detail
       //   mention://project/<uuid> → navigate to that project detail
+      //   mention://comment/<uuid>?issue=<uuid> → issue detail, comment highlighted
       //   mention://member/<uuid>  → no-op (no member profile screen yet)
       //   mention://agent/<uuid>   → no-op (no agent profile screen yet)
       //   mention://squad/<uuid>   → no-op (no squad profile screen yet)
       //   mention://all/all        → no-op (semantic only — "everyone")
       //   anything malformed       → no-op
       if (url.startsWith("mention://")) {
+        const comment = parseCommentMention(url);
+        if (comment) {
+          if (wsSlug) {
+            // `h` re-triggers the scroll + flash when the same comment is
+            // opened twice (see the issue screen's highlight handling).
+            router.push({
+              pathname: "/[workspace]/issue/[id]",
+              params: {
+                workspace: wsSlug,
+                id: comment.issueId,
+                highlight: comment.commentId,
+                h: String(Date.now()),
+              },
+            });
+          }
+          return;
+        }
         const rest = url.slice("mention://".length);
         const slash = rest.indexOf("/");
         if (slash < 0) return;
@@ -198,14 +278,16 @@ export function Markdown({
         switch (seg.type) {
           case "prose":
             return (
-              <EnrichedMarkdownText
-                key={i}
-                flavor="github"
-                markdown={seg.content}
-                markdownStyle={markdownStyle}
-                onLinkPress={onLinkPress}
-                selectable={selectable}
-              />
+              // Always wrapped so toggling the hold-back never remounts the text.
+              <View key={i} style={holdBack(i) ? { opacity: 0 } : undefined}>
+                <EnrichedMarkdownText
+                  flavor="github"
+                  markdown={seg.content}
+                  markdownStyle={markdownStyle}
+                  onLinkPress={onLinkPress}
+                  selectable={selectable}
+                />
+              </View>
             );
           case "code":
             return (
