@@ -67,7 +67,7 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 	if err != nil {
 		return RecoveryClaim{}, "", fmt.Errorf("begin recovery claim: %w", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('recovery_claim:' || $1::text, 0))`, p.WorkspaceID); err != nil {
 		return RecoveryClaim{}, "", fmt.Errorf("lock recovery claims: %w", err)
@@ -98,15 +98,18 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 }
 
 func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams) (RecoveryClaimOutcome, error) {
+	// Both native modes and fresh replay answer to the native ceiling: the
+	// original attempt is attempt one, so retries stop at ceiling-1, and an
+	// exhausted native lineage never earns a fresh replay.
+	var retries int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND mode IN ('native_resume', 'native_release') AND state <> 'released'`,
+		p.WorkspaceID, p.IssueID).Scan(&retries); err != nil {
+		return "", fmt.Errorf("count native recovery attempts: %w", err)
+	}
+	if retries >= p.NativeCeiling-1 {
+		return RecoveryNativeCeiling, nil
+	}
 	if p.Mode == RecoveryModeNativeResume {
-		var attempts int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND mode = 'native_resume' AND state <> 'released'`,
-			p.WorkspaceID, p.IssueID).Scan(&attempts); err != nil {
-			return "", fmt.Errorf("count native recovery attempts: %w", err)
-		}
-		if attempts >= p.NativeCeiling {
-			return RecoveryNativeCeiling, nil
-		}
 		return "", nil
 	}
 	if p.Mode == RecoveryModeFreshReplay {

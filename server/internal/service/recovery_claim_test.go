@@ -164,20 +164,57 @@ func TestRecoveryClaimNativeResumeIsRecordedButExemptFromPacing(t *testing.T) {
 	}
 }
 
-func TestRecoveryClaimNativeResumeStopsAtCeiling(t *testing.T) {
+// The native ceiling counts the original attempt, so a ceiling of 3 admits the
+// original plus two recovery retries, whatever native mode each retry used.
+func TestRecoveryClaimNativeCeilingCountsOriginalAttempt(t *testing.T) {
+	for _, mode := range []RecoveryMode{RecoveryModeNativeResume, RecoveryModeNativeRelease} {
+		t.Run(string(mode), func(t *testing.T) {
+			f := newRecoveryClaimFixture(t, 1)
+			now := time.Now()
+			for i := 0; i < 2; i++ {
+				c, outcome := f.claim(t, 0, mode, now.Add(time.Duration(i)*3*time.Minute))
+				if outcome != RecoveryAdmitted {
+					t.Fatalf("retry %d: outcome=%q, want admitted", i+1, outcome)
+				}
+				if err := f.store.Settle(context.Background(), c.ID, RecoveryStateFailed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, outcome := f.claim(t, 0, mode, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+				t.Fatalf("third retry at ceiling 3: outcome=%q, want native_ceiling", outcome)
+			}
+		})
+	}
+}
+
+func TestRecoveryClaimNativeModesShareOneCeiling(t *testing.T) {
 	f := newRecoveryClaimFixture(t, 1)
 	now := time.Now()
-	for i := 0; i < 3; i++ {
-		if _, outcome := f.claim(t, 0, RecoveryModeNativeResume, now); outcome != RecoveryAdmitted {
-			t.Fatalf("native attempt %d: outcome=%q, want admitted", i+1, outcome)
+	for i, mode := range []RecoveryMode{RecoveryModeNativeResume, RecoveryModeNativeRelease} {
+		if _, outcome := f.claim(t, 0, mode, now.Add(time.Duration(i)*3*time.Minute)); outcome != RecoveryAdmitted {
+			t.Fatalf("%s: outcome=%q, want admitted", mode, outcome)
 		}
 	}
-	if _, outcome := f.claim(t, 0, RecoveryModeNativeResume, now); outcome != RecoveryNativeCeiling {
-		t.Fatalf("fourth native attempt: outcome=%q, want native_ceiling", outcome)
+	if _, outcome := f.claim(t, 0, RecoveryModeNativeResume, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+		t.Fatalf("resume after one resume and one release: outcome=%q, want native_ceiling", outcome)
 	}
-	// An exhausted native lineage is not a fresh-replay budget.
-	if _, outcome := f.claim(t, 0, RecoveryModeFreshReplay, now); outcome != RecoveryAdmitted {
-		t.Fatalf("fresh replay after native exhaustion: outcome=%q, want admitted from its own allowance", outcome)
+}
+
+// An exhausted native lineage is not a fresh-replay budget.
+func TestRecoveryClaimExhaustedNativeLineageGetsNoFreshReplay(t *testing.T) {
+	f := newRecoveryClaimFixture(t, 1)
+	now := time.Now()
+	for i := 0; i < 2; i++ {
+		c, outcome := f.claim(t, 0, RecoveryModeNativeResume, now)
+		if outcome != RecoveryAdmitted {
+			t.Fatalf("setup retry %d: outcome=%q, want admitted", i+1, outcome)
+		}
+		if err := f.store.Settle(context.Background(), c.ID, RecoveryStateFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, outcome := f.claim(t, 0, RecoveryModeFreshReplay, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+		t.Fatalf("fresh replay after native exhaustion: outcome=%q, want native_ceiling", outcome)
 	}
 }
 
