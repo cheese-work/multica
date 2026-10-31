@@ -85,7 +85,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_action":                    workspaceDeleteWorker,
 	"decision_agent_scope":               workspaceDeleteWorker, // immutable scope is removed before its orphan request by the decision worker.
 	"decision_agent_settlement":          workspaceDeleteWorker,
+	"decision_agent_notice":              workspaceDeleteWorker,
 	"decision_agent_reliance":            workspaceDeleteWorker,
+	"decision_agent_undo":                workspaceDeleteWorker,
 	"decision_answer":                    workspaceDeleteWorker,
 	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,

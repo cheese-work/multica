@@ -60,7 +60,7 @@ func TestAgentDecisionWorkspaceDeletion(t *testing.T) {
 	resetDecisionLease(t)
 	_, runner := newDecisionRunnerFixture(t)
 	decisionPass(t, runner)
-	for _, table := range []string{"governed_vote_record", "decision_agent_scope", "decision_agent_reliance", "decision_agent_settlement", "decision_request"} {
+	for _, table := range []string{"governed_vote_record", "decision_agent_scope", "decision_agent_undo", "decision_agent_notice", "decision_agent_reliance", "decision_agent_settlement", "decision_request"} {
 		if got := dbfx.Count(t, "SELECT count(*) FROM "+table+" WHERE workspace_id=$1", workspaceID); got != 0 {
 			t.Errorf("%s has %d rows after workspace deletion and worker cleanup", table, got)
 		}

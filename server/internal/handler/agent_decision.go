@@ -54,6 +54,7 @@ type agentDecisionProposal struct {
 	Evidence              []agentDecisionEvidence `json:"evidence"`
 	Signers               []string                `json:"signers,omitempty"`
 	Dispute               *agentDecisionDispute   `json:"adjudication,omitempty"`
+	Supersedes            string                  `json:"supersedes,omitempty"`
 	BaseSHA               string                  `json:"base_sha,omitempty"`
 	BaseFailedChecks      []string                `json:"base_failed_checks,omitempty"`
 	CandidateFailedChecks []string                `json:"candidate_failed_checks,omitempty"`
@@ -67,10 +68,18 @@ type agentDecisionScope struct {
 	Signers    []agentDecisionIdentity
 	Disputants []agentDecisionIdentity
 }
-type agentDecisionLine struct{ kind, instance, digest, commitment, verdict string }
+
+// undoOwner is set for a veto: who must undo the work that relied on the record.
+type agentDecisionUndoOwner struct{ kind, id string }
+type agentDecisionLine struct {
+	kind, instance, digest, commitment, verdict string
+	undoOwner                                   agentDecisionUndoOwner
+}
 type agentDecisionAnnotation struct {
 	line           agentDecisionLine
 	event, verdict string
+	// Set for a veto: why it was vetoed.
+	vetoReason string
 }
 type agentDecisionEvent struct{ agent, kind, verdict, commitment, provider, model string }
 
@@ -136,8 +145,21 @@ func parseAgentDecisionLine(body string) (*agentDecisionLine, error) {
 		}
 		line.kind = "retract"
 		line.instance = fields[1]
+	case "Veto:":
+		if len(fields) != 4 {
+			return nil, agentDecisionRefusal("invalid Veto line: Veto: decision:<uuid> <sha256> <agent|member>:<uuid>")
+		}
+		kind, id, _ := strings.Cut(fields[3], ":")
+		parsed, err := uuid.Parse(id)
+		if (kind != "agent" && kind != "member") || err != nil || parsed == uuid.Nil || parsed.String() != id {
+			return nil, agentDecisionRefusal("a veto must name its undo owner as agent:<uuid> or member:<uuid>")
+		}
+		line.kind = "veto"
+		line.instance = fields[1]
+		line.digest = fields[2]
+		line.undoOwner = agentDecisionUndoOwner{kind, id}
 	default:
-		return nil, agentDecisionRefusal("Veto is not enabled in C1")
+		return nil, agentDecisionRefusal("unknown protocol line")
 	}
 	if !strings.HasPrefix(line.instance, "decision:") {
 		return nil, agentDecisionRefusal("missing decision subject")
@@ -204,7 +226,7 @@ func decodeAgentDecisionJSON(raw string, out any) error {
 
 func validateAgentDecisionProposal(p agentDecisionProposal, author string) error {
 	if !agentDecisionGateAllowed(p.WaivedGate) {
-		return agentDecisionRefusal("gate is not on allowlist version 1")
+		return agentDecisionExcluded("gate is not on allowlist version 1", "excluded category proposed: gate "+p.WaivedGate)
 	}
 	if p.WorkAuthorID != author {
 		return agentDecisionRefusal("work author must be the proposer")
@@ -379,7 +401,7 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 		}
 		for _, excluded := range []string{"security", "test-first", "test_first", "merge approval", "deploy", "spend", "publication", "irreversible", "product direction", "missing evidence", "independently protected"} {
 			if strings.Contains(strings.ToLower(dispute.ReviewerVerdict), excluded) {
-				return agentDecisionRefusal("excluded or missing-evidence BLOCK cannot be adjudicated")
+				return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded category in adjudication: "+excluded)
 			}
 		}
 		scope.Disputants = []agentDecisionIdentity{rebuttal, reviewer}
@@ -413,7 +435,10 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 	if errors.As(err, &constraint) && constraint.Code == "23505" && constraint.ConstraintName == "agent_decision_scope_candidate_gate_uidx" {
 		return agentDecisionRefusal("candidate and gate already have an immutable instance; signers cannot be replaced")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return supersedeAgentDecision(ctx, tx, params, line.instance, proposal)
 }
 
 func loadAgentDecisionEvents(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, instance string) ([]agentDecisionEvent, error) {
@@ -510,15 +535,20 @@ func prepareAgentDecision(ctx context.Context, tx pgx.Tx, params db.CreateCommen
 	if err != nil || line == nil {
 		return nil, err
 	}
-	if !taskToken || params.AuthorType != "agent" || !params.SourceTaskID.Valid {
+	// A workspace owner may veto without a task; every other action is a task's.
+	ownerVeto := line.kind == "veto" && params.AuthorType == "member"
+	if !ownerVeto && (!taskToken || params.AuthorType != "agent" || !params.SourceTaskID.Valid) {
 		return nil, agentDecisionRefusal("an issue task token is required")
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agent-decision:' || $1,0))`, line.instance); err != nil {
 		return nil, err
 	}
-	identity, err := agentDecisionTaskIdentity(ctx, tx, params.SourceTaskID, params.AuthorID, params.WorkspaceID, params.IssueID)
-	if err != nil {
-		return nil, err
+	var identity agentDecisionIdentity
+	if !ownerVeto {
+		identity, err = agentDecisionTaskIdentity(ctx, tx, params.SourceTaskID, params.AuthorID, params.WorkspaceID, params.IssueID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	annotation := &agentDecisionAnnotation{line: *line, event: line.kind}
 	if line.kind == "proposal" {
@@ -541,11 +571,26 @@ func prepareAgentDecision(ctx context.Context, tx pgx.Tx, params db.CreateCommen
 	if err := json.Unmarshal(encoded, &scope); err != nil {
 		return nil, err
 	}
-	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate) {
+	// Policy gates what may become effective or be relied on. A veto only
+	// takes effect away, so a record made under an older policy stays vetoable.
+	if line.kind != "veto" && (version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(scope.Proposal.WaivedGate)) {
 		return nil, agentDecisionRefusal("delegation or allowlist no longer matches")
 	}
 	if line.kind != "retract" && line.digest != digest {
 		return nil, agentDecisionRefusal("candidate digest does not match instance")
+	}
+	var settled, revoked bool
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(bool_or(true),false),COALESCE(bool_or(revoked_at IS NOT NULL),false) FROM decision_agent_settlement WHERE instance_id=$1`, line.instance).Scan(&settled, &revoked); err != nil {
+		return nil, err
+	}
+	if revoked {
+		return nil, agentDecisionRefusal("instance is revoked and can never become effective")
+	}
+	if line.kind == "veto" {
+		return annotation, authorizeAgentDecisionVeto(ctx, tx, params, annotation, scope, identity.AgentID, ownerVeto)
+	}
+	if line.kind == "retract" && settled {
+		return nil, agentDecisionRefusal("an effective record can only be vetoed")
 	}
 	signer := slices.IndexFunc(scope.Signers, func(s agentDecisionIdentity) bool { return s.AgentID == identity.AgentID })
 	if signer < 0 || identity.AgentID == scope.Author.AgentID || scope.Signers[signer].Lab != identity.Lab {
@@ -631,7 +676,10 @@ func annotateAgentDecision(ctx context.Context, tx pgx.Tx, commentID pgtype.UUID
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("agent decision snapshot missing")
 	}
-	if agentDecisionSettlementCreationEnabled && annotation.event == "vote" {
+	if annotation.event == "veto" {
+		return revokeAgentDecisionForVeto(ctx, tx, commentID, annotation)
+	}
+	if annotation.event == "vote" {
 		var workspaceID pgtype.UUID
 		if err := tx.QueryRow(ctx, `SELECT workspace_id FROM comment WHERE id=$1`, commentID).Scan(&workspaceID); err != nil {
 			return err

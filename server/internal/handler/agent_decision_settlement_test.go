@@ -23,6 +23,11 @@ func settlementReveal(f agentDecisionFixture, agent, opinion string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// The HTTP path locks the issue row (LockWakeupIssue) before the instance
+	// advisory lock; take them in the same order so races match production.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM issue WHERE id=$1 FOR UPDATE`, f.issueID); err != nil {
+		return err
+	}
 	params := db.CreateCommentParams{ID: parseUUID(uuid.NewString()), WorkspaceID: parseUUID(testWorkspaceID), IssueID: parseUUID(f.issueID), AuthorType: "agent", AuthorID: parseUUID(agent), SourceTaskID: parseUUID(f.tasks[agent]), Type: "comment", Content: "Vote: PASS decision:" + f.instance + " " + boundAfter + "\n\n```opinion\n" + opinion + "```\n"}
 	annotation, err := prepareAgentDecision(ctx, tx, params, true)
 	if err != nil {
@@ -43,6 +48,7 @@ func settlementReveal(f agentDecisionFixture, agent, opinion string) error {
 
 func prepareSettlement(t *testing.T) agentDecisionFixture {
 	t.Helper()
+	enableAgentDecisions(t, true)
 	f := newAgentDecisionFixture(t)
 	// These tables do not exist on the red-run baseline.
 	t.Cleanup(func() {
@@ -106,19 +112,6 @@ func TestAgentDecisionSettlementInsertFailureRollsBackVote(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_settlement WHERE instance_id=$1`, f.instance); n != 0 {
 		t.Fatalf("gate has %d settlements after failure", n)
-	}
-}
-
-func TestAgentDecisionSettlementDisabled(t *testing.T) {
-	f := prepareSettlement(t)
-	for _, agent := range []string{f.leaderID, f.peerID} {
-		f.reveal(t, agent, "PASS", f.opinion(agent, "PASS"), http.StatusCreated)
-	}
-	if dbfx.Count(t, `SELECT count(*) FROM pg_class WHERE relname='decision_agent_settlement'`) == 0 {
-		t.Fatal("disabled settlement storage is missing")
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_agent_settlement WHERE instance_id=$1`, f.instance); n != 0 {
-		t.Fatalf("disabled production path created %d settlements", n)
 	}
 }
 
@@ -216,8 +209,9 @@ func TestAgentDecisionRelianceRefusals(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := prepareSettlement(t)
 			if kind != "missing" {
-				dbfx.Exec(t, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id,effective_at,revoked_at)
-    VALUES($1,$2,$3,CASE WHEN $4='future' THEN now()+interval '1 hour' ELSE now() END,CASE WHEN $4='revoked' THEN now() ELSE NULL END)`, f.instance, testWorkspaceID, f.issueID, kind)
+				dbfx.Exec(t, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id,effective_at,revoked_at,undo_owner_type,undo_owner_id)
+    VALUES($1,$2,$3,CASE WHEN $4='future' THEN now()+interval '1 hour' ELSE now() END,CASE WHEN $4='revoked' THEN now() ELSE NULL END,
+        CASE WHEN $4='revoked' THEN 'agent' END,CASE WHEN $4='revoked' THEN $1::uuid END)`, f.instance, testWorkspaceID, f.issueID, kind)
 			}
 			req := agentDecisionRequest(f, http.MethodPost)
 			switch kind {

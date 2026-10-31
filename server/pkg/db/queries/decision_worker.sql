@@ -103,3 +103,8 @@ WHERE reliance.instance_id = sqlc.arg('id') AND reliance.workspace_id = sqlc.arg
 DELETE FROM decision_agent_settlement settlement
 WHERE settlement.instance_id = sqlc.arg('id') AND settlement.workspace_id = sqlc.arg('workspace_id')
   AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentUndo :exec
+DELETE FROM decision_agent_undo undo
+WHERE undo.instance_id = sqlc.arg('id') AND undo.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id);
