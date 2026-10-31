@@ -46,6 +46,7 @@ var auditedRoutes = map[string]string{
 	"DELETE /api/runtimes/{runtimeId}/":                        "runtime.delete",
 	"POST /api/runtimes/{runtimeId}/unbind-agents-and-delete":  "runtime.delete",
 	"POST /api/runtimes/{runtimeId}/archive-agents-and-delete": "runtime.delete",
+	"POST /api/runtimes/{runtimeId}/revoke-workspace-access":   "runtime.access.revoke",
 }
 
 // auditExemptRoutes need no audit row, with the reason.
@@ -172,7 +173,6 @@ func init() {
 		"POST /api/runtimes/{runtimeId}/local-skills",
 		"POST /api/runtimes/{runtimeId}/local-skills/import",
 		"POST /api/runtimes/{runtimeId}/models",
-		"POST /api/runtimes/{runtimeId}/revoke-workspace-access",
 		"POST /api/runtimes/{runtimeId}/update",
 		"POST /api/skills/",
 		"POST /api/skills/import",
