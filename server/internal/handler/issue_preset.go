@@ -63,6 +63,11 @@ func (h *Handler) replaceIssuePreset(w http.ResponseWriter, r *http.Request, kee
 	}
 	res, err := wakeupWrite(h, r, func(q *db.Queries) (issuePresetResult, error) {
 		var out issuePresetResult
+		// Serialize replacements: without the lock two requests both read an
+		// empty label set and each attach their own preset.
+		if _, err := q.LockIssueForAttachmentWrite(r.Context(), db.LockIssueForAttachmentWriteParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return out, err
+		}
 		current, err := q.ListLabelsByIssue(r.Context(), db.ListLabelsByIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
 		if err != nil {
 			return out, err

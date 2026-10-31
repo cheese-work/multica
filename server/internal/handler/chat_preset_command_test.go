@@ -133,10 +133,11 @@ func TestDMPresetCommand_I7_NeedsInvokeAccess(t *testing.T) {
 	ownerID := seedSecurityTestOwner(t, "preset-cmd-owner")
 	dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, agentID, ownerID)
 
-	// The runtime-access check refuses first (409) when the new owner's agent
-	// is private; the invoke gate itself answers 403. Either way: refused.
-	if r := sendPresetCommand(t, sessionID, "/preset fast"); r.Code != http.StatusForbidden && r.Code != http.StatusConflict {
-		t.Fatalf("a caller who cannot use the agent got %d: %s", r.Code, r.Body.String())
+	// The agent's owner keeps access to the runtime, so readiness passes and
+	// the refusal can only come from the invoke gate (403, not readiness' 409).
+	dbfx.Exec(t, `UPDATE agent_runtime SET owner_id = $2 WHERE id = (SELECT runtime_id FROM agent WHERE id = $1)`, agentID, ownerID)
+	if r := sendPresetCommand(t, sessionID, "/preset fast"); r.Code != http.StatusForbidden {
+		t.Fatalf("a caller who cannot invoke the agent got %d, want 403: %s", r.Code, r.Body.String())
 	}
 
 	if got := dmPreset(t, sessionID); got != "<NULL>" {
@@ -144,6 +145,37 @@ func TestDMPresetCommand_I7_NeedsInvokeAccess(t *testing.T) {
 	}
 	if n := countRows(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sessionID); n != 0 {
 		t.Fatalf("a denied /preset wrote %d messages", n)
+	}
+}
+
+// A /preset command never reaches the normal send path, so extra fields cannot
+// turn it into a user message and a paid run.
+func TestDMPresetCommand_RefusesAttachmentsAndDecisionReplies(t *testing.T) {
+	requireDB(t)
+	agentID, sessionID, _, _ := presetAgent(t, "claude", "claude-opus-5-5", "high")
+	addPreset(t, agentID, "fast", presetSpec{thinking: sp("low")})
+	const someID = "01a19459-5b07-7a79-bd0f-d31826d59fa4"
+
+	for name, extra := range map[string]map[string]any{
+		"attachment":     {"attachment_ids": []string{someID}},
+		"decision reply": {"decision_request_id": someID},
+	} {
+		body := map[string]any{"content": "/preset fast"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		req := withChatTestWorkspaceCtx(t, newRequest("POST", "/api/chat/sessions/"+sessionID+"/messages", body))
+		testutil.Call(t, testHandler.SendChatMessage, withURLParam(req, "sessionId", sessionID)).Want(http.StatusBadRequest)
+
+		if n := countRows(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sessionID); n != 0 {
+			t.Fatalf("%s: /preset wrote %d messages", name, n)
+		}
+		if n := countRows(t, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, sessionID); n != 0 {
+			t.Fatalf("%s: /preset enqueued %d tasks", name, n)
+		}
+		if got := dmPreset(t, sessionID); got != "<NULL>" {
+			t.Fatalf("%s: a refused /preset changed preset_name to %s", name, got)
+		}
 	}
 }
 

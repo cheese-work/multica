@@ -958,7 +958,11 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// /preset needs the same permission as any send, so it comes after the gate.
-	if arg, isPreset := parsePresetCommand(req.Content); isPreset && len(attachmentIDs) == 0 && !decisionRequestID.Valid {
+	if arg, isPreset := parsePresetCommand(req.Content); isPreset {
+		if len(attachmentIDs) > 0 || decisionRequestID.Valid {
+			writeError(w, http.StatusBadRequest, "/preset cannot carry attachments or a decision reply")
+			return
+		}
 		h.runPresetCommand(w, r, session, agent, workspaceID, userID, arg)
 		return
 	}

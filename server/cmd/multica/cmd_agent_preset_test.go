@@ -50,15 +50,16 @@ func presetFlagsCmd() *cobra.Command {
 	return cmd
 }
 
-// Cheese: `multica agent preset use <agent> <TAB>` offers the agent's presets
-// plus base and reset.
-func TestPresetCompletion_UseOffersPresetsBaseAndReset(t *testing.T) {
+// Cheese: `multica agent preset use <agent> <TAB>` offers the agent's usable
+// presets and base. reset is a DM keyword only: `use` cannot run it (the API
+// rejects the reserved name), so offering it would suggest a command that fails.
+func TestPresetCompletion_UseOffersPresetsAndBase(t *testing.T) {
 	calls, stop := presetServer(t, `{"names":["base","reset","big","fast"]}`)
 	defer stop()
 
-	got, _ := completePresetNames(true)(presetFlagsCmd(), []string{presetAgentID}, "")
+	got, _ := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID}, "")
 
-	want := []string{"base", "reset", "big", "fast"}
+	want := []string{"base", "big", "fast"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("completions = %v, want %v", got, want)
 	}
@@ -67,15 +68,20 @@ func TestPresetCompletion_UseOffersPresetsBaseAndReset(t *testing.T) {
 	}
 }
 
-// update and delete act on stored presets, so the keywords are not offered.
-func TestPresetCompletion_UpdateAndDeleteOmitKeywords(t *testing.T) {
-	_, stop := presetServer(t, `{"names":["base","reset","big","fast"]}`)
+// update and delete act on stored presets, so they complete from the full
+// inventory: a stale preset must stay reachable for repair or deletion, and the
+// list is open to a manager who cannot invoke the agent.
+func TestPresetCompletion_UpdateAndDeleteListStoredPresets(t *testing.T) {
+	calls, stop := presetServer(t, `[{"name":"big","stale":"model gone"},{"name":"fast","stale":""}]`)
 	defer stop()
 
-	got, _ := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID}, "")
+	got, _ := completePresetNames(true)(presetFlagsCmd(), []string{presetAgentID}, "")
 
 	if want := []string{"big", "fast"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("completions = %v, want %v", got, want)
+	}
+	if len(*calls) != 1 || (*calls)[0].Path != "/api/agents/"+presetAgentID+"/presets" {
+		t.Fatalf("requests = %+v", *calls)
 	}
 }
 
@@ -83,11 +89,11 @@ func TestPresetCompletion_FiltersByPrefixAndOnlyForSecondArg(t *testing.T) {
 	_, stop := presetServer(t, `{"names":["base","reset","big","fast"]}`)
 	defer stop()
 
-	got, _ := completePresetNames(true)(presetFlagsCmd(), []string{presetAgentID}, "b")
+	got, _ := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID}, "b")
 	if want := []string{"base", "big"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("prefix b = %v, want %v", got, want)
 	}
-	if third, _ := completePresetNames(true)(presetFlagsCmd(), []string{presetAgentID, "fast"}, ""); len(third) != 0 {
+	if third, _ := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID, "fast"}, ""); len(third) != 0 {
 		t.Fatalf("a third argument should complete nothing, got %v", third)
 	}
 }
@@ -102,7 +108,7 @@ func TestPresetCompletion_ServerErrorCompletesNothing(t *testing.T) {
 	defer srv.Close()
 	setCLITestServerEnv(t, srv.URL)
 
-	got, dir := completePresetNames(true)(presetFlagsCmd(), []string{presetAgentID}, "")
+	got, dir := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID}, "")
 	if len(got) != 0 || dir&cobra.ShellCompDirectiveNoFileComp == 0 {
 		t.Fatalf("got %v, directive %v", got, dir)
 	}

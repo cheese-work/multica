@@ -35,7 +35,7 @@ var agentPresetUpdateCmd = &cobra.Command{
 	Short:             "Change a preset; omitted fields stay as they are, --reset makes one inherit again",
 	Args:              exactArgs(2),
 	RunE:              runAgentPresetUpdate,
-	ValidArgsFunction: completePresetNames(false),
+	ValidArgsFunction: completePresetNames(true),
 }
 
 var agentPresetDeleteCmd = &cobra.Command{
@@ -43,7 +43,7 @@ var agentPresetDeleteCmd = &cobra.Command{
 	Short:             "Delete a preset",
 	Args:              exactArgs(2),
 	RunE:              runAgentPresetDelete,
-	ValidArgsFunction: completePresetNames(false),
+	ValidArgsFunction: completePresetNames(true),
 }
 
 var agentPresetUseCmd = &cobra.Command{
@@ -56,7 +56,7 @@ var agentPresetUseCmd = &cobra.Command{
   multica agent preset use <agent> --issue <id> --clear`,
 	Args:              cobra.RangeArgs(1, 2),
 	RunE:              runAgentPresetUse,
-	ValidArgsFunction: completePresetNames(true),
+	ValidArgsFunction: completePresetNames(false),
 }
 
 func init() {
@@ -80,10 +80,12 @@ func addPresetSettingFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("default", false, "Make this the agent default preset")
 }
 
-// completePresetNames completes `<agent> <TAB>` with the agent's usable preset
-// names. The server returns base and reset too; withKeywords=false drops them
-// for commands that act on stored presets only.
-func completePresetNames(withKeywords bool) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+// completePresetNames completes `<agent> <TAB>`. stored=false (use) offers what
+// the agent can run: its usable presets plus base, from the invoke-gated
+// completions endpoint without `reset`, a DM keyword `use` cannot execute.
+// stored=true (update, delete) offers every stored preset, stale ones too, from
+// the list endpoint, which a manager without invoke access can read.
+func completePresetNames(stored bool) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		none := cobra.ShellCompDirectiveNoFileComp
 		if len(args) != 1 {
@@ -99,18 +101,29 @@ func completePresetNames(withKeywords bool) func(*cobra.Command, []string, strin
 		if err != nil {
 			return nil, none
 		}
-		var resp struct {
-			Names []string `json:"names"`
-		}
-		if err := client.GetJSON(ctx, "/api/agents/"+agentID+"/presets/completions", &resp); err != nil {
-			return nil, none
+		var names []string
+		if stored {
+			var rows []struct {
+				Name string `json:"name"`
+			}
+			if err := client.GetJSON(ctx, "/api/agents/"+agentID+"/presets", &rows); err != nil {
+				return nil, none
+			}
+			for _, r := range rows {
+				names = append(names, r.Name)
+			}
+		} else {
+			var resp struct {
+				Names []string `json:"names"`
+			}
+			if err := client.GetJSON(ctx, "/api/agents/"+agentID+"/presets/completions", &resp); err != nil {
+				return nil, none
+			}
+			names = resp.Names
 		}
 		var out []string
-		for _, n := range resp.Names {
-			if !withKeywords && (n == "base" || n == "reset") {
-				continue
-			}
-			if strings.HasPrefix(n, toComplete) {
+		for _, n := range names {
+			if (stored || n != "reset") && strings.HasPrefix(n, toComplete) {
 				out = append(out, n)
 			}
 		}

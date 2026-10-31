@@ -3,9 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -316,6 +319,70 @@ func TestPresetAPI_S1_IssuePresetReplacesLabels(t *testing.T) {
 	presetCall(t, testHandler.ClearIssuePreset, "DELETE", "/api/issues/"+issue.ID+"/preset", nil, "id", issue.ID).Want(http.StatusOK)
 	if got, want := issueLabelNames(t, issue.ID), []string{"unrelated-s1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after clear labels = %v, want %v", got, want)
+	}
+}
+
+// update and delete complete from the stored presets: a stale one is still
+// listed for repair, and a manager who cannot invoke the agent still sees it.
+func TestPresetAPI_ListKeepsStalePresetsForManagerWithoutInvoke(t *testing.T) {
+	requireDB(t)
+	agentID, _, runtimeID, _ := presetAgent(t, "claude", "claude-opus-5-5", "high")
+	cleanupAgentPresets(t, agentID)
+	createPresetVia(t, agentID, map[string]any{"name": "big", "context_args": []string{"--autocompact", "200k"}}).Want(http.StatusCreated)
+	createPresetVia(t, agentID, map[string]any{"name": "fast", "thinking_level": "low"}).Want(http.StatusCreated)
+	dbfx.Exec(t, `UPDATE agent_runtime SET provider = 'codex' WHERE id = $1`, runtimeID)
+	ownerID := seedSecurityTestOwner(t, "list-owner")
+	dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, agentID, ownerID)
+	presetCall(t, testHandler.AgentPresetCompletions, "GET", "/api/agents/"+agentID+"/presets/completions", nil, "id", agentID).Want(http.StatusForbidden)
+
+	var names []string
+	for _, p := range listPresetsVia(t, agentID) {
+		names = append(names, p.Name)
+	}
+	if want := []string{"big", "fast"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("stored presets = %v, want %v", names, want)
+	}
+	if got := presetByName(t, agentID, "big").Stale; got == "" {
+		t.Fatal("big should be reported stale after the rebind")
+	}
+}
+
+// Concurrent selections serialize on the issue, so exactly one preset label survives.
+func TestPresetAPI_ConcurrentSelectionsLeaveOneLabel(t *testing.T) {
+	requireDB(t)
+	issue := createIssueForTest(t, map[string]any{"title": "preset label race"})
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issue.ID) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_label WHERE workspace_id = $1 AND name LIKE 'preset:%'`, testWorkspaceID)
+	})
+
+	const n = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := withURLParams(newRequest("PUT", "/api/issues/"+issue.ID+"/preset", map[string]any{"name": fmt.Sprintf("p%d", i)}), "id", issue.ID)
+			w := httptest.NewRecorder()
+			testHandler.SetIssuePreset(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("PUT p%d = %d: %s", i, w.Code, w.Body.String())
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var presets []string
+	for _, name := range issueLabelNames(t, issue.ID) {
+		if strings.HasPrefix(name, "preset:") {
+			presets = append(presets, name)
+		}
+	}
+	if len(presets) != 1 {
+		t.Fatalf("preset labels after %d concurrent selections = %v, want exactly one", n, presets)
 	}
 }
 
