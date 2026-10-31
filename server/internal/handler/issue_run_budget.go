@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -218,13 +219,15 @@ func (h *Handler) inRunBudgetTx(ctx context.Context, issueID pgtype.UUID, what s
 	}
 }
 
+const errRecoveryCaused = "a budget recovery run cannot start work, create children or wakeups, or top up"
+
 // grantRunBudgetStep grants the first entry of a status in the budget window
 // when an agent or a workflow edge moved the issue. It runs after the event is
 // published, like openRunBudgetWindowForMove: the activity listener has written
 // the move, and the window's first status is read from it.
 func (h *Handler) grantRunBudgetStep(ctx context.Context, issue db.Issue, prevStatus string) {
 	h.inRunBudgetTx(ctx, issue.ID, "grant step", func(q *db.Queries) error {
-		return service.GrantRunBudgetStep(ctx, q, issue, prevStatus, false)
+		return service.GrantRunBudgetStep(ctx, q, issue, prevStatus, dispatch.BudgetRecoveryCaller(ctx))
 	})
 }
 
