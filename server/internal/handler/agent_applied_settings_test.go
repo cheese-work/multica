@@ -245,3 +245,15 @@ func TestAppliedSettings_FinishedTaskIsRefused(t *testing.T) {
 		t.Fatalf("applied = %+v, want all NULL", a)
 	}
 }
+
+// An identical retry after the task finished is refused too: the write-once row
+// matches, but the claim is no longer live.
+func TestAppliedSettings_FinishedTaskRefusesIdenticalRetry(t *testing.T) {
+	requireDB(t)
+	claimed, runtimeID := claimOnce(t)
+	generation := claimedGeneration(t, claimed)
+	testutil.Call(t, testHandler.ReportAppliedSettings, postApplied(claimed.ID, report(runtimeID, generation, "m"))).Want(http.StatusOK)
+	finishTask(t, claimed.ID)
+
+	testutil.Call(t, testHandler.ReportAppliedSettings, postApplied(claimed.ID, report(runtimeID, generation, "m"))).Want(http.StatusConflict)
+}

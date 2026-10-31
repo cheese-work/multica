@@ -81,11 +81,11 @@ func (h *Handler) ReportAppliedSettings(w http.ResponseWriter, r *http.Request) 
 }
 
 // appliedReportIsRetry reports whether an unwritten report repeats what this
-// claim generation already stores (a retry after a lost response). Anything
+// claim generation already stores (a retry after a lost response) while the task is still live. Anything
 // else, including an older claim on the same runtime, is a conflict.
 func (h *Handler) appliedReportIsRetry(r *http.Request, task db.AgentTaskQueue, runtimeID pgtype.UUID, generation time.Time, req appliedSettingsRequest) bool {
 	current, err := h.Queries.GetAgentTask(r.Context(), task.ID)
-	if err != nil || current.RuntimeID != runtimeID || !current.DispatchedAt.Valid || !current.DispatchedAt.Time.Equal(generation) || !current.AppliedReportedAt.Valid {
+	if err != nil || current.RuntimeID != runtimeID || !current.DispatchedAt.Valid || !current.DispatchedAt.Time.Equal(generation) || !current.AppliedReportedAt.Valid || !appliedReportableStatus(current.Status) {
 		return false
 	}
 	var stored []string
@@ -96,6 +96,11 @@ func (h *Handler) appliedReportIsRetry(r *http.Request, task db.AgentTaskQueue, 
 		current.AppliedThinkingLevel.String == req.AppliedThinkingLevel &&
 		current.AppliedServiceTier.String == req.AppliedServiceTier &&
 		reflect.DeepEqual(nonNilStrings(stored), nonNilStrings(req.AppliedContextArgs))
+}
+
+// appliedReportableStatus mirrors the status filter of SetTaskAppliedSettings.
+func appliedReportableStatus(status string) bool {
+	return status == "dispatched" || status == "waiting_local_directory" || status == "running"
 }
 
 func nonNilStrings(s []string) []string {

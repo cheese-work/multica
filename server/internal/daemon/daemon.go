@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -7605,6 +7606,13 @@ type taskModelSelection struct {
 	ThinkingLevelWarning string
 }
 
+// launchContextArgs lists the context-window args every launch input carries, in
+// argv order: the runtime's launch prefix, the daemon's default args, then the
+// agent's custom args.
+func launchContextArgs(provider string, prefix, defaults, custom []string) []string {
+	return agentpreset.ContextArgsOf(provider, slices.Concat(prefix, defaults, custom))
+}
+
 // reportAppliedSettings tells the server what this launch will use (CHE-2248). It
 // runs only for a claim the server marked as supporting it, and a failure is
 // logged and dropped: the applied columns stay NULL and the task still runs.
@@ -8910,7 +8918,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
 	d.reportAppliedSettings(ctx, task, provider, AppliedSettings{
 		Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier,
-		ContextArgs: agentpreset.ContextArgsOf(provider, customArgs),
+		ContextArgs: launchContextArgs(provider, profileFixedArgs, extraArgs, customArgs),
 	}, taskLog)
 
 	var idleWatchdogTimeout time.Duration
