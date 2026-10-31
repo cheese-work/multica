@@ -157,7 +157,7 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 
 func idleGuardLeaderNote(issue db.Issue, receipt idleGuardReceipt) string {
 	return fmt.Sprintf("Idle started-issue guard: issue %s was idle in %s since %s with no run, wakeup or sub-issue left to continue it, so it moved to %s (%s). Decide whether to continue it, re-route it, or open a decision request if a person must choose. This alert grants no new decision, merge or deploy authority.",
-		uuidToString(issue.ID), receipt.From, receipt.IdleSince, receipt.To, receipt.Kind)
+		uuidToString(issue.ID), receipt.From, idleGuardWhen(receipt.IdleSince), receipt.To, receipt.Kind)
 }
 
 // admitIdleGuardLeaderTask routes the issue's owning squad and queues one task
@@ -175,41 +175,6 @@ func (handler *Handler) admitIdleGuardLeaderTask(ctx context.Context, q *db.Quer
 		return db.AgentTaskQueue{}, errors.New("idle guard: squad leader is archived")
 	}
 	return handler.TaskService.EnqueueGuardLeaderTaskInTx(ctx, q, issue, leader.ID, squad.ID, note, "idle started guard", "Idle started issue moved")
-}
-
-// alertIdleGuardLeader is the best-effort alert after the guard gives up on a
-// refused move; it takes the same locks as a notice.
-func (handler *Handler) alertIdleGuardLeader(ctx context.Context, issue db.Issue, note string) (db.AgentTaskQueue, error) {
-	tx, err := handler.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	defer tx.Rollback(ctx)
-	q := handler.Queries.WithTx(tx)
-	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	if _, err := q.LockDecisionIssueNowait(ctx, db.LockDecisionIssueNowaitParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID}); err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	task, err := handler.admitIdleGuardLeaderTask(ctx, q, issue, note)
-	if err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	return task, tx.Commit(ctx)
-}
-
-// postIdleGuardComment adds a system comment outside any move; a failure is
-// logged, never fatal.
-func (handler *Handler) postIdleGuardComment(ctx context.Context, issue db.Issue, content string) {
-	created, err := handler.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
-	})
-	if err != nil {
-		slog.Warn("idle_started_guard could not post a comment", "issue_id", uuidToString(issue.ID), "err", err)
-		return
-	}
-	handler.publishIdleGuardComment(ctx, issue.WorkspaceID, issue.ID, created.Comment())
 }
 
 func (handler *Handler) publishIdleGuardComment(ctx context.Context, workspaceID, issueID pgtype.UUID, comment db.Comment) {

@@ -37,6 +37,17 @@ func (q *Queries) IdleStartedGuardHumanWait(ctx context.Context, issueID pgtype.
 const listIdleStartedGuardEpisodes = `-- name: ListIdleStartedGuardEpisodes :many
 SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
 FROM issue i
+CROSS JOIN LATERAL (
+  SELECT GREATEST(
+    i.created_at,
+    (SELECT max(c.created_at) FROM comment c
+      WHERE c.issue_id = i.id AND c.deleted_at IS NULL AND c.author_type <> 'system'),
+    (SELECT max(GREATEST(t.created_at, t.completed_at)) FROM agent_task_queue t
+      WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM (i.metadata -> 'idle_guard' ->> 'alert_id')),
+    (SELECT max(a.created_at) FROM activity_log a
+      WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent'))
+  ) AS idle_since
+) clock
 WHERE i.workspace_id = $1
   AND i.metadata ? 'idle_guard'
   AND NOT (
@@ -46,7 +57,8 @@ WHERE i.workspace_id = $1
   AND NOT (
     i.status = i.metadata -> 'idle_guard' ->> 'from'
     AND i.metadata -> 'idle_guard' ->> 'state' = 'gave_up'
-    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = '')
+    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = ''
+    AND clock.idle_since <= (i.metadata -> 'idle_guard' ->> 'idle_since')::timestamptz)
 ORDER BY i.id
 `
 
@@ -59,7 +71,10 @@ type ListIdleStartedGuardEpisodesRow struct {
 
 // Issues with an idle_guard receipt that need another look: a notice owed, a
 // refused move to retry, or an issue that left the episode (a repair). A settled
-// receipt on an issue still where it settled is left alone.
+// receipt on an issue still where it settled is left alone. A move the guard
+// gave up on is settled until a person or an agent acts on the issue again: the
+// idle clock, not counting the alert task the guard queued itself, is then past
+// the idle time the receipt recorded.
 func (q *Queries) ListIdleStartedGuardEpisodes(ctx context.Context, workspaceID pgtype.UUID) ([]ListIdleStartedGuardEpisodesRow, error) {
 	rows, err := q.db.Query(ctx, listIdleStartedGuardEpisodes, workspaceID)
 	if err != nil {

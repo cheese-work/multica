@@ -57,6 +57,15 @@ func (fixture idleActFixture) workflow(test *testing.T, steps []issueworkflow.St
 	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, project, fixture.issue)
 }
 
+// ageEverything moves every signal on the issue six hours into the past.
+func (fixture idleActFixture) ageEverything(test *testing.T) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE comment SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE activity_log SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed', created_at = now() - interval '6 hours', completed_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE issue SET created_at = now() - interval '7 hours' WHERE id = $1`, fixture.issue)
+}
+
 func (fixture idleActFixture) dueDate(test *testing.T) bool {
 	test.Helper()
 	return dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND due_date IS NOT NULL`, fixture.issue) == 1

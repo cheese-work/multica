@@ -95,16 +95,22 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 	}
 	prior, _ := readIdleGuardReceipt(issue)
 	idleGuardBeforeMove()
-	receipt := idleGuardReceipt{State: idleGuardMoved, From: issue.Status, IdleSince: finding.IdleSince.UTC().Format(time.RFC3339)}
+	receipt := idleGuardReceipt{State: idleGuardMoved, From: issue.Status, IdleSince: finding.IdleSince.UTC().Format(time.RFC3339Nano)}
 	if prior.State == idleGuardRefused {
 		receipt.Attempts = prior.Attempts
 	}
 	var unavailable error
 	if receipt.To, receipt.Kind, unavailable = handler.idleGuardTarget(ctx, issue); unavailable != nil {
-		if !errors.Is(unavailable, errIdleGuardNoTarget) {
-			return unavailable
+		switch {
+		case errors.Is(unavailable, errIdleGuardOpenRequest):
+			if prior.State == idleGuardRefused {
+				return handler.endIdleGuardEpisode(ctx, issue.WorkspaceID, issue.ID)
+			}
+			return nil
+		case errors.Is(unavailable, errIdleGuardNoTarget):
+			return handler.refuseIdleMove(ctx, issue, receipt, unavailable)
 		}
-		return handler.refuseIdleMove(ctx, issue, receipt, unavailable)
+		return unavailable
 	}
 	var comment db.Comment
 	guard := func(ctx context.Context, q *db.Queries, params *db.UpdateIssueParams) error {
@@ -135,7 +141,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 		created, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true},
 			Content: fmt.Sprintf("Idle started-issue guard: no run, wakeup or sub-issue was left to continue this issue and it had been idle since %s. Moved from %s to %s (%s).",
-				receipt.IdleSince, receipt.From, receipt.To, receipt.Kind),
+				idleGuardWhen(receipt.IdleSince), receipt.From, receipt.To, receipt.Kind),
 			Type: "system",
 		})
 		if err != nil {
@@ -156,7 +162,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 		params.ExpectedRevision = pgtype.Int8{Int64: written.Revision, Valid: true}
 		return nil
 	}
-	extra := map[string]any{"kind": receipt.Kind, "idle_since": receipt.IdleSince}
+	extra := map[string]any{"kind": receipt.Kind, "idle_since": idleGuardWhen(receipt.IdleSince)}
 	moved, _, err := handler.tryMoveIssueOnEdge(withIssueMoveGuard(ctx, guard), issue, receipt.To, "idle_started_guard", extra, false)
 	switch {
 	case err != nil && isStaleMove(err):
@@ -173,11 +179,16 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 
 var errIdleGuardNoTarget = errors.New("idle guard: the issue's workflow lists neither need_decision nor blocked")
 
+// errIdleGuardOpenRequest marks an open decision request on a workflow without
+// need_decision. The wait is legitimate: no move, no receipt, no comment.
+var errIdleGuardOpenRequest = errors.New("idle guard: an open decision request is the legitimate wait")
+
 // idleGuardTarget picks where an idle issue goes. A person is the next move when
 // an open decision request, a member-filtered wakeup, a mention of a member in
 // the newest comment, Readiness gated-human or a person-handled workflow step
 // says so; otherwise nothing is left to continue it and it is blocked. A target
-// the issue's workflow or catalog lacks falls back to blocked.
+// the issue's workflow or catalog lacks falls back to blocked, except for an
+// open decision request, which stays where it is.
 func (handler *Handler) idleGuardTarget(ctx context.Context, issue db.Issue) (to, kind string, err error) {
 	kind = idleGuardKindNoContinuation
 	requests, err := handler.Queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
@@ -208,6 +219,9 @@ func (handler *Handler) idleGuardTarget(ctx context.Context, issue db.Issue) (to
 		}
 		if available {
 			return candidate, kind, nil
+		}
+		if kind == idleGuardKindOpenRequest {
+			return "", "", errIdleGuardOpenRequest
 		}
 	}
 	return "", "", errIdleGuardNoTarget
@@ -267,17 +281,79 @@ func (handler *Handler) refuseIdleMove(ctx context.Context, issue db.Issue, rece
 		_, err := writeIdleGuardReceipt(ctx, handler.Queries, issue, receipt)
 		return err
 	}
-	receipt.State = idleGuardGaveUp
-	if _, err := writeIdleGuardReceipt(ctx, handler.Queries, issue, receipt); err != nil {
+	return handler.giveUpIdleMove(ctx, issue, receipt)
+}
+
+// giveUpIdleMove ends a refused episode. The give-up note, the leader alert and
+// the gave_up receipt commit together: a failure or a crash leaves the receipt
+// refused, and the next pass tries the whole give-up again. Only the alert may
+// fail alone (no squad to route to); the note is the promised visible result.
+func (handler *Handler) giveUpIdleMove(ctx context.Context, issue db.Issue, receipt idleGuardReceipt) error {
+	tx, err := handler.TxStarter.Begin(ctx)
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback(ctx)
+	q := handler.Queries.WithTx(tx)
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
+		return err
+	}
+	if _, err := q.LockDecisionIssueNowait(ctx, db.LockDecisionIssueNowaitParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID}); err != nil {
+		return err
+	}
+	current, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID})
+	if err != nil {
+		return err
+	}
+	if current.Status != receipt.From {
+		return nil
+	}
+	receipt.State = idleGuardGaveUp
 	note := fmt.Sprintf("Idle started-issue guard: gave up after %d attempts to move this issue from %s to %s (idle since %s). Last error: %s",
-		receipt.Attempts, receipt.From, receipt.To, receipt.IdleSince, receipt.Error)
-	handler.postIdleGuardComment(ctx, issue, note)
-	if task, err := handler.alertIdleGuardLeader(ctx, issue, note); err != nil {
+		receipt.Attempts, receipt.From, receipt.To, idleGuardWhen(receipt.IdleSince), receipt.Error)
+	var alert db.AgentTaskQueue
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if alert, err = handler.admitIdleGuardLeaderTask(ctx, handler.Queries.WithTx(savepoint), current, note); err != nil {
 		slog.Warn("idle_started_guard could not alert the leader after giving up", "issue_id", uuidToString(issue.ID), "err", err)
-	} else if task.ID.Valid {
-		handler.TaskService.PublishTaskEnqueued(ctx, task)
+		alert = db.AgentTaskQueue{}
+		err = savepoint.Rollback(ctx)
+	} else {
+		err = savepoint.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	created, err := q.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: note, Type: "system",
+	})
+	if err != nil {
+		return err
+	}
+	receipt.CommentID = uuidToString(created.ID)
+	if alert.ID.Valid {
+		receipt.AlertID = uuidToString(alert.ID)
+	}
+	if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	handler.publishIdleGuardComment(ctx, issue.WorkspaceID, issue.ID, created.Comment())
+	if alert.ID.Valid {
+		handler.TaskService.PublishTaskEnqueued(ctx, alert)
 	}
 	return nil
+}
+
+// idleGuardWhen shows a receipt's exact idle time to the second.
+func idleGuardWhen(exact string) string {
+	at, err := time.Parse(time.RFC3339Nano, exact)
+	if err != nil {
+		return exact
+	}
+	return at.UTC().Format(time.RFC3339)
 }
