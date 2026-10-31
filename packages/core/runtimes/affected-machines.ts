@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { registerDraftCleanup } from "../drafts/cleanup-registry";
 import { defaultStorage } from "../platform/storage";
 import type { AffectedMachine } from "../types";
 
@@ -69,6 +70,13 @@ export const useDismissedMachineEventsStore = create<DismissedMachineEventsState
     },
   ),
 );
+
+// Dismissals are per viewer; ending a session wipes them like it wipes drafts.
+registerDraftCleanup({
+  storageKey: "multica_dismissed_machine_events",
+  workspaceScoped: false,
+  resetInMemory: () => useDismissedMachineEventsStore.setState({ dismissed: [] }),
+});
 
 /** Details open/closed, so reopening the banner from the header icon keeps it as it was. */
 export const useMachineBannerDetailsStore = create<{

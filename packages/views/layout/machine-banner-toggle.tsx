@@ -34,6 +34,7 @@ export function MachineBannerToggle() {
         type="button"
         aria-label={label}
         aria-pressed={open}
+        data-testid="machine-banner-toggle"
         onClick={() => {
           if (open) {
             closeBanner();

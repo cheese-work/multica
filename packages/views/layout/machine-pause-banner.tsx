@@ -73,6 +73,7 @@ function MachineBanner({
   return (
     <div
       id={MACHINE_BANNER_ID}
+      data-testid="machine-banner"
       tabIndex={-1}
       role="status"
       className={cn(
@@ -106,11 +107,12 @@ function SummaryBanner({
   const { duration } = useMachinePauseFormat();
   const detailsOpen = useMachineBannerDetailsStore((state) => state.open);
   const setDetailsOpen = useMachineBannerDetailsStore((state) => state.setOpen);
-  const tasks = machines.reduce((sum, machine) => sum + machine.tasks, 0);
+  const tasks = machines.reduce((sum, machine) => sum + machine.waiting, 0);
   const next = machines.find((machine) => machine.remainingMs !== null);
   return (
     <div
       id={MACHINE_BANNER_ID}
+      data-testid="machine-banner"
       tabIndex={-1}
       role="status"
       className="flex flex-col gap-2 rounded-lg border border-warning/60 bg-warning/15 px-3 py-2 text-caption outline-none"
@@ -132,6 +134,7 @@ function SummaryBanner({
           type="button"
           size="xs"
           variant="ghost"
+          data-testid="machine-banner-details"
           aria-expanded={detailsOpen}
           onClick={() => setDetailsOpen(!detailsOpen)}
         >
@@ -146,7 +149,7 @@ function SummaryBanner({
       {detailsOpen && (
         <ul className="flex flex-col gap-1.5 border-t border-warning/40 pt-2">
           {machines.map((machine) => (
-            <li key={machine.key} className="flex items-center gap-2.5">
+            <li key={machine.key} data-testid="machine-banner-row" className="flex items-center gap-2.5">
               <MachineLine
                 machine={machine}
                 isNew={isNew(machine)}
@@ -190,15 +193,19 @@ function MachineLine({
           machine: name,
           reason: reasonName(machine.reason ?? "maintenance"),
         });
-  // The owner's own machine keeps the drain wording; everyone else reads how
-  // many of their tasks wait.
+  // The owner's own machine keeps the drain wording and adds queued tasks when
+  // some wait; everyone else reads how many of their tasks wait.
+  const waiting =
+    machine.waiting > 0
+      ? t(($) => $.machine_pause.banner.tasks_wait, { count: machine.waiting })
+      : null;
   const progress = own
     ? safe
       ? t(($) => $.machine_pause.banner.drained)
       : own.online
-        ? t(($) => $.machine_pause.banner.tasks_left, { count: machine.tasks })
-        : t(($) => $.machine_pause.banner.tasks_left_stale, { count: machine.tasks })
-    : t(($) => $.machine_pause.banner.tasks_wait, { count: machine.tasks });
+        ? t(($) => $.machine_pause.banner.tasks_left, { count: machine.running })
+        : t(($) => $.machine_pause.banner.tasks_left_stale, { count: machine.running })
+    : waiting;
   const ends =
     machine.remainingMs === null
       ? null
@@ -220,7 +227,7 @@ function MachineLine({
           {t(($) => $.machine_pause.banner.new_event)}
         </span>
       )}
-      {progress} {ends} {lastSeen}
+      {progress} {own && waiting} {ends} {lastSeen}
       {machine.state === "paused" && !machine.target && ` ${t(($) => $.machine_pause.no_rights)}`}
     </span>
   );
@@ -236,6 +243,7 @@ function ResumeButton({ machine, wsId }: { machine: BannerMachine; wsId: string 
       type="button"
       size="xs"
       variant="outline"
+      data-testid="machine-banner-resume"
       disabled={resume.isPending}
       aria-busy={resume.isPending}
       onClick={() =>
@@ -252,7 +260,14 @@ function ResumeButton({ machine, wsId }: { machine: BannerMachine; wsId: string 
 
 function CloseButton({ onClose, label }: { onClose: () => void; label: string }) {
   return (
-    <Button type="button" size="icon-xs" variant="ghost" aria-label={label} onClick={onClose}>
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      data-testid="machine-banner-close"
+      aria-label={label}
+      onClick={onClose}
+    >
       <X aria-hidden="true" className="size-3.5" />
     </Button>
   );

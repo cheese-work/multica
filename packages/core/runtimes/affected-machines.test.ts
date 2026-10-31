@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import { parseWithFallback } from "../api/schema";
+import { registeredDraftKeys, resetAllRegisteredDrafts } from "../drafts/cleanup-registry";
 import {
   AffectedMachinesSchema,
   useDismissedMachineEventsStore,
@@ -71,5 +72,14 @@ describe("dismissed machine events", () => {
     expect(dismissed).toHaveLength(50);
     expect(dismissed[0]).toBe("e10");
     expect(dismissed.at(-1)).toBe("e59");
+  });
+});
+
+describe("dismissed machine events on session end", () => {
+  it("are registered with the session cleanup, so the next account starts clean", () => {
+    useDismissedMachineEventsStore.getState().dismiss(["u1:paused:1"]);
+    expect(registeredDraftKeys().global).toContain("multica_dismissed_machine_events");
+    resetAllRegisteredDrafts();
+    expect(useDismissedMachineEventsStore.getState().dismissed).toEqual([]);
   });
 });

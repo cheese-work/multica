@@ -32,8 +32,10 @@ export interface BannerMachine {
   reason: RuntimePauseReason | null;
   remainingMs: number | null;
   endingSoon: boolean;
-  /** Tasks left to finish (viewer's own machine) or queued tasks that wait (everyone else). */
-  tasks: number;
+  /** Tasks still running before the viewer's own paused machine is drained; 0 for every other machine. */
+  running: number;
+  /** Queued tasks of the viewer's audience that wait for this machine. */
+  waiting: number;
   /** Set for the viewer's own paused machine: the drain progress the L1 banner shows. */
   own: MachinePauseState | null;
   lastSeenAt: string | null;
@@ -80,6 +82,9 @@ export function useMachineBanner() {
       members.find((member) => member.user_id === ownerId)?.name ?? null;
     const rows: BannerMachine[] = [];
     const seen = new Set<string>();
+    const waitingByKey = new Map(
+      (affected ?? []).map((item) => [`${item.machine_owner_id}:${item.daemon_id}`, item.waiting_tasks]),
+    );
 
     for (const machine of built) {
       if (!machine.runtimes.some((runtime) => runtime.owner_id === currentUserId)) continue;
@@ -93,14 +98,15 @@ export function useMachineBanner() {
       seen.add(key);
       rows.push({
         key,
-        eventId: `own:${key}:${state.pause.paused_at}`,
+        eventId: `${currentUserId}:own:${key}:${state.pause.paused_at}`,
         title: machine.title,
         ownerName: null,
         state: "paused",
         reason: state.reason,
         remainingMs: state.remainingMs,
         endingSoon: state.endingSoon,
-        tasks: state.tasks,
+        running: state.tasks,
+        waiting: waitingByKey.get(key) ?? 0,
         own: state,
         lastSeenAt: machine.lastSeenAt,
         target: pauseTarget(machine.runtimes, currentUserId, role),
@@ -123,14 +129,17 @@ export function useMachineBanner() {
       if (item.state === "paused" && remainingMs !== null && remainingMs <= 0) continue;
       rows.push({
         key,
-        eventId: item.event_id,
-        title: item.device_name || machine?.title || item.daemon_id,
+        // Event ids name the machine event, not the viewer; a dismissal is the viewer's.
+        eventId: `${currentUserId}:${item.event_id}`,
+        // The canonical name (a rename, or the machine-name rules) wins over the raw device string.
+        title: machine?.title || item.device_name || item.daemon_id,
         ownerName: ownerName(item.machine_owner_id),
         state: item.state,
         reason: item.reason,
         remainingMs,
         endingSoon: remainingMs !== null && remainingMs < 5 * 60_000,
-        tasks: item.waiting_tasks,
+        running: 0,
+        waiting: item.waiting_tasks,
         own: null,
         lastSeenAt: machine?.lastSeenAt ?? null,
         target: machine ? pauseTarget(machine.runtimes, currentUserId, role) : null,

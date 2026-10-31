@@ -218,6 +218,49 @@ describe("machine banner audiences", () => {
     expect(rows.find((row) => row.textContent?.includes("New"))).toHaveTextContent("mac-mini");
   });
 
+  it("a renamed machine shows its canonical name, not the raw device string", async () => {
+    givenServer(
+      [affected({ device_name: "x99 · claude 2.1.0" })],
+      [runtime({ custom_name: "Build box", device_info: "x99 · claude 2.1.0" })],
+    );
+    renderChrome();
+    expect(await screen.findByRole("status")).toHaveTextContent("Build box (Cheese's machine) is paused");
+  });
+
+  it("the owner's drained machine with queued tasks adds them to the other machines' waiting count", async () => {
+    me.id = "owner-1";
+    const paused = {
+      reason: "maintenance" as const,
+      paused_by: "owner-1",
+      paused_at: new Date(Date.now() - MIN).toISOString(),
+      expires_at: new Date(Date.now() + 20 * MIN).toISOString(),
+    };
+    givenServer(
+      [
+        affected({ waiting_tasks: 4 }),
+        affected({ machine_owner_id: "owner-2", daemon_id: "daemon-mac", device_name: "mac", waiting_tasks: 1, event_id: "paused:2" }),
+      ],
+      [
+        runtime({ pause: paused, daemon_running_tasks: 0 }),
+        runtime({ id: "rt-2", daemon_id: "daemon-mac", owner_id: "owner-2", device_info: "mac" }),
+      ],
+    );
+    renderChrome();
+    expect(await screen.findByRole("status")).toHaveTextContent("5 tasks wait for agents on them.");
+  });
+
+  it("a dismissal belongs to the viewer: another account on the same client still sees the banner", async () => {
+    givenServer([affected()]);
+    const first = renderChrome();
+    fireEvent.click(await screen.findByRole("button", { name: "Hide machine banner" }));
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    first.unmount();
+
+    me.id = "lead-2";
+    renderChrome();
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+  });
+
   it("counts above 9 read 9+", async () => {
     givenServer(
       Array.from({ length: 11 }, (_, i) =>

@@ -1,0 +1,25 @@
+# Machine banner audiences, per-event dismiss and header status icon (CHE-2674 L4), web and desktop.
+# Design gate: Cheese picked direction B in CHE-2684; lock PR #684 is merged at 804135a7fd19c01d0dd6138b02e326f2d33d3503.
+# Deviations from the lock: the icon sits at the right end of PageHeader (headers have no action slot); the project-lead line omits the project name (the query does not return it).
+issue: CHE-2674
+design: design/machine-pause-banner/approved/banner-audiences-b.html @ 804135a7fd19c01d0dd6138b02e326f2d33d3503
+pages:
+  - id: dashboard-header-banner
+    url: /<workspace-slug>/issues   # every dashboard page; 1440 px
+    keep:
+      - machine-banner-resume
+    change:
+      - machine-banner: "one banner at most: a single machine in full, several machines as one summary; shown to the daemon owner for their own paused machine, to the workspace owner and project leads only while a task of theirs waits"
+      - machine-banner-details: "new Details toggle on the summary banner; one row per machine with a New tag on unseen events"
+      - machine-banner-row: "new row per machine: name, owner, cause, waiting tasks, time left"
+      - machine-banner-close: "now hides the banner until a new event instead of for the session"
+      - machine-banner-toggle: "new header icon with the machine count and aria-pressed; reopens the banner and moves focus to it"
+    remove: []
+  - id: dashboard-header-banner-phone
+    url: /<workspace-slug>/issues   # 390 px; the icon keeps a 40 px tap target
+    keep:
+      - machine-banner-resume
+    change:
+      - machine-banner: "same banner; text wraps, Details and close stay reachable"
+      - machine-banner-toggle: "same icon at the right end of the header"
+    remove: []
