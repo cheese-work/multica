@@ -704,7 +704,11 @@
     "recipient_count_other": "{{count}} 个智能体会收到",
     "steer_attachment_notice": "插话只支持文字，带附件的消息会在本轮结束后处理。",
     "restart_send": "停止并发送",
-    "restart_failed": "没能停止当前运行，消息还没有发送。"
+    "restart_failed": "没能停止当前运行，消息还没有发送。",
+    "supersession": {
+      "superseded_by": "已被 rev-{{revision}} 取代",
+      "supersedes": "取代 rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "回复...",

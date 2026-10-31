@@ -4,6 +4,7 @@ import { Card } from "@multica/ui/components/ui/card";
 import type { TimelineEntry } from "@multica/core/types";
 import { isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { useT } from "../../i18n";
+import { SupersededByLink } from "./supersession-links";
 
 interface ResolvedThreadBarProps {
   /** The resolved root comment. */
@@ -76,6 +77,11 @@ export function ResolvedThreadBar({ entry, replies, onExpand }: ResolvedThreadBa
         </span>
         <ChevronRight className="h-3.5 w-3.5 rotate-90 shrink-0 text-muted-foreground" />
       </button>
+      {entry.superseded_by_id && (
+        <div className="px-4 pb-3 pl-[2.375rem]">
+          <SupersededByLink entry={entry} />
+        </div>
+      )}
     </Card>
   );
 }
