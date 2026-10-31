@@ -30,8 +30,14 @@ type Ask struct {
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
 	SourceIssueID    string      `json:"source_issue_id"`
 	SourceCommentID  string      `json:"source_comment_id"`
+	HumanSteps       []HumanStep `json:"human_steps"`
+	Probes           []string    `json:"probes"`
+	AfterDone        string      `json:"after_done"`
 	Subject          string      `json:"subject,omitempty"`
 	Artifacts        []Artifact  `json:"artifacts,omitempty"`
+	// AskedBy is the asking agent's name, set by the server for a new request;
+	// it is not caller input, so it is never decoded or fingerprinted.
+	AskedBy string `json:"-"`
 }
 
 // Artifact is a file the human approves. The server checks that it is an
@@ -42,6 +48,9 @@ type Artifact struct {
 	SHA256                 string             `json:"sha256"`
 	SupersedesAttachmentID string             `json:"supersedes_attachment_id,omitempty"`
 	SignedBy               *ArtifactSignature `json:"signed_by,omitempty"`
+	// SupersedesSignedBy is the signature of the superseded revision, so a diff
+	// can say who signed the file it is measured against.
+	SupersedesSignedBy *ArtifactSignature `json:"supersedes_signed_by,omitempty"`
 }
 
 // ArtifactSignature names the reviewer agent and the signed review comment.
@@ -59,7 +68,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "subject", "artifacts"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
@@ -83,13 +92,19 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
-		{"subject", &ask.Subject},
+		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
+		return ask, err
+	}
+	if err := decodeSteps(fields["human_steps"], &ask.HumanSteps); err != nil {
+		return ask, err
+	}
+	if err := decodeStrings("ask.probes", fields["probes"], &ask.Probes); err != nil {
 		return ask, err
 	}
 	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
@@ -238,17 +253,45 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
+	if err := ask.validateReadable(); err != nil {
+		return err
+	}
+	if err := ask.validateHumanSteps(); err != nil {
+		return err
+	}
 	return ask.validateArtifacts()
 }
 
 func (ask Ask) Content(workspaceSlug string) string {
-	labels := make([]string, len(ask.Options))
-	for index, option := range ask.Options {
-		labels[index] = option.Label
+	var options strings.Builder
+	for _, option := range ask.Options {
+		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
+		for _, pro := range option.Pros {
+			fmt.Fprintf(&options, "  - Pro: %s\n", pro)
+		}
+		for _, con := range option.Cons {
+			fmt.Fprintf(&options, "  - Con: %s\n", con)
+		}
+		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
 	}
-	commentPath := util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID)
-	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Stakes if wrong**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.AgentDid, ask.Decision, ask.StakesIfWrong, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.SourceIssueID, commentPath, ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+}
+
+func (ask Ask) askedByLine() string {
+	if ask.AskedBy == "" {
+		return ""
+	}
+	return "**Asked by** " + ask.AskedBy + "\n\n"
+}
+
+// askSourceTail is the per-run provenance link that ends Content().
+var askSourceTail = regexp.MustCompile(`\n\nInvestigate in issue: [^\n]*$`)
+
+// WithoutSourceTail drops the provenance link, so two renders of the same
+// decision from different source comments compare equal.
+func WithoutSourceTail(content string) string {
+	return askSourceTail.ReplaceAllString(content, "")
 }
 
 // artifactsContent lists each artifact before the source link, so the re-ask

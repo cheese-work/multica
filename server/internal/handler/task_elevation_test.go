@@ -109,7 +109,7 @@ func TestClaimRecordsElevationOnce(t *testing.T) {
 		t.Fatalf("recorded scopes = %v", scopes)
 	}
 	// A re-claim of the same task keeps its row and its epoch.
-	if got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID)); got.Profile != "elevated" || got.Epoch != 1 {
+	if got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID), nil); got.Profile != "elevated" || got.Epoch != 1 {
 		t.Fatalf("re-claim profile = %+v", got)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1`, f.taskID); n != 1 {
@@ -121,7 +121,7 @@ func TestReclaimAfterOneGrantLapsedIsNotElevated(t *testing.T) {
 	f := claimElevatedGrants(t, []string{"docker"}, []string{"repo_write:1234"})
 	dbfx.Exec(t, `UPDATE run_capability_grant SET revoked_at = now() WHERE issue_id = $1 AND scopes = ARRAY['docker']`, f.issueID)
 	// Before the fence sweep runs, a re-claim must not hand out the frozen scopes.
-	got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID))
+	got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID), nil)
 	if got.Profile == "elevated" {
 		t.Fatalf("re-claim profile = %+v, want not elevated", got)
 	}
@@ -211,7 +211,7 @@ func TestRevocationFencesTheTaskAndEndsInRestrictedFinal(t *testing.T) {
 	f.authorize(t, 2, "repo_write:1234", hashA).Want(http.StatusForbidden)
 	// The task is never elevated again, even with a fresh grant.
 	insertGrant(t, f.issueID, testWorkspaceID, []string{"repo_write:1234"}, "1 minute", "1 hour", false)
-	if got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID)); got.Profile != "restricted" {
+	if got := testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.issueID), parseUUID(f.taskID), nil); got.Profile != "restricted" {
 		t.Fatalf("fenced task re-elevated: %+v", got)
 	}
 }

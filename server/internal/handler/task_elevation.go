@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -44,8 +45,8 @@ type authorizeElevatedOpRequest struct {
 // AuthorizeElevatedOp records one operation the caller is about to run with the
 // exact input it hashed. One transaction under the task's row lock checks grant
 // liveness, scope, state and epoch, so a fence either precedes the check or
-// waits for it. Taint on the task or issue also refuses; its storage lands with
-// B5a and B5b.
+// waits for it. Task taint also refuses, read under a share lock on the task row
+// so a taint writer serializes with it; issue taint lands with B5b.
 func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
 	if !ok {
@@ -80,12 +81,19 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
 	}
+	taint, err := qtx.LockTaskTaintIDs(r.Context(), task.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to authorize")
+		return
+	}
 	live, err := qtx.CountLiveGrantsByID(r.Context(), te.GrantIds)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
 	}
 	switch {
+	case len(taint) > 0:
+		writeError(w, http.StatusForbidden, "task is tainted")
 	case te.State != elevationElevated:
 		writeError(w, http.StatusForbidden, "task is fenced")
 	case te.Epoch != req.Epoch:
@@ -192,6 +200,11 @@ func (h *Handler) fenceRound(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	tainted, err := q.FenceTaintedTaskElevations(ctx, pgtype.UUID{})
+	if err != nil {
+		return err
+	}
+	fenced = append(fenced, tainted...)
 	unknown, err := q.MarkLapsedElevatedOpsUnknown(ctx)
 	if err != nil {
 		return err

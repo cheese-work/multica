@@ -174,6 +174,16 @@ INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payl
 VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
+-- Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
+-- receipt keeps every comment it has held, migration 831). A new wakeup task and
+-- a merge into a queued one both end here; the task trigger keeps what it had.
+WITH receipt_taint AS (
+ SELECT COALESCE(array_agg(DISTINCT x ORDER BY x),'{}')::text[] AS ids
+ FROM issue_wakeup_receipt r,unnest(r.taint_ids) AS x WHERE r.id=ANY(@ids::uuid[])
+), tainted AS (
+ UPDATE agent_task_queue SET taint_ids=(SELECT ids FROM receipt_taint)
+ WHERE id=sqlc.narg(task_id)::uuid AND cardinality((SELECT ids FROM receipt_taint))>0
+)
 UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WHERE id=ANY(@ids::uuid[]);
 -- name: MarkWakeupReceiptsDeferred :many
 -- Active-run defer: stamps the facts a running target held back and returns

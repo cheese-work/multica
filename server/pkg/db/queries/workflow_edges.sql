@@ -65,3 +65,11 @@ UPDATE issue SET max_runs_override = sqlc.arg('runs')::int
 WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
   AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
 RETURNING max_runs_override;
+
+-- name: ListMemberStatusChangesAfter :many
+-- Every time a person moved the issue's status after a point: each one opened a
+-- run-budget window, whether or not anything was admitted in it.
+SELECT created_at FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
+  AND created_at > sqlc.arg('after')::timestamptz
+ORDER BY created_at;

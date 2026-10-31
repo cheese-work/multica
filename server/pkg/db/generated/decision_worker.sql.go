@@ -39,6 +39,71 @@ func (q *Queries) AcquireDecisionWorkerLease(ctx context.Context, arg AcquireDec
 	return i, err
 }
 
+const deleteDecisionOrphanAgentReliance = `-- name: DeleteDecisionOrphanAgentReliance :exec
+DELETE FROM decision_agent_reliance reliance
+WHERE reliance.instance_id = $1 AND reliance.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = reliance.issue_id AND issue.workspace_id = reliance.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentRelianceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentReliance(ctx context.Context, arg DeleteDecisionOrphanAgentRelianceParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentReliance, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentScope = `-- name: DeleteDecisionOrphanAgentScope :exec
+DELETE FROM decision_agent_scope scope
+WHERE scope.instance_id = $1 AND scope.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentScopeParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Authority-neutral orphan cleanup, before deleting the parent request.
+func (q *Queries) DeleteDecisionOrphanAgentScope(ctx context.Context, arg DeleteDecisionOrphanAgentScopeParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentScope, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentSettlement = `-- name: DeleteDecisionOrphanAgentSettlement :exec
+DELETE FROM decision_agent_settlement settlement
+WHERE settlement.instance_id = $1 AND settlement.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentSettlementParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentSettlement(ctx context.Context, arg DeleteDecisionOrphanAgentSettlementParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentSettlement, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentUndo = `-- name: DeleteDecisionOrphanAgentUndo :exec
+DELETE FROM decision_agent_undo undo
+WHERE undo.instance_id = $1 AND undo.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentUndoParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentUndo(ctx context.Context, arg DeleteDecisionOrphanAgentUndoParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentUndo, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const deleteDecisionOrphanIntent = `-- name: DeleteDecisionOrphanIntent :exec
 DELETE FROM decision_intent intent
 WHERE intent.workspace_id = $1 AND intent.id = $2
@@ -86,10 +151,10 @@ func (q *Queries) DeleteDecisionOrphanRequestAction(ctx context.Context, decisio
 }
 
 const listDecisionFinalizations = `-- name: ListDecisionFinalizations :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
-WHERE EXISTS (
+WHERE request.authority = 'human' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     JOIN agent_task_queue task ON task.id = answer.answered_by_task_id
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL AND answer.wake_at IS NULL
@@ -136,7 +201,9 @@ func (q *Queries) ListDecisionFinalizations(ctx context.Context, batchSize int32
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
+			&i.Authority,
 		); err != nil {
 			return nil, err
 		}
@@ -295,7 +362,7 @@ func (q *Queries) RenewDecisionWorkerLease(ctx context.Context, arg RenewDecisio
 const scheduleDecisionAnswer = `-- name: ScheduleDecisionAnswer :one
 UPDATE decision_answer answer SET wake_at = GREATEST(answer.effective_at, clock_timestamp())
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = $1
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = $1
   AND request.status = 'answered' AND answer.id = $2
   AND answer.wake_at IS NULL AND answer.disclaimed_at IS NULL
 RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label

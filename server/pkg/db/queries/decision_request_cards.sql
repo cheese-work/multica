@@ -8,12 +8,14 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
     last_answer.chosen_option_index AS answer_chosen_option_index,
+    COALESCE(asker.name, '')::text AS asking_agent_name,
     pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 JOIN chat_message message ON message.chat_session_id = request.chat_session_id
     AND (message.id = request.ping_message_id OR request.id = ANY(message.decision_request_ids))
+LEFT JOIN agent asker ON asker.id = request.asking_agent_id AND asker.workspace_id = request.workspace_id
 LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
@@ -36,7 +38,7 @@ LEFT JOIN LATERAL (
         task.created_at, task.id
     LIMIT 1
 ) pickup ON true
-WHERE request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id')
     AND message.id = ANY(sqlc.arg('message_ids')::uuid[])
 ORDER BY message.id, request.created_at, request.id;
 
@@ -50,6 +52,23 @@ FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id')
+    AND request.human_user_id = sqlc.arg('human_user_id')
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id;
+
+-- name: ListOpenDecisionAsksForHuman :many
+-- Read-only projection for the open-asks read: first line of the ask and the
+-- default text only, never options, answers, or the full ask.
+SELECT request.id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.issue_id, workspace.slug AS workspace_slug,
+    COALESCE(NULLIF(split_part(btrim(request.ask_json->>'decision', E' \t\r\n'), E'\n', 1), ''), NULLIF(split_part(split_part(request.ask, E'**Decision**\n', 2), E'\n', 1), ''), split_part(request.ask, E'\n', 1))::text AS ask_headline,
+    request.escalation_class, request.created_at, request.chat_session_id,
+    request.asking_agent_id, COALESCE(request.ask_json->>'default_if_no_reply', '')::text AS default_if_no_reply
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id')
     AND request.human_user_id = sqlc.arg('human_user_id')
     AND request.status = 'open'
