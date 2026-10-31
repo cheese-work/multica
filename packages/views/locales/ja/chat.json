@@ -368,6 +368,7 @@
   },
   "decision": {
     "request_title": "判断の依頼",
+    "asked_by": "{{agent}} から",
     "request_label": "判断の依頼：{{state}}",
     "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み" },
     "picked_up_by": "{{agent}} が着手",

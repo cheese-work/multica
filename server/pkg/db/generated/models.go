@@ -984,6 +984,7 @@ type DecisionRequest struct {
 	WithdrawnByTaskID     pgtype.UUID        `json:"withdrawn_by_task_id"`
 	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
 	Options               []byte             `json:"options"`
+	AskIdentity           string             `json:"ask_identity"`
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
 }
