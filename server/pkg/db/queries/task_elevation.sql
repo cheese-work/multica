@@ -43,3 +43,17 @@ WHERE te.state = 'fencing'
   AND (te.launch_scopes_ended_at IS NOT NULL
        OR NOT EXISTS (SELECT 1 FROM unnest(te.scopes) s WHERE s = 'docker' OR s LIKE 'device:%'))
 RETURNING te.task_id;
+
+-- name: FenceTaintedTaskElevations :many
+-- A task whose taint grew after its elevation was recorded stops being
+-- elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
+UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
+FROM agent_task_queue t
+WHERE t.id = te.task_id AND te.state = 'elevated' AND cardinality(t.taint_ids) > 0
+  AND (sqlc.narg('task_id')::uuid IS NULL OR te.task_id = sqlc.narg('task_id')::uuid)
+RETURNING te.task_id;
+
+-- name: LockTaskTaintIDs :one
+-- Share lock: a taint writer updates the task row, so it waits for an
+-- authorization in flight, and an authorization that starts after it sees it.
+SELECT taint_ids FROM agent_task_queue WHERE id = $1 FOR SHARE;
