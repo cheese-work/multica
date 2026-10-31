@@ -72,6 +72,73 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+describe("annotation note drafts", () => {
+  it.each([false, true])("restores an unconfirmed note after outside dismissal (existing: %s)", async (existing) => {
+    const { container } = renderWithI18n(<ChatFixture />);
+    if (existing) {
+      await addComment(container, "Saved note");
+      fireEvent.click(await screen.findByRole("button", { name: "Edit comment 1: Saved note" }));
+    } else {
+      selectText(container);
+      fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    }
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this draft" } });
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(useCommentDraftStore.getState().getAnnotations(key).map((annotation) => annotation.note))
+      .toEqual(existing ? ["Saved note"] : []);
+
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    expect(await screen.findByRole("textbox")).toHaveValue("Keep this draft");
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    expect(await screen.findByRole("textbox")).toHaveValue(existing ? "Saved note" : "");
+  });
+
+  it("does not dismiss a note when an outside touch becomes a scroll", async () => {
+    const { container } = renderWithI18n(<ChatFixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Keep typing" } });
+    const touch = (type: string, clientY: number) => fireEvent(document.body, Object.assign(new Event(type, { bubbles: true }), {
+      pointerType: "touch", pointerId: 1, clientX: 20, clientY,
+    }));
+    touch("pointerdown", 200);
+    expect(input).toBeInTheDocument();
+    touch("pointercancel", 140);
+    expect(input).toBeInTheDocument();
+    touch("pointerdown", 200);
+    touch("pointerup", 140);
+    expect(input).toBeInTheDocument();
+    touch("pointerdown", 200);
+    touch("pointerup", 200);
+    expect(input).not.toBeInTheDocument();
+  });
+
+  it("resizes from measured content, including wrapped lines, and shrinks after deletion", async () => {
+    let contentHeight = 32;
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(() => contentHeight);
+    const { container } = renderWithI18n(<ChatFixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    const input = await screen.findByRole("textbox");
+    expect(input).toHaveStyle({ height: "32px" });
+    contentHeight = 72;
+    fireEvent.change(input, { target: { value: "A single paragraph that wraps onto several visual lines" } });
+    expect(input).toHaveStyle({ height: "72px" });
+    contentHeight = 240;
+    fireEvent.change(input, { target: { value: "Long note\n".repeat(12) } });
+    expect(input).toHaveStyle({ height: "240px" });
+    expect(input).toHaveClass("overflow-y-auto", "max-h-[calc(4lh+0.75rem)]");
+    contentHeight = 32;
+    fireEvent.change(input, { target: { value: "Short" } });
+    expect(input).toHaveStyle({ height: "32px" });
+  });
+});
+
 describe("selection released outside the message text", () => {
   function select(source: HTMLElement) {
     const range = document.createRange();

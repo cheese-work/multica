@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "Graph",
+    "list": "List",
+    "sub_issues": "Sub-issues",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sub-issues",
+    "done_count": "done",
+    "in_progress_count": "in progress",
+    "todo_count": "todo",
+    "closed_count": "closed",
+    "no_parent": "No parent",
+    "mentions_hint": "Loads when turned on",
+    "navigation_hint": "Click a card to open · hover for full title · ← → ↑ ↓ move focus · Esc to close",
     "title": "Relations graph",
     "direction": "Arrows point from parent to child, from a watched issue to the issue it wakes, and from a mention to its target. The current issue has a thick border.",
     "depth": "Depth",
@@ -407,7 +419,6 @@
     "metadata_restore": "Restore dialog size",
     "metadata_copy_failed": "Failed to copy metadata",
     "metadata_description": "Key-value data recorded by agents and integrations for workflow coordination.",
-
     "section_load_failed_retry": "Could not load. Retry",
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "breadcrumb_project_unknown": "Unknown project",
@@ -1916,6 +1927,12 @@
     "withdrawn_body": "Nothing was changed by this click.",
     "review_action": "Review",
     "failed_notice": "Could not disclaim. The decision is unchanged.",
-    "try_again_action": "Try again"
+    "try_again_action": "Try again",
+    "full_message": "Full message",
+    "agent_note": "Agent's note",
+    "timing_disclaimed": "Disclaimed at {{time}}",
+    "timing_effective": "In effect since {{time}}",
+    "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
+    "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
   }
 }

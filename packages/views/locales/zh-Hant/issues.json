@@ -1790,6 +1790,18 @@
     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
   },
   "relations": {
+    "graph": "圖表",
+    "list": "列表",
+    "sub_issues": "子任務",
+    "parent_summary": "父任務",
+    "parent_filter": "父任務 / 子任務",
+    "done_count": "已完成",
+    "in_progress_count": "進行中",
+    "todo_count": "待辦",
+    "closed_count": "已關閉",
+    "no_parent": "無父任務",
+    "mentions_hint": "啟用時載入",
+    "navigation_hint": "點擊卡片開啟 · 懸停查看完整標題 · ← → ↑ ↓ 移動焦點 · Esc 關閉",
     "title": "任務關係圖",
     "direction": "箭頭從父任務指向子任務，從被監測的任務指向待喚醒的任務，從提及來源指向目標。當前任務以粗邊框標出。",
     "depth": "深度",
@@ -1843,6 +1855,12 @@
     "withdrawn_body": "此次點擊未更改任何內容。",
     "review_action": "查看",
     "failed_notice": "無法撤回，決定保持不變。",
-    "try_again_action": "重試"
+    "try_again_action": "重試",
+    "full_message": "完整訊息",
+    "agent_note": "代理備註",
+    "timing_disclaimed": "已於 {{time}} 撤銷",
+    "timing_effective": "自 {{time}} 起生效",
+    "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分鐘內可撤銷。",
+    "timing_pending_wake": "待生效。代理被喚醒後立即生效。"
   }
 }

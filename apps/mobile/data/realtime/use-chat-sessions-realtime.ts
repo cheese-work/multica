@@ -48,6 +48,9 @@ export function useChatSessionsRealtime() {
           const payload = p as {
             chat_session_id: string;
             title?: string;
+            pinned?: boolean;
+            status?: "active" | "archived";
+            continued_into_session_id?: string;
             updated_at?: string;
           };
           patchSessionListAfterRename(qc, wsId, payload);

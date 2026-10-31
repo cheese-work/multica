@@ -46,7 +46,10 @@
     "rename_failed_toast": "重命名對話失敗",
     "fork_unconfirmed": "無法確認分支是否成功。重試前請先查看“已分支到”鏈接。",
     "rename_title_too_long_toast": "對話標題不能超過 200 個字符",
-    "rename_session_required_toast": "開始對話後才能重命名"
+    "rename_session_required_toast": "開始對話後才能重命名",
+    "placeholder_archived_send": "此私訊已封存。傳送時會先取消封存…",
+    "command_no_arguments": "/{{command}} 不接受參數。請單獨傳送該指令，或移除開頭的 /。",
+    "command_no_attachments": "/{{command}} 不能連同附件一起傳送。執行 /{{command}} 前請先移除附件。"
   },
   "queue": {
     "title_other": "{{count}} 條排隊訊息",
@@ -270,7 +273,12 @@
     "archive": "歸檔",
     "unarchive": "取消歸檔",
     "archived_title": "已歸檔",
-    "row_actions_aria": "聊天操作"
+    "row_actions_aria": "聊天操作",
+    "archived_toast": "對話已封存",
+    "archive_failed": "無法封存此對話",
+    "unarchive_failed": "無法取消封存此對話",
+    "pin_failed": "無法更新置頂狀態",
+    "undo": "復原"
   },
   "header": {
     "view_profile": "檢視智慧體資料",
@@ -281,7 +289,19 @@
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回復後將壓縮",
     "compact_now": "立即壓縮",
-    "more_actions": "更多操作"
+    "more_actions": "更多操作",
+    "statistics": "統計",
+    "pin": "置頂對話",
+    "unpin": "取消置頂對話"
+  },
+  "scheduled": {
+    "chip": "已排程 {{count}}",
+    "title": "{{name}} 的排程",
+    "title_unknown_agent": "已排程的跟進",
+    "cancel": "取消",
+    "cancel_label": "取消 {{time}} 的排程跟進",
+    "cancel_failed": "無法取消該跟進",
+    "load_failed": "無法載入已排程的跟進。重試"
   },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",
@@ -301,7 +321,8 @@
     "count_limit": "一條消息最多包含 {{count}} 條評論。",
     "selection_failed": "未能獲取選中文字。請在同一條回復內重新選擇後再試。",
     "source_changed": "原文已更改或不可用，已保留你保存的引用。",
-    "removed": "已移除評論 {{number}}"
+    "removed": "已移除評論 {{number}}",
+    "one_request": "請每次只傳送針對一個決策請求的評論。"
   },
   "decision": {
     "request_title": "決策請求",
@@ -311,11 +332,16 @@
       "answered": "已答復",
       "withdrawn": "已撤回",
       "recorded": "已記錄",
-      "delivered": "已送達",
+      "delivered": "已送達", "picked_up": "已接手", "not_picked_up": "未接手",
       "disclaimed": "已撤銷"
     },
+    "picked_up_by": "{{agent}} 已接手",
+    "not_picked_up": "答復記錄後沒有執行啟動。",
+    "open_issue": "開啟 {{issue}}",
     "answer_options": "選項",
-    "answer_text": "或輸入回答",
+    "answer_text": "輸入回答",
+    "answer_note": "新增備註（選填）",
+    "answer_chose": "已選擇：{{option}}",
     "answer_send": "傳送",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
@@ -333,6 +359,69 @@
     "from_original_dm": "來自原始私信",
     "inherited": "繼承",
     "message_unavailable": "該消息已不可用"
+  },
+  "stats": {
+    "title": "統計",
+    "scope": "僅此私訊",
+    "estimated": "估算",
+    "partial": "不完整",
+    "tokens": "{{tokens}} 個權杖",
+    "usage_missing_other": "{{count}} 次已完成的執行缺少用量資料",
+    "in_progress_other": "{{count}} 次執行進行中——完成後合計會更新",
+    "runs": "執行",
+    "runs_value": "已完成 {{completed}} 次 · 失敗 {{failed}} 次",
+    "runs_cancelled": " · 已取消 {{cancelled}} 次",
+    "run_time": "智慧代理執行時長",
+    "messages": "訊息",
+    "messages_value": "你 {{user}} · 智慧代理 {{agent}}",
+    "by_model": "依模型",
+    "col_model": "模型",
+    "col_input": "輸入",
+    "col_output": "輸出",
+    "col_cache_read": "快取讀取",
+    "col_cache_write": "快取寫入",
+    "col_cost": "費用",
+    "no_value": "—",
+    "no_cost": "未回報費用",
+    "no_runs": "尚無執行紀錄。",
+    "related": "相關私訊",
+    "continued_from": "續自",
+    "continued_into": "續至",
+    "forked_from": "複製自",
+    "error": "無法載入統計。沒有任何資料被記為零。",
+    "offline": "你已離線。這些資料來自 {{time}} 開啟統計時。重新連線後即可更新。",
+    "retry": "重試",
+    "close": "關閉",
+    "less_than_a_minute": "不足 1 分鐘"
+  },
+  "archived_send": {
+    "title": "此私訊已封存",
+    "question": "取消封存並傳送？",
+    "kept": "你的訊息會保留，取消封存後傳送。",
+    "newer": "較新的私訊延續了這段對話：{{title}}。",
+    "confirm": "取消封存並傳送",
+    "cancel": "取消",
+    "open_newer": "開啟較新的私訊"
+  },
+  "search": {
+    "label": "搜尋聊天",
+    "placeholder": "搜尋聊天",
+    "shortcut_hint": "/",
+    "clear": "清除搜尋",
+    "results_label": "搜尋結果",
+    "count_other": "{{count}} 筆結果",
+    "searching": "搜尋中…",
+    "empty": "沒有與「{{query}}」相符的聊天",
+    "failed": "搜尋失敗，請重試。",
+    "timed_out": "搜尋耗時過長，請嘗試更短或更具體的關鍵字。",
+    "disconnected": "你已離線，搜尋需要網路連線。",
+    "retry": "重試",
+    "too_long": "搜尋最多 {{max}} 個字元。",
+    "show_more": "顯示更多",
+    "loading_more": "載入中…",
+    "archived_badge": "已封存",
+    "title_match": "標題相符",
+    "actions_aria": "{{title}} 的操作"
   },
   "wakeup": {
     "node_label": "定時喚醒已觸發",

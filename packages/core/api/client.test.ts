@@ -86,6 +86,33 @@ describe("ApiClient decision cards", () => {
   });
 });
 
+describe("ApiClient chat search", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("sends q, limit and cursor and parses hits with the next cursor", async () => {
+    const hit = {
+      session_id: "s1", title: "Plan", agent_id: "a1", message_id: "m1",
+      snippet: "the launch plan", updated_at: "2026-10-28T10:00:00Z", archived: false,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json({ results: [hit], next_cursor: "c2" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const page = await new ApiClient("https://api.example.test").searchChats({ q: "launch plan", limit: 20, cursor: "c1" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "https://api.example.test/api/chat/search?q=launch+plan&limit=20&cursor=c1",
+    );
+    expect(page.results).toEqual([hit]);
+    expect(page.next_cursor).toBe("c2");
+  });
+
+  it("tolerates a malformed response as an empty page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ results: "nope" })));
+    const page = await new ApiClient("https://api.example.test").searchChats({ q: "x" });
+    expect(page.results).toEqual([]);
+    expect(page.next_cursor).toBeNull();
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",
@@ -3303,5 +3330,45 @@ describe("ApiClient shared credential across windows", () => {
     await expect(client.markOnboardingComplete()).rejects.toBeInstanceOf(ApiError);
 
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ApiClient machine pause", () => {
+  const pause = {
+    reason: "incident",
+    paused_by: null,
+    paused_at: "2026-10-30T07:20:00Z",
+    expires_at: "2026-10-30T07:50:00Z",
+  };
+
+  it("PUTs the reason and parses the pause", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pause), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "incident");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ reason: "incident" });
+    expect(result).toEqual(pause);
+  });
+
+  it("tolerates a malformed pause body from the server", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify("nope"), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "maintenance");
+    expect(result.reason).toBe("maintenance");
+  });
+
+  it("DELETEs the pause and accepts 204", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").resumeRuntimeMachine("rt-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
   });
 });

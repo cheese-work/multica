@@ -13,13 +13,15 @@ import {
 } from "@multica/core/dashboard";
 import {
   addDaysIso,
-  estimateCost,
-  estimateCostBreakdown,
   formatShortDate,
   todayIso,
   weekStartIso,
   type DailyTokenData,
 } from "../runtimes/utils";
+import {
+  estimateCost,
+  estimateCostBreakdown,
+} from "@multica/core/runtimes/pricing";
 import type {
   DailyTimeData,
   DailyTasksData,

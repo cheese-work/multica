@@ -202,6 +202,13 @@ interface ContentEditorBaseProps {
   enableSlashCommands?: boolean;
   enableRenameCommand?: boolean;
   enableForkCommand?: boolean;
+  /** DM commands the owner handles itself; each is off unless switched on. */
+  enableStatisticCommand?: boolean;
+  enableArchiveCommand?: boolean;
+  enablePinCommand?: boolean;
+  enableUnarchiveCommand?: boolean;
+  /** `/compact` is offered by default; an archived DM turns it off. */
+  enableCompactCommand?: boolean;
   /**
    * Which `/` menu to show when enableSlashCommands is true: "skill" (default)
    * lists the active agent's skills (chat); "command" shows the fixed built-in
@@ -389,6 +396,11 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableSlashCommands = false,
       enableRenameCommand = false,
       enableForkCommand = false,
+      enableStatisticCommand = false,
+      enableArchiveCommand = false,
+      enablePinCommand = false,
+      enableUnarchiveCommand = false,
+      enableCompactCommand = true,
       slashCommandMode = "skill",
       quickActionMenu,
       attachments,
@@ -430,6 +442,20 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     enableRenameCommandRef.current = enableRenameCommand;
     const enableForkCommandRef = useRef(enableForkCommand);
     enableForkCommandRef.current = enableForkCommand;
+    const dmCommandsRef = useRef({
+      statistic: enableStatisticCommand,
+      archive: enableArchiveCommand,
+      pin: enablePinCommand,
+      unarchive: enableUnarchiveCommand,
+    });
+    dmCommandsRef.current = {
+      statistic: enableStatisticCommand,
+      archive: enableArchiveCommand,
+      pin: enablePinCommand,
+      unarchive: enableUnarchiveCommand,
+    };
+    const enableCompactCommandRef = useRef(enableCompactCommand);
+    enableCompactCommandRef.current = enableCompactCommand;
     // Kept in a ref for the same reason as mentionContextItems: the extension
     // set is built once at mount, so a directly-captured options object would
     // freeze whatever closures existed then and stop seeing new quick actions.
@@ -650,6 +676,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         enableSlashCommands,
         canRename: () => enableRenameCommandRef.current,
         canFork: () => enableForkCommandRef.current,
+        canUseCommand: (command) => dmCommandsRef.current[command],
+        canCompact: () => enableCompactCommandRef.current,
         slashCommandMode,
         quickActionMenu: {
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],

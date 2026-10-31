@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "グラフ",
+    "list": "リスト",
+    "sub_issues": "サブ課題",
+    "parent_summary": "親課題",
+    "parent_filter": "親 / サブ課題",
+    "done_count": "完了",
+    "in_progress_count": "進行中",
+    "todo_count": "未着手",
+    "closed_count": "終了",
+    "no_parent": "親課題なし",
+    "mentions_hint": "有効にすると読み込みます",
+    "navigation_hint": "カードをクリックして開く · ホバーで完全なタイトル · ← → ↑ ↓ で移動 · Esc で閉じる",
     "title": "関連グラフ",
     "direction": "矢印は親から子、監視対象タスクから再開するタスク、メンション元から参照先へ向かいます。現在のタスクは太い枠線で表示されます。",
     "depth": "深さ",
@@ -403,7 +415,6 @@
     "metadata_restore": "ダイアログのサイズを戻す",
     "metadata_copy_failed": "メタデータをコピーできませんでした",
     "metadata_description": "エージェントや連携機能がワークフローを引き継ぐために記録するキーと値のデータ。",
-
     "section_load_failed_retry": "読み込めませんでした。再試行",
     "not_found": "このタスクはこのワークスペースに存在しないか、削除されています。",
     "breadcrumb_project_unknown": "不明なプロジェクト",
@@ -1844,6 +1855,12 @@
     "withdrawn_body": "今回のクリックでは何も変更されていません。",
     "review_action": "確認",
     "failed_notice": "撤回できませんでした。決定は変更されていません。",
-    "try_again_action": "再試行"
+    "try_again_action": "再試行",
+    "full_message": "全文",
+    "agent_note": "エージェントのメモ",
+    "timing_disclaimed": "{{time}} に取り消し済み",
+    "timing_effective": "{{time}} から有効",
+    "timing_pending_window": "保留中。{{time}} に有効になります。取り消しは {{minutes}} 分以内。",
+    "timing_pending_wake": "保留中。エージェントが起動され次第、有効になります。"
   }
 }

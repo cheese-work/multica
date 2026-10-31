@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -86,6 +87,10 @@ const (
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
 	repoCheckoutModeIsolated = "isolated"
+	// repoCheckoutModeShared is the isolated layout with objects borrowed from
+	// the repo cache through read-only alternates, for sandboxed tasks that
+	// cannot read the cache's refs or config (CHE-2216 slice A2c).
+	repoCheckoutModeShared = "shared"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
 	// execution-environment setup, and the StartTask request itself. It is
@@ -775,6 +780,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	// Tag every daemon HTTP request with the daemon's CLI version so the
 	// server can split logs/metrics by client version (parallel to the CLI).
 	client.SetVersion(cfg.CLIVersion)
+	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
 		client:                      client,
@@ -8704,6 +8710,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	// CHE-2216 A2b: per-run HOME and read-only provider credential copy. Set
+	// after custom_env so a configured HOME cannot point the run back at the
+	// daemon user's home. A no-op unless MULTICA_SANDBOX_MODE is on or audit.
+	userHome, _ := os.UserHomeDir()
+	homeDone, err := applyRestrictedHome(d.cfg.SandboxMode, homeLayout{
+		RootDir: env.RootDir, UserHome: userHome, Template: d.cfg.SandboxHomeTemplate,
+		Provider: provider, CodexHome: env.CodexHome,
+	}, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
+	}
+	defer homeDone()
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8719,7 +8737,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
-	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
+	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
 	// The overlay is authoritative once built, so nothing on the command line
@@ -8935,6 +8953,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentName:       task.Agent.Name,
 		WorkDir:         env.WorkDir,
 		IssueIdentifier: task.IssueIdentifier,
+		IntakeRun:       task.IntakeRun,
+		PinnedBranch:    task.PinnedBranch,
+		PinnedRepo:      task.PinnedRepo,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 

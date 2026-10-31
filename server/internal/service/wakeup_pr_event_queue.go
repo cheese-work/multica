@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"context"
@@ -120,6 +121,11 @@ func (s *IssueWakeupService) bridgePREvent(ctx context.Context, tx pgx.Tx, q *db
 	if active, err := systemWakeupIssueActive(ctx, q, issue, true); err != nil || !active {
 		return nil, nil, err
 	}
+	// The event was selected before this issue lock: a legacy rule wake that
+	// committed in between already carries it (CHE-2540).
+	if covered, err := q.PREventCoveredByLegacyWake(ctx, e.ID); err != nil || covered {
+		return nil, nil, err
+	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
 		return nil, nil, err
@@ -177,6 +183,7 @@ func (s *IssueWakeupService) bridgePREvent(ctx context.Context, tx pgx.Tx, q *db
 	payload, err := json.Marshal(map[string]any{
 		"event_id": util.UUIDToString(e.ID), "kind": e.Kind, "pr_number": e.PrNumber,
 		"repo_owner": e.RepoOwner, "repo_name": e.RepoName, "head_sha": e.HeadSha, "base_sha": e.BaseSha,
+		"old_head_sha": e.OldHeadSha, "check_name": e.CheckName,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -217,4 +224,121 @@ func prEventCause(r db.IssueWakeupReceipt) string {
 		p.Kind = r.EventType
 	}
 	return fmt.Sprintf("%s on PR #%d", p.Kind, p.PRNumber)
+}
+
+// maxPREventSentences bounds the instruction of a wake that carries many
+// causes; the trigger facts list every one of them.
+const maxPREventSentences = 5
+
+// prAttentionInstruction words the instruction of a pr_needs_attention wake from
+// every cause it carries, one sentence per distinct cause. A pr.event cause is
+// worded by its kind from its own receipt, so each names its own PR and a field
+// the event does not carry is left out with its clause. Any other receipt is a
+// mergeability or returned-to-draft cause and keeps its own text. A wake with
+// no receipt falls back to the latest facts.
+func prAttentionInstruction(receipts []db.IssueWakeupReceipt, pr string, facts map[string]any) string {
+	var sentences []string
+	seen := map[string]bool{}
+	add := func(key, sentence string) {
+		if !seen[key] {
+			seen[key] = true
+			sentences = append(sentences, sentence)
+		}
+	}
+	// notMerge is set by any cause that says the PR cannot merge; legacy marks
+	// causes that bring their own closing guidance.
+	notMerge, legacy := false, false
+	for _, r := range receipts {
+		if r.EventType != wakeupPREventType {
+			var own map[string]any
+			if json.Unmarshal(r.Payload, &own) != nil {
+				continue
+			}
+			number, _ := own["pr_number"].(float64)
+			url, _ := own["pr_url"].(string)
+			label := prLabel(int64(number), url)
+			if number == 0 {
+				label = pr
+			}
+			legacy = true
+			notMerge = notMerge || own["reason"] != PRAttentionDraft
+			add(fmt.Sprintf("%s|%v|%v|%v|%v", r.EventType, number, own["reason"], own["merge_state"], own["head_sha"]), prAttentionLegacyText(label, own))
+			continue
+		}
+		var p struct {
+			Kind       string `json:"kind"`
+			PRNumber   int64  `json:"pr_number"`
+			RepoOwner  string `json:"repo_owner"`
+			RepoName   string `json:"repo_name"`
+			HeadSHA    string `json:"head_sha"`
+			BaseSHA    string `json:"base_sha"`
+			OldHeadSHA string `json:"old_head_sha"`
+			CheckName  string `json:"check_name"`
+		}
+		if json.Unmarshal(r.Payload, &p) != nil {
+			continue
+		}
+		notMerge = notMerge || p.Kind == "conflict"
+		sentence := prEventSentence(prLabel(p.PRNumber, ""), p.Kind, p.HeadSHA, p.BaseSHA, p.OldHeadSHA, p.CheckName)
+		add(p.RepoOwner+"/"+p.RepoName+"|"+sentence, sentence)
+	}
+	if len(sentences) == 0 {
+		return prAttentionLegacyText(pr, facts)
+	}
+	text := strings.Join(sentences[:min(len(sentences), maxPREventSentences)], " ")
+	if more := len(sentences) - maxPREventSentences; more > 0 {
+		text += fmt.Sprintf(" %d more PR events are in the trigger facts.", more)
+	}
+	// The guard rides on the causes, not on which sentences fit: a conflict
+	// never loses "Do not merge" to a draft cause or to the sentence cap.
+	switch {
+	case notMerge && !strings.Contains(text, "Do not merge"):
+		text += " Update the branch or resolve the conflicts, or say on this issue who owns that. Do not merge."
+	case !notMerge && !legacy:
+		text += " Read the current PR and issue state, then decide what follow-up is needed."
+	}
+	return text
+}
+
+func prLabel(number int64, url string) string {
+	label := fmt.Sprintf("PR #%d", number)
+	if url != "" {
+		label += " (" + url + ")"
+	}
+	return label
+}
+
+func prEventSentence(pr, kind, head, base, oldHead, check string) string {
+	onHead := ""
+	if head != "" {
+		onHead = " on head " + head
+	}
+	switch kind {
+	case "head_changed":
+		text := "Linked " + pr + " has a new head"
+		if head != "" {
+			text += ": " + head
+		}
+		if oldHead != "" {
+			text += ", replacing " + oldHead
+		}
+		return text + "."
+	case "conflict":
+		text := "Linked " + pr + " has a merge conflict" + onHead
+		if base != "" {
+			text += " against base " + base
+		}
+		return text + "."
+	case "checks_failed":
+		text := "Checks for linked " + pr + " failed" + onHead
+		if check != "" {
+			text += "; failing check: " + check
+		}
+		return text + "."
+	default:
+		if kind == "" {
+			kind = "event"
+		}
+		return "Linked " + pr + " reported " + kind + onHead + "."
+	}
 }

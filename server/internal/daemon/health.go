@@ -137,6 +137,9 @@ type activeRepoCheckoutTask struct {
 	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
 	// tasks with no issue.
 	IssueIdentifier string
+	IntakeRun       bool
+	PinnedBranch    string
+	PinnedRepo      string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -480,7 +483,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "workdir is required", http.StatusBadRequest)
 			return
 		}
-		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated {
+		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated && req.CheckoutMode != repoCheckoutModeShared {
 			http.Error(w, "invalid checkout_mode", http.StatusBadRequest)
 			return
 		}
@@ -516,6 +519,24 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			return
 		}
 
+		// An intake run checks out its PR's repository at its PR's head ref and
+		// nothing else, whatever the request asks for, and this is decided before
+		// any cache operation. With no valid pin it checks out nothing.
+		pinnedBranch := ""
+		if activeTask.IntakeRun {
+			switch {
+			case !validPinnedBranch(activeTask.PinnedBranch) || activeTask.PinnedRepo == "":
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_unpinned", "task_id", activeTask.TaskID)
+				http.Error(w, "this run has no pull request head ref to check out", http.StatusForbidden)
+				return
+			case !pinAllowsRepo(activeTask.PinnedRepo, req.URL):
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_other_repo", "task_id", activeTask.TaskID)
+				http.Error(w, "this run is pinned to its pull request's repository", http.StatusForbidden)
+				return
+			}
+			pinnedBranch = activeTask.PinnedBranch
+		}
+
 		if err := d.ensureRepoReady(r.Context(), req.WorkspaceID, req.URL); err != nil {
 			if r.Context().Err() != nil {
 				d.logger.Debug("repo checkout readiness cancelled", "url", req.URL, "error", err)
@@ -534,17 +555,22 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		if checkoutRef == "" {
 			checkoutRef = d.taskRepoDefaultRef(req.WorkspaceID, req.TaskID, req.URL)
 		}
+		if pinnedBranch != "" {
+			checkoutRef = pinnedBranch
+		}
 
 		params := repocache.WorktreeParams{
 			WorkspaceID:         req.WorkspaceID,
 			RepoURL:             req.URL,
 			WorkDir:             req.WorkDir,
 			Ref:                 checkoutRef,
+			Branch:              pinnedBranch,
 			AgentName:           req.AgentName,
 			TaskID:              req.TaskID,
 			IssueIdentifier:     activeTask.IssueIdentifier,
 			CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
 			IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+			SharedObjects:       req.CheckoutMode == repoCheckoutModeShared,
 			Fresh:               req.Fresh,
 		}
 		if req.RetryBusy {

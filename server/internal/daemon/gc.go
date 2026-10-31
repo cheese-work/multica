@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1333,11 +1334,131 @@ func (d *Daemon) pruneRepoWorktreesContext(ctx context.Context, workspacesRoot s
 
 func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *gcStats) {
 	d.withRepoMaintenance(ctx, barePath, func(maintenanceCtx context.Context) {
+		d.releaseOrphanKeepRefsLocked(maintenanceCtx, barePath)
 		d.pruneWorktreeLocked(maintenanceCtx, barePath)
 		if maintenanceCtx.Err() == nil {
 			d.evictRepoCacheLocked(maintenanceCtx, barePath, stats)
 		}
 	})
+}
+
+// liveKeepRefTaskKeys returns the task keys some checkout under the workspaces
+// root still records as a borrower of a repo cache (repocache keep-refs). The
+// repo checkout API accepts any existing directory under the workdir, so a
+// checkout can sit at any depth, even inside another checkout's working tree:
+// the scan walks every workdir completely and reads the record of each
+// directory that holds a .git directory. A .git file is a linked worktree and
+// records nothing. It reports every read failure other than a path that
+// vanished, because a borrower it could not see must not lose its pins. The
+// scan runs under the repo lock, so it returns ctx's error as soon as
+// maintenance is cancelled and a waiting checkout is not held behind it.
+func liveKeepRefTaskKeys(ctx context.Context, workspacesRoot string) (map[string]struct{}, error) {
+	live := map[string]struct{}{}
+	workdirs, err := taskWorkdirs(ctx, workspacesRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, workdir := range workdirs {
+		err := filepath.WalkDir(workdir, func(path string, entry fs.DirEntry, err error) error {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() || entry.Name() != ".git" {
+				return nil
+			}
+			keys, err := repocache.CheckoutKeepRefTaskKeys(filepath.Dir(path))
+			if err != nil {
+				return err
+			}
+			for _, key := range keys {
+				live[key] = struct{}{}
+			}
+			return filepath.SkipDir
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return live, nil
+}
+
+// taskWorkdirs lists <workspace>/<task env>/workdir under the workspaces root
+// with reads that report errors (filepath.Glob would drop a directory it
+// cannot list, and its workdir with it). A directory that does not exist, or a
+// plain file where a directory would be, is skipped; anything else fails.
+func taskWorkdirs(ctx context.Context, workspacesRoot string) ([]string, error) {
+	var workdirs []string
+	workspaces, err := os.ReadDir(workspacesRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, workspace := range workspaces {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !workspace.IsDir() || workspace.Name() == reposDirName {
+			continue
+		}
+		tasks, err := os.ReadDir(filepath.Join(workspacesRoot, workspace.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, task := range tasks {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !task.IsDir() {
+				continue
+			}
+			workdir := filepath.Join(workspacesRoot, workspace.Name(), task.Name(), "workdir")
+			if _, err := os.Lstat(workdir); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			workdirs = append(workdirs, workdir)
+		}
+	}
+	return workdirs, nil
+}
+
+// releaseOrphanKeepRefsLocked drops the keep-refs whose borrowing checkout is
+// gone, so the cache's next prune can reclaim the objects they pinned. The
+// caller holds the repo lock, which also serializes it against a checkout that
+// is pinning its base. Pins stay on any failure, including a cancelled
+// maintenance pass and a borrower scan that could not read every record; the eviction guard then sees them too.
+func (d *Daemon) releaseOrphanKeepRefsLocked(ctx context.Context, barePath string) {
+	live, err := liveKeepRefTaskKeys(ctx, d.cfg.WorkspacesRoot)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		d.logger.Warn("gc: keep-ref borrower scan failed; pins kept", "repo", barePath, "error", err)
+		return
+	}
+	released, remaining, err := repocache.PruneKeepRefs(ctx, barePath, live)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.logger.Warn("gc: keep-ref release failed", "repo", barePath, "error", err)
+		}
+		return
+	}
+	if released > 0 {
+		d.logger.Info("gc: keep-refs released", "repo", filepath.Base(barePath), "released", released, "remaining", remaining)
+	}
 }
 
 // pruneWorktree runs only the maintenance half — prune stale worktrees and
@@ -1405,7 +1526,7 @@ func (d *Daemon) withRepoLock(barePath string, fn func()) {
 //     empty one cannot widen what we delete; it can only drop a layer of
 //     protection that conditions 3 and 4 still enforce.
 //
-//  3. No worktrees are left, checked after `git worktree prune` has dropped the
+//  3. No worktrees or shared-objects borrowers are left, checked after `git worktree prune` has dropped the
 //     entries whose task dirs the GC already removed. A live worktree's .git
 //     points into this directory, so removing it would break that checkout.
 //
@@ -1435,6 +1556,19 @@ func (d *Daemon) evictRepoCacheLocked(ctx context.Context, barePath string, stat
 		return
 	}
 	if worktrees > 0 {
+		return
+	}
+
+	// A shared-objects checkout borrows this cache's objects without being a
+	// linked worktree; removing the cache would break it.
+	borrowers, err := repocache.KeepRefTaskKeys(ctx, barePath)
+	if err != nil {
+		if ctx.Err() == nil {
+			d.logger.Warn("gc: keep-ref count failed", "repo", barePath, "error", err)
+		}
+		return
+	}
+	if len(borrowers) > 0 {
 		return
 	}
 
