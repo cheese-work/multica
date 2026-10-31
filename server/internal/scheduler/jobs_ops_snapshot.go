@@ -21,8 +21,8 @@ const (
 	opsSamplerCadence = 30 * time.Second
 	opsRollupCadence  = 5 * time.Minute
 	// opsRollupLookback is how far back each rollup run recomputes. The upsert
-	// is idempotent, so a late sample or a run missed by downtime is folded in
-	// on the next run while its raw rows still exist (raw retention is 7 d).
+	// is idempotent, so a late sample or a run missed by a short outage is folded
+	// in on the next run. A longer outage reaches further back, see rollupFrom.
 	opsRollupLookback = 48 * time.Hour
 
 	opsRawRetention    = 7 * 24 * time.Hour
@@ -84,8 +84,12 @@ func OpsSnapshotRollupJob(queries *db.Queries) JobSpec {
 func makeOpsRollupHandler(queries *db.Queries) Handler {
 	return func(ctx context.Context, in HandlerInput) (HandlerResult, error) {
 		to := in.PlanTime.UTC().Truncate(opsRollupCadence) // complete intervals only
+		last, err := queries.MaxOpsSnapshot5mBucket(ctx)
+		if err != nil {
+			return HandlerResult{}, fmt.Errorf("read newest ops rollup: %w", err)
+		}
 		rows, err := queries.RollupOpsSnapshot5m(ctx, db.RollupOpsSnapshot5mParams{
-			FromTs: ts(to.Add(-opsRollupLookback)),
+			FromTs: ts(opsRollupFrom(to, last)),
 			ToTs:   ts(to),
 		})
 		if err != nil {
@@ -93,6 +97,22 @@ func makeOpsRollupHandler(queries *db.Queries) Handler {
 		}
 		return HandlerResult{RowsAffected: rows}, nil
 	}
+}
+
+// opsRollupFrom is where a rollup run starts recomputing. Normally that is the
+// fixed lookback. After an outage longer than the lookback, catch-up runs only
+// the latest plan, so the start moves back to the newest rolled interval and
+// folds in every raw row still retained (raw retention is 7 d). Rows older than
+// raw retention are already deleted and cannot be recovered.
+func opsRollupFrom(to time.Time, newestRolled pgtype.Timestamptz) time.Time {
+	from := to.Add(-opsRollupLookback)
+	if newestRolled.Valid && newestRolled.Time.Before(from) {
+		from = newestRolled.Time
+	}
+	if oldest := to.Add(-opsRawRetention); from.Before(oldest) {
+		from = oldest
+	}
+	return from
 }
 
 // OpsRetentionJob deletes raw snapshots after 7 d, rollups and requeue events

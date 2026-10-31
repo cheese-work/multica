@@ -21,8 +21,6 @@ CREATE TABLE IF NOT EXISTS ops_snapshot (
     PRIMARY KEY (workspace_id, daemon_id, bucket_ts)
 );
 
-CREATE INDEX IF NOT EXISTS idx_ops_snapshot_ws_bucket ON ops_snapshot (workspace_id, bucket_ts);
-
 CREATE TABLE IF NOT EXISTS ops_snapshot_5m (
     workspace_id        UUID        NOT NULL,
     daemon_id           TEXT        NOT NULL,

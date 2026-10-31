@@ -874,6 +874,34 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 	}
 }
 
+// The ops page uses __cloud__, __unbound__ and __unknown__ as synthetic machine
+// keys. A daemon_id of the form __x__ must never register, or a real machine
+// would merge into a synthetic group.
+func TestDaemonRegister_RejectsReservedDaemonID(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID)
+	})
+	for _, id := range []string{"__cloud__", "__unbound__", "__unknown__", "__anything__", "  __cloud__  "} {
+		req := newRequest("POST", "/api/daemon/register", map[string]any{
+			"workspace_id": testWorkspaceID,
+			"daemon_id":    id,
+			"device_name":  "test-device",
+			"runtimes": []map[string]any{
+				{"name": "reserved-id-runtime", "type": "claude", "version": "1.0.0", "status": "online"},
+			},
+		})
+		testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusBadRequest)
+	}
+	var n int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("runtimes with reserved daemon_id = %d err %v, want 0", n, err)
+	}
+}
+
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

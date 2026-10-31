@@ -74,6 +74,10 @@ LEFT JOIN task_counts tc ON tc.workspace_id = k.workspace_id AND tc.key = k.key
 LEFT JOIN agent_counts ac ON ac.workspace_id = k.workspace_id AND ac.key = k.key
 ON CONFLICT (workspace_id, daemon_id, bucket_ts) DO NOTHING;
 
+-- name: MaxOpsSnapshot5mBucket :one
+-- Newest interval any rollup run has written; NULL before the first run.
+SELECT max(bucket_ts)::timestamptz AS bucket_ts FROM ops_snapshot_5m;
+
 -- name: RollupOpsSnapshot5m :execrows
 -- Folds raw rows in [from_ts, to_ts) into 5-minute intervals. Idempotent:
 -- a rerun recomputes from the raw rows still present. Intervals with no raw

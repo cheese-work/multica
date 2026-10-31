@@ -749,6 +749,18 @@ func (q *Queries) ListOpsSnapshotSeries(ctx context.Context, arg ListOpsSnapshot
 	return items, nil
 }
 
+const maxOpsSnapshot5mBucket = `-- name: MaxOpsSnapshot5mBucket :one
+SELECT max(bucket_ts)::timestamptz AS bucket_ts FROM ops_snapshot_5m
+`
+
+// Newest interval any rollup run has written; NULL before the first run.
+func (q *Queries) MaxOpsSnapshot5mBucket(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, maxOpsSnapshot5mBucket)
+	var bucket_ts pgtype.Timestamptz
+	err := row.Scan(&bucket_ts)
+	return bucket_ts, err
+}
+
 const rollupOpsSnapshot5m = `-- name: RollupOpsSnapshot5m :execrows
 INSERT INTO ops_snapshot_5m (workspace_id, daemon_id, bucket_ts,
     queued_max, queued_last, dispatched_max, dispatched_last, waiting_dir_max, waiting_dir_last, running_max, running_last, agents_unbound_max, agents_unbound_last, agents_offline_max, agents_offline_last, agents_busy_max, agents_busy_last, agents_waiting_dir_max, agents_waiting_dir_last, agents_available_max, agents_available_last, oldest_unstarted_s_max, oldest_unstarted_s_last,

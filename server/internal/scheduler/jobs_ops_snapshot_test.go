@@ -171,9 +171,9 @@ func TestOpsSamplerDropsDuplicateTick(t *testing.T) {
 	if _, keys := f.sums(t, "ops_snapshot", "", tick); keys != 4 {
 		t.Fatalf("rows after first sample = %d, want 4", keys)
 	}
-	if second := f.sample(t, tick); second != 0 {
-		t.Fatalf("second sample rows = %d, want 0", second)
-	}
+	// The return value counts other workspaces that appeared between the two
+	// calls (other packages run in parallel), so only this fixture's rows count.
+	f.sample(t, tick)
 	if _, keys := f.sums(t, "ops_snapshot", "", tick); keys != 4 {
 		t.Fatalf("rows after duplicate = %d, want 4", keys)
 	}
@@ -225,6 +225,31 @@ func TestOpsRollupKeepsSpikeLastAndPartialCoverage(t *testing.T) {
 		`SELECT sample_count FROM ops_snapshot_5m WHERE workspace_id = $1 AND bucket_ts = $2 AND daemon_id LIKE 'host-online-%'`,
 		f.workspaceID, interval).Scan(&samples); err != nil || samples != 5 {
 		t.Fatalf("after rerun samples = %d err %v, want 5", samples, err)
+	}
+}
+
+// After a downtime longer than the normal 48 h lookback, raw rows from the
+// last unrolled interval are still retained (raw retention is 7 d) and the next
+// rollup run must still fold them into the 30 d series.
+func TestOpsRollupRecoversAfterLongDowntime(t *testing.T) {
+	f := newOpsFixture(t)
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	rolled := now.Add(-100 * time.Hour)  // last interval a rollup run covered
+	unrolled := now.Add(-80 * time.Hour) // sampled before shutdown, never rolled
+	for i := 0; i < 3; i++ {
+		f.sample(t, rolled.Add(time.Duration(i)*30*time.Second))
+		f.sample(t, unrolled.Add(time.Duration(i)*30*time.Second))
+	}
+	f.rollup(t, rolled.Add(5*time.Minute)) // the last run before the outage
+	// The newest-rolled lookup is global, so drop rollups other tests wrote in
+	// the shared database after that run; production has none either.
+	f.exec(t, `DELETE FROM ops_snapshot_5m WHERE bucket_ts > $1`, rolled)
+
+	f.rollup(t, now) // first run after the outage
+
+	got, keys := f.sums(t, "ops_snapshot_5m", "_last", unrolled)
+	if keys == 0 || got != wantOpsSums {
+		t.Fatalf("interval %s after long downtime: keys %d sums %+v, want sums %+v", unrolled, keys, got, wantOpsSums)
 	}
 }
 
