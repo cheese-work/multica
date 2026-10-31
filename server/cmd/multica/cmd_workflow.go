@@ -42,7 +42,9 @@ var workflowUpdateCmd = &cobra.Command{
 	Long: `Replace a workflow's steps with the JSON array in --steps-file. The array uses
 the same shape "workflow get --output json" prints under "steps": status_key,
 handler, instructions, next_status_key, back_status_key, edges (guarded exits:
-[{"to","guard","timeout","on_timeout"}]; PR guards need a timeout).
+[{"to","guard","timeout","on_timeout"}]; PR guards need a timeout), entry (gates a
+status write must meet to enter the step: [{"guard","mode":"off|warn|block",
+"member_override"}]; omit to keep the stored gates, [] to clear them).
 
 Run rules change with their own flags, with or without --steps-file; a rule
 flag left out keeps its value. --max-runs-per-issue N (1 to 1000) caps the runs

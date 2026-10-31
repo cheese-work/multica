@@ -318,7 +318,10 @@ var issueStatusCmd = &cobra.Command{
 		"To cancel an issue because it duplicates another, mark it instead of only cancelling:\n" +
 		"  multica issue status <id> cancelled --duplicate-of <original>\n" +
 		"The original then lists it as a duplicate. Moving the issue to any status other\n" +
-		"than cancelled later removes the mark.",
+		"than cancelled later removes the mark.\n\n" +
+		"A workflow step can set entry gates a status write must meet. A refused write\n" +
+		"names each failed gate, the fact and the fix. A person's own login may pass a\n" +
+		"block gate with --override-reason; agent runs cannot.",
 	Args: exactArgs(2),
 	RunE: runIssueStatus,
 }
@@ -728,6 +731,7 @@ func init() {
 	// issue status
 	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
+	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// issue reorder
@@ -2412,6 +2416,9 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	}
 	if noStart {
 		body["suppress_run"] = true
+	}
+	if reason, _ := cmd.Flags().GetString("override-reason"); strings.TrimSpace(reason) != "" {
+		body["entry_gate_override_reason"] = strings.TrimSpace(reason)
 	}
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
