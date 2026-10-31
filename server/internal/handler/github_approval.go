@@ -16,7 +16,8 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// Exact-snapshot approval of an `unsigned` revision (CHE-2126 plan 5.3, R3).
+// Exact-snapshot approval of an `unsigned` or `quarantined` revision (CHE-2126
+// plan 5.2 and 5.3, R3).
 // An approver reads one snapshot (GET), then signs its hash (POST). The server
 // reads again and approves only when the hash still matches. Settling then reads
 // a third time: a body changed after approval returns the item to `quarantined`.
@@ -41,6 +42,8 @@ func (h *Handler) readGitHubSnapshot(ctx context.Context, revision db.GithubWebh
 	}
 	return read(ctx, pull.InstallationID, pull.RepoOwner, pull.RepoName, revision.PrNumber, revision.ObjectKind, revision.ObjectID)
 }
+
+func githubApprovable(state string) bool { return state == "unsigned" || state == "quarantined" }
 
 // snapshotMatchesRevision is true when the live object is still the one the reconciler recorded.
 func snapshotMatchesRevision(snapshot ghsnapshot.ApprovalSnapshot, revision db.GithubWebhookRevision) bool {
@@ -72,8 +75,17 @@ func (h *Handler) loadGitHubApproval(w http.ResponseWriter, r *http.Request) (gi
 		writeError(w, http.StatusInternalServerError, "failed to load revision")
 		return loaded, pgtype.UUID{}, false
 	}
-	if revision.State != "unsigned" {
-		writeError(w, http.StatusConflict, "only an unsigned revision can be approved")
+	if !githubApprovable(revision.State) {
+		writeError(w, http.StatusConflict, "only an unsigned or quarantined revision can be approved")
+		return loaded, pgtype.UUID{}, false
+	}
+	workspace, err := h.Queries.GetWorkspace(ctx, revision.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load workspace")
+		return loaded, pgtype.UUID{}, false
+	}
+	if !githubFeaturesEnabled(workspace) {
+		writeError(w, http.StatusForbidden, "the GitHub integration is disabled")
 		return loaded, pgtype.UUID{}, false
 	}
 	pull, err := h.Queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: revision.PullRequestID, WorkspaceID: revision.WorkspaceID})
@@ -204,7 +216,7 @@ func (h *Handler) recordGitHubApproval(ctx context.Context, revision db.GithubWe
 	if err != nil {
 		return err
 	}
-	if locked.State != "unsigned" {
+	if !githubApprovable(locked.State) {
 		return errGitHubApprovalConflict
 	}
 	inserted, err := queries.InsertGitHubSnapshotApproval(ctx, db.InsertGitHubSnapshotApprovalParams{
@@ -254,9 +266,17 @@ func (h *Handler) settleApprovedRevision(ctx context.Context, workspaceID, revis
 	if err != nil {
 		return err
 	}
-	snapshot, readErr := h.readGitHubSnapshot(ctx, revision, pull)
-	if readErr != nil {
-		return readErr
+	// The master switch is read before the GitHub call and again under the lock.
+	workspace, err := h.Queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	enabled := githubFeaturesEnabled(workspace)
+	var snapshot ghsnapshot.ApprovalSnapshot
+	if enabled {
+		if snapshot, err = h.readGitHubSnapshot(ctx, revision, pull); err != nil {
+			return err
+		}
 	}
 
 	transaction, err := h.TxStarter.Begin(ctx)
@@ -272,9 +292,18 @@ func (h *Handler) settleApprovedRevision(ctx context.Context, workspaceID, revis
 	if locked.State != "deferred" || locked.Reason != "approved_snapshot" {
 		return nil
 	}
+	workspace, err = queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
 	state, reason := "quarantined", "approved_snapshot_changed"
 	var publications []githubIntakePublication
-	if snapshot.Hash == approval.SnapshotHash && snapshotMatchesRevision(snapshot, revision) {
+	switch {
+	case !githubFeaturesEnabled(workspace):
+		state, reason = "denied", "integration_disabled"
+	case !enabled:
+		return errors.New("github: integration enabled since the snapshot read; retry")
+	case snapshot.Hash == approval.SnapshotHash && snapshotMatchesRevision(snapshot, revision):
 		state, reason, publications, err = h.routeApprovedRevision(ctx, queries, revision, pull, approval.ApproverUserID)
 		if err != nil {
 			return err

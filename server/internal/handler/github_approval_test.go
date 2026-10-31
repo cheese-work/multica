@@ -245,3 +245,79 @@ func TestGitHubApprovalLookupErrorIsRetried(t *testing.T) {
 		t.Fatalf("projected %d comments, want 1", n)
 	}
 }
+
+// Plan 5.2: a signed revision quarantined for a foreign editor is approved the same way.
+func TestGitHubApprovalQuarantinedSignedRevisionIsApprovable(t *testing.T) {
+	f := newApprovalFixture(t)
+	dbfx.Exec(t, `UPDATE github_webhook_revision SET state='quarantined', reason='foreign_editor', source_delivery_guid='signed-delivery-1' WHERE id=$1`, f.reviewID)
+	hash := f.snapshotHash(t)
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve quarantined = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if state, reason := f.revisionState(t); state != "projected" || reason != "gate_g_closed" {
+		t.Fatalf("revision = %s/%s, want projected/gate_g_closed", state, reason)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1`, f.fixture.issueID); n != 1 {
+		t.Fatalf("projected %d comments, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND id<>$2`, f.fixture.issueID, f.fixture.source); n != 0 {
+		t.Fatalf("notify-only approval started %d runs", n)
+	}
+}
+
+// A quarantined revision whose body changed cannot be approved: the live object is no longer the recorded one.
+func TestGitHubApprovalQuarantinedRevisionWithChangedBodyIsRefused(t *testing.T) {
+	f := newApprovalFixture(t)
+	dbfx.Exec(t, `UPDATE github_webhook_revision SET state='quarantined', reason='body_changed', source_delivery_guid='signed-delivery-2' WHERE id=$1`, f.reviewID)
+	f.reader.body = "edited by someone else"
+	if recorder := f.call(t, http.MethodGet, "/snapshot", nil); recorder.Code != http.StatusConflict {
+		t.Fatalf("snapshot of changed quarantined object = %d, want 409", recorder.Code)
+	}
+}
+
+func TestGitHubApprovalRefusedWhileIntegrationIsDisabled(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	setWorkspacePRWakeSetting(t, "github_enabled", false)
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusForbidden {
+		t.Fatalf("approve while disabled = %d, want 403", recorder.Code)
+	}
+	if recorder := f.call(t, http.MethodGet, "/snapshot", nil); recorder.Code != http.StatusForbidden {
+		t.Fatalf("snapshot while disabled = %d, want 403", recorder.Code)
+	}
+	if state, _ := f.revisionState(t); state != "unsigned" {
+		t.Fatalf("revision = %s, want unsigned", state)
+	}
+	f.assertNoEffects(t)
+}
+
+// An approval left pending by an API outage must not project after the integration is switched off.
+func TestGitHubApprovalSettlementRechecksTheIntegrationSwitch(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	reads := 0
+	f.fixture.handler.readApprovalSnapshot = func(ctx context.Context, installationID int64, owner, repo string, number int32, kind string, id int64) (ghsnapshot.ApprovalSnapshot, error) {
+		reads++
+		f.reader.err = nil
+		if reads > 1 {
+			f.reader.err = errors.New("github down")
+		}
+		return f.reader.read(ctx, installationID, owner, repo, number, kind, id)
+	}
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if state, reason := f.revisionState(t); state != "deferred" || reason != "approved_snapshot" {
+		t.Fatalf("revision = %s/%s, want deferred/approved_snapshot", state, reason)
+	}
+	setWorkspacePRWakeSetting(t, "github_enabled", false)
+	f.fixture.handler.readApprovalSnapshot = f.reader.read
+	f.reader.err = nil
+	if _, err := reconcilerForTest(f.fixture, &fakeReconcileAPI{}).settleApproved(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := f.revisionState(t); state != "denied" || reason != "integration_disabled" {
+		t.Fatalf("revision = %s/%s, want denied/integration_disabled", state, reason)
+	}
+	f.assertNoEffects(t)
+}
