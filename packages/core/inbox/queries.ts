@@ -1,6 +1,6 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { ArchivedInboxPage } from "../types/inbox";
-import { EMPTY_INBOX_FILTERS, type ArchivedInboxFilters } from "./filter-store";
+import { EMPTY_INBOX_FILTERS, isViewerMention, type ArchivedInboxFilters } from "./filter-store";
 import { infiniteQueryOptions, queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import type { InboxItem, InboxWorkspaceUnread } from "../types";
@@ -228,11 +228,17 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
     const commentId =
       newest.details?.comment_id ??
       group.find((item) => item.details?.comment_id)?.details?.comment_id;
+    // A later comment must not hide a mention from the "Mentions me" filter.
+    const mention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
 
-    if (commentId && newest.details?.comment_id !== commentId) {
+    if ((commentId && newest.details?.comment_id !== commentId) || mention) {
       merged.push({
         ...newest,
-        details: { ...(newest.details ?? {}), comment_id: commentId },
+        details: {
+          ...(newest.details ?? {}),
+          ...(commentId ? { comment_id: commentId } : {}),
+          ...(mention ? { mention_source: mention.details?.mention_source ?? "direct" } : {}),
+        },
       });
       continue;
     }

@@ -32,6 +32,7 @@ import { useT } from "@/lib/i18n";
 import {
   deduplicateInboxItems,
   getInboxNavigationTarget,
+  isViewerMention,
 } from "@/lib/inbox-display";
 
 export default function Inbox() {
@@ -45,11 +46,10 @@ export default function Inbox() {
   // Dedup + drop archived to match web/desktop. See CLAUDE.md
   // "Behavioral parity" → inbox dedup incident.
   const [mentionsOnly, setMentionsOnly] = useState(false);
-  // Same predicate as web's "Mentions me" filter (core/inbox/filter-store.ts):
-  // the rendered row's type, which the server sets for `@me` and `@all` alike.
+  // Same predicate as web's "Mentions me" filter (core/inbox/filter-store.ts).
   const data = useMemo(() => {
     const deduped = deduplicateInboxItems(rawItems ?? []);
-    return mentionsOnly ? deduped.filter((i) => i.type === "mentioned") : deduped;
+    return mentionsOnly ? deduped.filter(isViewerMention) : deduped;
   }, [rawItems, mentionsOnly]);
   const markRead = useMarkInboxRead();
   const markAllRead = useMarkAllInboxRead();

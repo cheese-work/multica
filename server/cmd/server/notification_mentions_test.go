@@ -107,3 +107,69 @@ func TestNotifyMentionedMembersOnlyMalformedIDs(t *testing.T) {
 		parseMentions("[@Bad](mention://member/deadbeef) [@Bad all](mention://member/all)"),
 		"", "", "", "", nil, nil)
 }
+
+func TestNotification_MentionRecordsItsSource(t *testing.T) {
+	fx := workspaceFixture(t)
+	directID := fx.User(t, "Direct recipient", "mention-source-direct@multica.ai")
+	squadOnlyID := fx.User(t, "Squad-only recipient", "mention-source-squad@multica.ai")
+	bothID := fx.User(t, "Direct and squad recipient", "mention-source-both@multica.ai")
+	for _, id := range []string{directID, squadOnlyID, bothID} {
+		fx.Member(t, testWorkspaceID, id, "member")
+	}
+	squadID := fx.Squad(t, "Mention source squad", fx.Agent(t, "Mention source leader", ""))
+	fx.SquadMember(t, squadID, "member", squadOnlyID)
+	fx.SquadMember(t, squadID, "member", bothID)
+
+	sourcesFor := func(content string, recipients ...string) map[string]string {
+		issueID := fx.Issue(t, "Mention source")
+		fx.Cleanup(t, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
+		fx.Cleanup(t, `DELETE FROM issue_subscriber WHERE issue_id = $1`, issueID)
+		commentID := fx.Comment(t, issueID, content)
+		queries := db.New(testPool)
+		bus := newNotificationBus(t, queries)
+		bus.Publish(events.Event{
+			Type: protocol.EventCommentCreated, WorkspaceID: testWorkspaceID,
+			ActorType: "member", ActorID: testUserID,
+			Payload: map[string]any{
+				"comment": handler.CommentResponse{
+					ID: commentID, IssueID: issueID, AuthorType: "member",
+					AuthorID: testUserID, Content: content, Type: "comment",
+				},
+				"issue_title": "Mention source", "issue_status": "todo",
+			},
+		})
+		sources := map[string]string{}
+		for _, id := range recipients {
+			for _, item := range inboxItemsForRecipient(t, queries, id) {
+				if item.Type != "mentioned" || util.UUIDToString(item.IssueID) != issueID {
+					continue
+				}
+				var details map[string]string
+				if err := json.Unmarshal(item.Details, &details); err != nil {
+					t.Fatalf("details = %s: %v", item.Details, err)
+				}
+				if details["comment_id"] != commentID {
+					t.Fatalf("details = %s; want comment_id %s kept", item.Details, commentID)
+				}
+				sources[id] = details["mention_source"]
+			}
+		}
+		return sources
+	}
+
+	got := sourcesFor("[@Direct](mention://member/"+directID+") [@Both](mention://member/"+bothID+") [@Squad](mention://squad/"+squadID+")", directID, squadOnlyID, bothID)
+	want := map[string]string{directID: "direct", squadOnlyID: "squad", bothID: "direct"}
+	if len(got) != len(want) {
+		t.Fatalf("direct + squad mention sources = %v, want %v", got, want)
+	}
+	for id, source := range want {
+		if got[id] != source {
+			t.Fatalf("direct + squad mention sources = %v, want %v", got, want)
+		}
+	}
+
+	got = sourcesFor("[@All](mention://all/all) [@Squad](mention://squad/"+squadID+")", directID, squadOnlyID)
+	if got[directID] != "all" || got[squadOnlyID] != "all" {
+		t.Fatalf("@all + squad mention sources = %v, want all for every member (@all outranks squad)", got)
+	}
+}

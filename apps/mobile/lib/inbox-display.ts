@@ -117,6 +117,17 @@ export function getInboxNavigationTarget(
 }
 
 /**
+ * True when the viewer was named directly or by `@all`. Mirrors
+ * packages/core/inbox/filter-store.ts isViewerMention: the server writes
+ * `mentioned` for `@squad` too, with `details.mention_source` telling them
+ * apart; a row without it counts as a mention.
+ */
+export function isViewerMention(item: InboxItem): boolean {
+  const source = item.details?.mention_source;
+  return source ? source === "direct" || source === "all" : item.type === "mentioned";
+}
+
+/**
  * Deduplicate inbox items by issue_id (Linear-style: one entry per issue).
  *
  * Mirrors packages/core/inbox/queries.ts deduplicateInboxItems. **MUST stay
@@ -132,7 +143,9 @@ export function getInboxNavigationTarget(
  *   3. In each group, keep the newest by `created_at`.
  *   4. Preserve the newest grouped `comment_id` anchor when the newest row
  *      is a later status/metadata event for the same issue.
- *   5. Sort the result newest-first.
+ *   5. Copy a grouped viewer mention's source onto the kept row, so a later
+ *      comment does not hide it from the "Mentions me" filter.
+ *   6. Sort the result newest-first.
  */
 export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
   const active = items.filter((i) => !i.archived);
@@ -155,11 +168,17 @@ export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
     const commentId =
       newest.details?.comment_id ??
       group.find((item) => item.details?.comment_id)?.details?.comment_id;
+    // A later comment must not hide a mention from the "Mentions me" filter.
+    const mention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
 
-    if (commentId && newest.details?.comment_id !== commentId) {
+    if ((commentId && newest.details?.comment_id !== commentId) || mention) {
       merged.push({
         ...newest,
-        details: { ...(newest.details ?? {}), comment_id: commentId },
+        details: {
+          ...(newest.details ?? {}),
+          ...(commentId ? { comment_id: commentId } : {}),
+          ...(mention ? { mention_source: mention.details?.mention_source ?? "direct" } : {}),
+        },
       });
       continue;
     }

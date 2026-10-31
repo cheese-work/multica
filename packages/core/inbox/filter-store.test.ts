@@ -222,6 +222,21 @@ describe("mentions-me filtering", () => {
     expect(inboxFilterCount(filters)).toBe(1);
   });
 
+  it("matches direct and @all mentions but not squad-only ones", () => {
+    const rows = [
+      item("direct", "todo", "high", { type: "mentioned", details: { mention_source: "direct" } }),
+      item("all", "todo", "high", { type: "mentioned", details: { mention_source: "all" } }),
+      item("squad", "todo", "high", { type: "mentioned", details: { mention_source: "squad" } }),
+      // Written before the server recorded provenance.
+      item("legacy", "todo", "high", { type: "mentioned" }),
+      item("comment", "todo", "high", { type: "new_comment" }),
+    ];
+
+    expect(
+      filterInboxItems(rows, { ...EMPTY_INBOX_FILTERS, mentionsOnly: true }).map((row) => row.id),
+    ).toEqual(["direct", "all", "legacy"]);
+  });
+
   it("toggles per workspace and clears with the rest", () => {
     const { toggleMentionsOnly, clearFilters } = useInboxFilterStore.getState();
     toggleMentionsOnly("ws-1");

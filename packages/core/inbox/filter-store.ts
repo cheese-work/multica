@@ -36,6 +36,17 @@ export function inboxActorKey(item: InboxItem): string | null {
   return item.actor_id ? `${type}:${item.actor_id}` : null;
 }
 
+/**
+ * True when the viewer was named directly or by `@all`. The server writes
+ * `mentioned` for `@squad` too and records which source it was in
+ * `details.mention_source`; a row from before that was recorded has none and
+ * counts as a mention.
+ */
+export function isViewerMention(item: InboxItem): boolean {
+  const source = item.details?.mention_source;
+  return source ? source === "direct" || source === "all" : item.type === "mentioned";
+}
+
 /** Inverse of `inboxActorKey`, for resolving a selection back to a directory. */
 export function inboxActorKeyParts(key: string): { type: string; id: string } {
   const separator = key.indexOf(":");
@@ -261,10 +272,10 @@ export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
  * one never matches. `activeIssueIds` are the issues an agent is running or
  * queued on; the caller derives them from the agent task snapshot.
  *
- * `mentionsOnly` reads the rendered row's type, like the actor: the server
- * writes `mentioned` for a direct mention and for `@all` alike (and for a
- * `@squad` one), and a group whose newest row is a later comment shows as
- * that comment, so it does not match.
+ * `mentionsOnly` asks about the issue's group, not just the newest row: a later
+ * comment must not hide a mention, so deduplication copies the mention's source
+ * onto the row it keeps (`groupInboxItemsByIssue`). A `@squad`-only mention
+ * does not match.
  *
  * `pinnedUnreadKey` / `pinnedIdleKey` name the notification whose detail is
  * open. Opening an unread
@@ -305,7 +316,7 @@ export function filterInboxItems(
       !filters.unreadOnly ||
       item.read !== true ||
       (pinnedUnreadKey != null && key === pinnedUnreadKey);
-    if (filters.mentionsOnly && item.type !== "mentioned") return false;
+    if (filters.mentionsOnly && !isViewerMention(item)) return false;
     const matchesIdle =
       !filters.idleOnly ||
       (item.issue_id != null && !activeIssueIds.has(item.issue_id)) ||
