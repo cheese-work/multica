@@ -4342,6 +4342,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
+	} else if statusChanged && actorType == "agent" {
+		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
@@ -5181,6 +5183,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
 		if statusChanged && actorType == "member" {
 			h.openRunBudgetWindowForMove(r.Context(), issue)
+		} else if statusChanged && actorType == "agent" {
+			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
