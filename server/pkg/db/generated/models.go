@@ -2206,17 +2206,19 @@ type ProvenanceExportLog struct {
 }
 
 type ProviderFailureRecovery struct {
-	FailedTaskID     pgtype.UUID        `json:"failed_task_id"`
-	TriggerKind      string             `json:"trigger_kind"`
-	TriggerID        pgtype.UUID        `json:"trigger_id"`
-	ConditionKey     string             `json:"condition_key"`
-	FailedAt         pgtype.Timestamptz `json:"failed_at"`
-	ProbeAt          pgtype.Timestamptz `json:"probe_at"`
-	ProbeStatus      int32              `json:"probe_status"`
-	ChangedCondition string             `json:"changed_condition"`
-	RecoveryRunID    pgtype.UUID        `json:"recovery_run_id"`
-	RecoveryTaskID   pgtype.UUID        `json:"recovery_task_id"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	FailedTaskID           pgtype.UUID        `json:"failed_task_id"`
+	TriggerKind            string             `json:"trigger_kind"`
+	TriggerID              pgtype.UUID        `json:"trigger_id"`
+	ConditionKey           string             `json:"condition_key"`
+	FailedAt               pgtype.Timestamptz `json:"failed_at"`
+	ProbeAt                pgtype.Timestamptz `json:"probe_at"`
+	ProbeStatus            pgtype.Int4        `json:"probe_status"`
+	ChangedCondition       string             `json:"changed_condition"`
+	RecoveryRunID          pgtype.UUID        `json:"recovery_run_id"`
+	RecoveryTaskID         pgtype.UUID        `json:"recovery_task_id"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	RecoveryWakeupID       pgtype.UUID        `json:"recovery_wakeup_id"`
+	RecoveryWakeupRevision pgtype.Int8        `json:"recovery_wakeup_revision"`
 }
 
 type PushDelivery struct {
