@@ -565,6 +565,12 @@ const IssueWorkflowEdgeSchema = z.object({
   on_timeout: z.string().optional(),
 });
 
+const IssueWorkflowEntryGateSchema = z.object({
+  guard: z.string(),
+  mode: z.string(),
+  member_override: z.boolean().default(true),
+});
+
 const IssueWorkflowSubWorkflowSchema = z.object({
   workflow_id: z.string(),
   stage: z.number().optional(),
@@ -578,6 +584,7 @@ const IssueWorkflowStepSchema = z.object({
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
