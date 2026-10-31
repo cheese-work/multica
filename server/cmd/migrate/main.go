@@ -221,6 +221,7 @@ var concurrentIndexCleanups = map[string]string{
 	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
 	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
 	"677_issue_workflow_override_index":                         "idx_issue_workflow_override",
+	"851_comment_supersession_issue_index":                      "idx_comment_supersession_issue",
 	"700_comment_trigger_rate_limit_unique_index":               "comment_trigger_rate_limit_issue_agent_uidx",
 	"675_issue_ci_advance_index":                                "idx_issue_ci_advance_issue_head",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
