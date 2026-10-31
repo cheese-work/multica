@@ -29,15 +29,20 @@ const (
 // Dest is one CONNECT target the run asked for.
 type Dest struct {
 	Host, Port string
-	Allowed    bool // the policy let it through
-	External   bool // not the Multica server or provider API
+	Allowed    bool   // the policy let it through
+	External   bool   // not the Multica server or provider API
+	Reason     string // why a refused destination was refused
 }
 
 // Proxy serves one run. A nil Allow is the restricted policy: every hostname
 // is allowed until CHE-2224 sets an allowlist.
 type Proxy struct {
-	Allow   func(host, port string) bool
-	Trusted []string // hosts that do not mark external_read: Multica server, provider API
+	Allow func(host, port string) bool
+	// Elevated, when set, replaces Allow with the elevated egress policy
+	// (plan 3.3): default deny, two exact hosts, hostname-only CONNECT,
+	// checked resolution, SNI match.
+	Elevated *ElevatedPolicy
+	Trusted  []string // hosts that do not mark external_read: Multica server, provider API
 	// AllowLoopback lets the proxy dial loopback, link-local and unspecified
 	// addresses. Off by default: the proxy runs on the host, so these would
 	// reach host services that the run's netns hides.
@@ -99,8 +104,16 @@ func (p *Proxy) handle(c net.Conn) {
 		reply(c, http.StatusBadRequest)
 		return
 	}
+	if p.Elevated != nil {
+		p.handleElevated(c, br, req.RequestURI, req.Host, host, port)
+		return
+	}
 	allowed := n != 22 && (p.Allow == nil || p.Allow(host, port)) // SSH has no path, whatever the spelling
-	p.record(host, port, allowed)
+	reason := ""
+	if !allowed {
+		reason = "restricted policy"
+	}
+	p.record(host, port, allowed, reason)
 	if !allowed {
 		reply(c, http.StatusForbidden)
 		return
@@ -133,10 +146,12 @@ func (p *Proxy) control(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-func (p *Proxy) record(host, port string, allowed bool) {
+// record logs one destination and returns its index for refuse.
+func (p *Proxy) record(host, port string, allowed bool, reason string) int {
 	external := !p.trusted(host)
 	p.mu.Lock()
-	p.dests = append(p.dests, Dest{Host: host, Port: port, Allowed: allowed, External: external})
+	p.dests = append(p.dests, Dest{Host: host, Port: port, Allowed: allowed, External: external, Reason: reason})
+	i := len(p.dests) - 1
 	first := external && allowed && !p.external
 	if first {
 		p.external = true
@@ -145,6 +160,15 @@ func (p *Proxy) record(host, port string, allowed bool) {
 	if first && p.OnExternalRead != nil {
 		p.OnExternalRead(host)
 	}
+	return i
+}
+
+// refuse turns an allowed entry into a refusal found after the CONNECT was
+// accepted (dial failure, SNI mismatch).
+func (p *Proxy) refuse(i int, reason string) {
+	p.mu.Lock()
+	p.dests[i].Allowed, p.dests[i].Reason = false, reason
+	p.mu.Unlock()
 }
 
 func (p *Proxy) trusted(host string) bool {
