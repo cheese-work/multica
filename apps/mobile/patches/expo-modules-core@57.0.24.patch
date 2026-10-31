@@ -1,0 +1,78 @@
+diff --git a/ios/Core/Events/EventEmitter.swift b/ios/Core/Events/EventEmitter.swift
+index 3046568451ed58bdc7076d6d739dea37f2285859..fae0013383952e6765fc0fd1e83dcb60e3f52c1f 100644
+--- a/ios/Core/Events/EventEmitter.swift
++++ b/ios/Core/Events/EventEmitter.swift
+@@ -46,10 +46,10 @@ public extension EventEmitter {
+     // safe here because the scheduled closure only calls `withEventTarget`, which touches `@JavaScriptActor`-
+     // isolated or `Sendable` state (the JS object, the registry, `appContext`) and the emitter's identity -
+     // never the module's own mutable state.
+-    nonisolated(unsafe) weak let emitter = self
++    let emitterRef = WeakEventEmitterReference(value: self)
+ 
+     runtime.schedule {
+-      guard let emitter else {
++      guard let emitter = emitterRef.value else {
+         return
+       }
+       let dispatched = emitter.withEventTarget { target in
+@@ -73,10 +73,10 @@ public extension EventEmitter {
+     // See the note in `emit(event:payload:)` above - the emitter is captured as `nonisolated(unsafe)`
+     // because it isn't necessarily `Sendable`, and the scheduled closure only reaches `@JavaScriptActor`-
+     // isolated or `Sendable` state through it.
+-    nonisolated(unsafe) weak let emitter = self
++    let emitterRef = WeakEventEmitterReference(value: self)
+ 
+     runtime.schedule { [weak appContext] in
+-      guard let emitter, let appContext else {
++      guard let emitter = emitterRef.value, let appContext else {
+         return
+       }
+       let jsPayload: JavaScriptValue
+@@ -117,3 +117,9 @@ internal func dispatchEvent(event: String, payload: JavaScriptValue, to target:
+     }
+   }
+ }
++
++/// A weak reference captured by the scheduled `emit` closures. Wrapping it in an `@unchecked Sendable` struct
++/// keeps Swift 6.2 (Xcode 26) from rejecting the non-`Sendable` emitter as a `sending` capture.
++private struct WeakEventEmitterReference: @unchecked Sendable {
++  weak var value: (any EventEmitter)?
++}
+diff --git a/ios/Utilities/Utilities.swift b/ios/Utilities/Utilities.swift
+index 3144ea069305fc36a8ffc2cd9f3fdff9b21257a9..ada48093d9bf3a2e3f1cca5adb7d4c4238ab5005 100644
+--- a/ios/Utilities/Utilities.swift
++++ b/ios/Utilities/Utilities.swift
+@@ -138,10 +138,23 @@ public struct Utilities {
+     return convertToUrl(string: string)
+   }
+ 
++  /**
++   Returns the app's key window. On iOS and tvOS it is resolved from the foregrounded scene, so
++   callers presenting UI don't reach a window in a scene the user isn't looking at.
++   */
++  @MainActor
++  public static func keyWindow() -> UIWindow? {
++#if os(iOS) || os(tvOS)
++    return SceneGeometry.keyWindow()
++#elseif os(macOS)
++    return NSApplication.shared.keyWindow
++#endif
++  }
++
+   nonisolated public func currentViewController() -> UIViewController? {
+     return MainActor.assumeIsolated {
+ #if os(iOS) || os(tvOS)
+-      var controller = UIApplication.shared.keyWindow?.rootViewController
++      var controller = Utilities.keyWindow()?.rootViewController
+ 
+       while let presentedController = controller?.presentedViewController, !presentedController.isBeingDismissed {
+         controller = presentedController
+@@ -149,7 +162,7 @@ public struct Utilities {
+       return controller
+ #elseif os(macOS)
+       // Even though the function's return type is `UIViewController`, react-native-macos will alias `NSViewController` to `UIViewController`.
+-      return NSApplication.shared.keyWindow?.contentViewController
++      return Utilities.keyWindow()?.contentViewController
+ #endif
+     }
+   }
