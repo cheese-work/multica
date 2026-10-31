@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDayLabel, formatMessageDateTime, formatMessageTime, formatTimeWithZone } from "./message-time";
+import { formatDayLabel, formatMessageDateTime, formatDateTimeWithZone, formatMessageTime, formatTimeWithZone } from "./message-time";
 
 // 2026-10-20T04:20:00Z: 11:20 in Ho Chi Minh (UTC+7), 00:20 in New York (EDT, UTC-4).
 const AT = "2026-10-20T04:20:00Z";
@@ -56,5 +56,22 @@ describe("formatTimeWithZone", () => {
 
   it("returns the raw string for an unparseable timestamp", () => {
     expect(formatTimeWithZone("not-a-date", "en-US", "UTC")).toBe("not-a-date");
+  });
+});
+
+describe("formatDateTimeWithZone", () => {
+  it("prefixes the reader-local date to the shared time and zone", () => {
+    expect(formatDateTimeWithZone(AT, "en-US", "Asia/Ho_Chi_Minh")).toBe("Oct 20, 2026, 11:20 ICT");
+  });
+
+  it("uses the reader's calendar day, not the UTC day", () => {
+    // 2026-10-20T20:00Z is already 21 Oct in Ho Chi Minh.
+    expect(formatDateTimeWithZone("2026-10-20T20:00:00Z", "en-US", "Asia/Ho_Chi_Minh")).toBe(
+      "Oct 21, 2026, 03:00 ICT",
+    );
+  });
+
+  it("returns the raw string for an unparseable timestamp", () => {
+    expect(formatDateTimeWithZone("not-a-date", "en-US", "UTC")).toBe("not-a-date");
   });
 });

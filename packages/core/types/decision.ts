@@ -25,6 +25,8 @@ export interface DecisionRequestCard {
   issue_identifier: string;
   source_comment_id?: string | null;
   ask: string;
+  /** The asking agent's name; absent when the agent is gone or the server is older. */
+  asking_agent_name?: string;
   options?: DecisionRequestOption[];
   state: "open" | "answered" | "withdrawn";
   created_at: string;
@@ -36,9 +38,17 @@ export interface DecisionRequestCard {
   answer?: DecisionRequestAnswer;
 }
 
-/** Receipt half of a request card: recorded, then delivered once the asking agent was woken. */
+/** The run that resumed the issue after the answer was recorded. */
+export interface DecisionRequestRun {
+  id: string;
+  agent_name: string;
+}
+
+/** Receipt half of a request card: recorded, delivered once the asking agent was woken, then picked up once a run started. */
 export interface DecisionRequestAnswer {
-  state: "recorded" | "delivered" | "disclaimed";
+  state: "recorded" | "delivered" | "picked_up" | "disclaimed";
+  /** Set with `picked_up`. */
+  run?: DecisionRequestRun;
   /** 0-based into the card's options; absent for a free-text answer. */
   chosen_option_index?: number;
   option_label?: string;
@@ -99,4 +109,53 @@ export interface DecisionCommentFields {
   /** The DM message that asked, in the request's own session (a continued DM can differ from the answer's). */
   decision_request_session_id?: string;
   decision_request_message_id?: string;
+  /** The offered-option label (for example D1) an excerpted record answers. */
+  decision_answered_label?: string;
+  /** The whole source message, sent only for an excerpted record so the card can disclose it. */
+  decision_full_message?: string;
+  /** When the record was made; `effective_at` minus this is the disclaim window. */
+  decision_answered_at?: string;
+  /** When the answer became effective; absent while pending. */
+  decision_woken_at?: string | null;
+}
+
+/** Reviewer signature carried by an approved file. */
+export interface DecisionArtifactSignature {
+  reviewer: string;
+  comment_id: string;
+}
+
+/** One changed region of a text diff. Each line starts with " ", "-" or "+". */
+export interface DecisionArtifactHunk {
+  old_start: number;
+  new_start: number;
+  lines: string[];
+}
+
+/** `problem` is set when no hunks can be shown. */
+export interface DecisionArtifactDiff {
+  previous_filename: string;
+  hunks: DecisionArtifactHunk[];
+  problem?: "not_text" | "too_large" | "unavailable";
+}
+
+/** A file the human approves, from `GET /api/decisions/{id}/artifacts`. */
+export interface DecisionArtifact {
+  attachment_id: string;
+  label: string;
+  sha256: string;
+  supersedes_attachment_id?: string;
+  signed_by?: DecisionArtifactSignature;
+  /** Signature of the superseded revision; the diff is measured against that file. */
+  supersedes_signed_by?: DecisionArtifactSignature;
+  /** Absent when the file was deleted after the ask was sent. */
+  attachment?: {
+    id: string;
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    download_url: string;
+    attachment_download_url?: string;
+  };
+  diff?: DecisionArtifactDiff;
 }

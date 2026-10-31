@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown } from "@multica/ui/icons";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { visit } from "unist-util-visit";
 import { useAuthStore } from "@multica/core/auth";
@@ -17,9 +17,10 @@ import { useT } from "../i18n";
 
 // Virtuoso scrolls to an estimated offset for rows it has not measured, so one
 // jump can land short or long. Re-issue it each frame until the row sits at the
-// top of the viewport, for at most ~1s, and give up the moment the reader scrolls.
+// top of the viewport, for at most 1s of wall time (a frame budget would shrink
+// on 120 Hz displays), and give up the moment the reader scrolls.
 const SETTLE_TOLERANCE_PX = 40;
-const SETTLE_MAX_FRAMES = 60;
+const SETTLE_MAX_MS = 1000;
 
 /**
  * Whether markdown mentions the viewer: their member mention, or `@all`.
@@ -106,9 +107,6 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, e
     };
     measure();
     scrollEl.addEventListener("scroll", measure, { passive: true });
-    const cancelJump = () => void jumpId.current++;
-    scrollEl.addEventListener("wheel", cancelJump, { passive: true });
-    scrollEl.addEventListener("touchstart", cancelJump, { passive: true });
     const resize = new ResizeObserver(measure);
     resize.observe(scrollEl);
     // Rows mount and unmount as Virtuoso windows the list.
@@ -117,13 +115,25 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, e
     return () => {
       cancelAnimationFrame(frame);
       scrollEl.removeEventListener("scroll", measure);
-      scrollEl.removeEventListener("wheel", cancelJump);
-      scrollEl.removeEventListener("touchstart", cancelJump);
-      cancelJump();
       resize.disconnect();
       mutations.disconnect();
     };
   }, [scrollEl, enabled, flags, firstItemIndex]);
+
+  // Only the reader or the list going away ends a jump. Kept apart from the
+  // measuring effect, which re-runs whenever the host passes new flags: a live
+  // thread would otherwise abort the settle mid-flight and strand the row short.
+  useEffect(() => {
+    if (!scrollEl || !enabled) return;
+    const cancelJump = () => void jumpId.current++;
+    scrollEl.addEventListener("wheel", cancelJump, { passive: true });
+    scrollEl.addEventListener("touchstart", cancelJump, { passive: true });
+    return () => {
+      scrollEl.removeEventListener("wheel", cancelJump);
+      scrollEl.removeEventListener("touchstart", cancelJump);
+      cancelJump();
+    };
+  }, [scrollEl, enabled]);
 
   const below = useMemo(() => {
     if (visibleEnd === null) return [];
@@ -134,9 +144,9 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, e
 
   const jump = (target: number) => {
     const id = ++jumpId.current;
-    let frames = 0;
+    const deadline = performance.now() + SETTLE_MAX_MS;
     const settle = () => {
-      if (!scrollEl || id !== jumpId.current || ++frames > SETTLE_MAX_FRAMES) return;
+      if (!scrollEl || id !== jumpId.current || performance.now() > deadline) return;
       const row = scrollEl.querySelector(`[data-item-index="${target + firstItemIndex}"]`);
       const offTop = row ? row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top : Infinity;
       if (Math.abs(offTop) <= SETTLE_TOLERANCE_PX) return;

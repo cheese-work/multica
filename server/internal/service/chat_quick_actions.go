@@ -244,8 +244,8 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 	}
 	actions := parseChatQuickActionsOutput(raw)
 	for i := range actions {
-		actions[i].Label = redact.Text(actions[i].Label)
-		actions[i].Prompt = redact.Text(actions[i].Prompt)
+		actions[i].Label = redact.Prose(actions[i].Label)
+		actions[i].Prompt = redact.Prose(actions[i].Prompt)
 	}
 
 	var msg db.ChatMessage
@@ -269,7 +269,8 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 		return fmt.Errorf("attach chat quick actions: %w", err)
 	}
 
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
+	scope := s.ResolveTaskScope(ctx, task)
+	workspaceID := scope.WorkspaceID
 	if workspaceID == "" {
 		return nil
 	}
@@ -282,12 +283,13 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 	}
 	_ = json.Unmarshal(msg.QuickActions, &payload.QuickActions)
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatQuickActions,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:               protocol.EventChatQuickActions,
+		WorkspaceID:        workspaceID,
+		ActorType:          "system",
+		ActorID:            "",
+		ChatSessionID:      util.UUIDToString(task.ChatSessionID),
+		ChatSessionOwnerID: scope.ChatSessionOwnerID,
+		Payload:            payload,
 	})
 	return nil
 }

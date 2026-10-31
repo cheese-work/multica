@@ -28,6 +28,9 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, uuidToString(issue.WorkspaceID))
+		},
 		IsSelfLoop: func() bool {
 			return h.isAgentRunningOnIssue(r, actorType, issue)
 		},
@@ -51,6 +54,9 @@ func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID str
 func (h *Handler) issueTriggerPreviewProbe(r *http.Request, actorType, actorID, workspaceID string, issue db.Issue) service.IssueTriggerProbe {
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
 	return service.IssueTriggerProbe{
+		CanResumeBlockedIssue: func(agent db.Agent) bool {
+			return actorType == "member" && h.canInvokeAgent(r.Context(), agent, actorType, actorID, actorID, workspaceID)
+		},
 		CanAccessAgent: func(agent db.Agent) bool {
 			return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 		},
@@ -114,12 +120,35 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		}
 		return true
 	case "squad":
-		// Delivery only when the leader's run was queued. Jev can route the work
-		// to a specialist instead: the specialist's run carries the write, not
-		// the leader's, so the leader's receipts stay pending.
+		// Delivery only when the leader's run was queued.
 		return h.enqueueSquadLeaderTaskOutcome(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote) == squadEnqueueLeader
 	}
 	return false
+}
+
+// withIssueWriteTaint reads the taint of the task making this assignment or
+// handoff and puts it on the write's context. updateIssueStoppingWakeups gives
+// it to every run pending on the issue in the same transaction as the write, so
+// no claim can read the committed write and miss it. If the requesting task's
+// taint cannot be read, the write does not happen.
+func (h *Handler) withIssueWriteTaint(w http.ResponseWriter, r *http.Request, ctx context.Context) (context.Context, bool) {
+	taint, err := service.ActingTaskTaint(h.actingTaskContext(r), h.Queries)
+	if err != nil {
+		slog.Error("could not read requesting task taint", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return ctx, false
+	}
+	if len(taint) == 0 {
+		return ctx, true
+	}
+	return context.WithValue(ctx, issueWriteTaintKey{}, taint), true
+}
+
+type issueWriteTaintKey struct{}
+
+func issueWriteTaint(ctx context.Context) []string {
+	taint, _ := ctx.Value(issueWriteTaintKey{}).([]string)
+	return taint
 }
 
 // queuedRunCarriesWrite reports whether a queued run of the agent can stand in
@@ -130,10 +159,28 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		step, ok := def.Step(issue.Status)
 		stepHandsOff = ok && step.HandsOff()
 	}
+	head := h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID)
+	// A tainted writer passes its taint to the run that stands in for it.
+	// Fail closed: if the writer's taint cannot be read, nothing carries it.
+	taint, err := service.ActingTaskTaint(ctx, h.Queries)
+	if err != nil {
+		return false
+	}
+	if len(taint) > 0 {
+		n, err := h.Queries.TaintQueuedRunCarryingIssueWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
+			TaintIds:     taint,
+			IssueID:      issue.ID,
+			AgentID:      agentID,
+			HeadSha:      head,
+			StepHandsOff: stepHandsOff,
+			Step:         issue.Status,
+		})
+		return err == nil && n > 0
+	}
 	carries, err := h.Queries.HasQueuedRunCarryingIssueWrite(ctx, db.HasQueuedRunCarryingIssueWriteParams{
 		IssueID:      issue.ID,
 		AgentID:      agentID,
-		HeadSha:      h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		HeadSha:      head,
 		StepHandsOff: stepHandsOff,
 		Step:         issue.Status,
 	})

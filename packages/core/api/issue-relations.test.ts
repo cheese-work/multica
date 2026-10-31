@@ -18,6 +18,15 @@ it("scopes the lazy relations request to workspace and depth and forwards cancel
   expect(fetch.mock.calls[0]![1].signal).toBe(controller.signal);
 });
 
+it("requests mentions only when explicitly enabled", async () => {
+  const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(graph))));
+  vi.stubGlobal("fetch", fetch);
+  await client.getIssueRelations("workspace", "issue");
+  expect(new URL(fetch.mock.calls[0]![0]).searchParams.has("include")).toBe(false);
+  await client.getIssueRelations("workspace", "issue", 1, undefined, true);
+  expect(new URL(fetch.mock.calls[1]![0]).searchParams.get("include")).toBe("mentions");
+});
+
 it.each([
   { ...graph, depth: 3 },
   { ...graph, omitted_count: -1 },

@@ -1,5 +1,5 @@
 import type { TaskMessagePayload } from "@multica/core/types/events";
-import { redactSecrets } from "./redact";
+import { redactForType, redactSecrets } from "./redact";
 
 /** A unified timeline entry: tool calls, thinking, text, and errors in chronological order. */
 export interface TimelineItem {
@@ -52,7 +52,7 @@ export function appendTimelineItem(items: TimelineItem[], item: TimelineItem): T
 function redactTimelineItems(items: TimelineItem[]): TimelineItem[] {
   return items.map((item) => ({
     ...item,
-    content: item.content ? redactSecrets(item.content) : item.content,
+    content: item.content ? redactForType(item.type, item.content) : item.content,
     output: item.output ? redactSecrets(item.output) : item.output,
   }));
 }

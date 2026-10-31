@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>decision-eli10 rev-2 A: decision request card, ELI10 order</title>
+<style>
+  /* Light-mode values copied from packages/ui/styles/tokens.css; the details/summary rules
+     mirror packages/views/rich-content/rich-content.css. No network fetches. */
+  :root {
+    --radius: 0.5rem; --radius-xs: calc(var(--radius) * 0.375); --radius-md: calc(var(--radius) * 0.75); --radius-xl: calc(var(--radius) * 1.5);
+    --page-canvas: oklch(0.988087 0 0); --surface: oklch(1 0 0); --surface-border: oklch(0.92 0.004 286.32);
+    --foreground: oklch(0.141 0.005 285.823); --muted-foreground: oklch(0.505 0.016 285.938); --ring: oklch(0.705 0.015 286.067);
+    --link: oklch(0.546 0.245 262.881);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; background: var(--page-canvas); color: var(--foreground); font: 14px/1.5 system-ui, sans-serif; }
+  main { display: grid; gap: 1.5rem; max-width: 40rem; margin: 0 auto; }
+  h2 { margin: 0 0 .5rem; font-size: 12px; font-weight: 500; color: var(--muted-foreground); }
+  .card { background: var(--surface); border: 1px solid var(--surface-border); border-radius: var(--radius-xl); }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--surface-border); font-weight: 500; }
+  .state { font-size: 12px; padding: 0 .5rem; border-radius: 999px; background: oklch(0.95 0.05 80); color: oklch(0.5 0.12 70); }
+  .chip { font-size: 12px; padding: 0 .5rem; border: 1px solid var(--surface-border); border-radius: var(--radius-md); }
+  .body { padding: .75rem 1rem 1rem; overflow-wrap: anywhere; }
+  .body p { margin: 0 0 .75rem; } .body p > strong:first-child { display: block; }
+  ul { margin: 0 0 .75rem; padding-left: 1.25rem; } ul ul { margin: 0; }
+  a { color: var(--link); }
+  .when { padding: 0 1rem .75rem; font-size: 12px; color: var(--muted-foreground); }
+  details { margin-top: .5rem; margin-bottom: .5rem; border: 1px solid var(--surface-border); border-radius: var(--radius-md); padding: 0 .75rem; }
+  details > summary { min-height: 2.25rem; padding: .375rem 0; cursor: pointer; color: var(--muted-foreground); font-weight: 500; }
+  details > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-xs); }
+  details[open] > summary { margin-bottom: .25rem; border-bottom: 1px solid var(--surface-border); }
+</style>
+</head>
+<body>
+<main>
+<!-- Same ask twice: Details collapsed (default) and open. data-testid values match docs/ux/CHE-2186.yml. Details and the Investigate line sit inside decision-request-ask (rendered markdown, no own id). -->
+<template id="ask">
+  <article class="card" data-testid="decision-request-card">
+    <header class="head"><span>Decision request</span><span class="state">Open</span><span class="chip" data-testid="decision-request-source-issue">CHE-1755</span><a href="#" data-testid="decision-request-source-comment">Source comment</a></header>
+    <div class="body" data-testid="decision-request-ask">
+      <p><strong>Context</strong>This feature adds three things to DMs on web and phone: /archive to put a chat away, /statistic to see chat numbers, and a back button that returns to the previous DM. The code is ready in 3 draft pull requests. Some proof is still missing. You decide whether agents collect that proof first, or whether you accept the work without it.</p>
+      <p><strong>Decision</strong>Collect the missing proof before merge, or accept the three pull requests without it?</p>
+      <p><strong>What is at stake</strong>If the missing proof hides a real bug, archive or the back button can misbehave on Android after merge, and you find it instead of a test.</p>
+      <p><strong>Options</strong></p>
+      <ul>
+        <li><strong>KEEP GATES</strong>: Agents take the 24 screenshots, run the Android phone check and add the missing test. You merge after that.
+          <ul><li>Pro: Bugs show up before merge</li><li>Con: Slower</li><li>Cost or time: About 1 to 2 days (estimate)</li></ul></li>
+        <li><strong>WAIVE GAPS</strong>: Agents update the 3 pull requests and send them for a fresh review without the missing proof. You merge after that review.
+          <ul><li>Pro: Faster to merge</li><li>Con: Android bugs can show up only after merge</li><li>Cost or time: A few hours (estimate)</li></ul></li>
+      </ul>
+      <p><strong>Recommendation</strong>KEEP GATES. Get the missing proof first; the current checks do not cover the Android screens.</p>
+      <p><strong>Default if no reply</strong>KEEP GATES. The feature stays blocked and the three pull requests stay draft.</p>
+      <details>
+        <summary>Details</summary>
+        <p><strong>Agent did</strong>Stale sweep on 27 Oct 2026: PRs 340, 343 and 347 are OPEN and draft. Gaps: 24 PNGs NOT-CAPTURED, historical-red, chat-thread-group-pinned P2.</p>
+      </details>
+      <p>Investigate in issue: <span class="chip">CHE-1755</span> · <a href="#">Comment</a></p>
+    </div>
+    <div class="when">27 Oct 2026, 11:00 ICT</div>
+  </article>
+</template>
+<section><h2>Details collapsed (default)</h2><div id="collapsed"></div></section>
+<section><h2>Details open</h2><div id="open"></div></section>
+</main>
+<script>
+  const t = document.getElementById('ask').content;
+  document.getElementById('collapsed').append(t.cloneNode(true));
+  const open = t.cloneNode(true); open.querySelector('details').open = true;
+  document.getElementById('open').append(open);
+</script>
+</body>
+</html>

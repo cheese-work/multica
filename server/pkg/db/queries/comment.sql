@@ -403,18 +403,29 @@ LIMIT 1;
 SELECT c.* FROM comment c
 WHERE c.issue_id = @issue_id
   AND (c.id = ANY(@planned_comment_ids::uuid[])
-       OR comment_thread_root_id(c.id) = sqlc.narg('comment_thread_id')::uuid)
+       OR comment_thread_root_id(c.id) = sqlc.narg('comment_thread_id')::uuid
+       -- An agent comment that steered this run but was never read took the
+       -- place of the follow-up its mention would have queued; replay it.
+       OR (c.author_type = 'agent' AND EXISTS (
+           SELECT 1 FROM task_supplement steered
+           WHERE steered.comment_id = c.id AND steered.task_id = sqlc.narg('task_id')::uuid
+             AND steered.status <> 'delivered'
+       )))
   -- A deleted comment is no longer input, even when replies keep its row.
   AND c.deleted_at IS NULL
-  -- A comment that steered this agent's running turn belongs to that turn,
-  -- regardless of delivery status: failed delivery must not become an automatic
-  -- new run. The same comment still reconciles normally for any other agent
-  -- it addressed without steering.
+  -- A member comment that steered this agent's running turn belongs to that
+  -- turn, regardless of delivery status: failed delivery must not become an
+  -- automatic new run, because the member sees the failure and can retry or
+  -- send it as a new run. No one watches an agent's steering receipt, so an
+  -- agent comment belongs to the turn only once delivered; otherwise it is
+  -- replayed like any other mention. The same comment still reconciles
+  -- normally for any other agent it addressed without steering.
   AND NOT EXISTS (
       SELECT 1 FROM task_supplement s
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
         AND bound.agent_id = @agent_id
+        AND (c.author_type <> 'agent' OR s.status = 'delivered')
   )
   -- An explicit member/agent cancellation acknowledges the planned input for
   -- this agent only for completing tasks already in flight at cancellation;
@@ -1064,3 +1075,46 @@ WHERE issue_id = @issue_id
   AND created_at <= @cutoff
 ORDER BY created_at ASC, id ASC
 LIMIT @row_limit;
+
+-- name: GetThreadLatestComment :one
+-- The newest live comment in @target_id's thread (root plus every descendant,
+-- same walk as CountThreadCommentsSince). Supersede reads its author: a thread
+-- whose newest comment is a human's is never auto-resolved.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT * FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT 1;
+
+-- name: UpsertCommentSupersession :exec
+-- Links a superseded thread root to the comment that superseded it. The latest
+-- superseding comment wins.
+INSERT INTO comment_supersession (superseded_comment_id, superseding_comment_id, workspace_id, issue_id)
+VALUES (@superseded_comment_id, @superseding_comment_id, @workspace_id, @issue_id)
+ON CONFLICT (superseded_comment_id)
+DO UPDATE SET superseding_comment_id = EXCLUDED.superseding_comment_id,
+              created_at = clock_timestamp();
+
+-- name: ListCommentSupersessionsForIssue :many
+SELECT superseded_comment_id, superseding_comment_id
+FROM comment_supersession
+WHERE issue_id = @issue_id AND workspace_id = @workspace_id;

@@ -315,7 +315,7 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		publication.comment = db.CreateCommentRow(created)
 		publication.state, publication.reason = "projected", "gate_g_closed"
 	} else {
-		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
+		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, queries, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
 		if err != nil {
 			return nil, err
 		}

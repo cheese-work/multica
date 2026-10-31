@@ -1,6 +1,6 @@
 import type { ZodType } from "zod";
-import type { OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
+import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
@@ -52,6 +52,8 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  RuntimePause,
+  RuntimePauseReason,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
@@ -106,6 +108,7 @@ import type {
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
+  ChatWakeup,
   ChatForkResponse,
   ChatPinnedAgent,
   ChatMessage,
@@ -273,6 +276,7 @@ import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
+  DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -289,6 +293,8 @@ import {
   ChatContinueResponseSchema,
   ChatSessionUsageSchema,
   EMPTY_CHAT_SESSION_USAGE,
+  ChatWakeupsSchema,
+  EMPTY_CHAT_WAKEUPS,
   ChatForkResponseSchema,
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
@@ -1679,9 +1685,10 @@ export class ApiClient {
     );
   }
 
-  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal): Promise<IssueRelations> {
+  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal, includeMentions = false): Promise<IssueRelations> {
     const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
     const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
+    if (includeMentions) params.set("include", "mentions");
     const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
@@ -2521,6 +2528,29 @@ export class ApiClient {
       body: JSON.stringify(patch),
     });
     return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_RUNTIME, { endpoint: "updateRuntime" });
+  }
+
+  // Pause the whole machine hosting this runtime (CHE-2430). Only the machine
+  // owner and the workspace owner may call it; the server answers 403 otherwise.
+  async pauseRuntimeMachine(
+    runtimeId: string,
+    reason: RuntimePauseReason,
+  ): Promise<RuntimePause> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/pause`, {
+      method: "PUT",
+      body: JSON.stringify({ reason }),
+    });
+    return parseWithFallback(
+      raw,
+      RuntimePauseSchema,
+      { reason, paused_by: null, paused_at: "", expires_at: "" },
+      { endpoint: "pauseRuntimeMachine" },
+    );
+  }
+
+  // Idempotent: resuming a machine that is not paused still answers 204.
+  async resumeRuntimeMachine(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/pause`, { method: "DELETE" });
   }
 
   // Confirmed counterpart to a runtime access restriction PATCH. The PATCH
@@ -3937,6 +3967,18 @@ export class ApiClient {
     });
   }
 
+  /** Pending one-shot turns agents scheduled in this DM, soonest first. */
+  async listChatSessionWakeups(sessionId: string): Promise<ChatWakeup[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/wakeups`);
+    return parseWithFallback(raw, ChatWakeupsSchema, EMPTY_CHAT_WAKEUPS, {
+      endpoint: "GET /api/chat/sessions/:id/wakeups",
+    });
+  }
+
+  async cancelChatSessionWakeup(sessionId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/wakeups/${wakeupId}`, { method: "DELETE" });
+  }
+
   async continueChatSession(id: string, summary: string): Promise<ChatContinueResponse> {
     const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/continue`, {
       method: "POST",
@@ -4052,6 +4094,14 @@ export class ApiClient {
 
   async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  /** The files a decision request approves, with the changed hunks against the revision each supersedes. */
+  async listDecisionArtifacts(requestId: string): Promise<DecisionArtifact[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/${encodeURIComponent(requestId)}/artifacts`);
+    return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
+      endpoint: "GET /api/decisions/:id/artifacts",
+    }).artifacts;
   }
 
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, ScrollText } from "lucide-react";
+import { Loader2, ScrollText } from "@multica/ui/icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -150,6 +150,31 @@ export function TranscriptButton({
     },
     [liveCacheMode, providedItems, loadedItems, setOpen, task.id],
   );
+
+  // A parent that opens the dialog itself (no click on this button) still needs
+  // a terminal run's messages: load them once on open. A latched live session
+  // already took its final backfill from the cache, so it never needs this.
+  const needsLoad =
+    open &&
+    controlledOpen !== undefined &&
+    !liveCacheMode &&
+    !liveSession &&
+    providedItems === undefined &&
+    loadedItems === null;
+  useEffect(() => {
+    if (!needsLoad) return;
+    let cancelled = false;
+    api
+      .listTaskMessages(task.id)
+      .then((msgs) => !cancelled && setLoadedItems(buildTimeline(msgs)))
+      .catch((err) => {
+        console.error(err);
+        if (!cancelled) setLoadedItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsLoad, task.id]);
 
   useEffect(() => {
     if (!open) return;

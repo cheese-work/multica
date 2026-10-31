@@ -193,6 +193,7 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready')
+  AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
        OR (e.status = 'accepted'
            AND NOT EXISTS (
@@ -263,6 +264,8 @@ type ListNextTurnPREventsRow struct {
 // between the sweep and this read never makes the event eligible twice. The
 // after_* pair is the caller's cursor: a batch full of causes the rule cannot
 // take now must not hold every later batch back.
+// Action-required kinds of a merged or closed PR are never selected: the
+// lifecycle stop already ran, and a reopen raises its own events.
 func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
 	rows, err := q.db.Query(ctx, listNextTurnPREvents,
 		arg.WorkspaceIds,
@@ -410,7 +413,7 @@ SELECT EXISTS (
       AND pr.repo_owner = $2 AND pr.repo_name = $3 AND pr.pr_number = $4
       AND e.kind = $5 AND e.head_sha = $6
       AND (e.kind <> 'conflict' OR e.base_sha = $7::text)
-      AND (e.status = 'delivered'
+      AND (e.status IN ('delivering', 'delivered')
            OR EXISTS (
                SELECT 1
                FROM issue_wakeup w
@@ -434,9 +437,12 @@ type PREventCarriesLegacyWakeParams struct {
 }
 
 // A pr.event wake already carries the cause the legacy PR rule is about to
-// queue: the event was delivered, or a receipt for it is in flight (pending, or
-// on a run that is queued, dispatched or has started). A conflict is matched on
-// its base commit too. The legacy side of the CHE-2540 coalescing.
+// queue: the event was delivered, a typed live notice of it is in flight
+// (delivering: pending or claimed, not yet acknowledged), or a receipt for it is
+// in flight (pending, or on a run that is queued, dispatched or has started). A
+// failed or unacknowledged notice returns the event to next_turn, where the
+// fallback wake carries it (CHE-2600). A conflict is matched on its base commit
+// too. The legacy side of the CHE-2540 coalescing.
 func (q *Queries) PREventCarriesLegacyWake(ctx context.Context, arg PREventCarriesLegacyWakeParams) (bool, error) {
 	row := q.db.QueryRow(ctx, pREventCarriesLegacyWake,
 		arg.IssueID,

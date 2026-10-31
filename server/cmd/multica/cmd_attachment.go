@@ -95,12 +95,16 @@ func runAttachmentUpload(cmd *cobra.Command, args []string) error {
 	markdown := attachmentMarkdown(filename, att.ContentType, att.MarkdownURL)
 	fmt.Fprintln(os.Stderr, "Uploaded:", filename)
 
-	return cli.PrintJSON(os.Stdout, map[string]any{
+	result := map[string]any{
 		"id":           att.ID,
 		"filename":     filename,
 		"markdown_url": att.MarkdownURL,
 		"markdown":     markdown,
-	})
+	}
+	if att.WebURL != "" {
+		result["web_url"] = att.WebURL
+	}
+	return cli.PrintJSON(os.Stdout, result)
 }
 
 // attachmentMarkdown renders the markdown snippet that makes an uploaded file

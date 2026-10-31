@@ -123,7 +123,7 @@
     "backlog": "待規劃",
     "todo": "待辦",
     "in_progress": "進行中",
-    "in_review": "稽覈中",
+    "in_review": "審查中",
     "done": "已完成",
     "blocked": "已阻塞",
     "cancelled": "已取消"
@@ -463,6 +463,7 @@
     "agents_group": "智慧體",
     "mark_done_tooltip": "標記為已完成",
     "archive_tooltip": "歸檔",
+    "restore_to_inbox_tooltip": "恢復到收件箱",
     "pin_tooltip": "固定到側邊欄",
     "unpin_tooltip": "從側邊欄取消固定",
     "quick_jump_label": "快捷跳轉",
@@ -503,7 +504,8 @@
     "prop_requested_by": "請求人"
   },
   "timeline": {
-    "loading": "載入中…"
+    "loading": "載入中…",
+    "jump_to_latest": "跳到最新"
   },
   "activity": {
     "created": "建立了這個任務",
@@ -673,7 +675,11 @@
     "restart_failed": "沒能停止當前執行，訊息還沒有傳送。",
     "you": "你",
     "thread_show_more_other": "顯示另外 {{count}} 條回復",
-    "thread_show_less": "收起"
+    "thread_show_less": "收起",
+    "supersession": {
+      "superseded_by": "已被 rev-{{revision}} 取代",
+      "supersedes": "取代 rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "回覆...",
@@ -768,12 +774,11 @@
     "trigger_wakeup": "由喚醒觸發 · {{condition}}",
     "trigger_image": "[圖片]",
     "summary_runs_other": "{{count}} 次執行",
-    "latest": "最近",
     "open_timeline": "開啟時間線",
     "more_runs_other": "顯示其餘 {{count}} 次執行",
     "strip_aria": "每次執行的費用——開啟執行時間線",
     "strip_no_usage": "沒有用量記錄",
-    "sparkline_now": "現在"
+    "queued_count_other": "{{count}} 個排隊中"
   },
   "runs_timeline": {
     "title": "執行記錄",
@@ -1298,7 +1303,7 @@
       "pick_issue_description": "該任務達到所選狀態時喚醒智慧體。",
       "other_done": "完成",
       "other_ended": "完成或取消",
-      "other_in_review": "進入稽覈中",
+      "other_in_review": "進入審查中",
       "other_blocked": "進入 blocked",
       "max_fires": "最多觸發",
       "max_fires_times_other": "{{count}} 次",
@@ -1352,7 +1357,7 @@
       "pr_conflicts": "當關聯 PR 出現合併衝突時",
       "other_done": "當 {{issue}} 完成時",
       "other_ended": "當 {{issue}} 完成或取消時",
-      "other_in_review": "當 {{issue}} 進入稽覈中時",
+      "other_in_review": "當 {{issue}} 進入審查中時",
       "gh_run_id": "{{repo}} 的執行 {{id}}",
       "gh_run_sha": "{{repo}} 的 {{workflow}}（{{sha}}）",
       "gh_run_completed": "當 {{run}} 結束時",
@@ -1380,7 +1385,7 @@
       "pr_conflicts": "監視合併衝突",
       "other_done": "等 {{issue}} 完成",
       "other_ended": "等 {{issue}} 結束",
-      "other_in_review": "等 {{issue}} 進入稽覈",
+      "other_in_review": "等 {{issue}} 進入審查",
       "gh_run_completed": "等待 {{run}} 結束",
       "gh_run_waiting": "等待 {{run}} 到達審批關卡",
       "other_blocked": "等 {{issue}} 進入 blocked",
@@ -1522,9 +1527,11 @@
       "statuses_other": "{{count}} 個狀態",
       "handoffs_other": "{{count}} 步自動交接",
       "no_handoffs": "無自動交接",
-      "used_by_other": "用於 {{count}} 個專案：{{names}}",
-      "used_by_default_other": "用於 {{count}} 個專案：{{names}}，以及沒有專案的任務",
-      "used_by_default_none": "用於沒有專案的任務",
+      "usage_default_other": "{{count}} 個專案 + 沒有專案的任務",
+      "usage_default_none": "沒有專案的任務",
+      "filter_projects": "篩選專案",
+      "no_matching_projects": "沒有符合的專案",
+      "default_covers_no_project": "也適用於沒有專案的任務",
       "new_blank": "空白工作流",
       "from_template": "從模板建立"
     },
@@ -1790,6 +1797,18 @@
     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
   },
   "relations": {
+    "graph": "圖表",
+    "list": "列表",
+    "sub_issues": "子任務",
+    "parent_summary": "父任務",
+    "parent_filter": "父任務 / 子任務",
+    "done_count": "已完成",
+    "in_progress_count": "進行中",
+    "todo_count": "待辦",
+    "closed_count": "已關閉",
+    "no_parent": "無父任務",
+    "mentions_hint": "啟用時載入",
+    "navigation_hint": "點擊卡片開啟 · 懸停查看完整標題 · ← → ↑ ↓ 移動焦點 · Esc 關閉",
     "title": "任務關係圖",
     "direction": "箭頭從父任務指向子任務，從被監測的任務指向待喚醒的任務，從提及來源指向目標。當前任務以粗邊框標出。",
     "depth": "深度",
@@ -1843,6 +1862,12 @@
     "withdrawn_body": "此次點擊未更改任何內容。",
     "review_action": "查看",
     "failed_notice": "無法撤回，決定保持不變。",
-    "try_again_action": "重試"
+    "try_again_action": "重試",
+    "full_message": "完整訊息",
+    "agent_note": "代理備註",
+    "timing_disclaimed": "已於 {{time}} 撤銷",
+    "timing_effective": "自 {{time}} 起生效",
+    "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分鐘內可撤銷。",
+    "timing_pending_wake": "待生效。代理被喚醒後立即生效。"
   }
 }

@@ -89,6 +89,16 @@ type Task struct {
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
+	// Profile, Scopes, Epoch and TaintIDs are the server's claim-time launch hint
+	// (CHE-2216 plan 3.1). Read the profile through EffectiveProfile.
+	Profile  string   `json:"profile,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Epoch    int64    `json:"epoch,omitempty"`
+	TaintIDs []string `json:"taint_ids,omitempty"`
+	// IntakeRun, PinnedBranch and PinnedRepo are the claim-time intake pin (CHE-2216 plan 3.6).
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
+	PinnedRepo   string `json:"pinned_repo,omitempty"`
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
@@ -359,4 +369,13 @@ type PluginHookTool struct {
 	Name           string          `json:"name"`
 	Description    string          `json:"description"`
 	InputSchema    json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// EffectiveProfile is "elevated" only when the server said so; a missing or
+// unknown value (older server) is "restricted".
+func (t Task) EffectiveProfile() string {
+	if t.Profile == "elevated" {
+		return "elevated"
+	}
+	return "restricted"
 }

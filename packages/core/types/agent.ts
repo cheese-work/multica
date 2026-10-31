@@ -55,6 +55,18 @@ export interface AgentInvocationTargetInput {
 // the fallback.
 export type RuntimeVisibility = "private" | "public";
 
+/** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
+export type RuntimePauseReason = "maintenance" | "incident" | "suspended";
+
+/** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
+export interface RuntimePause {
+  reason: RuntimePauseReason;
+  paused_by: string | null;
+  paused_at: string;
+  /** When the pause lifts by itself. Empty when the server sent no usable time. */
+  expires_at: string;
+}
+
 export interface RuntimeDevice {
   id: string;
   workspace_id: string;
@@ -86,12 +98,42 @@ export interface RuntimeDevice {
    * a missing value as `null` (built-in).
    */
   profile_id?: string | null;
+  /** Live machine pause, or null/absent when the machine takes work. */
+  pause?: RuntimePause | null;
+  /**
+   * Dispatched, running and waiting tasks across the machine's runtimes.
+   * Null/absent when the runtime has no daemon or the server predates pause.
+   */
+  daemon_running_tasks?: number | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Commit-based update verdict computed by the server (CHE-2641). Older
+   * backends omit all four; treat missing as "no update, no reason".
+   */
+  update_available?: boolean;
+  /** Full commit of the daemon build the server carries. */
+  server_commit?: string;
+  /** Version string of that build. */
+  server_version?: string;
+  /**
+   * Why there is no firm verdict: `unknown_commit` (local build),
+   * `no_build` (server carries none for this platform), `unsupported_os`.
+   * Empty when the verdict is firm.
+   */
+  update_reason?: string;
 }
 
 export type AgentRuntime = RuntimeDevice;
+
+/** Per-machine view of the server's update verdict. */
+export interface RuntimeUpdateInfo {
+  available: boolean;
+  serverCommit: string;
+  serverVersion: string;
+  reason: string;
+}
 
 // Custom runtime profiles (MUL-3284)
 //

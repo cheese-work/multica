@@ -28,12 +28,13 @@ const PATRenewThreshold = 7 * 24 * time.Hour
 const PATRenewExtension = 90 * 24 * time.Hour
 
 type PersonalAccessTokenResponse struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Prefix     string  `json:"token_prefix"`
-	ExpiresAt  *string `json:"expires_at"`
-	LastUsedAt *string `json:"last_used_at"`
-	CreatedAt  string  `json:"created_at"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Prefix     string   `json:"token_prefix"`
+	ExpiresAt  *string  `json:"expires_at"`
+	LastUsedAt *string  `json:"last_used_at"`
+	CreatedAt  string   `json:"created_at"`
+	Scopes     []string `json:"scopes"`
 }
 
 type CreatePATResponse struct {
@@ -49,12 +50,15 @@ func patToResponse(pat db.PersonalAccessToken) PersonalAccessTokenResponse {
 		ExpiresAt:  timestampToPtr(pat.ExpiresAt),
 		LastUsedAt: timestampToPtr(pat.LastUsedAt),
 		CreatedAt:  timestampToString(pat.CreatedAt),
+		Scopes:     pat.Scopes,
 	}
 }
 
 type CreatePATRequest struct {
 	Name          string `json:"name"`
 	ExpiresInDays *int   `json:"expires_in_days"`
+	// Scopes narrows the token to named capabilities; today only DecisionFeedScope.
+	Scopes []string `json:"scopes"`
 }
 
 // CreatePersonalAccessToken mints a PAT for the caller. Machine credentials
@@ -79,6 +83,13 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
+	}
+
+	for _, scope := range req.Scopes {
+		if scope != DecisionFeedScope {
+			writeError(w, http.StatusBadRequest, "unknown scope: "+scope)
+			return
+		}
 	}
 
 	rawToken, err := auth.GeneratePATToken()
@@ -106,6 +117,7 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 		TokenHash:   auth.HashToken(rawToken),
 		TokenPrefix: prefix,
 		ExpiresAt:   expiresAt,
+		Scopes:      req.Scopes,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create token")

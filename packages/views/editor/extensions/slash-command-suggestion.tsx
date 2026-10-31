@@ -211,7 +211,7 @@ export const SlashCommandList = forwardRef<
               </span>
             )}
             {getChatCommand(item.descriptionKey ?? "")?.kind === "prompt" && (
-              <span className="text-[11px] text-muted-foreground/80">
+              <span className="text-[11px] text-muted-foreground">
                 {t(($) => $.slash_command.runs_the_agent)}
               </span>
             )}

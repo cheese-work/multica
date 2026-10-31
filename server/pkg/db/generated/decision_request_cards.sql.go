@@ -63,22 +63,37 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     record.issue_comment_id AS record_comment_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
-    last_answer.chosen_option_index AS answer_chosen_option_index
+    last_answer.chosen_option_index AS answer_chosen_option_index,
+    COALESCE(asker.name, '')::text AS asking_agent_name,
+    pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 JOIN chat_message message ON message.chat_session_id = request.chat_session_id
     AND (message.id = request.ping_message_id OR request.id = ANY(message.decision_request_ids))
+LEFT JOIN agent asker ON asker.id = request.asking_agent_id AND asker.workspace_id = request.workspace_id
 LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
     AND record.disclaimed_at IS NULL
 LEFT JOIN LATERAL (
-    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index
+    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.issue_comment_id
     FROM decision_answer answer WHERE answer.decision_request_id = request.id
     ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
 ) last_answer ON true
-WHERE request.workspace_id = $1
+LEFT JOIN LATERAL (
+    SELECT task.id, agent.name AS agent_name
+    FROM agent_task_queue task
+    JOIN agent ON agent.id = task.agent_id AND agent.workspace_id = request.workspace_id
+    WHERE task.issue_id = request.issue_id AND last_answer.id IS NOT NULL AND task.started_at IS NOT NULL
+        AND (task.trigger_comment_id = last_answer.issue_comment_id
+            OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)
+            OR task.created_at >= last_answer.created_at)
+    ORDER BY (task.trigger_comment_id = last_answer.issue_comment_id OR last_answer.issue_comment_id = ANY(task.coalesced_comment_ids)) DESC NULLS LAST,
+        task.created_at, task.id
+    LIMIT 1
+) pickup ON true
+WHERE request.authority = 'human' AND request.workspace_id = $1
     AND message.id = ANY($2::uuid[])
 ORDER BY message.id, request.created_at, request.id
 `
@@ -109,8 +124,12 @@ type ListDecisionRequestCardsRow struct {
 	AnswerWakeOutcome       pgtype.Text        `json:"answer_wake_outcome"`
 	AnswerDisclaimedAt      pgtype.Timestamptz `json:"answer_disclaimed_at"`
 	AnswerChosenOptionIndex pgtype.Int4        `json:"answer_chosen_option_index"`
+	AskingAgentName         string             `json:"asking_agent_name"`
+	PickupTaskID            pgtype.UUID        `json:"pickup_task_id"`
+	PickupAgentName         string             `json:"pickup_agent_name"`
 }
 
+// The run that resumed the issue: one that started and carries the record, else the first started run on the issue after it.
 func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecisionRequestCardsParams) ([]ListDecisionRequestCardsRow, error) {
 	rows, err := q.db.Query(ctx, listDecisionRequestCards, arg.WorkspaceID, arg.MessageIds)
 	if err != nil {
@@ -141,6 +160,76 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.AnswerWakeOutcome,
 			&i.AnswerDisclaimedAt,
 			&i.AnswerChosenOptionIndex,
+			&i.AskingAgentName,
+			&i.PickupTaskID,
+			&i.PickupAgentName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenDecisionAsksForHuman = `-- name: ListOpenDecisionAsksForHuman :many
+SELECT request.id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.issue_id, workspace.slug AS workspace_slug,
+    COALESCE(NULLIF(split_part(btrim(request.ask_json->>'decision', E' \t\r\n'), E'\n', 1), ''), NULLIF(split_part(split_part(request.ask, E'**Decision**\n', 2), E'\n', 1), ''), split_part(request.ask, E'\n', 1))::text AS ask_headline,
+    request.escalation_class, request.created_at, request.chat_session_id,
+    request.asking_agent_id, COALESCE(request.ask_json->>'default_if_no_reply', '')::text AS default_if_no_reply
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1
+    AND request.human_user_id = $2
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id
+`
+
+type ListOpenDecisionAsksForHumanParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+}
+
+type ListOpenDecisionAsksForHumanRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	IssueIdentifier  string             `json:"issue_identifier"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	WorkspaceSlug    string             `json:"workspace_slug"`
+	AskHeadline      string             `json:"ask_headline"`
+	EscalationClass  string             `json:"escalation_class"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID    pgtype.UUID        `json:"chat_session_id"`
+	AskingAgentID    pgtype.UUID        `json:"asking_agent_id"`
+	DefaultIfNoReply string             `json:"default_if_no_reply"`
+}
+
+// Read-only projection for the open-asks read: first line of the ask and the
+// default text only, never options, answers, or the full ask.
+func (q *Queries) ListOpenDecisionAsksForHuman(ctx context.Context, arg ListOpenDecisionAsksForHumanParams) ([]ListOpenDecisionAsksForHumanRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionAsksForHuman, arg.WorkspaceID, arg.HumanUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionAsksForHumanRow{}
+	for rows.Next() {
+		var i ListOpenDecisionAsksForHumanRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueIdentifier,
+			&i.IssueID,
+			&i.WorkspaceSlug,
+			&i.AskHeadline,
+			&i.EscalationClass,
+			&i.CreatedAt,
+			&i.ChatSessionID,
+			&i.AskingAgentID,
+			&i.DefaultIfNoReply,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +251,7 @@ FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
-WHERE request.workspace_id = $1
+WHERE request.authority = 'human' AND request.workspace_id = $1
     AND request.human_user_id = $2
     AND request.status = 'open'
 ORDER BY request.created_at, request.id
