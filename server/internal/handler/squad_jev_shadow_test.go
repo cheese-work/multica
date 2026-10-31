@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/governance"
-	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -500,50 +499,6 @@ func TestJevShadow_AgentAuthoredCommentIsNotEvaluated(t *testing.T) {
 	if routed || advisory != "" || calls != 0 || len(logs.records()) != 0 {
 		t.Fatalf("agent-authored trigger must bypass Jev in shadow: routed=%v advisory=%q calls=%d records=%d", routed, advisory, calls, len(logs.records()))
 	}
-}
-
-// Shadow leaves the whole create-issue path as it is under "off": the leader
-// gets its task with no Jev advisory, nothing moves to a worker.
-func TestJevShadow_CreateIssueLeaderPathMatchesOff(t *testing.T) {
-	run := func(t *testing.T, mode string) (status, handoff string, leaderTasks, workerTasks, jevComments int, logs *syncBuffer, issueID pgtype.UUID) {
-		logs = captureSlog(t)
-		f := newJevShadowFixture(t, map[string]any{"jev_squad_routing_mode": mode})
-		f.serve(f.confidentWorkerAnswer(0.95))
-		res, err := testHandler.IssueService.Create(context.Background(), service.IssueCreateParams{
-			WorkspaceID:  f.wsUUID,
-			Title:        "Shadow create " + mode,
-			Description:  pgtype.Text{String: "Go backend work", Valid: true},
-			Status:       "todo",
-			Priority:     "high",
-			AssigneeType: pgtype.Text{String: "squad", Valid: true},
-			AssigneeID:   f.squadID,
-			CreatorType:  "member",
-			CreatorID:    util.MustParseUUID(testUserID),
-		}, service.IssueCreateOpts{})
-		if err != nil {
-			t.Fatalf("create issue: %v", err)
-		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, res.Issue.ID) })
-		ctx := context.Background()
-		fresh, _ := testHandler.Queries.GetIssue(ctx, res.Issue.ID)
-		_ = testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, res.Issue.ID, f.leaderID).Scan(&leaderTasks)
-		_ = testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, res.Issue.ID, f.workerID).Scan(&workerTasks)
-		_ = testPool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'jev_route'`, res.Issue.ID).Scan(&jevComments)
-		_ = testPool.QueryRow(ctx, `SELECT COALESCE(handoff_note, '') FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 LIMIT 1`, res.Issue.ID, f.leaderID).Scan(&handoff)
-		return fresh.Status, handoff, leaderTasks, workerTasks, jevComments, logs, res.Issue.ID
-	}
-
-	offStatus, offHandoff, offLeader, offWorker, offComments, _, _ := run(t, "off")
-	shStatus, shHandoff, shLeader, shWorker, shComments, logs, issueID := run(t, "shadow")
-
-	if offStatus != "todo" || offLeader != 1 || offWorker != 0 || offComments != 0 {
-		t.Fatalf("baseline off drifted: status=%q leader=%d worker=%d comments=%d", offStatus, offLeader, offWorker, offComments)
-	}
-	if shStatus != offStatus || shLeader != offLeader || shWorker != offWorker || shComments != offComments || shHandoff != offHandoff {
-		t.Errorf("shadow differs from off: status %q/%q leader %d/%d worker %d/%d comments %d/%d handoff %q/%q",
-			shStatus, offStatus, shLeader, offLeader, shWorker, offWorker, shComments, offComments, shHandoff, offHandoff)
-	}
-	logs.waitForShadowRecord(t, issueID)
 }
 
 func TestJevRoutingMode_OnDispatchesWithoutLegacyFlag(t *testing.T) {

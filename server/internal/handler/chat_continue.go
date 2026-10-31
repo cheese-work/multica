@@ -200,7 +200,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 // compactSummaryContent is the new DM's first message: the agent's summary and
 // the link back, led by the automatic compaction's reason when there is one.
 func compactSummaryContent(reason, summary, previousURL string) string {
-	content := strings.TrimSpace(redact.Text(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
+	content := strings.TrimSpace(redact.Prose(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
 	if reason == "" {
 		return content
 	}

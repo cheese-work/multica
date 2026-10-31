@@ -2873,6 +2873,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// server that predates the resolver.
 	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID)
 	resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+	resp.IntakeRun, resp.PinnedBranch, resp.PinnedRepo = h.intakePinForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.ID)
 	// Agent-trigger plugin hooks, as tools. A failure here degrades to no
 	// tools rather than failing the claim: a plugin that cannot be listed must
 	// not stop an agent from working on the issue.
@@ -6198,7 +6199,14 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Redact sensitive information before persisting or broadcasting.
-		msg.Content = redact.Text(msg.Content)
+		// Agent prose (text/thinking) only loses provider-shaped tokens: the
+		// keyword rule would mangle ordinary sentences such as a "Token: input"
+		// table cell. Machine output (tool, error) gets the full rule set.
+		if msg.Type == string(agent.MessageText) || msg.Type == string(agent.MessageThinking) {
+			msg.Content = redact.Prose(msg.Content)
+		} else {
+			msg.Content = redact.Text(msg.Content)
+		}
 		msg.Output = redact.Text(msg.Output)
 		msg.Input = redact.InputMap(msg.Input)
 

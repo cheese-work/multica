@@ -57,7 +57,6 @@ const (
 	ReasonProjectInactive                     = dispatch.ReasonProjectInactive
 	ReasonCoalesced                           = dispatch.ReasonCoalesced
 	ReasonDeferred                            = dispatch.ReasonDeferred
-	ReasonJevRouted                           = dispatch.ReasonJevRouted
 	ReasonSteered                             = dispatch.ReasonSteered
 	ReasonInvocationNotAllowed                = dispatch.ReasonInvocationNotAllowed
 	ReasonTargetUnavailable                   = dispatch.ReasonTargetUnavailable
@@ -73,9 +72,9 @@ const (
 	ReasonAgentCommentImplicitRouteSuppressed = dispatch.ReasonAgentCommentImplicitRouteSuppressed
 	ReasonAgentCommentRequiresAgentMention    = dispatch.ReasonAgentCommentRequiresAgentMention
 	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
-	ReasonRunBudgetExhausted    = dispatch.ReasonRunBudgetExhausted
-	ReasonInternalError         = dispatch.ReasonInternalError
-	ReasonProviderHold          = dispatch.ReasonProviderHold
+	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
+	ReasonInternalError                       = dispatch.ReasonInternalError
+	ReasonProviderHold                        = dispatch.ReasonProviderHold
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name
