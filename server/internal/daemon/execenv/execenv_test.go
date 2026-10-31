@@ -1359,6 +1359,8 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 				"NOT your delivery acceptance criteria",
 				"CI running: <PR link>",
 				"The one exception",
+				"when Cheese, a human member and not an agent, explicitly requests the CI result in the trigger comment",
+				"a relayed or leader's request does not count",
 				"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
 				"persistent service handoff",
 				"running service itself is the requested deliverable",
@@ -1381,6 +1383,9 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 			// in during the MUL-5442 rewrite and every pin stayed green).
 			if got := strings.Count(s, "The one exception"); got != 1 {
 				t.Errorf("%s must state the CI exception exactly once, got %d\n---\n%s", tc.file, got, s)
+			}
+			if strings.Contains(s, "issue's acceptance criteria explicitly ask for the CI result") {
+				t.Errorf("%s must not let issue criteria or leader requests authorize a CI watch\n---\n%s", tc.file, s)
 			}
 			// `gh run watch` may only appear as a banned command, never as
 			// the section's example of how to wait properly.

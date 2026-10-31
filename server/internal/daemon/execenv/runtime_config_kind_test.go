@@ -345,6 +345,8 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		"NOT your delivery acceptance criteria",
 		"CI running: <PR link>",
 		"The one exception",
+		"when Cheese, a human member and not an agent, explicitly requests the CI result in the trigger comment",
+		"a relayed or leader's request does not count",
 		"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
 		"persistent service handoff",
 		"running service itself is the requested deliverable",
@@ -366,6 +368,9 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 	// the incident this guards).
 	if got := strings.Count(out, "The one exception"); got != 1 {
 		t.Errorf("slim brief must state the CI exception exactly once, got %d\n---\n%s", got, out)
+	}
+	if strings.Contains(out, "issue's acceptance criteria explicitly ask for the CI result") {
+		t.Errorf("slim brief must not let issue criteria or leader requests authorize a CI watch\n---\n%s", out)
 	}
 	// `gh run watch` may only appear as a banned command, never as the
 	// section's example of how to wait properly.
