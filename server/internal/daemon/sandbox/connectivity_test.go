@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -18,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/multica-ai/multica/server/internal/daemon/egress"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox/gateprobe"
 )
 
 // The A7c connectivity exit gate (CHE-2216 plan section 4, A6 entry gate): a
@@ -85,16 +85,28 @@ func tlsServer(t *testing.T, h http.Handler) *httptest.Server {
 
 func providerMux() http.Handler {
 	mux := http.NewServeMux()
+	ack := make(chan struct{}, 1)
 	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "pong")
 	})
+	// Events 1 and 2 wait for the client's ack of event 0 (see gateprobe), so
+	// the stream only completes when events are delivered as they are sent.
 	mux.HandleFunc("/v1/stream", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		for i := range 3 {
+		fmt.Fprint(w, "data: chunk-0\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-ack:
+		case <-time.After(10 * time.Second):
+			return
+		}
+		for i := 1; i < 3; i++ {
 			fmt.Fprintf(w, "data: chunk-%d\n\n", i)
 			w.(http.Flusher).Flush()
-			time.Sleep(20 * time.Millisecond)
 		}
+	})
+	mux.HandleFunc(gateprobe.SSEAckPath, func(w http.ResponseWriter, r *http.Request) {
+		ack <- struct{}{}
 	})
 	return mux
 }
@@ -137,7 +149,7 @@ func (g *gateHarness) host(s *httptest.Server) string {
 // sandbox, the proxy socket bridged in, the CA trusted.
 func (g *gateHarness) probeSpec(args ...string) Spec {
 	s := g.ly.spec("")
-	s.Argv = append([]string{bridgeMount, probeArg}, args...)
+	s.Argv = append([]string{bridgeMount, gateprobe.ProbeArg}, args...)
 	s.Env = append(s.Env, "SSL_CERT_FILE="+g.caFile)
 	s.EgressSocket = g.sock
 	return s
@@ -180,74 +192,6 @@ func TestGateMulticaHTTPAndWebSocketReachableThroughIsolatedPath(t *testing.T) {
 	g.mustOK("ok ws echo:hello", "ws", "wss://"+g.host(g.multica)+"/ws")
 }
 
-// runtimeMCPConfig is the canonical {"mcpServers": ...} document the daemon
-// hands to agents (see mergeRuntimeAndAgentMcpConfig).
-func (g *gateHarness) runtimeMCPConfig() string {
-	exe, _ := os.Executable()
-	return fmt.Sprintf(`{"mcpServers":{
-	  "local-a":{"command":%q,"args":[%q]},
-	  "local-b":{"command":%q,"args":[%q],"env":{"X":"1"}},
-	  "remote-a":{"type":"http","url":%q},
-	  "remote-b":{"type":"http","url":%q,"headers":{"Authorization":"Bearer x"}}}}`,
-		exe, fakeMCPArg, exe, fakeMCPArg, g.mcpURL.URL+"/mcp", g.mcpURL.URL+"/mcp/b")
-}
-
-// gateMCPServers probes every server in cfg and returns the names it cannot
-// classify, so a new transport cannot slip past the gate unprobed.
-func (g *gateHarness) gateMCPServers(cfg string) (unprobed []string) {
-	g.t.Helper()
-	var doc struct {
-		Servers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(cfg), &doc); err != nil || len(doc.Servers) == 0 {
-		g.t.Fatalf("runtime MCP config: %v (%d servers)", err, len(doc.Servers))
-	}
-	for name, entry := range doc.Servers {
-		switch {
-		case entry["command"] != nil:
-			args := []string{"mcp-stdio", entry["command"].(string)}
-			for _, a := range entry["args"].([]any) {
-				args = append(args, a.(string))
-			}
-			spec := g.probeSpec(args...)
-			spec.ReadOnly = append(spec.ReadOnly, entry["command"].(string))
-			out, err := runSandbox(g.t, g.l, spec)
-			if err != nil || !strings.Contains(out, "ok mcp-stdio fake-stdio-mcp") {
-				g.t.Errorf("MCP server %s: err=%v out=%q", name, err, out)
-			}
-		case entry["url"] != nil:
-			g.mustOK("ok mcp-http fake-remote-mcp", "mcp-http", entry["url"].(string))
-		default:
-			unprobed = append(unprobed, name)
-		}
-	}
-	return unprobed
-}
-
-func TestGateEachRuntimeMCPServerReachableThroughIsolatedPath(t *testing.T) {
-	g := newGate(t)
-	if unprobed := g.gateMCPServers(g.runtimeMCPConfig()); len(unprobed) != 0 {
-		t.Errorf("MCP servers the gate could not probe: %v", unprobed)
-	}
-	var remote int
-	for _, d := range g.proxied() {
-		if d == g.host(g.mcpURL) {
-			remote++
-		}
-	}
-	if remote != 2 {
-		t.Errorf("proxy saw %d connections to the remote MCP server, want 2: %v", remote, g.proxied())
-	}
-}
-
-func TestGateReportsMCPServerItCannotProbe(t *testing.T) {
-	g := newGate(t)
-	got := g.gateMCPServers(`{"mcpServers":{"odd":{"type":"carrier-pigeon"}}}`)
-	if len(got) != 1 || got[0] != "odd" {
-		t.Errorf("unprobed = %v, want [odd]", got)
-	}
-}
-
 // TestGateProxyLogShowsEveryDestination is the A6 evidence that the traffic
 // went through the proxy: every service the run used is in the destination log.
 func TestGateProxyLogShowsEveryDestination(t *testing.T) {
@@ -255,7 +199,7 @@ func TestGateProxyLogShowsEveryDestination(t *testing.T) {
 	g.mustOK("ok http", "http", g.provider.URL+"/v1/messages")
 	g.mustOK("ok http", "http", g.multica.URL+"/api/ping")
 	g.mustOK("ok ws", "ws", "wss://"+g.host(g.multica)+"/ws")
-	g.mustOK("ok mcp-http", "mcp-http", g.mcpURL.URL+"/mcp")
+	g.mustOK("ok mcp-http", "mcp", `{"url":"`+g.mcpURL.URL+`/mcp"}`)
 	got := strings.Join(g.proxied(), " ")
 	for _, s := range []*httptest.Server{g.provider, g.multica, g.mcpURL} {
 		if !strings.Contains(got, g.host(s)) {
@@ -280,7 +224,7 @@ func TestGateNoDirectRouteToAnyService(t *testing.T) {
 func TestGateProxyDeathMidRunLeavesNoRoute(t *testing.T) {
 	g := newGate(t)
 	spec := g.probeSpec()
-	probe := strings.Join([]string{bridgeMount, probeArg}, " ")
+	probe := strings.Join([]string{bridgeMount, gateprobe.ProbeArg}, " ")
 	url := g.provider.URL + "/v1/messages"
 	spec.Argv = []string{"/bin/sh", "-c", fmt.Sprintf(`
 		%[1]s http %[2]s || exit 2
@@ -340,5 +284,51 @@ func TestGatePolicyRefusalReachesTheClient(t *testing.T) {
 	out, err := g.run("http", g.provider.URL+"/v1/messages")
 	if err == nil || !strings.Contains(out, "Forbidden") {
 		t.Errorf("refused destination: err=%v out=%q, want the proxy refusal (Forbidden)", err, out)
+	}
+}
+
+// putCredential writes a 0400 copy of a provider credential at rel under the
+// run HOME and returns its path. Mode bits do not stop the run's own user from
+// chmod, replace or delete inside its writable HOME, so callers also bind the
+// returned path read-only over itself (Spec.ReadOnly).
+func putCredential(t *testing.T, ly layout, rel, body string) string {
+	t.Helper()
+	path := filepath.Join(ly.home, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestGateCredentialCopyCannotBeChangedInsideSandbox(t *testing.T) {
+	l := bridgeLauncher()
+	requireSandbox(t, l)
+	ly := newLayout(t)
+	const rel, body = ".claude/.credentials.json", "fake-credential-not-a-secret"
+	// Each attempt must fail; the file is read back last.
+	script := `f="$HOME/` + rel + `"
+		chmod 600 "$f" 2>/dev/null && echo CHMOD-WORKED
+		echo changed >> "$f" 2>/dev/null && echo APPEND-WORKED
+		mv "$f" "$f.moved" 2>/dev/null && echo RENAME-WORKED
+		rm -f "$f" 2>/dev/null; [ -e "$f" ] || echo DELETE-WORKED
+		printf x > "$f.new" && mv -f "$f.new" "$f" 2>/dev/null && echo REPLACE-WORKED
+		cat "$f"`
+	spec := ly.spec(script)
+	spec.ReadOnly = append(spec.ReadOnly, putCredential(t, ly, rel, body))
+	out, err := runSandbox(t, l, spec)
+	if err != nil && !strings.Contains(out, body) {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "WORKED") {
+		t.Errorf("sandbox changed its credential copy:\n%s", out)
+	}
+	if !strings.Contains(out, body) {
+		t.Errorf("credential copy no longer readable as written:\n%s", out)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ly.home, rel)); string(got) != body {
+		t.Errorf("host copy changed to %q", got)
 	}
 }
