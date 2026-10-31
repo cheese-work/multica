@@ -127,7 +127,7 @@ DELETE FROM sys_cron_executions WHERE job_name = 'ops_snapshot_sampler' AND plan
 -- name: ListOpsSnapshotSeries :many
 -- Charts 1 and 4 for windows up to 7 d: raw 30 s rows binned to @bucket_s.
 -- `_max` feeds lines, `_last` feeds point-in-time stacks.
-SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'epoch') AS ts,
+SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
        daemon_id,
        max(queued)::int AS queued_max,
        (array_agg(queued ORDER BY bucket_ts DESC))[1]::int AS queued_last,
@@ -147,8 +147,8 @@ SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'e
        (array_agg(agents_waiting_dir ORDER BY bucket_ts DESC))[1]::int AS agents_waiting_dir_last,
        max(agents_available)::int AS agents_available_max,
        (array_agg(agents_available ORDER BY bucket_ts DESC))[1]::int AS agents_available_last,
-       max(oldest_unstarted_s)::int AS oldest_unstarted_s_max,
-       (array_agg(oldest_unstarted_s ORDER BY bucket_ts DESC))[1]::int AS oldest_unstarted_s_last,
+       COALESCE(max(oldest_unstarted_s), 0)::int AS oldest_unstarted_s_max,
+       COALESCE((array_agg(oldest_unstarted_s ORDER BY bucket_ts DESC))[1], 0)::int AS oldest_unstarted_s_last,
        count(*)::int AS sample_count
 FROM ops_snapshot
 WHERE workspace_id = @workspace_id AND bucket_ts >= @since::timestamptz AND bucket_ts < @until::timestamptz
@@ -157,7 +157,7 @@ ORDER BY ts, daemon_id;
 
 -- name: ListOpsSnapshot5mSeries :many
 -- Same shape for the 30 d window, from the 5-minute rollups.
-SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'epoch') AS ts,
+SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
        daemon_id,
        max(queued_max)::int AS queued_max,
        (array_agg(queued_last ORDER BY bucket_ts DESC))[1]::int AS queued_last,
@@ -177,8 +177,8 @@ SELECT date_bin(make_interval(secs => @bucket_s::int), bucket_ts, TIMESTAMPTZ 'e
        (array_agg(agents_waiting_dir_last ORDER BY bucket_ts DESC))[1]::int AS agents_waiting_dir_last,
        max(agents_available_max)::int AS agents_available_max,
        (array_agg(agents_available_last ORDER BY bucket_ts DESC))[1]::int AS agents_available_last,
-       max(oldest_unstarted_s_max)::int AS oldest_unstarted_s_max,
-       (array_agg(oldest_unstarted_s_last ORDER BY bucket_ts DESC))[1]::int AS oldest_unstarted_s_last,
+       COALESCE(max(oldest_unstarted_s_max), 0)::int AS oldest_unstarted_s_max,
+       COALESCE((array_agg(oldest_unstarted_s_last ORDER BY bucket_ts DESC))[1], 0)::int AS oldest_unstarted_s_last,
        sum(sample_count)::int AS sample_count
 FROM ops_snapshot_5m
 WHERE workspace_id = @workspace_id AND bucket_ts >= @since::timestamptz AND bucket_ts < @until::timestamptz
@@ -227,7 +227,7 @@ task AS (
       AND t.created_at < @until::timestamptz
       AND (t.completed_at IS NULL OR t.completed_at > @since::timestamptz)
 )
-SELECT b.ts::timestamptz AS ts, t.machine,
+SELECT b.ts::timestamptz AS ts, t.machine::text AS machine,
        count(*) FILTER (WHERE t.started_at <= b.ts AND (t.completed_at IS NULL OR t.completed_at > b.ts))::int AS running,
        count(*) FILTER (WHERE t.created_at <= b.ts AND COALESCE(t.started_at, t.completed_at, 'infinity'::timestamptz) > b.ts)::int AS queued_approx
 FROM bucket b
@@ -282,9 +282,9 @@ WHERE a.workspace_id = @workspace_id AND t.started_at >= @since::timestamptz AND
 -- every terminal completed/failed task, failure_reason '' for success,
 -- 'unclassified' for a failed row with no reason.
 SELECT date_bin(make_interval(secs => @bucket_s::int), t.completed_at, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
-       CASE WHEN r.id IS NULL THEN '__unknown__'
-            WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
-            ELSE r.daemon_id END AS machine,
+       (CASE WHEN r.id IS NULL THEN '__unknown__'
+             WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
+             ELSE r.daemon_id END)::text AS machine,
        CASE WHEN t.status = 'failed' THEN COALESCE(NULLIF(t.failure_reason, ''), 'unclassified') ELSE '' END AS failure_reason,
        count(*)::int AS task_count
 FROM agent_task_queue t

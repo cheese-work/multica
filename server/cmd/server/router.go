@@ -2571,6 +2571,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
 
+			// Ops — queue and machine health for operators (CHE-2586 L1).
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Get("/api/ops", h.GetOps)
+
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)

@@ -193,9 +193,9 @@ func (q *Queries) InsertOpsSnapshot(ctx context.Context, bucketTs pgtype.Timesta
 
 const listOpsFailures = `-- name: ListOpsFailures :many
 SELECT date_bin(make_interval(secs => $1::int), t.completed_at, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
-       CASE WHEN r.id IS NULL THEN '__unknown__'
-            WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
-            ELSE r.daemon_id END AS machine,
+       (CASE WHEN r.id IS NULL THEN '__unknown__'
+             WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
+             ELSE r.daemon_id END)::text AS machine,
        CASE WHEN t.status = 'failed' THEN COALESCE(NULLIF(t.failure_reason, ''), 'unclassified') ELSE '' END AS failure_reason,
        count(*)::int AS task_count
 FROM agent_task_queue t
@@ -217,7 +217,7 @@ type ListOpsFailuresParams struct {
 
 type ListOpsFailuresRow struct {
 	Ts            pgtype.Timestamptz `json:"ts"`
-	Machine       interface{}        `json:"machine"`
+	Machine       string             `json:"machine"`
 	FailureReason string             `json:"failure_reason"`
 	TaskCount     int32              `json:"task_count"`
 }
@@ -395,7 +395,7 @@ task AS (
       AND t.created_at < $3::timestamptz
       AND (t.completed_at IS NULL OR t.completed_at > $2::timestamptz)
 )
-SELECT b.ts::timestamptz AS ts, t.machine,
+SELECT b.ts::timestamptz AS ts, t.machine::text AS machine,
        count(*) FILTER (WHERE t.started_at <= b.ts AND (t.completed_at IS NULL OR t.completed_at > b.ts))::int AS running,
        count(*) FILTER (WHERE t.created_at <= b.ts AND COALESCE(t.started_at, t.completed_at, 'infinity'::timestamptz) > b.ts)::int AS queued_approx
 FROM bucket b
@@ -413,7 +413,7 @@ type ListOpsRunsHistoryParams struct {
 
 type ListOpsRunsHistoryRow struct {
 	Ts           pgtype.Timestamptz `json:"ts"`
-	Machine      interface{}        `json:"machine"`
+	Machine      string             `json:"machine"`
 	Running      int32              `json:"running"`
 	QueuedApprox int32              `json:"queued_approx"`
 }
@@ -455,7 +455,7 @@ func (q *Queries) ListOpsRunsHistory(ctx context.Context, arg ListOpsRunsHistory
 }
 
 const listOpsSnapshot5mSeries = `-- name: ListOpsSnapshot5mSeries :many
-SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch') AS ts,
+SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
        daemon_id,
        max(queued_max)::int AS queued_max,
        (array_agg(queued_last ORDER BY bucket_ts DESC))[1]::int AS queued_last,
@@ -475,8 +475,8 @@ SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch') 
        (array_agg(agents_waiting_dir_last ORDER BY bucket_ts DESC))[1]::int AS agents_waiting_dir_last,
        max(agents_available_max)::int AS agents_available_max,
        (array_agg(agents_available_last ORDER BY bucket_ts DESC))[1]::int AS agents_available_last,
-       max(oldest_unstarted_s_max)::int AS oldest_unstarted_s_max,
-       (array_agg(oldest_unstarted_s_last ORDER BY bucket_ts DESC))[1]::int AS oldest_unstarted_s_last,
+       COALESCE(max(oldest_unstarted_s_max), 0)::int AS oldest_unstarted_s_max,
+       COALESCE((array_agg(oldest_unstarted_s_last ORDER BY bucket_ts DESC))[1], 0)::int AS oldest_unstarted_s_last,
        sum(sample_count)::int AS sample_count
 FROM ops_snapshot_5m
 WHERE workspace_id = $2 AND bucket_ts >= $3::timestamptz AND bucket_ts < $4::timestamptz
@@ -492,29 +492,29 @@ type ListOpsSnapshot5mSeriesParams struct {
 }
 
 type ListOpsSnapshot5mSeriesRow struct {
-	Ts                   interface{} `json:"ts"`
-	DaemonID             string      `json:"daemon_id"`
-	QueuedMax            int32       `json:"queued_max"`
-	QueuedLast           int32       `json:"queued_last"`
-	DispatchedMax        int32       `json:"dispatched_max"`
-	DispatchedLast       int32       `json:"dispatched_last"`
-	WaitingDirMax        int32       `json:"waiting_dir_max"`
-	WaitingDirLast       int32       `json:"waiting_dir_last"`
-	RunningMax           int32       `json:"running_max"`
-	RunningLast          int32       `json:"running_last"`
-	AgentsUnboundMax     int32       `json:"agents_unbound_max"`
-	AgentsUnboundLast    int32       `json:"agents_unbound_last"`
-	AgentsOfflineMax     int32       `json:"agents_offline_max"`
-	AgentsOfflineLast    int32       `json:"agents_offline_last"`
-	AgentsBusyMax        int32       `json:"agents_busy_max"`
-	AgentsBusyLast       int32       `json:"agents_busy_last"`
-	AgentsWaitingDirMax  int32       `json:"agents_waiting_dir_max"`
-	AgentsWaitingDirLast int32       `json:"agents_waiting_dir_last"`
-	AgentsAvailableMax   int32       `json:"agents_available_max"`
-	AgentsAvailableLast  int32       `json:"agents_available_last"`
-	OldestUnstartedSMax  int32       `json:"oldest_unstarted_s_max"`
-	OldestUnstartedSLast int32       `json:"oldest_unstarted_s_last"`
-	SampleCount          int32       `json:"sample_count"`
+	Ts                   pgtype.Timestamptz `json:"ts"`
+	DaemonID             string             `json:"daemon_id"`
+	QueuedMax            int32              `json:"queued_max"`
+	QueuedLast           int32              `json:"queued_last"`
+	DispatchedMax        int32              `json:"dispatched_max"`
+	DispatchedLast       int32              `json:"dispatched_last"`
+	WaitingDirMax        int32              `json:"waiting_dir_max"`
+	WaitingDirLast       int32              `json:"waiting_dir_last"`
+	RunningMax           int32              `json:"running_max"`
+	RunningLast          int32              `json:"running_last"`
+	AgentsUnboundMax     int32              `json:"agents_unbound_max"`
+	AgentsUnboundLast    int32              `json:"agents_unbound_last"`
+	AgentsOfflineMax     int32              `json:"agents_offline_max"`
+	AgentsOfflineLast    int32              `json:"agents_offline_last"`
+	AgentsBusyMax        int32              `json:"agents_busy_max"`
+	AgentsBusyLast       int32              `json:"agents_busy_last"`
+	AgentsWaitingDirMax  int32              `json:"agents_waiting_dir_max"`
+	AgentsWaitingDirLast int32              `json:"agents_waiting_dir_last"`
+	AgentsAvailableMax   int32              `json:"agents_available_max"`
+	AgentsAvailableLast  int32              `json:"agents_available_last"`
+	OldestUnstartedSMax  int32              `json:"oldest_unstarted_s_max"`
+	OldestUnstartedSLast int32              `json:"oldest_unstarted_s_last"`
+	SampleCount          int32              `json:"sample_count"`
 }
 
 // Same shape for the 30 d window, from the 5-minute rollups.
@@ -627,7 +627,7 @@ func (q *Queries) ListOpsSnapshotLatest(ctx context.Context, workspaceID pgtype.
 }
 
 const listOpsSnapshotSeries = `-- name: ListOpsSnapshotSeries :many
-SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch') AS ts,
+SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
        daemon_id,
        max(queued)::int AS queued_max,
        (array_agg(queued ORDER BY bucket_ts DESC))[1]::int AS queued_last,
@@ -647,8 +647,8 @@ SELECT date_bin(make_interval(secs => $1::int), bucket_ts, TIMESTAMPTZ 'epoch') 
        (array_agg(agents_waiting_dir ORDER BY bucket_ts DESC))[1]::int AS agents_waiting_dir_last,
        max(agents_available)::int AS agents_available_max,
        (array_agg(agents_available ORDER BY bucket_ts DESC))[1]::int AS agents_available_last,
-       max(oldest_unstarted_s)::int AS oldest_unstarted_s_max,
-       (array_agg(oldest_unstarted_s ORDER BY bucket_ts DESC))[1]::int AS oldest_unstarted_s_last,
+       COALESCE(max(oldest_unstarted_s), 0)::int AS oldest_unstarted_s_max,
+       COALESCE((array_agg(oldest_unstarted_s ORDER BY bucket_ts DESC))[1], 0)::int AS oldest_unstarted_s_last,
        count(*)::int AS sample_count
 FROM ops_snapshot
 WHERE workspace_id = $2 AND bucket_ts >= $3::timestamptz AND bucket_ts < $4::timestamptz
@@ -664,29 +664,29 @@ type ListOpsSnapshotSeriesParams struct {
 }
 
 type ListOpsSnapshotSeriesRow struct {
-	Ts                   interface{} `json:"ts"`
-	DaemonID             string      `json:"daemon_id"`
-	QueuedMax            int32       `json:"queued_max"`
-	QueuedLast           int32       `json:"queued_last"`
-	DispatchedMax        int32       `json:"dispatched_max"`
-	DispatchedLast       int32       `json:"dispatched_last"`
-	WaitingDirMax        int32       `json:"waiting_dir_max"`
-	WaitingDirLast       int32       `json:"waiting_dir_last"`
-	RunningMax           int32       `json:"running_max"`
-	RunningLast          int32       `json:"running_last"`
-	AgentsUnboundMax     int32       `json:"agents_unbound_max"`
-	AgentsUnboundLast    int32       `json:"agents_unbound_last"`
-	AgentsOfflineMax     int32       `json:"agents_offline_max"`
-	AgentsOfflineLast    int32       `json:"agents_offline_last"`
-	AgentsBusyMax        int32       `json:"agents_busy_max"`
-	AgentsBusyLast       int32       `json:"agents_busy_last"`
-	AgentsWaitingDirMax  int32       `json:"agents_waiting_dir_max"`
-	AgentsWaitingDirLast int32       `json:"agents_waiting_dir_last"`
-	AgentsAvailableMax   int32       `json:"agents_available_max"`
-	AgentsAvailableLast  int32       `json:"agents_available_last"`
-	OldestUnstartedSMax  int32       `json:"oldest_unstarted_s_max"`
-	OldestUnstartedSLast int32       `json:"oldest_unstarted_s_last"`
-	SampleCount          int32       `json:"sample_count"`
+	Ts                   pgtype.Timestamptz `json:"ts"`
+	DaemonID             string             `json:"daemon_id"`
+	QueuedMax            int32              `json:"queued_max"`
+	QueuedLast           int32              `json:"queued_last"`
+	DispatchedMax        int32              `json:"dispatched_max"`
+	DispatchedLast       int32              `json:"dispatched_last"`
+	WaitingDirMax        int32              `json:"waiting_dir_max"`
+	WaitingDirLast       int32              `json:"waiting_dir_last"`
+	RunningMax           int32              `json:"running_max"`
+	RunningLast          int32              `json:"running_last"`
+	AgentsUnboundMax     int32              `json:"agents_unbound_max"`
+	AgentsUnboundLast    int32              `json:"agents_unbound_last"`
+	AgentsOfflineMax     int32              `json:"agents_offline_max"`
+	AgentsOfflineLast    int32              `json:"agents_offline_last"`
+	AgentsBusyMax        int32              `json:"agents_busy_max"`
+	AgentsBusyLast       int32              `json:"agents_busy_last"`
+	AgentsWaitingDirMax  int32              `json:"agents_waiting_dir_max"`
+	AgentsWaitingDirLast int32              `json:"agents_waiting_dir_last"`
+	AgentsAvailableMax   int32              `json:"agents_available_max"`
+	AgentsAvailableLast  int32              `json:"agents_available_last"`
+	OldestUnstartedSMax  int32              `json:"oldest_unstarted_s_max"`
+	OldestUnstartedSLast int32              `json:"oldest_unstarted_s_last"`
+	SampleCount          int32              `json:"sample_count"`
 }
 
 // Charts 1 and 4 for windows up to 7 d: raw 30 s rows binned to @bucket_s.
