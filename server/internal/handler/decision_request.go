@@ -370,6 +370,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		return empty, err
 	}
+	if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusConflict); err != nil {
+		return empty, err
+	}
 	intent, err := queries.LockDecisionIntent(ctx, db.LockDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: located.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, deny
@@ -469,7 +472,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID})
 	if err != nil {
 		return empty, err
 	}
@@ -587,6 +590,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
+		return empty, err
+	}
+	if err := requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, http.StatusConflict); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: input.HumanUserID}); err != nil {

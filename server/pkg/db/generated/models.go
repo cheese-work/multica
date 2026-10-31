@@ -997,6 +997,7 @@ type DecisionRequest struct {
 	AskIdentity           string             `json:"ask_identity"`
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
+	ProjectID             pgtype.UUID        `json:"project_id"`
 }
 
 type DecisionWorkerLease struct {
@@ -2246,20 +2247,21 @@ type PluginStorage struct {
 }
 
 type Project struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Title       string             `json:"title"`
-	Description pgtype.Text        `json:"description"`
-	Icon        pgtype.Text        `json:"icon"`
-	Status      string             `json:"status"`
-	LeadType    pgtype.Text        `json:"lead_type"`
-	LeadID      pgtype.UUID        `json:"lead_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	Priority    string             `json:"priority"`
-	StartDate   pgtype.Date        `json:"start_date"`
-	DueDate     pgtype.Date        `json:"due_date"`
-	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Title             string             `json:"title"`
+	Description       pgtype.Text        `json:"description"`
+	Icon              pgtype.Text        `json:"icon"`
+	Status            string             `json:"status"`
+	LeadType          pgtype.Text        `json:"lead_type"`
+	LeadID            pgtype.UUID        `json:"lead_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Priority          string             `json:"priority"`
+	StartDate         pgtype.Date        `json:"start_date"`
+	DueDate           pgtype.Date        `json:"due_date"`
+	WorkflowID        pgtype.UUID        `json:"workflow_id"`
+	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
 }
 
 type ProjectResource struct {

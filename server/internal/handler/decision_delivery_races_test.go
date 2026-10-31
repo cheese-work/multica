@@ -63,7 +63,7 @@ func newDecisionDeliveryRaceWorkspace(test *testing.T) string {
 
 func moveDecisionDeliveryFixtureToWorkspace(test *testing.T, fixture *askedRecordFixture, workspaceID string) string {
 	test.Helper()
-	dbfx.Member(test, workspaceID, fixture.humanID, "member")
+	dbfx.Member(test, workspaceID, fixture.humanID, "owner")
 	runtimeID := dbfx.Insert(test, "agent_runtime", testutil.Cols{
 		"workspace_id": workspaceID,
 		"name":         "Decision delivery race runtime " + uuid.NewString(),
