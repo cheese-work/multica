@@ -178,6 +178,26 @@ describe("ChatMessageList reading-position restore", () => {
     expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 20, atLiveEnd: false });
   });
 
+  it("keeps the offset current while the reader scrolls inside a tall reply", () => {
+    saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
+    const view = mount("s1", messagesFor("s1"));
+    const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    root.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    row.getBoundingClientRect = () => ({ top: 80, bottom: 1500 }) as DOMRect;
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: 4, endIndex: 5 }));
+    expect(savedAnchor("s1")?.offsetInItemPx).toBe(20);
+
+    // 700 px further down the same tall row: the range endpoints do not change,
+    // so Virtuoso reports nothing; only the scroll event carries the new offset.
+    row.getBoundingClientRect = () => ({ top: -620, bottom: 800 }) as DOMRect;
+    act(() => {
+      root.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 720, atLiveEnd: false });
+  });
+
   it("records atLiveEnd when the reader returns to the bottom", () => {
     saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
     mount("s1", messagesFor("s1"));

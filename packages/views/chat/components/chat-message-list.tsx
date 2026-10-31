@@ -604,19 +604,35 @@ export function ChatMessageList({
     },
     [anchorKey, writeViewState],
   );
+  const measureOffset = useCallback(
+    (messageId: string) => {
+      const row = scrollContainerEl?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+      return row && scrollContainerEl
+        ? Math.max(0, Math.round(scrollContainerEl.getBoundingClientRect().top - row.getBoundingClientRect().top))
+        : 0;
+    },
+    [scrollContainerEl],
+  );
   const onRangeChanged = useCallback(
     ({ startIndex }: { startIndex: number }) => {
       if (!anchorReady || !scrollContainerEl) return;
       const item = renderItems[startIndex - firstIndex];
       if (item?.kind !== "message") return;
-      const row = scrollContainerEl.querySelector(`[data-message-id="${CSS.escape(item.message.id)}"]`);
-      const offset = row
-        ? Math.max(0, Math.round(scrollContainerEl.getBoundingClientRect().top - row.getBoundingClientRect().top))
-        : 0;
-      saveAnchor({ itemId: item.message.id, offsetInItemPx: offset, atLiveEnd: atBottomRef.current });
+      saveAnchor({ itemId: item.message.id, offsetInItemPx: measureOffset(item.message.id), atLiveEnd: atBottomRef.current });
     },
-    [anchorReady, scrollContainerEl, renderItems, firstIndex, saveAnchor],
+    [anchorReady, scrollContainerEl, renderItems, firstIndex, saveAnchor, measureOffset],
   );
+  // Scrolling inside a tall reply moves the offset without changing the range
+  // endpoints, so Virtuoso reports nothing. Re-measure the recorded item.
+  useEffect(() => {
+    if (!anchorReady || !scrollContainerEl) return;
+    const onScroll = () => {
+      const last = lastAnchorRef.current;
+      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+    };
+    scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => scrollContainerEl.removeEventListener("scroll", onScroll);
+  }, [anchorReady, scrollContainerEl, saveAnchor, measureOffset]);
   const onAtBottomStateChange = useCallback(
     (atBottom: boolean) => {
       atBottomRef.current = atBottom;
