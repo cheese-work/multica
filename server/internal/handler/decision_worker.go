@@ -255,6 +255,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
+	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx))
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
@@ -297,6 +298,15 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 			return err
 		}
 		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanAgentUndo(ctx, db.DeleteDecisionOrphanAgentUndoParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanAgentReliance(ctx, db.DeleteDecisionOrphanAgentRelianceParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanAgentSettlement(ctx, db.DeleteDecisionOrphanAgentSettlementParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}
 		if err := queries.DeleteDecisionOrphanAgentScope(ctx, db.DeleteDecisionOrphanAgentScopeParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
