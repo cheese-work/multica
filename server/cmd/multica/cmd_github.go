@@ -154,16 +154,20 @@ func runGitHubIntakeList(cmd *cobra.Command, _ []string) error {
 	if output, _ := cmd.Flags().GetString("output"); output == "json" {
 		return cli.PrintJSON(os.Stdout, resp)
 	}
+	if resp.Truncated {
+		fmt.Fprintln(os.Stderr, "scan incomplete: the server read its row cap before it finished; later deliveries may exist. Narrow --since.")
+	}
 	if len(resp.Deliveries) == 0 {
-		fmt.Println("no deliveries since", since)
+		if resp.Truncated {
+			fmt.Println("scan incomplete: none found in the rows read since", since)
+		} else {
+			fmt.Println("no deliveries since", since)
+		}
 		return nil
 	}
 	rows := make([][]string, 0, len(resp.Deliveries))
 	for _, d := range resp.Deliveries {
 		rows = append(rows, []string{d.Event, d.DeliveryGUID, d.State, d.Reason, d.RevisionState, d.RevisionReason, strconv.Itoa(d.Tasks), d.ReceivedAt})
-	}
-	if resp.Truncated {
-		fmt.Fprintln(os.Stderr, "scan cap reached: rows after the last one shown were not read; narrow --since")
 	}
 	cli.PrintTable(os.Stdout, []string{"EVENT", "DELIVERY", "STATE", "REASON", "REV_STATE", "REV_REASON", "RUNS", "RECEIVED_AT"}, rows)
 	return nil

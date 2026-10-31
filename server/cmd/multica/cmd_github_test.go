@@ -87,3 +87,19 @@ func TestGitHubIntakeListReadsSinceWithoutWriting(t *testing.T) {
 		t.Fatalf("query = %q, want since and limit", query)
 	}
 }
+
+func TestGitHubIntakeListEmptyTruncatedScanIsNotZeroDeliveries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"deliveries": []any{}, "truncated": true})
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newKillSwitchTestCmd("table")
+	cmd.Flags().String("since", "2026-10-30T10:31:00Z", "")
+	cmd.Flags().Int("limit", 50, "")
+	out, err := captureStdout(t, func() error { return runGitHubIntakeList(cmd, nil) })
+	if err != nil || strings.Contains(out, "no deliveries") || !strings.Contains(out, "scan incomplete") {
+		t.Fatalf("out = %q, %v; want a scan-incomplete notice, never 'no deliveries'", out, err)
+	}
+}
