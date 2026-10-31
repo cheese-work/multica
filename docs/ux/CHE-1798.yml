@@ -1,0 +1,35 @@
+# Web layer of DM notifications (CHE-1789 N4): service worker, push settings, banners, Inbox DM rows.
+# Direction A of the approved design (PR #307). Runtime proof on a desktop browser and an iPhone Home Screen app is NOT-RUN.
+issue: CHE-1798
+design: design/dm-notifications-web/rev-1/A.html @ 840794b6eab30980fa19e1014f23b48fb6330685
+pages:
+  - id: settings-notifications
+    url: /<workspace-slug>/settings?tab=notifications   # same path on base and preview
+    keep:
+      - notification-group-toggles
+      - notification-system-toggle
+      - browser-notification-setting
+    change:
+      - inbox-channel-switches: "In-app and Push switches at the top of the Inbox Notifications section"
+      - dm-notifications-section: "new Direct messages section with In-app and Push switches; defaults are In-app off and Push off"
+      - push-device-setting: "new This device section with Push on this device, permission, iOS Home Screen steps and unsupported or not-configured states"
+      - push-switches-web-only: "Push switches and the This device section render on web only, never in Electron"
+    remove: []
+  - id: dashboard-banners
+    url: /<workspace-slug>/inbox   # any dashboard page
+    keep:
+      - system-notification-mute
+    change:
+      - dm-banner: "sender as title, only New reply, N new replies or Decision needed as text; never the DM title or message text; no banner while that DM is open"
+      - blocked-notice: "toast Notifications are blocked in this browser, shown only when a Push switch is on and the browser blocks notifications"
+    remove:
+      - banner-item-body: "the inbox item body is no longer copied into any banner"
+  - id: inbox-dm-rows
+    url: /<workspace-slug>/inbox
+    keep:
+      - inbox-issue-rows
+      - inbox-archived-view
+    change:
+      - inbox-dm-row: "chat glyph, DM title, New reply or N new replies or Decision needed; a click opens the DM"
+      - inbox-quick-filters: "All, Unread and Direct messages chips above the list"
+    remove: []

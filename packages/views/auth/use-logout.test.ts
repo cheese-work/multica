@@ -13,6 +13,8 @@ const mockClearClientSessionData = vi.hoisted(() => vi.fn());
 const mockAuthLogout = vi.hoisted(() => vi.fn());
 const mockEndServerSession = vi.hoisted(() => vi.fn());
 const mockPush = vi.hoisted(() => vi.fn());
+const mockUnsubscribe = vi.hoisted(() => vi.fn());
+const desktop = vi.hoisted(() => ({ value: false }));
 const queryClient = vi.hoisted(() => ({ id: "query-client" }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -32,6 +34,10 @@ vi.mock("@multica/core/auth", () => ({
 vi.mock("@multica/core/platform", () => ({
   clearClientSessionData: mockClearClientSessionData,
 }));
+
+vi.mock("@multica/core/push", () => ({ unsubscribeThisDevice: mockUnsubscribe }));
+vi.mock("@multica/core/api", () => ({ api: { deletePushSubscription: vi.fn() } }));
+vi.mock("../platform", () => ({ isDesktopShell: () => desktop.value }));
 
 vi.mock("@multica/core/paths", () => ({
   paths: { login: () => "/login" },
@@ -55,6 +61,37 @@ describe("useLogout", () => {
     mockEndServerSession.mockImplementation(async () => void calls.push("endServerSession"));
     mockAuthLogout.mockImplementation(() => calls.push("authLogout"));
     mockPush.mockImplementation(() => calls.push("push"));
+    mockUnsubscribe.mockImplementation(async () => void calls.push("unsubscribe"));
+    desktop.value = false;
+  });
+
+  // The server delete needs the session, so it runs before the session ends.
+  it("drops this device's push subscription before the server session ends", async () => {
+    const { result } = renderHook(() => useLogout());
+    await act(async () => {
+      await result.current();
+    });
+    expect(calls.slice(0, 2)).toEqual(["unsubscribe", "endServerSession"]);
+  });
+
+  it("still logs out when the push cleanup rejects", async () => {
+    mockUnsubscribe.mockRejectedValue(new Error("boom"));
+    const { result } = renderHook(() => useLogout());
+    let done = false;
+    await act(async () => {
+      done = await result.current();
+    });
+    expect(done).toBe(true);
+    expect(mockPush).toHaveBeenCalledWith("/login");
+  });
+
+  it("never touches push in the desktop shell", async () => {
+    desktop.value = true;
+    const { result } = renderHook(() => useLogout());
+    await act(async () => {
+      await result.current();
+    });
+    expect(mockUnsubscribe).not.toHaveBeenCalled();
   });
 
   // Erasing after the auth store publishes `unauthenticated` would race the
@@ -66,7 +103,7 @@ describe("useLogout", () => {
       await result.current();
     });
 
-    expect(calls).toEqual(["endServerSession", "clear", "authLogout", "push"]);
+    expect(calls).toEqual(["unsubscribe", "endServerSession", "clear", "authLogout", "push"]);
     expect(mockClearClientSessionData).toHaveBeenCalledWith(queryClient);
     expect(mockPush).toHaveBeenCalledWith("/login");
   });

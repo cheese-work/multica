@@ -59,6 +59,7 @@ import {
   showWebNotification,
   type SystemNotificationPayload,
 } from "../platform/system-notification";
+import type { Agent } from "../types/agent";
 import type { Workspace } from "../types/workspace";
 import {
   chatKeys,
@@ -609,7 +610,31 @@ export async function resolveInboxSourceSlug(
 }
 
 /**
- * Handles an `inbox:new` event end-to-end: inbox cache invalidation, the
+ * Banner copy for a DM-linked record. Fixed strings only, matching the push
+ * payload: a DM title is derived from the first message and a decision ask is
+ * message text, so neither may reach a banner.
+ */
+function dmBannerBody(item: InboxItem): string {
+  if (item.type !== "dm_reply") return "Decision needed";
+  const count = Number(item.details?.reply_count ?? 1);
+  return count > 1 ? `${count} new replies` : "New reply";
+}
+
+/** True when this DM is open in a tab the user can see. */
+function isViewingDm(sessionId: string): boolean {
+  const g = globalThis as {
+    document?: { visibilityState?: string };
+    location?: { pathname: string; search: string };
+  };
+  if (g.document?.visibilityState !== "visible" || !g.location) return false;
+  return (
+    /\/chat\/?$/.test(g.location.pathname) &&
+    new URLSearchParams(g.location.search).get("session") === sessionId
+  );
+}
+
+/**
+ * Handles an `inbox:new` or `inbox:updated` event end-to-end: inbox cache invalidation, the
  * focus / mute checks, and the native OS banner. Exported so the handler
  * behavior (not just slug resolution) is testable.
  *
@@ -633,6 +658,8 @@ export async function handleInboxNew(
   // styling is enough — no need to interrupt with a banner. `desktopAPI`
   // is injected by the preload script; its absence (web app) skips silently.
   if (typeof document !== "undefined" && document.hasFocus()) return;
+  const sessionId = item.chat_session_id ?? null;
+  if (sessionId && isViewingDm(sessionId)) return;
   // Resolve the source workspace's slug once: it pins BOTH the mute check
   // and the deep link to the workspace the inbox item BELONGS to, never the
   // currently active one. Reading `getCurrentSlug()` here was the source of
@@ -670,13 +697,26 @@ export async function handleInboxNew(
   // client can't see) still shows the banner — the user should learn about
   // the inbox item — but with an empty slug so the click is a no-op
   // (the inbox bridge ignores empty slugs) instead of routing wrong.
-  const payload: SystemNotificationPayload = {
-    slug: slug ?? "",
-    itemId: item.id,
-    issueKey: item.issue_id ?? item.id,
-    title: item.title,
-    body: item.body ?? "",
-  };
+  const payload: SystemNotificationPayload = sessionId
+    ? {
+        slug: slug ?? "",
+        itemId: item.id,
+        issueKey: item.id,
+        chatSessionId: sessionId,
+        title:
+          qc
+            .getQueryData<Agent[]>(workspaceKeys.agents(sourceWsId))
+            ?.find((a) => a.id === item.actor_id)?.name ?? "Multica",
+        body: dmBannerBody(item),
+      }
+    : {
+        slug: slug ?? "",
+        itemId: item.id,
+        issueKey: item.issue_id ?? item.id,
+        title: item.title,
+        // Never the item body: it can carry comment text.
+        body: "",
+      };
   const desktopAPI = (
     globalThis as unknown as {
       desktopAPI?: {
@@ -1243,11 +1283,14 @@ export function useRealtimeSync(
       }),
     );
 
-    const unsubInboxNew = ws.on("inbox:new", async (p) => {
+    const onInboxItem = async (p: unknown) => {
       const { item } = p as InboxNewPayload;
       if (!item) return;
       await handleInboxNew(qc, item);
-    });
+    };
+    const unsubInboxNew = ws.on("inbox:new", onInboxItem);
+    // A reply joining an unread DM record updates it in place.
+    const unsubInboxUpdated = ws.on("inbox:updated", onInboxItem);
 
     // --- Timeline event handlers (global fallback) ---
     // These events are also handled granularly by useIssueTimeline when
@@ -1931,6 +1974,7 @@ export function useRealtimeSync(
       unsubIssuePropertiesChanged();
       unsubPropertyChanged.forEach((unsub) => unsub());
       unsubInboxNew();
+      unsubInboxUpdated();
       unsubCommentCreated();
       unsubCommentUpdated();
       unsubCommentDeleted();

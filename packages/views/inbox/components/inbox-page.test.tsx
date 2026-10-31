@@ -58,6 +58,7 @@ vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({
     inbox: () => "/acme/inbox",
     issueDetail: (id: string) => `/acme/issues/${id}`,
+    chatSession: (id: string) => `/acme/chat?session=${id}`,
   }),
 }));
 
@@ -132,10 +133,11 @@ vi.mock("../../issues/components/issue-detail", () => ({
 }));
 
 const replace = vi.fn();
+const push = vi.fn();
 let searchParams = new URLSearchParams();
 
 vi.mock("../../navigation", () => ({
-  useNavigation: () => ({ searchParams, replace }),
+  useNavigation: () => ({ searchParams, replace, push }),
   // Real hook: reports the detail-pane swap to the shell's progress bar.
   // Nothing here renders that bar, and the page reads nothing back from it.
   useReportNavigating: () => {},
@@ -210,6 +212,9 @@ vi.mock("./inbox-list", () => ({
     </div>
   ),
 }));
+vi.mock("./inbox-quick-filters", () => ({
+  InboxQuickFilters: () => <div data-testid="quick-filters" />,
+}));
 vi.mock("./inbox-filter-menu", () => ({
   InboxFilterMenu: () => <button type="button">Filter inbox</button>,
 }));
@@ -250,7 +255,21 @@ vi.mock("./autopilot-quota-notice", () => ({
     </button>
   ),
 }));
-vi.mock("../../i18n", () => ({ useT: () => ({ t: () => "Inbox" }) }));
+// Every label reads "Inbox" except the DM-only empty state, which a test
+// has to tell apart from the generic filtered-empty line.
+vi.mock("../../i18n", () => ({
+  useT: () => ({
+    t: (select: (dict: unknown) => unknown) => {
+      const path: string[] = [];
+      const probe: unknown = new Proxy(
+        {},
+        { get: (_, key) => (path.push(String(key)), probe) },
+      );
+      select(probe);
+      return path.join(".") === "filters.empty_dm" ? "dm-empty" : "Inbox";
+    },
+  }),
+}));
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
   return {
@@ -286,6 +305,7 @@ function reset() {
   queryCalls.length = 0;
   searchParams = new URLSearchParams();
   replace.mockClear();
+  push.mockClear();
   markReadMutate.mockReset();
   markUnreadMutate.mockClear();
   archiveMutate.mockClear();
@@ -302,6 +322,94 @@ function reset() {
   layout.width = PHONE;
   useInboxFilterStore.setState({ filtersByWorkspace: {} });
 }
+
+describe("InboxPage direct messages", () => {
+  const dmRow = (overrides: Partial<InboxItem> = {}) =>
+    item({
+      id: "dm-1",
+      type: "dm_reply",
+      issue_id: null,
+      chat_session_id: "chat-1",
+      read: false,
+      ...overrides,
+    });
+
+  it.each([
+    ["a dm_reply without an issue", {}],
+    ["a decision ping that also has an issue", { type: "mentioned", issue_id: "issue-7" }],
+  ] as const)("opens the DM and marks it read for %s, without selecting an issue", (_name, overrides) => {
+    reset();
+    layout.width = DESKTOP;
+    listData.active = [dmRow(overrides)];
+    render(<InboxPage />);
+
+    fireEvent.click(screen.getByTestId("row"));
+
+    expect(push).toHaveBeenCalledWith("/acme/chat?session=chat-1");
+    expect(markReadMutate).toHaveBeenCalledTimes(1);
+    expect(markReadMutate.mock.calls[0]![0]).toBe("dm-1");
+    expect(replace).not.toHaveBeenCalled();
+    expect(issueDetailProps).toHaveLength(0);
+  });
+
+  it("toasts the usual error when marking the DM read fails", () => {
+    reset();
+    listData.active = [dmRow()];
+    render(<InboxPage />);
+    fireEvent.click(screen.getByTestId("row"));
+
+    markReadMutate.mock.calls[0]![1].onError(new Error("boom"));
+
+    expect(toast.error).toHaveBeenCalledWith("boom");
+  });
+
+  it("keeps opening an issue row as a selection", () => {
+    reset();
+    listData.active = [item({ id: "issue-row", issue_id: "issue-1" })];
+    render(<InboxPage />);
+
+    fireEvent.click(screen.getByTestId("row"));
+
+    expect(push).not.toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith("/acme/inbox?issue=issue-1");
+  });
+
+  it("shows the quick filters in the main view only", () => {
+    reset();
+    const { unmount } = render(<InboxPage />);
+    expect(screen.getByTestId("quick-filters")).toBeTruthy();
+    unmount();
+
+    searchParams = new URLSearchParams("view=archived");
+    render(<InboxPage />);
+    expect(screen.queryByTestId("quick-filters")).toBeNull();
+  });
+
+  it("filters to DM rows and explains an empty DM list", () => {
+    reset();
+    listData.active = [item({ id: "issue-row" }), dmRow()];
+    useInboxFilterStore.getState().setQuickFilter("workspace-1", "dm");
+    const { unmount } = render(<InboxPage />);
+    expect(screen.getAllByTestId("row").map((row) => row.textContent)).toEqual(["dm-1"]);
+    unmount();
+
+    listData.active = [item({ id: "issue-row" })];
+    render(<InboxPage />);
+    expect(screen.queryByTestId("row")).toBeNull();
+    expect(screen.getByText("dm-empty")).toBeTruthy();
+  });
+
+  it("ignores a stored DM filter in the archived view", () => {
+    reset();
+    searchParams = new URLSearchParams("view=archived");
+    listData.archived = [item({ id: "archived-issue", archived: true })];
+    useInboxFilterStore.getState().setQuickFilter("workspace-1", "dm");
+
+    render(<InboxPage />);
+
+    expect(screen.getByTestId("row").textContent).toBe("archived-issue");
+  });
+});
 
 describe("InboxPage", () => {
   it.each([false, true])("enabling idle hides an already busy row with unread pin=%s", (unreadOnly) => {

@@ -1,0 +1,74 @@
+import type { PushConfig, PushSubscriptionRequest } from "../types";
+import {
+  ensurePushRegistration,
+  getPushSupport,
+  getThisDeviceSubscription,
+  registrationBody,
+  subscribeThisDevice,
+} from "./push-client";
+import { isPushWanted, withAutomaticLock } from "./push-intent";
+
+export type PushSyncResult = "registered" | "skipped";
+
+type Registrar = { registerPushSubscription: (body: PushSubscriptionRequest) => Promise<void> };
+
+function isGranted(): boolean {
+  return getPushSupport() === "ok" && window.Notification.permission === "granted";
+}
+
+type Resubscriber = Registrar & { getPushConfig: () => Promise<PushConfig> };
+
+/**
+ * App load: hand the server the subscription this browser holds. The service
+ * worker cannot do it (cookie auth needs CSRF), and registering again is what
+ * rebinds the subscription to the current login session, and what teaches the
+ * server an endpoint the worker renewed while no tab was open. Where the
+ * browser dropped the subscription and the user still wants push, subscribe
+ * again. Does nothing unless the stored choice is positively "on": after an
+ * opt-out, or when the choice cannot be read, a retained subscription is not
+ * registered; nor where Web Locks is missing (no ordering with an opt-out).
+ * Never prompts. Never throws, so a page
+ * load cannot break on it.
+ */
+export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted()) return "skipped";
+  // The choice is read inside the device lock, so an opt-out that was running
+  // (here or in another tab) has finished and is seen.
+  return withAutomaticLock(async () => {
+    if (!(await isPushWanted())) return "skipped";
+    try {
+      const subscription = await getThisDeviceSubscription();
+      if (!subscription) return await subscribeAndRegister(api);
+      const body = registrationBody(subscription);
+      if (!body) return "skipped";
+      await api.registerPushSubscription(body);
+      return "registered";
+    } catch {
+      return "skipped";
+    }
+  }, "skipped");
+}
+
+/**
+ * The browser replaced or dropped the subscription (`pushsubscriptionchange`):
+ * subscribe again with the deployment key and register the new one.
+ */
+export async function resubscribeThisDevice(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted()) return "skipped";
+  return withAutomaticLock(async () => ((await isPushWanted()) ? subscribeAndRegister(api) : "skipped"), "skipped");
+}
+
+async function subscribeAndRegister(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted()) return "skipped";
+  try {
+    const config = await api.getPushConfig();
+    if (!config.enabled || !config.public_key) return "skipped";
+    const registration = await ensurePushRegistration();
+    const body = await subscribeThisDevice(registration, config.public_key);
+    if (!body) return "skipped";
+    await api.registerPushSubscription(body);
+    return "registered";
+  } catch {
+    return "skipped";
+  }
+}

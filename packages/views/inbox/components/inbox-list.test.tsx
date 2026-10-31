@@ -84,10 +84,10 @@ function item(id: string, overrides: Partial<InboxItem> = {}): InboxItem {
 
 const items = [item("a"), item("b"), item("c")];
 
-function renderList(selectedKey: string, onSelect = vi.fn()) {
+function renderList(selectedKey: string, onSelect = vi.fn(), rows = items) {
   const utils = render(
     <InboxList
-      items={items}
+      items={rows}
       view="inbox"
       selectedKey={selectedKey}
       onSelect={onSelect}
@@ -111,6 +111,22 @@ beforeEach(() => {
 });
 
 describe("InboxList keyboard navigation", () => {
+  it("steps over DM rows, which open a chat instead of being selected", () => {
+    const dm = item("dm", { issue_id: null, chat_session_id: "chat-1", type: "dm_reply" });
+    const { scroller, onSelect } = renderList("issue-a", vi.fn(), [items[0]!, dm, items[2]!]);
+
+    press(scroller, "ArrowDown");
+
+    expect(onSelect).toHaveBeenCalledWith(items[2]);
+    expect(scrollIntoView).toHaveBeenCalledWith({ index: 2 });
+  });
+
+  it("does not highlight a DM row as the open issue", () => {
+    const dm = item("dm", { issue_id: "issue-a", chat_session_id: "chat-1", type: "mentioned" });
+    const { container } = renderList("issue-a", vi.fn(), [dm]);
+    expect(container.querySelector("[data-selected]")?.getAttribute("data-selected")).toBe("false");
+  });
+
   it("moves the selection down instead of scrolling", () => {
     const { scroller, onSelect } = renderList("issue-a");
 

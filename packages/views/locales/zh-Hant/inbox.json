@@ -19,7 +19,12 @@
     "no_agents_working": "沒有智慧體在工作",
     "notification_count_other": "{{count}} 條通知",
     "clear": "清除篩選",
-    "empty": "沒有符合篩選條件的通知"
+    "empty": "沒有符合篩選條件的通知",
+    "empty_dm": "暫無私訊通知",
+    "quick_label": "快速篩選",
+    "chip_all": "全部",
+    "chip_unread": "未讀",
+    "chip_dm": "私訊"
   },
   "context_menu": {
     "mark_read": "標為已讀",
@@ -81,7 +86,8 @@
     "autopilot_paused": "自動化已暫停",
     "children_done": "子任務已全部結束",
     "autopilot_quota_exceeded": "自動化執行次數已用完",
-    "machine_drained": "可安全關機"
+    "machine_drained": "可安全關機",
+    "dm_reply": "私訊回覆"
   },
   "labels": {
     "set_status_to": "狀態設為",
@@ -96,7 +102,10 @@
     "created_with_agent": "透過智慧體建立：{{identifier}}",
     "failed_with_detail": "失敗：{{detail}}",
     "autopilot_quota_blocked": "執行已被阻止：額度已用完",
-    "children_done_stage": "第 {{stage}} 階段的子任務已全部結束"
+    "children_done_stage": "第 {{stage}} 階段的子任務已全部結束",
+    "dm_new_reply": "新回覆",
+    "dm_new_replies_other": "{{count}} 則新回覆",
+    "dm_decision_needed": "需要你來決定"
   },
   "toasts": {
     "source_context_retry_started": "已使用原始上下文開始重試",

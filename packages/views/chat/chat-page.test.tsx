@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
+import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
@@ -150,6 +151,10 @@ const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
 const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
+const sessionsRef = vi.hoisted(() => ({
+  current: [] as { id: string }[],
+  loaded: false,
+}));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -179,7 +184,11 @@ vi.mock("@multica/core/chat", async (importOriginal) => {
 
 vi.mock("./components/use-chat-controller", async () => {
   const { useChatStore } = await import("@multica/core/chat");
+  const { hasInFlightPendingTask } = await vi.importActual<
+    typeof import("./components/use-chat-controller")
+  >("./components/use-chat-controller");
   return {
+    hasInFlightPendingTask,
     useChatController: () => {
       const activeSession = useChatStore((state) => state.activeSessionId);
       return {
@@ -188,7 +197,8 @@ vi.mock("./components/use-chat-controller", async () => {
       agents: availableAgentsRef.current,
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
-      sessions: [],
+      sessions: sessionsRef.current,
+      sessionsLoaded: sessionsRef.loaded,
       interactiveLoginRequired: interactiveLoginRequiredRef.current,
       activeSessionId: activeSession,
       selectedAgentId: null,
@@ -263,7 +273,10 @@ const agent: Agent = {
 
 const NO_ACCESS_MSG = "You don't have access to chat with this agent.";
 
-function renderPage(search: string, { strict = false } = {}) {
+function renderPage(
+  search: string,
+  { strict = false, seed }: { strict?: boolean; seed?: (qc: QueryClient) => void } = {},
+) {
   const replace = vi.fn();
   let navigation: NavigationAdapter = {
     push: vi.fn(),
@@ -279,6 +292,7 @@ function renderPage(search: string, { strict = false } = {}) {
   // ChatPage reads the client-only quick-actions pending marker via useQuery,
   // so the page needs a QueryClient like it has in the real app shell.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seed?.(qc);
   const makeUi = () => {
     const page = (
       <QueryClientProvider client={qc}>
@@ -316,6 +330,8 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
   messagesLoadedRef.current = true;
+  sessionsRef.current = [];
+  sessionsRef.loaded = false;
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -508,6 +524,66 @@ describe("ChatPage URL synchronization", () => {
 });
 
 // CHE-1807: while a DM compacts, the page's composer is disabled and says why.
+describe("ChatPage unavailable DM (CHE-1798)", () => {
+  const NOTICE = "This conversation is no longer available";
+
+  it("says so when ?session= names a conversation the list does not have", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+  });
+
+  it("stays quiet for a conversation the list has", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-9" }];
+    renderPage("session=session-9");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("does not judge before the list has loaded", () => {
+    renderPage("session=session-gone");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("clears once the user picks another conversation", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-9" }];
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    fireEvent.click(screen.getByRole("button", { name: "select-thread" }));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("stays quiet for a conversation just created, before the list has it", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    renderPage("session=session-new", {
+      seed: (qc) =>
+        qc.setQueryData(chatKeys.pendingTask("session-new"), { task_id: "task-1" }),
+    });
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("clears the notice once the conversation arrives in the list", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    const { rerender } = renderPage("session=session-late");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    sessionsRef.current = [{ id: "session-1" }, { id: "session-late" }];
+    rerender();
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("shows the notice in place of the list on a compact screen", () => {
+    layout.width = 600;
+    sessionsRef.loaded = true;
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    expect(screen.getByRole("button", { name: "select-thread" })).toBeTruthy();
+  });
+});
+
 describe("ChatPage compacting composer", () => {
   it("disables the composer for a compacting DM and leaves other DMs alone", () => {
     seedSession("session-compacting");

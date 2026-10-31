@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +23,7 @@ import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
@@ -33,6 +33,7 @@ import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
+import { hasInFlightPendingTask } from "./components/use-chat-controller";
 import { useChatRename } from "./components/use-chat-rename";
 import { useChatFork } from "./components/use-chat-fork";
 import { useDmSessionSurface } from "./components/use-dm-session-surface";
@@ -87,6 +88,7 @@ export function ChatPage() {
   const isCurrentChatRoute = pathname === wsPaths.chat();
   const isCompact = useIsCompact();
 
+  const qc = useQueryClient();
   const c = useChatController({
     isActive: isCurrentChatRoute && getCurrentSlug() === workspaceSlug,
   });
@@ -149,6 +151,45 @@ export function ChatPage() {
   // agree with the pane. At compact widths it decides list-vs-conversation;
   // on desktop the conversation pane is always mounted.
   const composingNew = urlNew;
+
+  // A tapped DM (push, banner or Inbox row) can name a conversation that is
+  // gone. The controller drops the dangling selection and the URL writer then
+  // strips `?session=`, so the page remembers the id to say so instead of
+  // landing on a silent blank pane.
+  const [unavailableSessionId, setUnavailableSessionId] = useState<string | null>(null);
+  // A session created a moment ago is not in the list yet; the controller
+  // keeps it while its first task is in flight, so the page must not call it
+  // gone. The notice also clears once the conversation shows up in the list.
+  useEffect(() => {
+    const inList = (id: string) => c.sessions.some((s) => s.id === id);
+    if (
+      urlSession &&
+      c.sessionsLoaded &&
+      !inList(urlSession) &&
+      !hasInFlightPendingTask(qc, urlSession)
+    ) {
+      setUnavailableSessionId(urlSession);
+    } else if (
+      unavailableSessionId &&
+      (inList(unavailableSessionId) ||
+        (c.activeSessionId && c.activeSessionId !== unavailableSessionId))
+    ) {
+      setUnavailableSessionId(null);
+    }
+  }, [urlSession, c.sessionsLoaded, c.sessions, c.activeSessionId, unavailableSessionId, qc]);
+  const showUnavailable =
+    unavailableSessionId !== null &&
+    !composingNew &&
+    (!c.activeSessionId || c.activeSessionId === unavailableSessionId);
+  const unavailableNotice = (
+    <div
+      role="status"
+      className="flex flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground"
+    >
+      <MessageSquare className="h-10 w-10 text-faint-foreground" />
+      <p className="text-body">{t(($) => $.page.session_unavailable)}</p>
+    </div>
+  );
   const { handleRename, renameRequest } = useChatRename(c.currentSession);
 
   // Two-way sync between the URL (`?session=`) and the chat store's
@@ -519,7 +560,7 @@ export function ChatPage() {
 
   // -- Compact: list / conversation toggle -----------------------------------
   if (isCompact) {
-    if (c.activeSessionId || composingNew) {
+    if ((c.activeSessionId && !showUnavailable) || composingNew) {
       return (
         <div className="flex flex-1 flex-col min-h-0">
           <div className="flex h-12 shrink-0 items-center border-b px-2">
@@ -543,6 +584,7 @@ export function ChatPage() {
     return (
       <div className="flex flex-1 flex-col min-h-0">
         {listHeader}
+        {showUnavailable && unavailableNotice}
         <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
       </div>
     );
@@ -552,7 +594,7 @@ export function ChatPage() {
   // there is a chat target — an open thread or a new chat whose agent was just
   // picked via ⊕. With nothing selected there is no agent, so we show a neutral
   // prompt instead of an orphaned compose box. -------------------------------
-  const hasTarget = !!c.activeSessionId || composingNew;
+  const hasTarget = (!!c.activeSessionId && !showUnavailable) || composingNew;
   return (
     <ResizablePanelGroup
       orientation="horizontal"
@@ -577,6 +619,8 @@ export function ChatPage() {
         <div className="flex flex-col min-h-0 h-full">
           {hasTarget ? (
             conversation
+          ) : showUnavailable ? (
+            <div className="flex h-full flex-col justify-center">{unavailableNotice}</div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
               <MessageSquare className="h-10 w-10 text-faint-foreground" />

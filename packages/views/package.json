@@ -51,6 +51,7 @@
     "./chat": "./chat/index.ts",
     "./chat/floating-chat": "./chat/floating-chat.tsx",
     "./settings": "./settings/index.ts",
+    "./settings/push-sync": "./settings/components/push-sync.tsx",
     "./settings/lark-tab": "./settings/components/lark-tab.tsx",
     "./lark": "./lark/index.ts",
     "./slack": "./slack/index.ts",

@@ -131,20 +131,24 @@ export function InboxList({
     event.preventDefault();
     focusList();
 
-    const current = items.findIndex(
+    // DM rows open a chat instead of being selected, so the arrows walk only
+    // the selectable rows; `index` maps back to the full list for scrolling.
+    const selectable = items.filter((item) => !item.chat_session_id);
+    const current = selectable.findIndex(
       (item) => (item.issue_id ?? item.id) === selectedKey,
     );
     const step = event.key === "ArrowDown" ? 1 : -1;
     // Nothing selected yet: Down enters the list at the top, Up at the bottom.
-    const nextIndex =
+    const next =
       current < 0
         ? step === 1
           ? 0
-          : items.length - 1
-        : Math.min(Math.max(current + step, 0), items.length - 1);
-    if (nextIndex === current) return;
-    const nextItem = items[nextIndex];
+          : selectable.length - 1
+        : Math.min(Math.max(current + step, 0), selectable.length - 1);
+    if (next === current) return;
+    const nextItem = selectable[next];
     if (!nextItem) return;
+    const nextIndex = items.indexOf(nextItem);
 
     // Virtuoso's own scrollIntoView, never the DOM element's: the target row
     // may not be mounted, and the native call scrolls ancestors too. It is a
@@ -223,7 +227,7 @@ export function InboxList({
     <InboxListItem
       item={item}
       view={view}
-      isSelected={(item.issue_id ?? item.id) === selectedKey}
+      isSelected={!item.chat_session_id && (item.issue_id ?? item.id) === selectedKey}
       onClick={() => selectItem(item)}
       onAction={() => onAction(item.id)}
     />

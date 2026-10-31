@@ -19,7 +19,12 @@
     "no_agents_working": "作業中のエージェントなし",
     "notification_count_other": "{{count}} 件の通知",
     "clear": "フィルターをクリア",
-    "empty": "フィルターに一致する通知はありません"
+    "empty": "フィルターに一致する通知はありません",
+    "empty_dm": "ダイレクトメッセージの通知はありません",
+    "quick_label": "クイックフィルター",
+    "chip_all": "すべて",
+    "chip_unread": "未読",
+    "chip_dm": "ダイレクトメッセージ"
   },
   "context_menu": {
     "mark_read": "既読にする",
@@ -81,7 +86,8 @@
     "autopilot_paused": "自動化を一時停止しました",
     "children_done": "サブタスクがすべて終わりました",
     "autopilot_quota_exceeded": "自動化の実行上限に達しました",
-    "machine_drained": "シャットダウンして問題ありません"
+    "machine_drained": "シャットダウンして問題ありません",
+    "dm_reply": "ダイレクトメッセージへの返信"
   },
   "labels": {
     "set_status_to": "ステータスを変更:",
@@ -96,7 +102,10 @@
     "created_with_agent": "エージェントで作成: {{identifier}}",
     "failed_with_detail": "失敗: {{detail}}",
     "autopilot_quota_blocked": "上限に達したため実行をブロックしました",
-    "children_done_stage": "ステージ {{stage}} のサブタスクがすべて終わりました"
+    "children_done_stage": "ステージ {{stage}} のサブタスクがすべて終わりました",
+    "dm_new_reply": "新しい返信",
+    "dm_new_replies_other": "新しい返信 {{count}} 件",
+    "dm_decision_needed": "判断が必要です"
   },
   "toasts": {
     "source_context_retry_started": "元のコンテキストで再試行を開始しました",

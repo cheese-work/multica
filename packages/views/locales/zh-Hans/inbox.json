@@ -19,7 +19,12 @@
     "no_agents_working": "没有智能体在工作",
     "notification_count_other": "{{count}} 条通知",
     "clear": "清除筛选",
-    "empty": "没有符合筛选条件的通知"
+    "empty": "没有符合筛选条件的通知",
+    "empty_dm": "暂无私信通知",
+    "quick_label": "快速筛选",
+    "chip_all": "全部",
+    "chip_unread": "未读",
+    "chip_dm": "私信"
   },
   "context_menu": {
     "mark_read": "标为已读",
@@ -81,7 +86,8 @@
     "autopilot_paused": "自动化已暂停",
     "children_done": "子任务已全部结束",
     "autopilot_quota_exceeded": "自动化执行次数已用完",
-    "machine_drained": "可安全关机"
+    "machine_drained": "可安全关机",
+    "dm_reply": "私信回复"
   },
   "labels": {
     "set_status_to": "状态设为",
@@ -96,7 +102,10 @@
     "created_with_agent": "通过智能体创建：{{identifier}}",
     "failed_with_detail": "失败：{{detail}}",
     "autopilot_quota_blocked": "执行已被阻止：额度已用完",
-    "children_done_stage": "第 {{stage}} 阶段的子任务已全部结束"
+    "children_done_stage": "第 {{stage}} 阶段的子任务已全部结束",
+    "dm_new_reply": "新回复",
+    "dm_new_replies_other": "{{count}} 条新回复",
+    "dm_decision_needed": "需要你来决定"
   },
   "toasts": {
     "source_context_retry_started": "已使用原始上下文开始重试",

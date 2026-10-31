@@ -33,3 +33,14 @@ export interface UpdateNotificationChannelRequest {
   channel: NotificationChannel;
   enabled: boolean;
 }
+
+/** `GET /api/push/config`: push is off when the deployment has no VAPID keys. */
+export interface PushConfig {
+  enabled: boolean;
+  public_key: string;
+}
+
+export interface PushSubscriptionRequest {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}

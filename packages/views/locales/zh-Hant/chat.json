@@ -9,6 +9,7 @@
   "page": {
     "title": "聊天",
     "select_prompt": "選擇一個對話，或點 + 新建",
+    "session_unavailable": "該對話已不可用",
     "agent_link_no_access": "你沒有權限與該智慧體聊天。",
     "interactive_login_required": "請重新登錄以使用聊天。",
     "interactive_login_action": "登錄"

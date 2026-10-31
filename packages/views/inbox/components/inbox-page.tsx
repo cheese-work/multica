@@ -98,6 +98,7 @@ import { PAGE_GUTTER, PageHeader } from "../../layout/page-header";
 import { useTimeAgo } from "./inbox-list-item";
 import { InboxList } from "./inbox-list";
 import { InboxFilterMenu } from "./inbox-filter-menu";
+import { InboxQuickFilters } from "./inbox-quick-filters";
 import { InboxContextMenuProvider } from "./inbox-context-menu";
 import { ARCHIVED_VIEW_PARAM, type InboxView } from "./inbox-view";
 import { useTypeLabels } from "./inbox-detail-label";
@@ -123,7 +124,7 @@ export function InboxPage() {
   const showAutopilotQuotaRecoveryPrompt = useIssueLimitUpgradePrompt(
     "autopilot_quota",
   );
-  const { searchParams, replace } = useNavigation();
+  const { searchParams, replace, push } = useNavigation();
   const urlIssue = searchParams.get("issue") ?? "";
   const urlView: InboxView =
     searchParams.get("view") === ARCHIVED_VIEW_PARAM ? "archived" : "inbox";
@@ -423,6 +424,13 @@ export function InboxPage() {
   // by issue) and a fresh mount with a cleared memento entry lands by itself.
   const [highlightRequestToken, setHighlightRequestToken] = useState(0);
   const handleSelect = (item: InboxItem) => {
+    // A DM opens the chat, never the issue pane: the chat link outranks the
+    // issue a decision ping may also carry.
+    if (item.chat_session_id) {
+      handleMarkRead(item.id);
+      push(wsPaths.chatSession(item.chat_session_id));
+      return;
+    }
     const nextKey = item.issue_id ?? item.id;
     // Every click on a notification row is a fresh deep-link intent: clear
     // the "highlight already landed" memento entry so the comment jump runs
@@ -691,7 +699,9 @@ export function InboxPage() {
         onOpenArchived={openArchived}
         emptyLabel={
           hasActiveFilters && visibleItems.length === 0
-            ? t(($) => $.filters.empty)
+            ? effectiveFilters.dmOnly
+              ? t(($) => $.filters.empty_dm)
+              : t(($) => $.filters.empty)
             : undefined
         }
         emptyAction={
@@ -712,7 +722,7 @@ export function InboxPage() {
   const listPanel = (
     <>
       {listHeader}
-      {isArchivedView && archivedBackRow}
+      {isArchivedView ? archivedBackRow : <InboxQuickFilters wsId={wsId} />}
       {lookupLoading && (
         <p role="status" className="shrink-0 border-b px-3 py-2 text-caption text-muted-foreground">
           {t(($) => $.list.loading_selection)}

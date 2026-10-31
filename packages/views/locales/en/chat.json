@@ -11,6 +11,7 @@
     "interactive_login_action": "Sign in",
     "title": "Chat",
     "select_prompt": "Pick a conversation, or start a new one with +",
+    "session_unavailable": "This conversation is no longer available",
     "agent_link_no_access": "You don't have access to chat with this agent."
   },
   "fab": {

@@ -6,6 +6,8 @@ import {
   EMPTY_INBOX_FILTERS,
   filterInboxItems,
   inboxActorKey,
+  inboxFiltersForArchive,
+  isEmptyInboxFilters,
   inboxFiltersForPrioritySupport,
   inboxFilterCount,
   inboxPriorityFilterSupport,
@@ -330,5 +332,82 @@ describe("useInboxFilterStore", () => {
     expect(
       useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.unreadOnly,
     ).toBe(false);
+  });
+});
+
+describe("direct message filtering", () => {
+  const dm = item("dm", null, null, { chat_session_id: "chat-1", type: "dm_reply" });
+  const ping = item("ping", "todo", "high", { chat_session_id: "chat-2" });
+  const plain = item("plain", "todo", "high");
+
+  it("keeps only rows linked to a DM and counts as one filter", () => {
+    const filters = { ...EMPTY_INBOX_FILTERS, dmOnly: true };
+
+    expect(
+      filterInboxItems([dm, plain, ping], filters).map((row) => row.id),
+    ).toEqual(["dm", "ping"]);
+    expect(inboxFilterCount(filters)).toBe(1);
+    expect(isEmptyInboxFilters(filters)).toBe(false);
+    expect(isEmptyInboxFilters(EMPTY_INBOX_FILTERS)).toBe(true);
+  });
+
+  it("combines with the other dimensions by AND", () => {
+    expect(
+      filterInboxItems([dm, plain, ping], {
+        ...EMPTY_INBOX_FILTERS,
+        dmOnly: true,
+        statuses: ["todo"],
+      }).map((row) => row.id),
+    ).toEqual(["ping"]);
+  });
+
+  it("stays dormant in the archived view", () => {
+    const filters = { ...EMPTY_INBOX_FILTERS, dmOnly: true, unreadOnly: true };
+    expect(inboxFiltersForArchive(filters)).toEqual({
+      ...EMPTY_INBOX_FILTERS,
+      unreadOnly: true,
+    });
+    expect(inboxFiltersForArchive(EMPTY_INBOX_FILTERS)).toBe(EMPTY_INBOX_FILTERS);
+  });
+
+  it("toggles per workspace", () => {
+    useInboxFilterStore.getState().toggleDmOnly("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.dmOnly).toBe(true);
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-2"]).toBeUndefined();
+
+    useInboxFilterStore.getState().toggleDmOnly("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.dmOnly).toBe(false);
+  });
+});
+
+describe("setQuickFilter", () => {
+  const filtersOf = () => useInboxFilterStore.getState().filtersByWorkspace["ws-1"];
+
+  it("keeps exactly one of unread and DMs active", () => {
+    const { setQuickFilter } = useInboxFilterStore.getState();
+
+    setQuickFilter("ws-1", "unread");
+    expect(filtersOf()).toMatchObject({ unreadOnly: true, dmOnly: false });
+
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "dm");
+    expect(filtersOf()).toMatchObject({ unreadOnly: false, dmOnly: true });
+
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "unread");
+    expect(filtersOf()).toMatchObject({ unreadOnly: true, dmOnly: false });
+  });
+
+  it("All clears only unread and DMs and leaves the menu filters alone", () => {
+    useInboxFilterStore.getState().togglePriorityFilter("ws-1", "high");
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "dm");
+
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "all");
+
+    expect(filtersOf()).toEqual({ ...EMPTY_INBOX_FILTERS, priorities: ["high"] });
+  });
+
+  it("drops the workspace entry when All leaves nothing", () => {
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "dm");
+    useInboxFilterStore.getState().setQuickFilter("ws-1", "all");
+    expect(filtersOf()).toBeUndefined();
   });
 });

@@ -34,6 +34,7 @@ export type WSEventType =
   | "task:message"
   | "task:cancelled"
   | "inbox:new"
+  | "inbox:updated"
   | "inbox:read"
   | "inbox:unread"
   | "inbox:archived"
@@ -621,6 +622,7 @@ export interface WSEventPayloadMap {
   "task:cancelled": TaskCancelledPayload;
   "task:progress": unknown;
   "inbox:new": InboxNewPayload;
+  "inbox:updated": InboxNewPayload;
   "inbox:read": InboxReadPayload;
   "inbox:unread": InboxUnreadPayload;
   "inbox:archived": InboxArchivedPayload;

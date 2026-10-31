@@ -55,6 +55,7 @@ afterEach(() => {
   FakeNotification.requestPermission.mockClear();
   registerSystemNotificationClickHandler(null);
   delete (globalThis as Record<string, unknown>).window;
+  vi.unstubAllGlobals();
 });
 
 describe("isWebNotificationSupported / getWebNotificationPermission", () => {
@@ -138,5 +139,78 @@ describe("showWebNotification", () => {
     }
     installWindow(ThrowingNotification);
     expect(() => showWebNotification(payload())).not.toThrow();
+  });
+});
+
+describe("showWebNotification with a service worker registration", () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function installRegistration(showNotification: (title: string, options?: unknown) => Promise<void>) {
+    const getRegistration = vi.fn(async () => ({ showNotification }));
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistration } });
+    return getRegistration;
+  }
+
+  it("shows through the registration so a push for the same record replaces it (one banner)", async () => {
+    installWindow(FakeNotification);
+    const showNotification = vi.fn(async () => undefined);
+    installRegistration(showNotification);
+
+    showWebNotification(payload());
+    await flush();
+
+    expect(created).toHaveLength(0);
+    // The worker's push handler uses this registration with tag = record id.
+    expect(showNotification).toHaveBeenCalledWith("Mentioned you", {
+      body: "in a comment",
+      tag: "item-1",
+      data: { url: "/workspace-a/inbox?issue=issue-1" },
+    });
+  });
+
+  it("points a DM banner at its chat session", async () => {
+    installWindow(FakeNotification);
+    const showNotification = vi.fn(async () => undefined);
+    installRegistration(showNotification);
+
+    showWebNotification(payload({ chatSessionId: "sess-9" }));
+    await flush();
+
+    expect(showNotification).toHaveBeenCalledWith(
+      "Mentioned you",
+      expect.objectContaining({ data: { url: "/workspace-a/chat?session=sess-9" } }),
+    );
+  });
+
+  it("falls back to an in-page banner when no worker is registered", async () => {
+    installWindow(FakeNotification);
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistration: vi.fn(async () => undefined) } });
+
+    showWebNotification(payload());
+    await flush();
+
+    expect(created).toHaveLength(1);
+  });
+
+  it("falls back to an in-page banner when the registration refuses", async () => {
+    installWindow(FakeNotification);
+    installRegistration(vi.fn(async () => Promise.reject(new Error("no"))));
+
+    showWebNotification(payload());
+    await flush();
+
+    expect(created).toHaveLength(1);
+  });
+
+  it("shows nothing without a workspace slug to route to", async () => {
+    installWindow(FakeNotification);
+    const showNotification = vi.fn(async () => undefined);
+    installRegistration(showNotification);
+
+    showWebNotification(payload({ slug: "" }));
+    await flush();
+
+    expect(showNotification).not.toHaveBeenCalled();
+    expect(created).toHaveLength(1);
   });
 });

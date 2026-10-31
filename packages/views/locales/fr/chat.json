@@ -11,6 +11,7 @@
     "interactive_login_action": "Se connecter",
     "title": "Discussion",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
+    "session_unavailable": "Cette conversation n’est plus disponible",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."
   },
   "fab": {

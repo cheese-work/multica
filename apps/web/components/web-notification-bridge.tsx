@@ -10,7 +10,7 @@ import { useNavigation } from "@multica/views/navigation";
 
 /**
  * Routes browser notification clicks to the source workspace's inbox, focused
- * on the clicked item. The web counterpart of the desktop `DesktopInboxBridge`:
+ * on the clicked item, or to the DM for a DM-linked record. The web counterpart of the desktop `DesktopInboxBridge`:
  * desktop receives the click via Electron IPC, web wires it through the
  * Notification API's `onclick` (registered here into the core singleton).
  *
@@ -31,8 +31,12 @@ export function WebNotificationBridge() {
 
   useEffect(() => {
     registerSystemNotificationClickHandler(
-      ({ slug, issueKey }: SystemNotificationPayload) => {
+      ({ slug, issueKey, chatSessionId }: SystemNotificationPayload) => {
         if (!slug) return;
+        if (chatSessionId) {
+          pushRef.current(paths.workspace(slug).chatSession(chatSessionId));
+          return;
+        }
         const inboxPath = `${paths.workspace(slug).inbox()}?issue=${encodeURIComponent(issueKey)}`;
         pushRef.current(inboxPath);
       },

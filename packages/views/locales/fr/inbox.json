@@ -21,7 +21,12 @@
     "notification_count_one": "{{count}} notification",
     "notification_count_other": "{{count}} notifications",
     "clear": "Effacer les filtres",
-    "empty": "Aucune notification ne correspond à vos filtres"
+    "empty": "Aucune notification ne correspond à vos filtres",
+    "empty_dm": "Aucune notification de message direct",
+    "quick_label": "Filtres rapides",
+    "chip_all": "Toutes",
+    "chip_unread": "Non lues",
+    "chip_dm": "Messages directs"
   },
   "context_menu": {
     "mark_read": "Marquer comme lu",
@@ -83,7 +88,8 @@
     "autopilot_paused": "Automatisation en pause",
     "children_done": "Sous-tâches terminées",
     "autopilot_quota_exceeded": "Limite d'exécutions d'automatisation atteinte",
-    "machine_drained": "Prêt à être éteint"
+    "machine_drained": "Prêt à être éteint",
+    "dm_reply": "Réponse à un message direct"
   },
   "labels": {
     "set_status_to": "Statut défini sur",
@@ -98,7 +104,11 @@
     "created_with_agent": "Créé avec un agent : {{identifier}}",
     "failed_with_detail": "Échec : {{detail}}",
     "autopilot_quota_blocked": "Exécution bloquée car la limite a été atteinte",
-    "children_done_stage": "Sous-tâches de l’étape {{stage}} terminées"
+    "children_done_stage": "Sous-tâches de l’étape {{stage}} terminées",
+    "dm_new_reply": "Nouvelle réponse",
+    "dm_new_replies_one": "{{count}} nouvelle réponse",
+    "dm_new_replies_other": "{{count}} nouvelles réponses",
+    "dm_decision_needed": "Décision requise"
   },
   "toasts": {
     "source_context_retry_started": "Nouvelle tentative démarrée avec le contexte d'origine",
