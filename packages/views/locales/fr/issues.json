@@ -728,7 +728,11 @@
     "recipient_count_other": "{{count}} agents recevront ce message",
     "steer_attachment_notice": "Seul du texte peut rejoindre une exécution en cours : un message avec des fichiers sera traité après.",
     "restart_send": "Arrêter et envoyer",
-    "restart_failed": "Impossible d'arrêter l'exécution en cours. Votre message n'a pas été envoyé."
+    "restart_failed": "Impossible d'arrêter l'exécution en cours. Votre message n'a pas été envoyé.",
+    "supersession": {
+      "superseded_by": "Remplacé par rev-{{revision}}",
+      "supersedes": "Remplace rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "Laisser une réponse...",

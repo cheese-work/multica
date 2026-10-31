@@ -37,6 +37,10 @@ export interface Comment extends DecisionCommentFields {
   resolved_by_type: CommentAuthorType | null;
   resolved_by_id: string | null;
   source_task_id?: string | null;
+  /** Newer comment that superseded this one (CHE-2121); absent on older servers. */
+  superseded_by_id?: string | null;
+  /** Comments this one superseded. Create responses also carry whether each thread resolved. */
+  supersedes?: CommentSupersedeLink[];
   hints?: string[];
   // The quick action that produced this comment (MUL-5465). A quick action
   // posts an ORDINARY comment and marks it with this id; the collapsed card
@@ -57,6 +61,12 @@ export interface Comment extends DecisionCommentFields {
   supplement_status?: "pending" | "delivering" | "delivered" | "failed";
   supplement_failure_reason?: string;
   supplement_delivered_at?: string;
+}
+
+export interface CommentSupersedeLink {
+  comment_id: string;
+  resolved?: boolean;
+  skipped_reason?: string;
 }
 
 export type CommentSupplementStatus = "pending" | "delivering" | "delivered" | "failed";

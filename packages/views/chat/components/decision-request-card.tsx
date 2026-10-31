@@ -219,6 +219,11 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
         <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="font-medium">{t(($) => $.decision.request_title)}</span>
+        {card.asking_agent_name && (
+          <span className="text-muted-foreground" data-testid="decision-request-asker">
+            {t(($) => $.decision.asked_by, { agent: card.asking_agent_name })}
+          </span>
+        )}
         <span className={cn(
           "rounded-full px-2 py-0.5 text-micro font-medium",
           shown === "open" && "bg-warning/10 text-warning",

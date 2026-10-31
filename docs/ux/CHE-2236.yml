@@ -1,0 +1,18 @@
+# D1d (CHE-2236): the decision request card names the asking agent in its header ("from <agent>").
+# One text span is added; nothing is removed. The Details block of the ask comment
+# (server-rendered markdown) gains an "**Asked by**" line and up to 5 comment excerpts.
+issue: CHE-2236
+design: waiver Cheese 2026-10-29 "waived" on decision request 51ac8bd4-5b97-443d-a325-c4bb3db844a7 (CHE-2236 comment 01a18765-3ff3-7441-bfe8-6ef125eb2c28)   # no design lock; one muted header span, existing tokens.
+pages:
+  - id: chat-decision-request-card
+    url: /<workspace-slug>/chat   # a chat session with a decision request card; same path on base and preview
+    keep:
+      - decision-request-card
+      - decision-request-source-issue
+      - decision-request-source-comment
+      - decision-request-record
+      - decision-request-reason
+      - decision-request-ask
+    change:
+      - decision-request-asker: "new muted span after the title, 'from <agent name>', shown only when the API sends asking_agent_name; wraps with the other header items on a phone"
+    remove: []

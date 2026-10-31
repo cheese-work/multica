@@ -21,8 +21,8 @@ import (
 // reads the PR's current head at release time. A push while the old run drains
 // therefore changes nothing but the head the replacement will read.
 //
-// Author runs carry another workflow step and are never listed. Run budget
-// refunds are out of scope.
+// Author runs carry another workflow step and are never listed. A new head
+// grants run budget once (L2c), and a cancelled superseded_head run is refunded.
 
 // supersedeStaleReviews cancels the live review runs of a PR whose stamped head
 // is no longer the PR's head, then tries to release their replacement. It is the
@@ -39,10 +39,12 @@ func (h *Handler) supersedeStaleReviews(ctx context.Context, prID pgtype.UUID) {
 		return
 	}
 	for _, run := range stale {
-		if _, err := h.TaskService.CancelTaskWithReason(ctx, run.ID, "superseded by a newer head "+pr.HeadSha, service.FailureReasonSupersededHead); err != nil {
+		cancelled, err := h.TaskService.CancelTaskWithReason(ctx, run.ID, "superseded by a newer head "+pr.HeadSha, service.FailureReasonSupersededHead)
+		if err != nil {
 			slog.Warn("review supersede: cancel failed", "task_id", uuidToString(run.ID), "err", err)
 			continue
 		}
+		h.refundSupersededRun(ctx, *cancelled)
 		h.recordReviewActivity(ctx, run.IssueID, "agent", uuidToString(run.AgentID), "review_superseded", map[string]string{
 			"task_id": uuidToString(run.ID), "head_sha": pr.HeadSha,
 		})
@@ -52,6 +54,7 @@ func (h *Handler) supersedeStaleReviews(ctx context.Context, prID pgtype.UUID) {
 		return
 	}
 	for _, id := range issueIDs {
+		h.grantRunBudgetHead(ctx, id, prID, pr.HeadSha)
 		h.releaseSupersededReviewReplacement(ctx, id)
 	}
 }

@@ -1627,6 +1627,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// purpose: the bearer token in the URL path IS the credential. Workspace
 	// context is derived from the trigger row, never from request headers.
 	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
+	// Inbound workflow webhook: authenticated by HMAC signature in the handler.
+	r.Post("/api/webhooks/workflows/{endpoint_id}", h.HandleWorkflowWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -1659,6 +1661,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Get("/api/integrations/composio/callback", h.ComposioCallback)
 
 	daemonUpdate := loadDaemonUpdateSource()
+	h.DaemonUpdate = daemonUpdate
+
+	// The install script is the only public /api/daemon route (CHE-2641): a
+	// fresh host runs `curl <server>/api/daemon/install.sh | bash` before it has
+	// any token. It is static and holds no secret; the manifest and binary it
+	// downloads stay behind DaemonAuth below.
+	r.Get("/api/daemon/install.sh", handler.DaemonInstallScript)
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
@@ -2160,6 +2169,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/changes", h.ListSearchIndexChanges)
 			})
 
+			// Agent decisions: the brief feed and the owner pilot setting. A task
+			// token carries the owner's user id, so the setting needs a human.
+			r.Route("/api/agent-decisions", func(r chi.Router) {
+				r.Get("/brief", h.GetAgentDecisionBrief)
+				r.With(handler.RequireHumanActor).Put("/setting", h.SetAgentDecisionSetting)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)
@@ -2181,6 +2197,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
+					r.Get("/agent-decisions", h.LookupAgentDecision)
+					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
@@ -2192,6 +2210,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Post("/run-budget", h.RaiseIssueRunBudget)
+					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					r.Put("/workflow", h.SetIssueWorkflow)
@@ -2327,6 +2346,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
+					r.Get("/webhooks", h.ListWorkflowWebhooks)
+					r.Post("/webhooks", h.CreateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/rotate", h.RotateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/disable", h.DisableWorkflowWebhook)
 				})
 			})
 
@@ -2718,6 +2741,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.Get("/feed", h.ListDecisionFeed)
+				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
 				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
 				r.Get("/{id}/artifacts", h.ListDecisionArtifacts)
@@ -2891,6 +2916,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 
 	pat, err := pr.queries.GetPersonalAccessTokenByHash(ctx, hash)
 	if err != nil {
+		return "", false
+	}
+
+	// A scoped PAT never opens a realtime connection.
+	if len(pat.Scopes) > 0 {
 		return "", false
 	}
 

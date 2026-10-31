@@ -327,7 +327,12 @@ type DaemonRegisterRequest struct {
 	DeviceName      string   `json:"device_name"`
 	CLIVersion      string   `json:"cli_version"` // multica CLI version
 	LaunchedBy      string   `json:"launched_by"` // "desktop" when spawned by the Electron app
-	Runtimes        []struct {
+	// CLICommit/CLIOS/CLIArch identify the daemon build so the server can
+	// compute the per-runtime update verdict (CHE-2641). Older daemons omit them.
+	CLICommit string `json:"cli_commit"`
+	CLIOS     string `json:"cli_os"`
+	CLIArch   string `json:"cli_arch"`
+	Runtimes  []struct {
 		Name        string `json:"name"`
 		RuntimeMode string `json:"runtime_mode,omitempty"`
 		Type        string `json:"type"`
@@ -780,6 +785,9 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		metadata, _ := json.Marshal(map[string]any{
 			"version":      runtime.Version,
 			"cli_version":  req.CLIVersion,
+			"cli_commit":   req.CLICommit,
+			"cli_os":       req.CLIOS,
+			"cli_arch":     req.CLIArch,
 			"launched_by":  req.LaunchedBy,
 			"capabilities": requestClientCapabilities(r),
 		})
@@ -975,7 +983,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		resp = append(resp, runtimeToResponse(registered))
+		resp = append(resp, h.runtimeResponse(registered))
 	}
 	for _, failed := range req.FailedProfiles {
 		profileID := strings.TrimSpace(failed.ProfileID)
@@ -1023,6 +1031,9 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				metadata, _ := json.Marshal(map[string]any{
 					"version":                            "",
 					"cli_version":                        req.CLIVersion,
+					"cli_commit":                         req.CLICommit,
+					"cli_os":                             req.CLIOS,
+					"cli_arch":                           req.CLIArch,
 					"launched_by":                        req.LaunchedBy,
 					"capabilities":                       requestClientCapabilities(r),
 					"runtime_profile_registration_error": true,

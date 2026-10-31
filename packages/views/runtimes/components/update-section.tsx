@@ -9,78 +9,8 @@ import {
 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { api } from "@multica/core/api";
-import type { RuntimeUpdateStatus } from "@multica/core/types";
+import type { RuntimeUpdateInfo, RuntimeUpdateStatus } from "@multica/core/types";
 import { useT } from "../../i18n";
-
-const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/multica-ai/multica/releases/latest";
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-
-let cachedLatestVersion: string | null = null;
-let cachedAt = 0;
-
-async function fetchLatestVersion(): Promise<string | null> {
-  if (cachedLatestVersion && Date.now() - cachedAt < CACHE_TTL_MS) {
-    return cachedLatestVersion;
-  }
-  try {
-    const resp = await fetch(GITHUB_RELEASES_URL, {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    cachedLatestVersion = data.tag_name ?? null;
-    cachedAt = Date.now();
-    return cachedLatestVersion;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Parses a released CLI version ("v0.4.17" / "0.4.17") into comparable parts,
- * or null when the string is not a release version.
- *
- * A daemon built from source reports a `git describe` string
- * ("v0.4.17-12-gabc1234") or the ldflags default ("dev"), and neither can be
- * ordered against a release tag. This mirrors `IsReleaseVersion` in
- * server/internal/cli/update.go, which is how the daemon's own auto-update
- * loop decides the same question.
- */
-function parseReleaseVersion(v: string): number[] | null {
-  const plainVersion = v.trim().replace(/^v/, "")
-    .replace(/-\d{8}-\d{4}(?=\+|$)/, "").split("+", 1)[0] ?? "";
-  const parts = plainVersion.split(".");
-  if (parts.length !== 3) return null;
-  const parsed: number[] = [];
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) return null;
-    parsed.push(Number(part));
-  }
-  return parsed;
-}
-
-/**
- * True when `latest` is strictly newer than `current`.
- *
- * An unparseable version on either side compares as "no update available".
- * Number("dev") is NaN, and every NaN comparison is false, so the old
- * component-wise scan fell through to the next component and reported an
- * upgrade for a version string it had never actually read — inviting the
- * operator to replace a locally built binary on the strength of a claim we
- * could not make.
- */
-function isNewer(latest: string, current: string): boolean {
-  const l = parseReleaseVersion(latest);
-  const c = parseReleaseVersion(current);
-  if (!l || !c) return false;
-  for (const [i, lv] of l.entries()) {
-    const cv = c[i] ?? 0;
-    if (lv > cv) return true;
-    if (lv < cv) return false;
-  }
-  return false;
-}
 
 const statusConfig: Record<
   RuntimeUpdateStatus,
@@ -97,6 +27,12 @@ interface UpdateSectionProps {
   /** Null for a read-only viewer who cannot use a runtime as the command channel. */
   runtimeId: string | null;
   currentVersion: string | null;
+  /**
+   * The server's commit-based verdict for this machine's daemon (CHE-2641).
+   * The server compares the daemon's build commit with the build it carries;
+   * the client never fetches or compares versions itself.
+   */
+  updateStatus: RuntimeUpdateInfo;
   isOnline: boolean;
   /**
    * Non-null when the daemon process was spawned by a managed launcher
@@ -110,12 +46,12 @@ interface UpdateSectionProps {
 export function UpdateSection({
   runtimeId,
   currentVersion,
+  updateStatus,
   isOnline,
   launchedBy,
 }: UpdateSectionProps) {
   const { t } = useT("runtimes");
   const isManaged = launchedBy === "desktop";
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [status, setStatus] = useState<RuntimeUpdateStatus | null>(null);
   const [error, setError] = useState("");
   const [output, setOutput] = useState("");
@@ -132,11 +68,6 @@ export function UpdateSection({
 
   useEffect(() => cleanup, [cleanup]);
 
-  // Fetch latest version on mount.
-  useEffect(() => {
-    fetchLatestVersion().then(setLatestVersion);
-  }, []);
-
   const markCompleted = useCallback(
     (message: string) => {
       setStatus("completed");
@@ -152,23 +83,24 @@ export function UpdateSection({
   );
 
   useEffect(() => {
-    if (!updating || !targetVersion || !currentVersion) return;
-    if (!isNewer(targetVersion, currentVersion)) {
+    if (!updating || !targetVersion) return;
+    if (!updateStatus.available) {
       markCompleted(`Updated to ${targetVersion}`);
     }
-  }, [currentVersion, markCompleted, targetVersion, updating]);
+  }, [markCompleted, targetVersion, updateStatus.available, updating]);
 
   const handleUpdate = async () => {
-    if (!latestVersion || !runtimeId) return;
+    if (!hasUpdate || !runtimeId) return;
+    const target = updateTarget;
     cleanup();
     setUpdating(true);
-    setTargetVersion(latestVersion);
+    setTargetVersion(target);
     setStatus("pending");
     setError("");
     setOutput("");
 
     try {
-      const update = await api.initiateUpdate(runtimeId, latestVersion);
+      const update = await api.initiateUpdate(runtimeId, target);
 
       pollRef.current = setInterval(async () => {
         try {
@@ -177,7 +109,7 @@ export function UpdateSection({
 
           if (result.status === "completed") {
             markCompleted(
-              result.output ?? `Updated to ${targetVersion ?? latestVersion}`,
+              result.output ?? `Updated to ${target}`,
             );
           } else if (
             result.status === "failed" ||
@@ -200,17 +132,27 @@ export function UpdateSection({
     }
   };
 
-  const hasUpdate =
-    currentVersion &&
-    latestVersion &&
-    isNewer(latestVersion, currentVersion);
+  const hasUpdate = updateStatus.available;
+  // The daemon's fork update ignores the target and installs the server's own
+  // build; the target is only what the request and the success text name.
+  const updateTarget = updateStatus.serverVersion || updateStatus.serverCommit;
+  const shortCommit = updateStatus.serverCommit.slice(0, 7);
+  const availableLabel = [
+    updateStatus.serverVersion,
+    shortCommit && `(${shortCommit})`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
-  // A source build cannot be ordered against a release tag, so neither
-  // "update available" nor "Latest" is a claim we can make. Say that, rather
-  // than defaulting to "Latest" and telling the operator their local binary is
-  // up to date when we never parsed its version.
-  const isLocalBuild =
-    !!currentVersion && parseReleaseVersion(currentVersion) === null;
+  // Only a firm verdict from the server may say "Latest": an unknown commit
+  // (source build) or a server with no build for this platform is not a claim
+  // we can make either way, and an older server sends no verdict at all.
+  const isLocalBuild = updateStatus.reason === "unknown_commit";
+  const isLatest =
+    !hasUpdate &&
+    !updateStatus.reason &&
+    !!updateStatus.serverCommit &&
+    !!currentVersion;
 
   const config = status ? statusConfig[status] : null;
   const Icon = config?.icon;
@@ -242,11 +184,7 @@ export function UpdateSection({
               </span>
             )}
 
-            {!isLocalBuild &&
-              !hasUpdate &&
-              currentVersion &&
-              latestVersion &&
-              !status && (
+            {isLatest && !status && (
                 <span className="inline-flex items-center gap-1 text-caption text-success">
                   <Check className="h-3 w-3" />
                   {t(($) => $.update.latest)}
@@ -257,7 +195,7 @@ export function UpdateSection({
               <>
                 <span className="text-caption text-muted-foreground">→</span>
                 <span className="text-caption font-mono text-info">
-                  {latestVersion}
+                  {availableLabel}
                 </span>
                 <span className="text-caption text-muted-foreground">{t(($) => $.update.available)}</span>
               </>

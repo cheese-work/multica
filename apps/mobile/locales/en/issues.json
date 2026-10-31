@@ -218,6 +218,10 @@
     "collapse": "Collapse",
     "collapse_a11y": "Collapse resolved thread"
   },
+  "supersession": {
+    "superseded_by": "Superseded by rev-{{revision}}",
+    "supersedes": "Supersedes rev-{{revision}}"
+  },
   "failed": {
     "send": "Couldn't send",
     "retry": "Retry",

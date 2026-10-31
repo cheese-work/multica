@@ -66,6 +66,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: timeout 25s node scripts/migration-prefix-check.mjs
 
+  # CHE-2641: one update source. Fails on any non-test reference to upstream
+  # release or install-script URLs in packages, apps and server. Not gated by
+  # ci-scope: a TS-only change can reintroduce the URL.
+  upstream-update-source-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test the guard
+        run: bash scripts/check-no-upstream-update-source.test.sh
+      - name: Check no upstream update source
+        run: bash scripts/check-no-upstream-update-source.sh
+
   # Linux stays on GitHub-hosted ubuntu-latest: root cause confirmed (CHE-522)
   # via a live kernel-version probe, not inference — the retired paid runner
   # runs Linux 6.6.141, GitHub-hosted ubuntu-latest runs 6.17.0. The

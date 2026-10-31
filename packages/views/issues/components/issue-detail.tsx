@@ -118,6 +118,7 @@ import { CommentInput } from "./comment-input";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
+import { SupersessionRevisionsProvider } from "./supersession-links";
 import {
   ThreadMinimap,
   createRowRangeSource,
@@ -4781,6 +4782,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   <TimelineSkeleton />
                 ) : (
                   <div className="mt-4">
+                    <SupersessionRevisionsProvider entries={timeline}>
                     <Virtuoso
                       key={`${wsId}:${id}`}
                       ref={virtuosoRef}
@@ -4800,6 +4802,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       itemContent={renderItem}
                       rangeChanged={onRowRangeChanged}
                     />
+                    </SupersessionRevisionsProvider>
                   </div>
                 )
             )}

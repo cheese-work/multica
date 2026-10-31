@@ -69,8 +69,7 @@ const wsEventState = vi.hoisted(() => ({
   reconnect: null as (() => void) | null,
 }));
 
-const WINDOWS_CMD =
-  "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex";
+const INSTALL_CMD = `curl -fsSL ${window.location.origin}/api/daemon/install.sh | bash`;
 
 vi.mock("@multica/core/realtime", () => ({
   useWSEvent: (_event: string, handler: (payload: unknown) => void) => {
@@ -233,20 +232,17 @@ describe("ConnectRemoteDialog", () => {
     expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
   });
 
-  // The install command is OS-specific, so the dialog can't hardcode one.
-  // Before this switch existed the dialog shipped only the curl command and
-  // Windows users had no path at all, despite scripts/install.ps1. The switch
-  // itself is covered in common/cli-install-command.test.tsx; this checks it
-  // is wired through to step 1's copy button.
-  it("copies the installer for the platform picked in step 1", async () => {
+  // The command comes from the server being connected to (CHE-2641); the
+  // builder itself is covered in common/cli-install-command.test.tsx. This
+  // checks it is wired through to step 1's copy button.
+  it("copies the server's installer from step 1", async () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("tab", { name: "Windows" }));
     await user.click(screen.getAllByRole("button", { name: "Copy" })[0]!);
 
     await waitFor(() => {
-      expect(clipboard.copyText).toHaveBeenCalledWith(WINDOWS_CMD);
+      expect(clipboard.copyText).toHaveBeenCalledWith(INSTALL_CMD);
     });
   });
 
