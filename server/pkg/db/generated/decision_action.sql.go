@@ -522,7 +522,7 @@ func (q *Queries) LockDecisionIssueNowait(ctx context.Context, arg LockDecisionI
 
 const lockDecisionLiveAnswerNowait = `-- name: LockDecisionLiveAnswerNowait :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND request.id = $2
   AND answer.disclaimed_at IS NULL
 FOR UPDATE OF answer NOWAIT
@@ -573,8 +573,8 @@ func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDeci
 }
 
 const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json, project_id FROM decision_request
-WHERE workspace_id = $1 AND id = $2
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json, authority, project_id FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
 
@@ -615,6 +615,7 @@ func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisio
 		&i.WithdrawnByUserID,
 		&i.Options,
 		&i.AskJson,
+		&i.Authority,
 		&i.ProjectID,
 	)
 	return i, err

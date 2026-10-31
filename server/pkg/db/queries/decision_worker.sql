@@ -22,7 +22,7 @@ WHERE name = 'decision_consequences' AND holder = sqlc.arg('holder') AND token =
 SELECT request.* FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
-WHERE EXISTS (
+WHERE request.authority = 'human' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     JOIN agent_task_queue task ON task.id = answer.answered_by_task_id
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL AND answer.wake_at IS NULL
@@ -34,7 +34,7 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- name: ScheduleDecisionAnswer :one
 UPDATE decision_answer answer SET wake_at = GREATEST(answer.effective_at, clock_timestamp())
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
   AND request.status = 'answered' AND answer.id = sqlc.arg('id')
   AND answer.wake_at IS NULL AND answer.disclaimed_at IS NULL
 RETURNING answer.*;

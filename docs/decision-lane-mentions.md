@@ -109,10 +109,12 @@ accepts the same object as `ask` in `POST /api/decisions`.
 An ask that approves a file adds two optional fields. `subject` is
 `artifact_approval`; it requires at least one entry in `artifacts[]`. Each
 artifact has `attachment_id`, `label`, `sha256` (64 lowercase hex characters),
-and optionally `supersedes_attachment_id` and `signed_by` (`reviewer` and the
-signed review `comment_id`). The server refuses the request when an attachment
+and optionally `supersedes_attachment_id`, `signed_by` and
+`supersedes_signed_by` (each `reviewer` and the signed review `comment_id`;
+`supersedes_signed_by` needs `supersedes_attachment_id` and names who signed
+the file the diff is measured against). The server refuses the request when an attachment
 is not on the source issue in the workspace, or when the stored bytes do not
-hash to `sha256`. `signed_by` is recorded as given and is not checked against
+hash to `sha256`. Both signatures are recorded as given and are not checked against
 the comment. `GET /api/decisions/{id}/artifacts` returns each artifact with its
 file card and, when it supersedes an earlier text attachment, the changed
 hunks only (`diff.hunks`, lines prefixed ` `, `-` or `+`). `diff.problem` is

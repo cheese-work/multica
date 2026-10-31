@@ -192,6 +192,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
+	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
+	"push_session_end":                   workspaceDeleteKeep, // Ended login sessions, account-level, expire with the session lifetime (CHE-1795).
+	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
 	"run_capability_grant":               workspaceDelete,
