@@ -81,6 +81,7 @@
     "speaker_you": "你",
     "load_older_messages": "加载更早的消息",
     "show_details": "查看详情",
+    "show_earlier_context": "显示之前的上下文",
     "replied_in": "{{elapsed}} 内回复",
     "failed_after": "{{elapsed}} 后失败",
     "finished_in": "{{elapsed}} 内结束",

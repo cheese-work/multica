@@ -81,6 +81,7 @@
     "speaker_you": "나",
     "load_older_messages": "이전 메시지 더 보기",
     "show_details": "세부 정보 보기",
+    "show_earlier_context": "이전 맥락 보기",
     "replied_in": "{{elapsed}} 만에 답변",
     "failed_after": "{{elapsed}} 후 실패",
     "finished_in": "{{elapsed}} 만에 완료",
