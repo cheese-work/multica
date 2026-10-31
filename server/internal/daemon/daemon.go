@@ -8900,7 +8900,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd = ""
+		}
+	}
 	execOpts := agent.ExecOptions{
+		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -8991,6 +8999,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentID:         task.AgentID,
 		AgentName:       task.Agent.Name,
 		WorkDir:         env.WorkDir,
+		StableDir:       stableCwd,
 		IssueIdentifier: task.IssueIdentifier,
 		IntakeRun:       task.IntakeRun,
 		PinnedBranch:    task.PinnedBranch,
