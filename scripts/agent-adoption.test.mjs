@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   buildAdoption,
   checkAgentFacing,
+  findExistingIssue,
+  main,
   newCliFlags,
   parseAgentFacing,
+  runMapCommand,
   touchesAgentSurface,
 } from "./agent-adoption.mjs";
 
@@ -107,4 +112,66 @@ test("a PR with a missing field is judged by the path heuristic and flagged", ()
 
 test("an empty range opens no issue", () => {
   assert.equal(buildAdoption({ ...range, prs: [] }).issue, false);
+});
+
+// Review round 1 (CHE-2794 PR 729): every finding gets a behavioural test.
+const workflow = readFileSync(new URL("../.github/workflows/agent-adoption.yml", import.meta.url), "utf8");
+
+test("finding 2: the adoption workflow token can read pull requests", () => {
+  assert.match(workflow.split(/^jobs:/m)[0], /^permissions:[\s\S]*^\s+pull-requests: read$/m);
+});
+
+test("finding 4: the agent brief sources count as an agent surface", () => {
+  for (const path of ["server/internal/handler/agent.go", "server/internal/issueworkflow/issueworkflow.go"])
+    assert.equal(touchesAgentSurface([path]), true, path);
+  assert.equal(touchesAgentSurface(["server/internal/issueworkflow/rules_test.go"]), false);
+});
+
+test("finding 3: persistent flags and local cmd.Flags() declarations are found", () => {
+  const diff = [
+    "+++ b/server/cmd/multica/main.go",
+    "+\trootCmd.PersistentFlags().String(\"profile\", \"\", \"x\")",
+    "+++ b/server/cmd/multica/cmd_issue_label.go",
+    "+\t\tcmd.Flags().Bool(\"full-id\", false, \"x\")",
+    "+\t\tc.Flags().StringVar(&out, \"output\", \"table\", \"x\")",
+  ].join("\n");
+  assert.deepEqual(newCliFlags(diff), [
+    { command: "", flag: "profile" },
+    { command: "issue label", flag: "full-id" },
+    { command: "issue label", flag: "output" },
+  ]);
+});
+
+test("finding 3: a PR adding only a local cmd.Flags() flag keeps the host readback gate", () => {
+  const pr = { ...agentPr, diff: "+++ b/server/cmd/multica/cmd_chat.go\n+\t\tc.Flags().Int(\"limit\", 0, \"x\")" };
+  const out = buildAdoption({ ...range, prs: [pr] });
+  assert.doesNotMatch(out.body, /No host readback needed/);
+  assert.match(out.body, /\| C00 \|.*multica chat --help.*--limit/);
+});
+
+test("finding 1: the map command runs with the range in its env, and a failure is not swallowed", () => {
+  const ctx = { prev: range.prev, next: range.next, repo: "o/r" };
+  assert.equal(runMapCommand("", ctx), "");
+  assert.equal(runMapCommand('echo "map $ADOPTION_PREV $ADOPTION_NEXT $ADOPTION_REPO"', ctx).trim(), `map ${range.prev} ${range.next} o/r`);
+  assert.throws(() => runMapCommand("exit 3", ctx));
+});
+
+test("finding 5: an existing issue is matched on the full SHA, not only the 12-character title", () => {
+  const issue = (description) => ({ identifier: "CHE-9", title: "Agent adoption: C00 deploy bbbbbbbbbbbb", description });
+  const hit = JSON.stringify({ issues: [issue(`<!-- adoption-key: sha:${range.next} -->`)] });
+  const other = JSON.stringify({ issues: [issue(`<!-- adoption-key: sha:${"b".repeat(12)}${"c".repeat(28)} -->`)] });
+  assert.equal(findExistingIssue(hit, range.next), "CHE-9");
+  assert.equal(findExistingIssue(other, range.next), null);
+  assert.equal(findExistingIssue(JSON.stringify({ issues: [] }), range.next), null);
+  assert.throws(() => findExistingIssue("not json", range.next));
+  assert.throws(() => findExistingIssue(JSON.stringify({ error: "x" }), range.next));
+});
+
+test("finding 5: reuse mode exits 0 on a hit, 1 on no match and 2 on a failed lookup", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adoption-"));
+  const file = (name, text) => (writeFileSync(join(dir, name), text), join(dir, name));
+  const run = (path) => main(["reuse", "--next", range.next, "--file", path], {});
+  assert.equal(run(file("hit.json", JSON.stringify({ issues: [{ identifier: "CHE-9", description: `adoption-key: sha:${range.next}` }] }))), 0);
+  assert.equal(run(file("none.json", JSON.stringify({ issues: [] }))), 1);
+  assert.equal(run(file("bad.json", "{")), 2);
 });

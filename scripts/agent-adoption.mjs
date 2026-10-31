@@ -6,6 +6,11 @@
 //   Post-deploy:     node scripts/agent-adoption.mjs plan --prev <sha> --next <sha> --repo <owner/repo> --out <dir>
 //     Reads merged PRs in prev..next from git and `gh`, writes <dir>/title.txt and <dir>/body.md and
 //     prints `issue=true|false` plus the log line. Opening or reusing the issue stays with the workflow.
+//     ADOPTION_MAP_CMD, when set, is run with ADOPTION_PREV/NEXT/REPO in its env; its stdout is the
+//     adoption map (the CHE-2793 generator). A failing command fails the plan.
+//   Dedup:           node scripts/agent-adoption.mjs reuse --next <sha> [--file <search.json>]
+//     Reads `multica issue search --output json`; exit 0 + identifier = same-SHA issue exists, 1 = none,
+//     2 = the lookup output is unusable (the workflow must not create after a 2).
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -19,8 +24,10 @@ const AGENT_SURFACE = [
   /^server\/cmd\/multica\/(?!.*_test\.go$)/,
   /^server\/internal\/daemon\/(?!.*_test\.go$)/,
   /^server\/internal\/handler\/[^/]*brief[^/]*\.go$/,
+  /^server\/internal\/handler\/agent\.go$/,
+  /^server\/internal\/issueworkflow\/(?!.*_test\.go$)/,
 ];
-const FLAG = /(\w+)Cmd\.Flags\(\)\.\w+\((?:&[\w.]+,\s*)?"([a-z][a-z0-9-]*)"/;
+const FLAG = /(\w+)\.(?:Persistent)?Flags\(\)\.\w+\((?:&[\w.]+,\s*)?"([a-z][a-z0-9-]*)"/;
 
 const short = (sha) => sha.slice(0, 12);
 
@@ -47,13 +54,23 @@ export function checkAgentFacing(body, paths) {
   return [];
 }
 
-// Added `fooBarCmd.Flags().Type("flag"` lines of a Go diff; the command path comes from the variable name.
+// Added `<recv>.Flags()` / `.PersistentFlags()` lines of a Go diff. A `fooBarCmd` receiver names its
+// command ("foo bar"); `rootCmd` is the top level; any other receiver (`cmd`, `c`, `command`) falls
+// back to the file name (`cmd_issue_label.go` -> "issue label"), which the issue body asks to verify.
 export function newCliFlags(diff) {
   const flags = [];
+  let file = "";
   for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) file = line.slice(4).replace(/^b\//, "");
     if (!line.startsWith("+") || line.startsWith("+++")) continue;
     const match = FLAG.exec(line);
-    if (match) flags.push({ command: match[1].replace(/([A-Z])/g, " $1").toLowerCase(), flag: match[2] });
+    if (!match) continue;
+    const [, receiver, flag] = match;
+    const named = /^(\w+)Cmd$/.exec(receiver)?.[1];
+    const command = named === "root" ? ""
+      : named ? named.replace(/([A-Z])/g, " $1").toLowerCase()
+      : /([^/]*?)\.go$/.exec(file)?.[1].replace(/^cmd_/, "").replaceAll("_", " ") ?? "";
+    flags.push({ command, flag });
   }
   return flags;
 }
@@ -84,7 +101,7 @@ export function buildAdoption({ prev, next, prs, map = "" }) {
         "| Host | Command | Result |",
         "| --- | --- | --- |",
         ...flags.flatMap(({ command, flag }) =>
-          HOSTS.map((host) => `| ${host} | \`multica ${command} --help \\| grep -- --${flag}\` | pending |`)),
+          HOSTS.map((host) => `| ${host} | \`${["multica", command, "--help"].filter(Boolean).join(" ")} \\| grep -- --${flag}\` | pending |`)),
         "",
         "Do not apply any instruction before every host row reads back with its flag listed.",
       ];
@@ -104,6 +121,22 @@ export function buildAdoption({ prev, next, prs, map = "" }) {
     "",
   ].join("\n");
   return { issue: true, log: `${agentPrs.length} agent-facing PR(s) in ${range}`, title: `Agent adoption: C00 deploy ${short(next)}`, body };
+}
+
+// The CHE-2793 map generator, run as a shell command so the repo variable can point at any checkout.
+export function runMapCommand(command, { prev, next, repo }) {
+  if (!command) return "";
+  return execFileSync("sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...process.env, ADOPTION_PREV: prev, ADOPTION_NEXT: next, ADOPTION_REPO: repo },
+  });
+}
+
+// Identifier of the issue whose body carries this deployed SHA's marker; the 12-character title is only a search key.
+export function findExistingIssue(searchJson, next) {
+  const { issues } = JSON.parse(searchJson);
+  if (!Array.isArray(issues)) throw new Error("issue search output has no issues array");
+  return issues.find((issue) => issue.description?.includes(`adoption-key: sha:${next}`))?.identifier ?? null;
 }
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -146,7 +179,9 @@ export function main(argv, env) {
   if (mode === "plan") {
     const prev = arg(argv, "prev");
     const next = arg(argv, "next");
-    const out = buildAdoption({ prev, next, prs: collectPrs(prev, next, arg(argv, "repo")), map: env.ADOPTION_MAP ?? "" });
+    const repo = arg(argv, "repo");
+    const map = runMapCommand(env.ADOPTION_MAP_CMD ?? "", { prev, next, repo });
+    const out = buildAdoption({ prev, next, prs: collectPrs(prev, next, repo), map });
     console.log(out.log);
     console.log(`issue=${out.issue}`);
     if (out.issue) {
@@ -157,7 +192,17 @@ export function main(argv, env) {
     }
     return 0;
   }
-  console.error("usage: agent-adoption.mjs check --event <file> | plan --prev <sha> --next <sha> --repo <owner/repo> --out <dir>");
+  if (mode === "reuse") {
+    try {
+      const existing = findExistingIssue(readFileSync(argv.includes("--file") ? arg(argv, "file") : 0, "utf8"), arg(argv, "next"));
+      if (existing) console.log(existing);
+      return existing ? 0 : 1;
+    } catch (error) {
+      console.error(`adoption issue lookup unusable: ${error.message}`);
+      return 2;
+    }
+  }
+  console.error("usage: agent-adoption.mjs check --event <file> | plan --prev <sha> --next <sha> --repo <owner/repo> --out <dir> | reuse --next <sha> [--file <search.json>]");
   return 2;
 }
 

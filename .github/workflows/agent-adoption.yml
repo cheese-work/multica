@@ -10,7 +10,10 @@ name: Agent adoption issue
 #
 # Needs on the runner: the `multica` CLI. Needs configured: secret MULTICA_TOKEN and variables
 # MULTICA_SERVER_URL, MULTICA_WORKSPACE_ID, ADOPTION_PROJECT_ID, ADOPTION_ASSIGNEE_ID. When one is
-# unset the job logs why and opens nothing (it does not fail).
+# unset the job fails with an error naming it and opens nothing.
+# Optional variable ADOPTION_MAP_CMD: shell command of the CHE-2793 map generator. It gets
+# ADOPTION_PREV, ADOPTION_NEXT and ADOPTION_REPO in its env and prints the map on stdout. Unset
+# until CHE-2793 publishes the generator; a failing command fails the job.
 on:
   workflow_run:
     workflows: ["CD deploy to C00"]
@@ -20,6 +23,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
   group: agent-adoption
@@ -77,12 +81,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ADOPTION_MAP_CMD: ${{ vars.ADOPTION_MAP_CMD }}
         run: |
           set -euo pipefail
           next="$(node -p 'JSON.parse(require("fs").readFileSync("cutover-input/manifest.json","utf8")).source_sha')"
           prev="$(node -p 'JSON.parse(require("fs").readFileSync("cutover-input/baseline-tuple.json","utf8")).application_sha')"
           node scripts/agent-adoption.mjs plan --prev "$prev" --next "$next" --repo "$GITHUB_REPOSITORY" --out adoption | tee plan.log
           tail -n 1 plan.log >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
           head -n 1 plan.log >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open or reuse the adoption issue
@@ -94,20 +100,28 @@ jobs:
           MULTICA_WORKSPACE_ID: ${{ vars.MULTICA_WORKSPACE_ID }}
           PROJECT_ID: ${{ vars.ADOPTION_PROJECT_ID }}
           ASSIGNEE_ID: ${{ vars.ADOPTION_ASSIGNEE_ID }}
+          NEXT_SHA: ${{ steps.plan.outputs.next }}
         run: |
           set -euo pipefail
           for name in MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID PROJECT_ID ASSIGNEE_ID; do
             if [ -z "${!name}" ]; then
-              echo "::warning::$name is not configured; adoption issue not opened. Body is in adoption/body.md of this run."
+              echo "::error::$name is not configured; adoption issue not opened. The body is in this run's step summary."
               cat adoption/body.md >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+              exit 1
             fi
           done
           title="$(cat adoption/title.txt)"
-          # One issue per deployed SHA: the title carries the 12-character SHA.
-          if multica issue search "$title" --include-closed --output json | grep -qF "$title"; then
-            echo "Adoption issue for this SHA already exists; reusing it."
+          # One issue per deployed SHA: search by the 12-character title, then match the full SHA in the
+          # body marker. A failed or unreadable lookup stops the job; it never falls through to create.
+          search="$(multica issue search "$title" --include-closed --limit 100 --output json)"
+          rc=0
+          existing="$(printf '%s' "$search" | node scripts/agent-adoption.mjs reuse --next "$NEXT_SHA")" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "Adoption issue $existing already exists for $NEXT_SHA; reusing it."
             exit 0
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::Adoption issue lookup failed (exit $rc); not creating a possible duplicate."
+            exit 1
           fi
           # Project, assignee and Readiness at creation (CHE-466).
           multica issue create --title "$title" --description-file adoption/body.md \
