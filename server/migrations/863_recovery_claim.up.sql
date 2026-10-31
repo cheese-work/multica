@@ -5,7 +5,7 @@
 -- native retry accounting is per retry lineage rather than per issue.
 CREATE TABLE recovery_claim (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL,
+    workspace_id UUID NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
     issue_id UUID NOT NULL,
     failed_task_id UUID NOT NULL,
     lineage_root_task_id UUID NOT NULL,
