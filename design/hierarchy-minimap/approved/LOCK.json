@@ -18,7 +18,7 @@
       "updatedAt": "2026-10-31T14:58:35.785Z",
       "content_sha256": "cebd3e842a9d95d98e64da8ad450580e8bc28a548d9a6d9b347d061f3b9e3a3f",
       "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
-      "ux_verdict_id": "PENDING"
+      "ux_verdict_id": "01a192a6-259a-7405-aec3-0fe1ba22b868"
     },
     {
       "screen": "D5: canvas dialog zoomed out 40%, groups show totals",
@@ -26,7 +26,7 @@
       "updatedAt": "2026-10-31T15:26:50.020Z",
       "content_sha256": "25f141dd9e70e515eede96da2d67d1409ee82b4a576af17b25e13f6ef9830a7a",
       "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
-      "ux_verdict_id": "PENDING"
+      "ux_verdict_id": "01a192a6-259a-7405-aec3-0fe1ba22b868"
     },
     {
       "screen": "D6: canvas dialog zoomed in 130%, groups split into single issues",
@@ -34,7 +34,7 @@
       "updatedAt": "2026-10-31T15:26:43.046Z",
       "content_sha256": "5a65520d91b0fa72f9e6e98f882f5e8493d76a76400ccf15284d9af542147042",
       "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
-      "ux_verdict_id": "PENDING"
+      "ux_verdict_id": "01a192a6-259a-7405-aec3-0fe1ba22b868"
     }
   ],
   "export_sha256": "58e4d1e275cbe710180ba13abdf161e2a6e04511443d8237acef3875891848fb",
