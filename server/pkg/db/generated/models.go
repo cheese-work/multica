@@ -2950,6 +2950,22 @@ type Workspace struct {
 	ExportManifestRetentionDays int32 `json:"export_manifest_retention_days"`
 }
 
+type WorkspaceAuditEvent struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	At                pgtype.Timestamptz `json:"at"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	ActorSource       string             `json:"actor_source"`
+	Kind              string             `json:"kind"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	Before            []byte             `json:"before"`
+	After             []byte             `json:"after"`
+	ExternalRequested []string           `json:"external_requested"`
+}
+
 type WorkspaceInvitation struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

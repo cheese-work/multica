@@ -626,10 +626,13 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
+	ws, pauseAction, activity, err := h.saveWorkspace(r, params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
 	var rejected settingsRejectedError
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
+	if failedAudit(w, r, err, "workspace.update") {
 		return
 	}
 	if err != nil {
@@ -1546,6 +1549,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete administration data",
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
+		},
+		{
+			// The one place audit rows may go: the SQL function sets the purge
+			// flag inside this tx (CHE-2774).
+			name: "delete audit events",
+			run: func() error {
+				_, err := qtx.AuditWorkspaceDelete(ctx, requester.WorkspaceID)
+				return err
+			},
 		},
 		{
 			// At this point workspaceMember has resolved → workspaceID is a
