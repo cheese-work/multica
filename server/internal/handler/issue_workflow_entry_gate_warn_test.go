@@ -2,9 +2,12 @@ package handler
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // The response to a write that posts the first-warning comment carries the
@@ -100,5 +103,48 @@ func TestEntryGateWarnKeysOnEveryRealHead(t *testing.T) {
 	enterReview()
 	if got := rows(); got != 3 {
 		t.Fatalf("same heads again: %d warning rows, want 3", got)
+	}
+}
+
+// The batch path publishes issue:updated after the first-warning comment, so
+// the event and the batch response carry the revision after that comment.
+func TestEntryGateBatchWarnEventCarriesCurrentRevision(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	installationID := gateInstall + 810
+	c := newEdgeCase(t, installationID, gateSteps(gate("pr.ready", "warn")))
+	linkGatePRs(t, c, installationID, draftPR)
+	c.enter(t, "in_progress")
+
+	var mu sync.Mutex
+	var published []IssueResponse
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		if resp, ok := payload["issue"].(IssueResponse); ok && resp.ID == c.issueID {
+			mu.Lock()
+			published = append(published, resp)
+			mu.Unlock()
+		}
+	})
+
+	req := newRequest("POST", "/api/issues/batch?workspace_id="+testWorkspaceID, map[string]any{
+		"issue_ids": []string{c.issueID},
+		"updates":   map[string]any{"status": "in_review"},
+	})
+	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
+
+	var stored int64
+	dbfx.QueryRow(t, `SELECT revision FROM issue WHERE id=$1`, c.issueID).Scan(&stored)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(published) != 1 {
+		t.Fatalf("got %d issue:updated events, want 1", len(published))
+	}
+	if published[0].Revision != stored {
+		t.Fatalf("event revision = %d, stored revision = %d", published[0].Revision, stored)
 	}
 }
