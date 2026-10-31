@@ -232,6 +232,10 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
 		return
 	}
+	if errors.Is(err, service.ErrRecoveryCaused) {
+		writeError(w, http.StatusForbidden, errRecoveryCaused)
+		return
+	}
 	var notConfirmed *service.StopNotConfirmedError
 	if errors.As(err, &notConfirmed) {
 		writeError(w, http.StatusConflict, notConfirmed.Error())
