@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight } from "@multica/ui/icons";
 import { supersessionRevisions } from "@multica/core/issues/supersession";
 import type { TimelineEntry } from "@multica/core/types";
 import { useT } from "../../i18n";
