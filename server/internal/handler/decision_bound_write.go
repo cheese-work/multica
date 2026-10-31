@@ -45,10 +45,13 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	}
 	request, err := qtx.LockDecisionRequest(ctx, db.LockDecisionRequestParams{WorkspaceID: workspaceID, ID: decisionID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return refuse(http.StatusNotFound, "decision request not found")
+		return refuse(http.StatusNotFound, "human decision request not found")
 	}
 	if err != nil {
 		return err
+	}
+	if request.Authority != "human" {
+		return refuse(http.StatusForbidden, "decision requires human authority")
 	}
 	answer, err := qtx.GetDecisionBindingAnswer(ctx, db.GetDecisionBindingAnswerParams{WorkspaceID: workspaceID, ID: decisionID})
 	if errors.Is(err, pgx.ErrNoRows) {

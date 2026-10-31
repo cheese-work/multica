@@ -116,3 +116,44 @@ export interface DecisionCommentFields {
   /** When the answer became effective; absent while pending. */
   decision_woken_at?: string | null;
 }
+
+/** Reviewer signature carried by an approved file. */
+export interface DecisionArtifactSignature {
+  reviewer: string;
+  comment_id: string;
+}
+
+/** One changed region of a text diff. Each line starts with " ", "-" or "+". */
+export interface DecisionArtifactHunk {
+  old_start: number;
+  new_start: number;
+  lines: string[];
+}
+
+/** `problem` is set when no hunks can be shown. */
+export interface DecisionArtifactDiff {
+  previous_filename: string;
+  hunks: DecisionArtifactHunk[];
+  problem?: "not_text" | "too_large" | "unavailable";
+}
+
+/** A file the human approves, from `GET /api/decisions/{id}/artifacts`. */
+export interface DecisionArtifact {
+  attachment_id: string;
+  label: string;
+  sha256: string;
+  supersedes_attachment_id?: string;
+  signed_by?: DecisionArtifactSignature;
+  /** Signature of the superseded revision; the diff is measured against that file. */
+  supersedes_signed_by?: DecisionArtifactSignature;
+  /** Absent when the file was deleted after the ask was sent. */
+  attachment?: {
+    id: string;
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    download_url: string;
+    attachment_download_url?: string;
+  };
+  diff?: DecisionArtifactDiff;
+}

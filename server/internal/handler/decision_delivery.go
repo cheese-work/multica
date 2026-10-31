@@ -348,7 +348,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 					'actor_type', 'member', 'actor_id', r.human_user_id, 'decision_answer_id', a.id))
 					FROM decision_answer a JOIN decision_request r ON r.id = a.decision_request_id
 					JOIN comment c ON c.id = a.issue_comment_id
-					WHERE a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
+					WHERE r.authority = 'human' AND a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
 					AND a.disclaimed_at IS NULL AND c.deleted_at IS NULL`, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
 					return false, err
 				}
