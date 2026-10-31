@@ -180,3 +180,19 @@ LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id 
 LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
 WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
 LIMIT 1;
+
+-- name: ListGitHubWebhookIntakeSince :many
+-- Read-only delivery metadata (no payload, no signature) for the intake check
+-- (CHE-2669). Rows whose revision belongs to another workspace are hidden; rows
+-- with no revision yet (denied, unsigned, deferred) have no workspace and show.
+SELECT intake.event, intake.delivery_guid, intake.state, intake.reason, intake.received_at,
+       COALESCE(revision.state, '')::text AS revision_state, COALESCE(revision.reason, '')::text AS revision_reason,
+       (SELECT count(*) FROM github_webhook_dispatch receipt
+        WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
+          AND receipt.task_id IS NOT NULL)::int AS tasks
+FROM github_webhook_intake intake
+LEFT JOIN github_webhook_revision revision ON revision.source_delivery_guid = intake.delivery_guid AND revision.workspace_id = $1
+WHERE intake.received_at >= $2
+  AND (revision.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM github_webhook_revision other WHERE other.source_delivery_guid = intake.delivery_guid))
+ORDER BY intake.received_at
+LIMIT $3;
