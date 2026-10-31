@@ -1917,19 +1917,21 @@ type IssueWakeupReceipt struct {
 }
 
 type IssueWorkflow struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	InitialStatusKey string             `json:"initial_status_key"`
-	Steps            []byte             `json:"steps"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsDefault        bool               `json:"is_default"`
-	OwnerID          pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs  bool               `json:"include_child_prs"`
-	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	Name                    string             `json:"name"`
+	Description             string             `json:"description"`
+	InitialStatusKey        string             `json:"initial_status_key"`
+	Steps                   []byte             `json:"steps"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	IsDefault               bool               `json:"is_default"`
+	OwnerID                 pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue         pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs         bool               `json:"include_child_prs"`
+	RunBudgetSince          pgtype.Timestamptz `json:"run_budget_since"`
+	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
+	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
 }
 
 type LarkBindingToken struct {
@@ -2879,6 +2881,39 @@ type WebhookDelivery struct {
 	DispatchAttempts       int32              `json:"dispatch_attempts"`
 	ReasonCode             pgtype.Text        `json:"reason_code"`
 	ReplayIdempotencyKey   pgtype.Text        `json:"replay_idempotency_key"`
+}
+
+type WorkflowWebhookEndpoint struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	WorkflowID           pgtype.UUID        `json:"workflow_id"`
+	Name                 string             `json:"name"`
+	SecretSealed         []byte             `json:"secret_sealed"`
+	PreviousSecretSealed []byte             `json:"previous_secret_sealed"`
+	PreviousExpiresAt    pgtype.Timestamptz `json:"previous_expires_at"`
+	RatePerMin           int32              `json:"rate_per_min"`
+	DisabledAt           pgtype.Timestamptz `json:"disabled_at"`
+	CreatedBy            pgtype.UUID        `json:"created_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkflowWebhookEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	EndpointID  pgtype.UUID        `json:"endpoint_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Name        string             `json:"name"`
+	Result      string             `json:"result"`
+	Ref         pgtype.Text        `json:"ref"`
+	BodySha256  []byte             `json:"body_sha256"`
+	BodyBytes   int32              `json:"body_bytes"`
+	ReceivedAt  pgtype.Timestamptz `json:"received_at"`
+}
+
+type WorkflowWebhookNonce struct {
+	EndpointID pgtype.UUID        `json:"endpoint_id"`
+	Nonce      string             `json:"nonce"`
+	SeenAt     pgtype.Timestamptz `json:"seen_at"`
 }
 
 type Workspace struct {

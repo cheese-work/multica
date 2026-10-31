@@ -1624,6 +1624,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// purpose: the bearer token in the URL path IS the credential. Workspace
 	// context is derived from the trigger row, never from request headers.
 	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
+	// Inbound workflow webhook: authenticated by HMAC signature in the handler.
+	r.Post("/api/webhooks/workflows/{endpoint_id}", h.HandleWorkflowWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -2333,6 +2335,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
+					r.Get("/webhooks", h.ListWorkflowWebhooks)
+					r.Post("/webhooks", h.CreateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/rotate", h.RotateWorkflowWebhook)
+					r.Post("/webhooks/{endpointId}/disable", h.DisableWorkflowWebhook)
 				})
 			})
 

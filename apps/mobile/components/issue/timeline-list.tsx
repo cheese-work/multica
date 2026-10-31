@@ -39,6 +39,12 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import {
+  issueAnchorKey,
+  loadReadingAnchor,
+  restoreIndex,
+} from "@/lib/reading-anchor";
+import { useReadingAnchorRecorder } from "@/lib/use-reading-anchor";
 
 interface Props {
   issue: Issue;
@@ -262,11 +268,19 @@ export function TimelineList({
     (info: { viewableItems: ViewToken[] }) => handlerRef.current(info),
     [],
   );
+  // Reading position (CHE-1857): record the top visible row per issue.
+  const anchorKey = issueAnchorKey(issue.id);
+  const rowIds = useMemo(
+    () => dataWithDivider.map((r) => r.entry.id),
+    [dataWithDivider],
+  );
+  const anchorRecorder = useReadingAnchorRecorder(anchorKey, rowIds, DIVIDER_ID);
   const [viewabilityCallbackPairs] = useState(() => [
     {
       viewabilityConfig,
       onViewableItemsChanged: stableViewabilityHandler,
     },
+    anchorRecorder.pair,
   ]);
 
   // On unmount, mark the issue's timeline as "viewed up to now" if the
@@ -315,10 +329,24 @@ export function TimelineList({
   // length 0 and never re-fire. Switching the key when data goes empty →
   // non-empty under a live highlight is the cheapest way to re-arm it.
   const hasData = dataWithDivider.length > 0;
+  // A deep link wins over the saved position. Otherwise reopen on the saved
+  // row (CHE-1857); read once data first loads, not on later refetches.
+  const initialIndex = useMemo(
+    () =>
+      highlightCommentId || !hasData
+        ? undefined
+        : restoreIndex(loadReadingAnchor(anchorKey), rowIds),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [anchorKey, hasData, highlightCommentId],
+  );
+  // The list also remounts when data first loads, so the initial scroll
+  // re-arms against real rows; a refetch leaves the key unchanged.
   const flashListKey =
     highlightCommentId && hasData
       ? `hl-${highlightNonce ?? "0"}`
-      : "list";
+      : hasData
+        ? "list-ready"
+        : "list";
 
   return (
     <ImageSequenceProvider blocks={imageBlocks}>
@@ -344,6 +372,7 @@ export function TimelineList({
       <FlashList
         key={flashListKey}
         ref={listRef}
+        initialScrollIndex={initialIndex}
         data={dataWithDivider}
         keyExtractor={(row) => row.entry.id}
         ListHeaderComponent={ListHeader}
@@ -388,7 +417,10 @@ export function TimelineList({
             <ActivityRow entry={item.entry} />
           );
         }}
-        onScroll={handleScroll}
+        onScroll={(e) => {
+          handleScroll(e);
+          anchorRecorder.onScroll(e);
+        }}
         // Any user-initiated scroll exits comment text-selection mode —
         // matches iMessage's behavior where scrolling implicitly commits /
         // dismisses the selection caret. Hooks both drag-start and the

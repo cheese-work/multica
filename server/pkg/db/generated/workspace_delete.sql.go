@@ -558,6 +558,16 @@ deleted_autopilot_subscribers AS (
 deleted_webhook_deliveries AS (
     DELETE FROM webhook_delivery WHERE workspace_id = $1
 ),
+deleted_workflow_webhook_nonces AS (
+    DELETE FROM workflow_webhook_nonce
+    WHERE endpoint_id IN (SELECT id FROM workflow_webhook_endpoint WHERE workspace_id = $1)
+),
+deleted_workflow_webhook_events AS (
+    DELETE FROM workflow_webhook_event WHERE workspace_id = $1
+),
+deleted_workflow_webhook_endpoints AS (
+    DELETE FROM workflow_webhook_endpoint WHERE workspace_id = $1
+),
 deleted_github_check_runs AS (
     DELETE FROM github_pull_request_check_run
     WHERE pr_id IN (SELECT id FROM ws_github_prs)
@@ -676,6 +686,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // no database cascades by design, so every workspace-owned table is removed
 // explicitly before its workspace row.
 // CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
+// CHE-2031 inbound workflow webhook guard: workspace-owned leaves with no FK.
+// Nonces carry no workspace_id, so they go through their endpoint.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
