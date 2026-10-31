@@ -275,6 +275,14 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "audit log write failed; env update rolled back")
 		return
 	}
+	// The kind allows no field, so the row holds key names and the marker only.
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.env.update", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+		Before: envAuditFields(unmarshalCustomEnv(locked)), After: envAuditFields(merged),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.env.update")
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Error("agent_env update: tx commit failed",

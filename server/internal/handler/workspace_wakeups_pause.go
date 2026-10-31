@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"net/http"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -78,50 +79,55 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // pause held. The audit record of a flip commits with it, so a flip that
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
-func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+	ctx := r.Context()
 	var activity db.ActivityLog
-	if settings == nil && pause == nil {
-		ws, err := h.Queries.UpdateWorkspace(ctx, params)
-		return ws, "", activity, err
-	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
+	// Every update takes the row lock and reads the row it replaces, so the
+	// audit row records the true before-state (CHE-2774).
 	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
+	if err != nil {
+		return db.Workspace{}, "", activity, err
+	}
+	before, err := q.GetWorkspace(ctx, params.ID)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object hold no pause
 	action := ""
-	if settings == nil {
-		// A pause-only patch: start from what is stored, not from the client.
-		clone := maps.Clone(stored)
-		if clone == nil {
-			clone = map[string]any{}
+	if settings != nil || pause != nil {
+		if settings == nil {
+			// A pause-only patch: start from what is stored, not from the client.
+			clone := maps.Clone(stored)
+			if clone == nil {
+				clone = map[string]any{}
+			}
+			settings = clone
 		}
-		settings = clone
+		if incoming, isObject := settings.(map[string]any); isObject {
+			if pause != nil {
+				incoming[wakeupsPausedKey] = *pause
+			}
+			// Only an old client's flip of the retired PR switch needs the stored
+			// value; see reconcilePRMergeSettings.
+			reconcilePRMergeSettings(stored, incoming)
+			reconcileDelegatedWrites(stored, incoming)
+			if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
+				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+			}
+		} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil {
+			// A non-object body would replace the whole blob and clear the pause or
+			// the delegated-writes setting with no record. Other callers may still store one.
+			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused or delegated writes are set"}
+		}
+		params.Settings, _ = json.Marshal(settings)
 	}
-	if incoming, isObject := settings.(map[string]any); isObject {
-		if pause != nil {
-			incoming[wakeupsPausedKey] = *pause
-		}
-		// Only an old client's flip of the retired PR switch needs the stored
-		// value; see reconcilePRMergeSettings.
-		reconcilePRMergeSettings(stored, incoming)
-		reconcileDelegatedWrites(stored, incoming)
-		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
-			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
-		}
-	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil {
-		// A non-object body would replace the whole blob and clear the pause or
-		// the delegated-writes setting with no record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused or delegated writes are set"}
-	}
-	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)
 	if err != nil {
 		return ws, "", activity, err
@@ -143,6 +149,12 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 		if err != nil {
 			return ws, "", activity, err
 		}
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: "workspace.update", WorkspaceID: ws.ID, TargetID: ws.ID,
+		Before: workspaceAuditFields(before), After: workspaceAuditFields(ws),
+	}); err != nil {
+		return ws, "", activity, auditWriteError{err}
 	}
 	return ws, action, activity, tx.Commit(ctx)
 }

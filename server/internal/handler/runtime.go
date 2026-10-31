@@ -1391,6 +1391,13 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
@@ -1603,6 +1610,13 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	// Finally delete the runtime row itself.
 	if err := qtx.DeleteAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
 		return
 	}
 

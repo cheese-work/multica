@@ -94,9 +94,12 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update env")
 		return
 	}
-	updated, next, err := applyAgentEnvPatch(r.Context(), qtx, locked, req, verifiedApprover{UserID: member.UserID})
+	updated, next, err := applyAgentEnvPatch(r.Context(), qtx, locked, req, verifiedApprover{UserID: member.UserID, Source: r.Header.Get("X-Actor-Source")})
 	if errors.Is(err, errEnvRevisionMismatch) {
 		writeError(w, http.StatusPreconditionFailed, "env changed since if_revision; re-read and retry")
+		return
+	}
+	if failedAudit(w, r, err, "agent.env.update") {
 		return
 	}
 	if err != nil {
@@ -132,6 +135,9 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 type verifiedApprover struct {
 	UserID           pgtype.UUID
 	DecisionActionID pgtype.UUID
+	// Source is the X-Actor-Source of the request; an approved decision action
+	// has no request and records "decision_action".
+	Source string
 }
 
 var errEnvRevisionMismatch = errors.New("env changed since if_revision")
@@ -188,6 +194,17 @@ func applyAgentEnvPatch(ctx context.Context, queries *db.Queries, locked db.Agen
 		Details:     details,
 	}); err != nil {
 		return db.Agent{}, nil, err
+	}
+	source := approver.Source
+	if approver.DecisionActionID.Valid {
+		source = "decision_action"
+	}
+	// Key names and the marker only; the kind allows no env field.
+	if err := insertAuditRow(ctx, queries, auditActor{Type: "member", ID: approver.UserID, Source: source}, auditInput{
+		Kind: "agent.env.update", WorkspaceID: locked.WorkspaceID, TargetID: locked.ID,
+		Before: envAuditFields(existing), After: envAuditFields(next),
+	}); err != nil {
+		return db.Agent{}, nil, auditWriteError{err}
 	}
 	return updated, next, nil
 }
