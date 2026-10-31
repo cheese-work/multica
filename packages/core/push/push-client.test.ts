@@ -7,6 +7,7 @@ import {
   unsubscribeThisDevice,
   urlBase64ToBytes,
 } from "./push-client";
+import { stubBrowserStorage } from "./fake-browser-storage";
 import { getPushIntent } from "./push-intent";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -118,12 +119,7 @@ describe("subscribeThisDevice", () => {
 
 describe("unsubscribeThisDevice", () => {
   function setup(opts: { deleteFails?: boolean; unsubscribeFails?: boolean; sub?: boolean }) {
-    const store = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    });
+    stubBrowserStorage();
     const unsubscribe = vi.fn(opts.unsubscribeFails ? () => Promise.reject(new Error("x")) : () => Promise.resolve(true));
     const sub = opts.sub === false ? null : { endpoint: "https://push.example/x", unsubscribe };
     const getRegistration = vi.fn().mockResolvedValue({ pushManager: { getSubscription: vi.fn().mockResolvedValue(sub) } });
@@ -141,33 +137,33 @@ describe("unsubscribeThisDevice", () => {
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("done");
     expect(deletePushSubscription).toHaveBeenCalledWith("https://push.example/x");
     expect(order).toEqual(["delete", "unsubscribe"]);
-    expect(getPushIntent()).toBe("off");
+    await expect(getPushIntent()).resolves.toBe("off");
   });
 
   it("reports a failed server delete, but still unsubscribes the browser and never throws", async () => {
     const { unsubscribe, deletePushSubscription } = setup({ deleteFails: true });
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("failed");
     expect(unsubscribe).toHaveBeenCalled();
-    expect(getPushIntent()).toBe("off");
+    await expect(getPushIntent()).resolves.toBe("off");
   });
 
   it("reports a browser unsubscribe that fails after the server delete succeeded", async () => {
     const { deletePushSubscription } = setup({ unsubscribeFails: true });
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("failed");
-    expect(getPushIntent()).toBe("off");
+    await expect(getPushIntent()).resolves.toBe("off");
   });
 
   it("reports both failing, and keeps the opt-out so a reload cannot re-register", async () => {
     const { deletePushSubscription } = setup({ deleteFails: true, unsubscribeFails: true });
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("failed");
-    expect(getPushIntent()).toBe("off");
+    await expect(getPushIntent()).resolves.toBe("off");
   });
 
   it("is done, and an opt-out, without a subscription", async () => {
     const { deletePushSubscription } = setup({ sub: false });
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("done");
     expect(deletePushSubscription).not.toHaveBeenCalled();
-    expect(getPushIntent()).toBe("off");
+    await expect(getPushIntent()).resolves.toBe("off");
   });
 
   it("does not throw when the browser has no service worker support", async () => {

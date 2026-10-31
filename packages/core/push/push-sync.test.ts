@@ -1,17 +1,15 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stubBrowserStorage, type FakeBrowserStorage } from "./fake-browser-storage";
 import { setPushIntent } from "./push-intent";
 import { reRegisterThisDevice, resubscribeThisDevice } from "./push-sync";
 
 afterEach(() => vi.unstubAllGlobals());
 
-function stubStorage(initial?: "on" | "off") {
-  const store = new Map<string, string>();
-  vi.stubGlobal("localStorage", {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
-  });
-  if (initial) setPushIntent(initial);
+async function stubStorage(initial?: "on" | "off"): Promise<FakeBrowserStorage> {
+  const storage = stubBrowserStorage();
+  if (initial) await setPushIntent(initial);
+  return storage;
 }
 
 const KEY = "BAEA"; // any base64url; subscribe is stubbed
@@ -53,7 +51,7 @@ const config = () => vi.fn(async () => ({ enabled: true, public_key: KEY }));
 
 describe("reRegisterThisDevice", () => {
   it("respects an opt-out: a subscription the browser failed to drop is not re-registered", async () => {
-    stubStorage("off");
+    await stubStorage("off");
     stubBrowser({ existing: subscription() });
     const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
@@ -62,23 +60,44 @@ describe("reRegisterThisDevice", () => {
 
   it("respects an opt-out even when storage refused to record it", async () => {
     vi.resetModules();
+    const storage = stubBrowserStorage();
     const intent = await import("./push-intent");
     const sync = await import("./push-sync");
-    vi.stubGlobal("localStorage", {
-      getItem: () => "on",
-      setItem: () => {
-        throw new Error("QuotaExceededError");
-      },
-    });
+    await intent.setPushIntent("on");
+    Object.assign(storage, { idbMode: "read-only", cookieMode: "denied" });
+    await intent.setPushIntent("off");
     stubBrowser({ existing: subscription() });
-    intent.setPushIntent("off");
     const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
     await expect(sync.reRegisterThisDevice(api)).resolves.toBe("skipped");
     expect(api.registerPushSubscription).not.toHaveBeenCalled();
   });
 
+  it("does not register a retained endpoint on a fresh page after storage failed", async () => {
+    vi.resetModules();
+    const storage = stubBrowserStorage();
+    await (await import("./push-intent")).setPushIntent("on");
+    Object.assign(storage, { idbMode: "read-only", cookieMode: "denied" });
+    await (await import("./push-intent")).setPushIntent("off");
+    storage.idbMode = "unavailable";
+    vi.resetModules();
+    const sync = await import("./push-sync");
+    stubBrowser({ existing: subscription() });
+    const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+    await expect(sync.reRegisterThisDevice(api)).resolves.toBe("skipped");
+    expect(api.registerPushSubscription).not.toHaveBeenCalled();
+  });
+
+  it("does not register when the choice cannot be read", async () => {
+    const storage = await stubStorage("on");
+    storage.idbMode = "unavailable";
+    stubBrowser({ existing: subscription() });
+    const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+    await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
+    expect(api.registerPushSubscription).not.toHaveBeenCalled();
+  });
+
   it("recovers a subscription the browser dropped while push is wanted", async () => {
-    stubStorage("on");
+    await stubStorage("on");
     const pushManager = stubBrowser({ existing: null });
     const api = { registerPushSubscription: vi.fn(async () => undefined), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("registered");
@@ -90,7 +109,7 @@ describe("reRegisterThisDevice", () => {
   });
 
   it("does not resubscribe when this device never opted in", async () => {
-    stubStorage();
+    await stubStorage();
     const pushManager = stubBrowser({ existing: null });
     const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
@@ -98,7 +117,7 @@ describe("reRegisterThisDevice", () => {
   });
 
   it("registers the renewed endpoint when a closed-tab renewal replaced it", async () => {
-    stubStorage("on");
+    await stubStorage("on");
     stubBrowser({ existing: subscription("https://push.example/renewed") });
     const api = { registerPushSubscription: vi.fn(async () => undefined), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("registered");
@@ -108,6 +127,7 @@ describe("reRegisterThisDevice", () => {
   });
 
   it("re-sends an existing subscription so the server rebinds it to this session", async () => {
+    await stubStorage("on");
     stubBrowser({ existing: subscription() });
     const api = { registerPushSubscription: vi.fn(async () => undefined), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("registered");
@@ -146,7 +166,15 @@ describe("reRegisterThisDevice", () => {
 
 describe("resubscribeThisDevice", () => {
   it("skips after an opt-out", async () => {
-    stubStorage("off");
+    await stubStorage("off");
+    stubBrowser({ existing: null });
+    const api = { getPushConfig: config(), registerPushSubscription: vi.fn() };
+    await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");
+    expect(api.registerPushSubscription).not.toHaveBeenCalled();
+  });
+
+  it("skips when the device never opted in", async () => {
+    await stubStorage();
     stubBrowser({ existing: null });
     const api = { getPushConfig: config(), registerPushSubscription: vi.fn() };
     await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");
@@ -154,6 +182,7 @@ describe("resubscribeThisDevice", () => {
   });
 
   it("subscribes with the deployment key and registers the result", async () => {
+    await stubStorage("on");
     const pushManager = stubBrowser({ existing: null });
     const api = {
       getPushConfig: vi.fn(async () => ({ enabled: true, public_key: KEY })),
@@ -168,6 +197,7 @@ describe("resubscribeThisDevice", () => {
   });
 
   it("skips when push is not configured on the server", async () => {
+    await stubStorage("on");
     stubBrowser({ existing: null });
     const api = {
       getPushConfig: vi.fn(async () => ({ enabled: false, public_key: "" })),
@@ -178,6 +208,7 @@ describe("resubscribeThisDevice", () => {
   });
 
   it("skips when permission was revoked", async () => {
+    await stubStorage("on");
     stubBrowser({ permission: "denied", existing: null });
     const api = { getPushConfig: vi.fn(), registerPushSubscription: vi.fn() };
     await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");

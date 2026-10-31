@@ -1,93 +1,111 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubBrowserStorage, type FakeBrowserStorage } from "./fake-browser-storage";
 
-// The module remembers a write that storage refused, so each test loads a fresh copy.
-let getPushIntent: typeof import("./push-intent").getPushIntent;
-let setPushIntent: typeof import("./push-intent").setPushIntent;
+type Intent = typeof import("./push-intent");
 
-beforeEach(async () => {
+// A page load: the module is evaluated again, only browser storage survives.
+async function freshPage(): Promise<Intent> {
   vi.resetModules();
-  ({ getPushIntent, setPushIntent } = await import("./push-intent"));
+  return import("./push-intent");
+}
+
+let storage: FakeBrowserStorage;
+
+beforeEach(() => {
+  storage = stubBrowserStorage();
 });
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("push intent", () => {
-  it("is unset until a choice is recorded", () => {
-    vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
-    expect(getPushIntent()).toBeNull();
+  it("is unset until a choice is recorded", async () => {
+    const page = await freshPage();
+    await expect(page.getPushIntent()).resolves.toBeNull();
   });
 
-  it("remembers the last choice", () => {
-    const store = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-    });
-    setPushIntent("on");
-    expect(getPushIntent()).toBe("on");
-    setPushIntent("off");
-    expect(getPushIntent()).toBe("off");
+  it("survives a reload once turned on", async () => {
+    await (await freshPage()).setPushIntent("on");
+    await expect((await freshPage()).getPushIntent()).resolves.toBe("on");
   });
 
-  it("ignores a value it did not write", () => {
-    vi.stubGlobal("localStorage", { getItem: () => "garbage" });
-    expect(getPushIntent()).toBeNull();
+  it("survives a reload once turned off", async () => {
+    const before = await freshPage();
+    await before.setPushIntent("on");
+    await before.setPushIntent("off");
+    await expect((await freshPage()).getPushIntent()).resolves.toBe("off");
   });
 
-  it("treats unavailable storage as unset and never throws", () => {
-    expect(getPushIntent()).toBeNull();
-    vi.stubGlobal("localStorage", {
-      getItem: () => {
-        throw new Error("denied");
-      },
-      setItem: () => {
-        throw new Error("denied");
-      },
-    });
-    expect(getPushIntent()).toBeNull();
-    expect(() => setPushIntent("on")).not.toThrow();
+  it("turning on again after an off lifts the off marker", async () => {
+    const page = await freshPage();
+    await page.setPushIntent("off");
+    await page.setPushIntent("on");
+    expect(storage.cookies.size).toBe(0);
+    await expect((await freshPage()).getPushIntent()).resolves.toBe("on");
   });
 
-  describe("when storage refuses the write", () => {
-    const refusing = (stored: string | null) => ({
-      getItem: () => stored,
-      setItem: () => {
-        throw new Error("QuotaExceededError");
-      },
+  it("ignores a value it did not write", async () => {
+    storage.idb.set("intent", "garbage");
+    await expect((await freshPage()).getPushIntent()).resolves.toBeNull();
+  });
+
+  it("never throws and reports nothing where storage is unavailable", async () => {
+    storage.idbMode = "unavailable";
+    const page = await freshPage();
+    await expect(page.setPushIntent("on")).resolves.toBeUndefined();
+    await expect(page.setPushIntent("off")).resolves.toBeUndefined();
+    await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
+  });
+
+  describe("an opt-out that storage cannot fully record", () => {
+    async function optOutWith(mode: Partial<Pick<FakeBrowserStorage, "idbMode" | "cookieMode">>) {
+      const page = await freshPage();
+      await page.setPushIntent("on");
+      Object.assign(storage, mode);
+      await page.setPushIntent("off");
+      return page;
+    }
+
+    it("holds after a reload when the database is full: the record is deleted, not overwritten", async () => {
+      await optOutWith({ idbMode: "no-space" });
+      await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
     });
 
-    it("keeps an opt-out for this page even though storage still says on", () => {
-      vi.stubGlobal("localStorage", refusing("on"));
-      setPushIntent("off");
-      expect(getPushIntent()).toBe("off");
+    it("holds after a reload when the database is read-only and still says on: the cookie marks the opt-out", async () => {
+      await optOutWith({ idbMode: "read-only" });
+      expect(storage.idb.get("intent")).toBe("on");
+      await expect((await freshPage()).getPushIntent()).resolves.toBe("off");
     });
 
-    it("keeps an opt-out when storage cannot be read at all", () => {
-      vi.stubGlobal("localStorage", {
-        getItem: () => {
-          throw new Error("denied");
-        },
-        setItem: () => {
-          throw new Error("denied");
-        },
-      });
-      setPushIntent("off");
-      expect(getPushIntent()).toBe("off");
+    it("holds after a reload when only the cookie is refused", async () => {
+      await optOutWith({ cookieMode: "denied" });
+      await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
     });
 
-    it("lets a later successful write take over", () => {
-      vi.stubGlobal("localStorage", refusing("on"));
-      setPushIntent("off");
-      const store = new Map<string, string>();
-      vi.stubGlobal("localStorage", {
-        getItem: (k: string) => store.get(k) ?? null,
-        setItem: (k: string, v: string) => void store.set(k, v),
-      });
-      setPushIntent("on");
-      expect(getPushIntent()).toBe("on");
-      store.set("multica_push_device", "off");
-      expect(getPushIntent()).toBe("off");
+    it("holds for this page when nothing could be written", async () => {
+      const page = await optOutWith({ idbMode: "read-only", cookieMode: "denied" });
+      await expect(page.getPushIntent()).resolves.toBe("off");
     });
+
+    it("is not revived by an unreadable database on the next page", async () => {
+      await optOutWith({ idbMode: "read-only", cookieMode: "denied" });
+      storage.idbMode = "unavailable";
+      await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
+    });
+
+    it("lets a later successful write replace the page's unsaved choice", async () => {
+      const page = await optOutWith({ idbMode: "read-only", cookieMode: "denied" });
+      Object.assign(storage, { idbMode: "ok", cookieMode: "ok" });
+      await page.setPushIntent("on");
+      await expect(page.getPushIntent()).resolves.toBe("on");
+    });
+  });
+
+  it("does not report on when the database refuses to record it", async () => {
+    storage.idbMode = "read-only";
+    const page = await freshPage();
+    await page.setPushIntent("on");
+    await expect(page.getPushIntent()).resolves.toBe("on");
+    await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
   });
 });

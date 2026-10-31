@@ -6,7 +6,7 @@ import {
   registrationBody,
   subscribeThisDevice,
 } from "./push-client";
-import { getPushIntent } from "./push-intent";
+import { isPushWanted } from "./push-intent";
 
 export type PushSyncResult = "registered" | "skipped";
 
@@ -24,14 +24,16 @@ type Resubscriber = Registrar & { getPushConfig: () => Promise<PushConfig> };
  * rebinds the subscription to the current login session, and what teaches the
  * server an endpoint the worker renewed while no tab was open. Where the
  * browser dropped the subscription and the user still wants push, subscribe
- * again. After an opt-out do nothing. Never prompts. Never throws, so a page
+ * again. Does nothing unless the stored choice is positively "on": after an
+ * opt-out, or when the choice cannot be read, a retained subscription is not
+ * registered. Never prompts. Never throws, so a page
  * load cannot break on it.
  */
 export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncResult> {
-  if (!isGranted() || getPushIntent() === "off") return "skipped";
+  if (!isGranted() || !(await isPushWanted())) return "skipped";
   try {
     const subscription = await getThisDeviceSubscription();
-    if (!subscription) return getPushIntent() === "on" ? await resubscribeThisDevice(api) : "skipped";
+    if (!subscription) return await resubscribeThisDevice(api);
     const body = registrationBody(subscription);
     if (!body) return "skipped";
     await api.registerPushSubscription(body);
@@ -46,7 +48,7 @@ export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncR
  * subscribe again with the deployment key and register the new one.
  */
 export async function resubscribeThisDevice(api: Resubscriber): Promise<PushSyncResult> {
-  if (!isGranted() || getPushIntent() === "off") return "skipped";
+  if (!isGranted() || !(await isPushWanted())) return "skipped";
   try {
     const config = await api.getPushConfig();
     if (!config.enabled || !config.public_key) return "skipped";

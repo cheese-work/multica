@@ -99,7 +99,7 @@ export type UnsubscribeResult = "done" | "failed";
 export async function unsubscribeThisDevice(api: {
   deletePushSubscription: (endpoint: string) => Promise<void>;
 }): Promise<UnsubscribeResult> {
-  setPushIntent("off");
+  await setPushIntent("off");
   let subscription: PushSubscription | null = null;
   try {
     subscription = await getThisDeviceSubscription();

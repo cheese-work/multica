@@ -11,7 +11,41 @@ type WorkerOptions = {
   // Cookies the worker can read through cookieStore; omit to model a browser without it.
   cookies?: Record<string, string>;
   fetchResponses?: { ok: boolean; status: number }[];
+  // The device choice the page saved in IndexedDB; "unreadable" models a database that errors. Default "on".
+  intent?: "on" | "unset" | "unreadable";
 };
+
+// Same names as packages/core/push/push-intent.ts.
+function fakeIndexedDb(intent: NonNullable<WorkerOptions["intent"]>) {
+  return {
+    open: () => {
+      const request: Record<string, unknown> = {};
+      queueMicrotask(() => {
+        if (intent === "unreadable") {
+          request.error = new Error("denied");
+          (request.onerror as () => void)();
+          return;
+        }
+        request.result = {
+          createObjectStore: () => ({}),
+          close: () => undefined,
+          transaction: () => ({
+            objectStore: () => ({
+              get: () => {
+                const read: Record<string, unknown> = { result: intent === "on" ? "on" : undefined };
+                queueMicrotask(() => (read.onsuccess as () => void)());
+                return read;
+              },
+            }),
+          }),
+        };
+        (request.onupgradeneeded as (() => void) | undefined)?.();
+        (request.onsuccess as () => void)();
+      });
+      return request;
+    },
+  };
+}
 
 function loadWorker(options: WorkerOptions = {}) {
   const listeners: Record<string, Listener> = {};
@@ -33,6 +67,7 @@ function loadWorker(options: WorkerOptions = {}) {
   const { cookies } = options;
   const scope = {
     fetch: fetchMock,
+    indexedDB: fakeIndexedDb(options.intent ?? "on"),
     ...(cookies
       ? {
           cookieStore: {
@@ -234,6 +269,33 @@ describe("service worker pushsubscriptionchange", () => {
       worker.windows.push(tab);
       await worker.dispatch("pushsubscriptionchange", change);
       expect(tab.postMessage).not.toHaveBeenCalled();
+    });
+
+    describe("when the device does not want push", () => {
+      const cookies = { multica_csrf_session: "c" };
+
+      it.each([
+        ["opted out (record deleted)", { intent: "unset" as const }],
+        ["the choice is unreadable", { intent: "unreadable" as const }],
+        ["opted out while the database kept a stale on", { intent: "on" as const, cookies: { ...cookies, multica_push_off: "1" } }],
+      ])("registers and renews nothing: %s", async (_name, extra) => {
+        const worker = loadWorker({ cookies, ...extra });
+        const tab = fakeWindow("https://app.example/acme");
+        worker.windows.push(tab);
+        await worker.dispatch("pushsubscriptionchange", {
+          ...change,
+          newSubscription: { toJSON: () => ({ endpoint: "https://push.example/handed", keys: { p256dh: "p", auth: "a" } }) },
+        });
+        expect(worker.subscribe).not.toHaveBeenCalled();
+        expect(worker.fetch).not.toHaveBeenCalled();
+        expect(tab.postMessage).not.toHaveBeenCalled();
+      });
+
+      it("still shows pushes the server sends", async () => {
+        const worker = loadWorker({ cookies, intent: "unset" });
+        await worker.dispatch("push", pushEvent({ record_id: "r", actor_name: "Ada", label: "New reply" }));
+        expect(worker.shown).toHaveLength(1);
+      });
     });
 
     it("sends nothing without a CSRF value, leaving the app to register on its next load", async () => {

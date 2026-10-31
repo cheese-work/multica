@@ -3,10 +3,12 @@
 // label and a url, never message text. Plain JS because Next serves public/
 // as is. A renewal (pushsubscriptionchange) is registered by the worker itself,
 // so it works with every tab closed: a same-origin POST that carries the CSRF
-// value read through cookieStore. Where that is not possible (no cookieStore,
-// no CSRF cookie, a refused or failed request) open tabs are told, and the app
-// reconciles on its next load: it registers the subscription it holds, or
-// subscribes again if the user still wants push.
+// value read through cookieStore. Only while the device positively wants push:
+// the worker reads the choice the page saved (see pushWanted) and, if it is off
+// or unreadable, renews and registers nothing. Where registering is not
+// possible (no cookieStore, no CSRF cookie, a refused or failed request) open
+// tabs are told, and the app reconciles on its next load: it registers the
+// subscription it holds, or subscribes again if the user still wants push.
 
 const FALLBACK_URL = "/";
 
@@ -68,6 +70,38 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
+// The device's push choice, saved by the page (packages/core/push/push-intent.ts;
+// keep these names in step with it). Fail closed: wanted only when IndexedDB
+// positively says "on" and the opt-out cookie is absent; any error means no.
+const INTENT_DB = "multica-push";
+const INTENT_STORE = "device";
+const INTENT_KEY = "intent";
+const OFF_COOKIE = "multica_push_off";
+
+async function pushWanted() {
+  try {
+    if (self.cookieStore && (await self.cookieStore.get(OFF_COOKIE))) return false;
+    const db = await new Promise((resolve, reject) => {
+      const request = self.indexedDB.open(INTENT_DB, 1);
+      request.onupgradeneeded = () => void request.result.createObjectStore(INTENT_STORE);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      const value = await new Promise((resolve, reject) => {
+        const read = db.transaction(INTENT_STORE, "readonly").objectStore(INTENT_STORE).get(INTENT_KEY);
+        read.onsuccess = () => resolve(read.result);
+        read.onerror = () => reject(read.error);
+      });
+      return value === "on";
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 // The two CSRF cookies the API client echoes, session-bound first (client.ts).
 const CSRF_COOKIES = ["multica_csrf_session", "multica_csrf"];
 
@@ -112,6 +146,7 @@ self.addEventListener("pushsubscriptionchange", (event) => {
   const old = event.oldSubscription;
   event.waitUntil(
     (async () => {
+      if (!(await pushWanted())) return;
       let renewed = event.newSubscription || null;
       try {
         const key = old && old.options && old.options.applicationServerKey;

@@ -73,7 +73,7 @@ export function usePushDevice() {
       if (permission !== "granted") return;
       // The user's request, kept even if the steps below fail: the next app
       // load retries it (reRegisterThisDevice) instead of dropping it.
-      setPushIntent("on");
+      await setPushIntent("on");
       const registration = await ensurePushRegistration();
       const body = await subscribeThisDevice(registration, config.data.public_key);
       if (!body) throw new Error("subscription has no keys");
