@@ -33,7 +33,7 @@ func TestSendHeartbeat_ReportsInFlightTasks(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL)
-	resp, err := c.SendHeartbeat(context.Background(), "rt-1", 0)
+	resp, err := c.SendHeartbeat(context.Background(), protocol.DaemonHeartbeatRequestPayload{RuntimeID: "rt-1", InFlightTasks: new(int)})
 	if err != nil {
 		t.Fatalf("SendHeartbeat: %v", err)
 	}
