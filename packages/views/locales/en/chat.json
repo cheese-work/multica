@@ -79,6 +79,8 @@
     "copied_count_other": "{{count}} messages copied",
     "fork_hint": "Send a message to start this branch.",
     "continuation_summary": "Conversation summary",
+    "compaction_divider": "Compacted at {{time}} ICT",
+    "compaction_divider_untimed": "Compacted",
     "earlier_dm": "Earlier DM",
     "quote_message": "Quote",
     "speaker_you": "You",

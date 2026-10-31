@@ -1107,7 +1107,7 @@ export const ChatMessageSchema = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "decision_reference", "decision_request", "decision_cancel_notice"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compact_notice", "compaction_summary", "decision_reference", "decision_request", "decision_cancel_notice"])
     .catch("message")
     .optional(),
   decision_quotes: z.array(DecisionCardSchema).optional().catch(undefined),
@@ -2365,6 +2365,7 @@ const ChatLastMessageSchema = z.object({
     "onboarding_opening",
     "continuation_summary",
     "compact_notice",
+    "compaction_summary",
     "decision_reference",
   ]).optional().catch(undefined),
 }).loose();

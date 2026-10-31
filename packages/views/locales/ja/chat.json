@@ -76,6 +76,8 @@
     "copied_count_other": "{{count}} 件のメッセージをコピー",
     "fork_hint": "メッセージを送信するとこのブランチが始まります。",
     "continuation_summary": "会話の要約",
+    "compaction_divider": "{{time}} ICT に圧縮",
+    "compaction_divider_untimed": "圧縮済み",
     "earlier_dm": "以前のDM",
     "quote_message": "引用",
     "speaker_you": "あなた",

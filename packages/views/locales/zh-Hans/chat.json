@@ -76,6 +76,8 @@
     "copied_count_other": "已复制 {{count}} 条消息",
     "fork_hint": "发送一条消息即可开始此分支。",
     "continuation_summary": "对话摘要",
+    "compaction_divider": "于 {{time}} ICT 压缩",
+    "compaction_divider_untimed": "已压缩",
     "earlier_dm": "较早的私信",
     "quote_message": "引用",
     "speaker_you": "你",

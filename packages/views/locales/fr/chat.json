@@ -79,6 +79,8 @@
     "copied_count_other": "{{count}} messages copiés",
     "fork_hint": "Envoyez un message pour démarrer cette branche.",
     "continuation_summary": "Résumé de la conversation",
+    "compaction_divider": "Compacté à {{time}} ICT",
+    "compaction_divider_untimed": "Compacté",
     "earlier_dm": "Conversation antérieure",
     "quote_message": "Citer",
     "speaker_you": "Vous",

@@ -2353,6 +2353,8 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactionSummary:
+		return protocol.ChatMessageKindCompactionSummary
 	case protocol.ChatMessageKindCompactNotice:
 		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:

@@ -76,6 +76,8 @@
     "copied_count_other": "메시지 {{count}}개 복사됨",
     "fork_hint": "메시지를 보내 이 분기를 시작하세요.",
     "continuation_summary": "대화 요약",
+    "compaction_divider": "{{time}} ICT에 압축됨",
+    "compaction_divider_untimed": "압축됨",
     "earlier_dm": "이전 대화",
     "quote_message": "인용",
     "speaker_you": "나",

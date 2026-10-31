@@ -24,6 +24,7 @@ export type ChatMessageKind =
   | "onboarding_opening"
   | "continuation_summary"
   | "compact_notice"
+  | "compaction_summary"
   | "decision_request"
   | "decision_cancel_notice"
   | "decision_reference";

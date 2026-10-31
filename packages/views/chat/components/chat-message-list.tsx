@@ -65,6 +65,7 @@ import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
 import { useT } from "../../i18n";
 import { AnnotatableAnswer } from "./annotatable-answer";
+import { CompactionDivider } from "./compaction-divider";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionAnswerContent, noteAfterOption } from "./decision-answer-content";
@@ -947,6 +948,10 @@ const MessageBubble = memo(function MessageBubble({
 
   if (message.message_kind === "continuation_summary") {
     return <ContinuationSummary message={message} />;
+  }
+
+  if (message.message_kind === "compaction_summary") {
+    return <CompactionDivider message={message} />;
   }
 
   // The server-authored reason for an automatic compaction (or its failure):
