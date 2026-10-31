@@ -170,31 +170,56 @@ func (h *Handler) publishSupersedeEvents(r *http.Request, outcomes []supersedeOu
 	}
 }
 
+// supersessionLinks maps each superseded comment to its replacement and each
+// replacement to the comments it superseded, for one issue. A lookup failure
+// reads as no links: they are display-only.
+func (h *Handler) supersessionLinks(ctx context.Context, workspaceID, issueID pgtype.UUID) (supersededBy map[string]string, supersedes map[string][]string) {
+	rows, err := h.Queries.ListCommentSupersessionsForIssue(ctx, db.ListCommentSupersessionsForIssueParams{
+		IssueID: issueID, WorkspaceID: workspaceID,
+	})
+	if err != nil || len(rows) == 0 {
+		return nil, nil
+	}
+	supersededBy = make(map[string]string, len(rows))
+	supersedes = make(map[string][]string, len(rows))
+	for _, row := range rows {
+		old, by := uuidToString(row.SupersededCommentID), uuidToString(row.SupersedingCommentID)
+		supersededBy[old] = by
+		supersedes[by] = append(supersedes[by], old)
+	}
+	return supersededBy, supersedes
+}
+
+func supersedeLinks(ids []string) []SupersedeResult {
+	links := make([]SupersedeResult, len(ids))
+	for i, id := range ids {
+		links[i] = SupersedeResult{CommentID: id}
+	}
+	return links
+}
+
 // attachSupersessions fills SupersededByID and Supersedes on the listed
 // comments from the issue's supersession links.
 func (h *Handler) attachSupersessions(ctx context.Context, issue db.Issue, resp []CommentResponse) {
 	if len(resp) == 0 {
 		return
 	}
-	rows, err := h.Queries.ListCommentSupersessionsForIssue(ctx, db.ListCommentSupersessionsForIssueParams{
-		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-	})
-	if err != nil || len(rows) == 0 {
-		return
-	}
-	supersededBy := make(map[string]string, len(rows))
-	supersedes := make(map[string][]string, len(rows))
-	for _, row := range rows {
-		old, by := uuidToString(row.SupersededCommentID), uuidToString(row.SupersedingCommentID)
-		supersededBy[old] = by
-		supersedes[by] = append(supersedes[by], old)
-	}
+	supersededBy, supersedes := h.supersessionLinks(ctx, issue.WorkspaceID, issue.ID)
 	for i := range resp {
 		if by, ok := supersededBy[resp[i].ID]; ok {
 			resp[i].SupersededByID = &by
 		}
-		for _, old := range supersedes[resp[i].ID] {
-			resp[i].Supersedes = append(resp[i].Supersedes, SupersedeResult{CommentID: old})
+		resp[i].Supersedes = supersedeLinks(supersedes[resp[i].ID])
+	}
+}
+
+// attachTimelineSupersessions is attachSupersessions for timeline entries.
+func (h *Handler) attachTimelineSupersessions(ctx context.Context, comments []db.Comment, entries []TimelineEntry) {
+	supersededBy, supersedes := h.supersessionLinks(ctx, comments[0].WorkspaceID, comments[0].IssueID)
+	for i := range entries {
+		if by, ok := supersededBy[entries[i].ID]; ok {
+			entries[i].SupersededByID = &by
 		}
+		entries[i].Supersedes = supersedeLinks(supersedes[entries[i].ID])
 	}
 }

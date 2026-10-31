@@ -195,3 +195,31 @@ func TestListComments_ReturnsSupersessionLinks(t *testing.T) {
 		t.Fatalf("new comment supersedes = %+v, want plan1", got)
 	}
 }
+
+func TestListTimeline_ReturnsSupersessionLinks(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newSupersedeFixture(t)
+	plan1 := fx.insert(t, "agent", nil, -3*time.Hour, "plan rev-1")
+	_, resp := fx.post(t, map[string]any{"content": "plan rev-2", "supersedes": []string{plan1}})
+
+	w := httptest.NewRecorder()
+	r := newRequest(http.MethodGet, "/api/issues/"+fx.IssueID+"/timeline", nil)
+	r = withURLParam(r, "id", fx.IssueID)
+	testHandler.ListTimeline(w, r)
+	var entries []TimelineEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode timeline: %v", err)
+	}
+	byID := map[string]TimelineEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if got := byID[plan1].SupersededByID; got == nil || *got != resp.ID {
+		t.Fatalf("old entry superseded_by_id = %v, want %s", got, resp.ID)
+	}
+	if got := byID[resp.ID].Supersedes; len(got) != 1 || got[0].CommentID != plan1 {
+		t.Fatalf("new entry supersedes = %+v, want plan1", got)
+	}
+}
