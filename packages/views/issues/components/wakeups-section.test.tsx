@@ -70,6 +70,9 @@ vi.mock("../../common/task-transcript", () => ({
 vi.mock("./wakeup-instruction-editor", () => ({
   WakeupInstructionEditor: () => <button>Edit prompt</button>,
 }));
+vi.mock("../../editor/readonly-content", () => ({
+  ReadonlyContent: ({ content }: { content: string }) => <div data-testid="rich-instruction">{content}</div>,
+}));
 beforeEach(() => {
   mutate.mockReset();
   trigger.mockReset();
@@ -225,6 +228,14 @@ describe("Wakeups sidebar", () => {
     await waitFor(() => expect(screen.getByText("Check CI")).toBeVisible());
     expect(screen.getByRole("button", { name: "Transcript" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Edit prompt" })).toBeVisible();
+  });
+  it("renders the prompt as rich content so issue slugs can become chips", async () => {
+    wakeup.instruction = "CHE-2545 is done. Re-check PR #135.";
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    fireEvent.click(screen.getByRole("button", { name: /Wake Emacs/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId("rich-instruction")).toHaveTextContent("CHE-2545 is done. Re-check PR #135."),
+    );
   });
   it("keeps a consumed one-shot queued run in the current list with withdrawal", () => {
     wakeup.enabled = false;

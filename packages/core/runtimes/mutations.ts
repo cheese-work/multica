@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import type { RuntimePauseReason } from "../types";
 import { runtimeKeys } from "./queries";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
@@ -92,6 +93,35 @@ export function useUpdateRuntime(wsId: string) {
         apply_to_machine?: boolean;
       };
     }) => api.updateRuntime(runtimeId, patch),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// Machine pause and resume (CHE-2430). The pause lives on the server and
+// applies to the whole machine, so the runtime list is the only projection to
+// refresh; the daemon:register event refreshes other open pages.
+export function usePauseRuntimeMachine(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      reason,
+    }: {
+      runtimeId: string;
+      reason: RuntimePauseReason;
+    }) => api.pauseRuntimeMachine(runtimeId, reason),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+export function useResumeRuntimeMachine(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runtimeId: string) => api.resumeRuntimeMachine(runtimeId),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     },

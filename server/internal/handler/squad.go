@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -1309,9 +1308,6 @@ const (
 	squadEnqueueNone squadEnqueueOutcome = iota
 	// squadEnqueueLeader: the squad leader's run was queued.
 	squadEnqueueLeader
-	// squadEnqueueSpecialist: Jev routed the work to a specialist; the leader
-	// runs nothing for this write.
-	squadEnqueueSpecialist
 )
 
 // enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
@@ -1352,17 +1348,6 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 	})
 	if err != nil || hasPending {
 		return squadEnqueueNone
-	}
-
-	// Try Jev Squad Routing (CHE-1708)
-	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-		return squadEnqueueSpecialist
-	} else if advisory != "" {
-		if strings.TrimSpace(handoffNote) != "" {
-			handoffNote = handoffNote + "\n\n" + advisory
-		} else {
-			handoffNote = advisory
-		}
 	}
 
 	// triggerCommentID is always empty on the assign/promote path; legacy

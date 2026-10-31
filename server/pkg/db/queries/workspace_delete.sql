@@ -399,6 +399,13 @@ deleted_run_capability_grants AS (
 deleted_protected_path_policies AS (
     DELETE FROM protected_path_policy WHERE workspace_id = $1
 ),
+-- CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
+deleted_task_elevations AS (
+    DELETE FROM task_elevation WHERE workspace_id = $1
+),
+deleted_elevated_ops AS (
+    DELETE FROM elevated_op WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),

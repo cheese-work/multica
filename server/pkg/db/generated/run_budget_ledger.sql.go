@@ -32,6 +32,29 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 	return column_1, err
 }
 
+const getIssueRunBudgetEntry = `-- name: GetIssueRunBudgetEntry :one
+SELECT window_id, tokens_delta FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND kind = $2::text AND event_key = $3::text
+`
+
+type GetIssueRunBudgetEntryParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	Kind     string      `json:"kind"`
+	EventKey string      `json:"event_key"`
+}
+
+type GetIssueRunBudgetEntryRow struct {
+	WindowID    string `json:"window_id"`
+	TokensDelta int64  `json:"tokens_delta"`
+}
+
+func (q *Queries) GetIssueRunBudgetEntry(ctx context.Context, arg GetIssueRunBudgetEntryParams) (GetIssueRunBudgetEntryRow, error) {
+	row := q.db.QueryRow(ctx, getIssueRunBudgetEntry, arg.IssueID, arg.Kind, arg.EventKey)
+	var i GetIssueRunBudgetEntryRow
+	err := row.Scan(&i.WindowID, &i.TokensDelta)
+	return i, err
+}
+
 const hasIssueRunBudgetWindow = `-- name: HasIssueRunBudgetWindow :one
 SELECT EXISTS (
   SELECT 1 FROM issue_run_budget_entry
@@ -83,6 +106,37 @@ func (q *Queries) InsertIssueRunBudgetEntry(ctx context.Context, arg InsertIssue
 	return err
 }
 
+const insertIssueRunBudgetTokenEntry = `-- name: InsertIssueRunBudgetTokenEntry :exec
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, tokens_delta)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING
+`
+
+type InsertIssueRunBudgetTokenEntryParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WindowID    string      `json:"window_id"`
+	Kind        string      `json:"kind"`
+	EventKey    string      `json:"event_key"`
+	TokensDelta int64       `json:"tokens_delta"`
+}
+
+// Token side of the ledger (L2b): reservations, releases and usage charges. A
+// replayed event (same issue, kind, key) is a no-op.
+func (q *Queries) InsertIssueRunBudgetTokenEntry(ctx context.Context, arg InsertIssueRunBudgetTokenEntryParams) error {
+	_, err := q.db.Exec(ctx, insertIssueRunBudgetTokenEntry,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.WindowID,
+		arg.Kind,
+		arg.EventKey,
+		arg.TokensDelta,
+	)
+	return err
+}
+
 const lockIssueRunBudget = `-- name: LockIssueRunBudget :one
 SELECT id FROM issue WHERE id = $1::uuid FOR NO KEY UPDATE
 `
@@ -112,6 +166,30 @@ func (q *Queries) SumIssueRunBudgetCap(ctx context.Context, arg SumIssueRunBudge
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const sumIssueRunBudgetTaskTokens = `-- name: SumIssueRunBudgetTaskTokens :one
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint AS charged, COUNT(*)::bigint AS entries
+FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND kind = 'tokens' AND event_key LIKE $2::text || '%'
+`
+
+type SumIssueRunBudgetTaskTokensParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	KeyPrefix string      `json:"key_prefix"`
+}
+
+type SumIssueRunBudgetTaskTokensRow struct {
+	Charged int64 `json:"charged"`
+	Entries int64 `json:"entries"`
+}
+
+// What a task's usage charges already hold: their sum and count.
+func (q *Queries) SumIssueRunBudgetTaskTokens(ctx context.Context, arg SumIssueRunBudgetTaskTokensParams) (SumIssueRunBudgetTaskTokensRow, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetTaskTokens, arg.IssueID, arg.KeyPrefix)
+	var i SumIssueRunBudgetTaskTokensRow
+	err := row.Scan(&i.Charged, &i.Entries)
+	return i, err
 }
 
 const sumIssueRunBudgetWindow = `-- name: SumIssueRunBudgetWindow :one

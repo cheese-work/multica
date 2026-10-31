@@ -128,6 +128,7 @@ import type {
   ChatSession,
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
+  AgentRuntime,
 } from "../types";
 
 const chatWsLogger = createLogger("chat.ws");
@@ -186,6 +187,17 @@ export function applyDecisionAnswerUpdated(
   if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
+ * A task started or ended. A paused machine shows "N tasks left" from the
+ * runtime list, which no heartbeat refreshes, so refetch it while a pause is on
+ * screen. Without a pause the list is left alone: task events are frequent.
+ */
+export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
+  const lists = qc.getQueriesData<AgentRuntime[]>({ queryKey: runtimeKeys.list(wsId) });
+  const paused = lists.some(([, runtimes]) => runtimes?.some((runtime) => runtime.pause));
+  if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
 }
 
 /**
@@ -1004,6 +1016,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        refreshRuntimesWhilePaused(qc, wsId);
         // Working-agent projections have their own bounded refresh below.
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone

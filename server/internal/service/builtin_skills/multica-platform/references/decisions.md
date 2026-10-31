@@ -14,7 +14,9 @@ multica decision withdraw <decision-id> --reason "no longer needed"
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
   `recommendation`, `default_if_no_reply`, `source_issue_id`,
-  `source_comment_id`.
+  `source_comment_id`. An ask that approves a file adds `subject:
+  "artifact_approval"` and `artifacts[]` (`attachment_id`, `label`, `sha256`);
+  the server checks each hash.
 - `--class` takes one of the classes `decision request --help` lists. Which
   class a situation belongs to is workspace policy.
 - `--for` is the named person's user or workspace member id (a real UUID). It
