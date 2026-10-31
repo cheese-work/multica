@@ -376,39 +376,46 @@ func (q *Queries) ListOpsRequeues(ctx context.Context, arg ListOpsRequeuesParams
 }
 
 const listOpsRunsHistory = `-- name: ListOpsRunsHistory :many
-WITH bucket AS (
-    SELECT generate_series(
-        date_bin(make_interval(secs => $1::int), $2::timestamptz, TIMESTAMPTZ 'epoch'),
-        $3::timestamptz,
-        make_interval(secs => $1::int)) AS ts
+WITH p AS (
+    SELECT make_interval(secs => $1::int) AS bs,
+           date_bin(make_interval(secs => $1::int), $2::timestamptz, TIMESTAMPTZ 'epoch') AS b0
 ),
 task AS (
-    SELECT t.id, t.created_at, t.started_at, t.completed_at,
+    SELECT t.created_at, t.started_at, t.completed_at,
            CASE WHEN r.id IS NULL THEN '__unknown__'
                 WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
                 ELSE r.daemon_id END AS machine
     FROM agent_task_queue t
     JOIN agent a ON a.id = t.agent_id
     LEFT JOIN agent_runtime r ON r.id = t.runtime_id
-    WHERE a.workspace_id = $4
+    WHERE a.workspace_id = $3
       AND t.status <> 'deferred'
-      AND t.created_at < $3::timestamptz
+      AND t.created_at < $4::timestamptz
       AND (t.completed_at IS NULL OR t.completed_at > $2::timestamptz)
+),
+span AS (
+    -- First bucket at or after created_at, last bucket strictly before
+    -- completed_at (ceil to a bucket boundary = bin of x - 1us, plus one bucket).
+    SELECT t.created_at, t.started_at, t.completed_at, t.machine, p.bs,
+           GREATEST(p.b0, date_bin(p.bs, t.created_at - interval '1 microsecond', TIMESTAMPTZ 'epoch') + p.bs) AS first_b,
+           CASE WHEN t.completed_at IS NULL THEN $4::timestamptz
+                ELSE LEAST($4::timestamptz, date_bin(p.bs, t.completed_at - interval '1 microsecond', TIMESTAMPTZ 'epoch')) END AS last_b
+    FROM task t, p
 )
-SELECT b.ts::timestamptz AS ts, t.machine::text AS machine,
-       count(*) FILTER (WHERE t.started_at <= b.ts AND (t.completed_at IS NULL OR t.completed_at > b.ts))::int AS running,
-       count(*) FILTER (WHERE t.created_at <= b.ts AND COALESCE(t.started_at, t.completed_at, 'infinity'::timestamptz) > b.ts)::int AS queued_approx
-FROM bucket b
-JOIN task t ON t.created_at <= b.ts AND COALESCE(t.completed_at, 'infinity'::timestamptz) > b.ts
-GROUP BY b.ts, t.machine
-ORDER BY b.ts, t.machine
+SELECT g.ts::timestamptz AS ts, s.machine::text AS machine,
+       count(*) FILTER (WHERE s.started_at <= g.ts)::int AS running,
+       count(*) FILTER (WHERE COALESCE(s.started_at, s.completed_at, 'infinity'::timestamptz) > g.ts)::int AS queued_approx
+FROM span s
+CROSS JOIN LATERAL generate_series(s.first_b, s.last_b, s.bs) AS g(ts)
+GROUP BY g.ts, s.machine
+ORDER BY g.ts, s.machine
 `
 
 type ListOpsRunsHistoryParams struct {
 	BucketS     int32              `json:"bucket_s"`
 	Since       pgtype.Timestamptz `json:"since"`
-	Until       pgtype.Timestamptz `json:"until"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Until       pgtype.Timestamptz `json:"until"`
 }
 
 type ListOpsRunsHistoryRow struct {
@@ -424,12 +431,14 @@ type ListOpsRunsHistoryRow struct {
 // overwrites dispatched_at, so the queued/dispatched split is lost; the span
 // is created_at .. COALESCE(started_at, completed_at). Deferred tasks are
 // not counted.
+// Each task expands only into the buckets it spans (a lateral series), not
+// into a bucket x task range join, which filtered 36M pairs for 600k tasks.
 func (q *Queries) ListOpsRunsHistory(ctx context.Context, arg ListOpsRunsHistoryParams) ([]ListOpsRunsHistoryRow, error) {
 	rows, err := q.db.Query(ctx, listOpsRunsHistory,
 		arg.BucketS,
 		arg.Since,
-		arg.Until,
 		arg.WorkspaceID,
+		arg.Until,
 	)
 	if err != nil {
 		return nil, err

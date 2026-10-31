@@ -208,14 +208,14 @@ ORDER BY daemon_id;
 -- overwrites dispatched_at, so the queued/dispatched split is lost; the span
 -- is created_at .. COALESCE(started_at, completed_at). Deferred tasks are
 -- not counted.
-WITH bucket AS (
-    SELECT generate_series(
-        date_bin(make_interval(secs => @bucket_s::int), @since::timestamptz, TIMESTAMPTZ 'epoch'),
-        @until::timestamptz,
-        make_interval(secs => @bucket_s::int)) AS ts
+-- Each task expands only into the buckets it spans (a lateral series), not
+-- into a bucket x task range join, which filtered 36M pairs for 600k tasks.
+WITH p AS (
+    SELECT make_interval(secs => @bucket_s::int) AS bs,
+           date_bin(make_interval(secs => @bucket_s::int), @since::timestamptz, TIMESTAMPTZ 'epoch') AS b0
 ),
 task AS (
-    SELECT t.id, t.created_at, t.started_at, t.completed_at,
+    SELECT t.created_at, t.started_at, t.completed_at,
            CASE WHEN r.id IS NULL THEN '__unknown__'
                 WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__'
                 ELSE r.daemon_id END AS machine
@@ -226,14 +226,23 @@ task AS (
       AND t.status <> 'deferred'
       AND t.created_at < @until::timestamptz
       AND (t.completed_at IS NULL OR t.completed_at > @since::timestamptz)
+),
+span AS (
+    -- First bucket at or after created_at, last bucket strictly before
+    -- completed_at (ceil to a bucket boundary = bin of x - 1us, plus one bucket).
+    SELECT t.*, p.bs,
+           GREATEST(p.b0, date_bin(p.bs, t.created_at - interval '1 microsecond', TIMESTAMPTZ 'epoch') + p.bs) AS first_b,
+           CASE WHEN t.completed_at IS NULL THEN @until::timestamptz
+                ELSE LEAST(@until::timestamptz, date_bin(p.bs, t.completed_at - interval '1 microsecond', TIMESTAMPTZ 'epoch')) END AS last_b
+    FROM task t, p
 )
-SELECT b.ts::timestamptz AS ts, t.machine::text AS machine,
-       count(*) FILTER (WHERE t.started_at <= b.ts AND (t.completed_at IS NULL OR t.completed_at > b.ts))::int AS running,
-       count(*) FILTER (WHERE t.created_at <= b.ts AND COALESCE(t.started_at, t.completed_at, 'infinity'::timestamptz) > b.ts)::int AS queued_approx
-FROM bucket b
-JOIN task t ON t.created_at <= b.ts AND COALESCE(t.completed_at, 'infinity'::timestamptz) > b.ts
-GROUP BY b.ts, t.machine
-ORDER BY b.ts, t.machine;
+SELECT g.ts::timestamptz AS ts, s.machine::text AS machine,
+       count(*) FILTER (WHERE s.started_at <= g.ts)::int AS running,
+       count(*) FILTER (WHERE COALESCE(s.started_at, s.completed_at, 'infinity'::timestamptz) > g.ts)::int AS queued_approx
+FROM span s
+CROSS JOIN LATERAL generate_series(s.first_b, s.last_b, s.bs) AS g(ts)
+GROUP BY g.ts, s.machine
+ORDER BY g.ts, s.machine;
 
 -- name: ListOpsRequeues :many
 SELECT date_bin(make_interval(secs => @bucket_s::int), at, TIMESTAMPTZ 'epoch')::timestamptz AS ts,
