@@ -86,14 +86,14 @@ describe("ChatMessageList continuation announcements", () => {
     );
   }
 
-  it("puts the metadata-driven source announcement before a collapsed, separate summary and opens at the newest item", () => {
+  it("puts the metadata-driven source announcement and a collapsed summary in one block and opens at the newest item", () => {
     const { container } = renderContinuation({ continuedFromSessionId: previousSessionId });
     const link = screen.getByRole("link", { name: "previous DM" });
     expect(link).toHaveAttribute("href", `/acme/chat?session=${previousSessionId}`);
     expect(link.parentElement).toHaveClass("text-muted-foreground");
     expect(link.parentElement).toHaveTextContent("Continued from previous DM");
-    const disclosure = screen.getByRole("button", { name: "Conversation summary" });
-    expect(link.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const disclosure = screen.getByRole("button", { name: "Show earlier context" });
+    expect(screen.queryByRole("button", { name: "Conversation summary" })).not.toBeInTheDocument();
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText(/Retained context/)).not.toBeInTheDocument();
     expect(container.querySelector("[data-initial-position]")).toHaveAttribute("data-initial-position", JSON.stringify({ index: "LAST", align: "end" }));
@@ -107,13 +107,14 @@ describe("ChatMessageList continuation announcements", () => {
     const link = screen.getByRole("link", { name: "Continued in →" });
     expect(link).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
     expect(link.parentElement).toHaveClass("text-muted-foreground");
-    expect(screen.getByRole("button", { name: "Conversation summary" }).compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show earlier context" }).compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps legacy summaries readable without inventing a continuation link", () => {
     renderContinuation();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Conversation summary" }));
+    expect(screen.getByText("Conversation summary")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier context" }));
     expect(screen.getByText(/Retained context/)).toBeInTheDocument();
   });
 
@@ -147,6 +148,8 @@ describe("ChatMessageList predecessor DMs", () => {
     message_kind: "continuation_summary", task_id: null, created_at: "2026-10-13T00:00:00Z",
   };
 
+  const expandContext = () => fireEvent.click(screen.getByRole("button", { name: "Show earlier context" }));
+
   function renderChain({ onQuoteMessage, sessions = chain }: { onQuoteMessage?: (content: string) => void; sessions?: ChatSession[] | null } = {}) {
     const qc = new QueryClient();
     const seed = (id: string, messages: ChatMessage[]) =>
@@ -171,17 +174,20 @@ describe("ChatMessageList predecessor DMs", () => {
 
   it("shows one collapsed section per earlier DM of a 3-DM chain, oldest first", () => {
     renderChain();
+    expandContext();
     const sections = screen.getAllByRole("button", { name: /^Earlier DM/ });
     expect(sections.map((b) => b.textContent)).toEqual(["Earlier DM · DM 1", "Earlier DM · DM 2"]);
     for (const section of sections) expect(section).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Oldest question")).not.toBeInTheDocument();
     expect(screen.queryByText("Middle question")).not.toBeInTheDocument();
     // Above the new DM's own messages.
-    expect(sections[1]!.compareDocumentPosition(screen.getByRole("button", { name: "Conversation summary" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The summary shares the one expand with them.
+    expect(screen.getByText("Summary of the past")).toBeInTheDocument();
   });
 
   it("expands a section to its messages, read-only", () => {
     renderChain();
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 1" }));
     expect(screen.getByText("Oldest question")).toBeInTheDocument();
     expect(screen.getByText("Oldest answer")).toBeInTheDocument();
@@ -192,6 +198,7 @@ describe("ChatMessageList predecessor DMs", () => {
   it("quotes the exact text of a predecessor message", () => {
     const onQuoteMessage = vi.fn();
     renderChain({ onQuoteMessage });
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
     const quotes = screen.getAllByRole("button", { name: "Quote" });
     expect(quotes).toHaveLength(2);
@@ -201,6 +208,7 @@ describe("ChatMessageList predecessor DMs", () => {
 
   it("offers no quote action when the host cannot take one", () => {
     renderChain();
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
     expect(screen.getByText("Middle question")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Quote" })).not.toBeInTheDocument();
@@ -219,6 +227,7 @@ describe("ChatMessageList predecessor DMs", () => {
       session(third, { status: "active", continued_from_session_id: second }),
     ];
     renderChain({ sessions: loop });
+    expandContext();
     expect(screen.getAllByRole("button", { name: /^Earlier DM/ })).toHaveLength(2);
   });
 });

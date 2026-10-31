@@ -233,6 +233,11 @@ export interface ChatMessage {
   task_id: string | null;
   created_at: string;
   /**
+   * Set on a reply whose run ran in an earlier DM and was written here by a
+   * rollover (CHE-2119). Its tool steps belong to that DM; absent otherwise.
+   */
+  carried_from_session_id?: string | null;
+  /**
    * Attachments linked to this message via the attachment table's
    * chat_message_id FK. Populated by ListChatMessages. UI renders these
    * as file/image cards inside the bubble; the markdown URL inline in

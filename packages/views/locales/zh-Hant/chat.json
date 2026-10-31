@@ -66,6 +66,7 @@
   },
   "message_list": {
     "show_details": "檢視詳情",
+    "show_earlier_context": "顯示先前脈絡",
     "replied_in": "{{elapsed}} 內回覆",
     "failed_after": "{{elapsed}} 後失敗",
     "finished_in": "{{elapsed}} 內結束",
