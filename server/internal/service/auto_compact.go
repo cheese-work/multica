@@ -141,6 +141,12 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		if session.Status != "active" || session.ContinuedIntoSessionID.Valid {
 			return nil
 		}
+		// A run that started before the DM's last in-place compaction (for
+		// example the one that wrote the summary) is not evidence that the new
+		// epoch has grown.
+		if task.ChatCompactionEpoch.Int64 < session.CompactionEpoch {
+			return nil
+		}
 		// Web DMs only: a channel-bound chat has an external delivery route.
 		if _, err := qtx.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -163,7 +169,10 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		}
 		// After a failed attempt, wait until the context has grown 10% past the
 		// size that triggered it, so a failing compaction cannot loop.
-		last, err := qtx.GetLastAutoCompactTriggerForSession(ctx, session.ID)
+		last, err := qtx.GetLastAutoCompactTriggerForSession(ctx, db.GetLastAutoCompactTriggerForSessionParams{
+			ChatSessionID:   session.ID,
+			CompactionEpoch: session.CompactionEpoch,
+		})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -228,7 +237,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 }
 
 // settleCompactionTask is the failure guard: a compaction task that reaches any
-// terminal state without having continued the DM leaves the DM as it was, so an
+// terminal state without having continued or summarised the DM leaves the DM as it was, so an
 // automatic one says so and the person can retry with /compact. It runs inside
 // SettleTerminalTaskState, the single entry point of every terminal path.
 func settleCompactionTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
@@ -243,6 +252,16 @@ func settleCompactionTask(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	}
 	if session.ContinuedIntoSessionID.Valid || !task.CompactReason.Valid {
 		return nil
+	}
+	// In-place compaction ends with a summary owned by this task, not with a
+	// continued DM. Explicit "chat continue" still ends the other way.
+	if _, err := q.GetTaskCompactionSummary(ctx, db.GetTaskCompactionSummaryParams{
+		ChatSessionID: session.ID,
+		TaskID:        task.ID,
+	}); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("load compaction summary for compaction guard: %w", err)
 	}
 	if _, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
