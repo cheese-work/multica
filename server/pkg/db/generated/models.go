@@ -1534,6 +1534,15 @@ type GovernedVoteRecord struct {
 	DecisionSequence   pgtype.Int8        `json:"decision_sequence"`
 }
 
+type HostSample struct {
+	DaemonID    string             `json:"daemon_id"`
+	SampledAt   pgtype.Timestamptz `json:"sampled_at"`
+	MountPath   string             `json:"mount_path"`
+	CpuPercent  pgtype.Float4      `json:"cpu_percent"`
+	RamPercent  pgtype.Float4      `json:"ram_percent"`
+	DiskPercent pgtype.Float4      `json:"disk_percent"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
