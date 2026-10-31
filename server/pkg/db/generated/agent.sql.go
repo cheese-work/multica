@@ -2870,10 +2870,10 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 const createAgentTask = `-- name: CreateAgentTask :one
 WITH review_claim AS (
     INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-    SELECT i.workspace_id, i.id, $27::text, $1
+    SELECT i.workspace_id, i.id, $28::text, $1
     FROM issue i
     WHERE i.id = $3
-      AND COALESCE($27::text, '') <> ''
+      AND COALESCE($28::text, '') <> ''
       AND lock_task_owner_rows($1, $3, $2)
     ON CONFLICT (issue_id, head_sha) DO NOTHING
     RETURNING issue_id
@@ -2893,12 +2893,15 @@ SELECT
     COALESCE($9::boolean, FALSE),
     $10,
     $11,
-    CASE
+    NULLIF(CASE
         WHEN COALESCE($12::text, '') <> ''
         THEN jsonb_build_object('head_sha', $12::text)
-        ELSE NULL
-    END,
-    $13,
+        ELSE '{}'::jsonb
+    END || CASE
+        WHEN COALESCE($13::boolean, FALSE)
+        THEN '{"fresh_rerun":true}'::jsonb
+        ELSE '{}'::jsonb
+    END, '{}'::jsonb),
     $14,
     $15,
     $16,
@@ -2908,6 +2911,7 @@ SELECT
     $20,
     $21,
     $22,
+    $23,
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     (SELECT i.status FROM issue i WHERE i.id = $3),
     -- The PR whose head the review is stamped with, so a later head can find
@@ -2916,7 +2920,7 @@ SELECT
     -- two PRs that share one. Otherwise only a run queued while the issue is in
     -- a review step is bound: an author's run is queued at another step, and its
     -- step advancing to in_review later does not make it a review.
-    COALESCE($23::uuid, (SELECT pr.id FROM github_pull_request pr
+    COALESCE($24::uuid, (SELECT pr.id FROM github_pull_request pr
        JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
       WHERE ipr.issue_id = $3
         AND (SELECT i.status FROM issue i WHERE i.id = $3) IN ('in_review', 'agent_review')
@@ -2925,10 +2929,10 @@ SELECT
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
     -- The assigning task's taint (migration 831): the trigger unions in every
     -- other source, but only the request knows which task is acting.
-    COALESCE($24::text[], '{}'),
-    COALESCE($25::uuid, gen_random_uuid())
+    COALESCE($25::text[], '{}'),
+    COALESCE($26::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
-  AND (NOT COALESCE($26::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
+  AND (NOT COALESCE($27::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids
 `
 
@@ -2945,6 +2949,7 @@ type CreateAgentTaskParams struct {
 	HandoffNote          pgtype.Text   `json:"handoff_note"`
 	SquadID              pgtype.UUID   `json:"squad_id"`
 	HeadSha              pgtype.Text   `json:"head_sha"`
+	FreshRerun           pgtype.Bool   `json:"fresh_rerun"`
 	OriginatorUserID     pgtype.UUID   `json:"originator_user_id"`
 	AccountableUserID    pgtype.UUID   `json:"accountable_user_id"`
 	RuntimeMcpOverlay    []byte        `json:"runtime_mcp_overlay"`
@@ -2969,8 +2974,9 @@ type CreateAgentTaskParams struct {
 // head_sha stamps the commit under review into the task's context JSONB so the
 // reviewer-loop dedup (HasPendingTaskForIssueAndAgent) can tell a pending run
 // against an OLD head apart from a fresh request against a NEW head (TEN-356).
-// Empty/absent head_sha leaves context NULL, preserving pre-TEN-356 behavior for
-// issues with no linked PR. Issue-linked tasks never hit quick-create context
+// Empty/absent head_sha leaves context NULL unless fresh_rerun is requested.
+// fresh_rerun disables source session/workdir reuse without losing rerun lineage.
+// Issue-linked tasks never hit quick-create context
 // parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 // key rides harmlessly alongside.
 // id is minted by the application as a UUIDv7 (pkg/dbid) so consecutive
@@ -3000,6 +3006,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.HandoffNote,
 		arg.SquadID,
 		arg.HeadSha,
+		arg.FreshRerun,
 		arg.OriginatorUserID,
 		arg.AccountableUserID,
 		arg.RuntimeMcpOverlay,
