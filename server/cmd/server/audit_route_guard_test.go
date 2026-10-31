@@ -274,6 +274,7 @@ func TestAdminMutatingRoutesHaveAuditKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("admin mutating routes: %d audited, %d exempt, %d pending L5b", len(auditedRoutes), len(auditExemptRoutes), len(auditPendingL5b))
 	sort.Strings(unclassified)
 	if len(unclassified) > 0 {
 		t.Errorf("mutating admin routes with no audit kind, exempt reason or L5b pending entry:\n  %s", strings.Join(unclassified, "\n  "))
