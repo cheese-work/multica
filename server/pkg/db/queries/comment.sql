@@ -1064,3 +1064,46 @@ WHERE issue_id = @issue_id
   AND created_at <= @cutoff
 ORDER BY created_at ASC, id ASC
 LIMIT @row_limit;
+
+-- name: GetThreadLatestComment :one
+-- The newest live comment in @target_id's thread (root plus every descendant,
+-- same walk as CountThreadCommentsSince). Supersede reads its author: a thread
+-- whose newest comment is a human's is never auto-resolved.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT * FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT 1;
+
+-- name: UpsertCommentSupersession :exec
+-- Links a superseded thread root to the comment that superseded it. The latest
+-- superseding comment wins.
+INSERT INTO comment_supersession (superseded_comment_id, superseding_comment_id, workspace_id, issue_id)
+VALUES (@superseded_comment_id, @superseding_comment_id, @workspace_id, @issue_id)
+ON CONFLICT (superseded_comment_id)
+DO UPDATE SET superseding_comment_id = EXCLUDED.superseding_comment_id,
+              created_at = clock_timestamp();
+
+-- name: ListCommentSupersessionsForIssue :many
+SELECT superseded_comment_id, superseding_comment_id
+FROM comment_supersession
+WHERE issue_id = @issue_id AND workspace_id = @workspace_id;

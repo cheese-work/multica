@@ -763,6 +763,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("allow-external-file", false, "Allow --content-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent run must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
 	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
+	issueCommentAddCmd.Flags().StringSlice("supersedes", nil, "Comment ID this comment supersedes (repeatable; a reply ID names its whole thread, same issue only). The server resolves each superseded thread unless a human posted its newest reply or it changed after this request began, and links old and new")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -2970,6 +2971,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
 		return err
 	}
+	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
+		return err
+	}
+	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
@@ -3038,6 +3043,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if len(attachmentIDs) > 0 {
 		body["attachment_ids"] = attachmentIDs
 	}
+	if supersedes, _ := cmd.Flags().GetStringSlice("supersedes"); len(supersedes) > 0 {
+		body["supersedes"] = supersedes
+	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/issues/"+issueID+"/comments", body, &result); err != nil {
 		return fmt.Errorf("add comment: %w", err)
@@ -3045,6 +3053,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	printSupersedeOutcomes(os.Stderr, result)
 	if hints, ok := result["hints"].([]any); ok {
 		for _, value := range hints {
 			if hint, ok := value.(string); ok && hint != "" {
@@ -3068,6 +3077,22 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)
+}
+
+// printSupersedeOutcomes reports, per superseded thread, whether the server
+// resolved it or left it open and why.
+func printSupersedeOutcomes(w io.Writer, result map[string]any) {
+	items, _ := result["supersedes"].([]any)
+	for _, item := range items {
+		entry, _ := item.(map[string]any)
+		id, _ := entry["comment_id"].(string)
+		if resolved, _ := entry["resolved"].(bool); resolved {
+			fmt.Fprintf(w, "Comment %s superseded and resolved.\n", id)
+			continue
+		}
+		reason, _ := entry["skipped_reason"].(string)
+		fmt.Fprintf(w, "Comment %s superseded, left open (%s).\n", id, reason)
+	}
 }
 
 func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
@@ -3095,6 +3120,10 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
 		return err
 	}
+	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
+		return err
+	}
+	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()

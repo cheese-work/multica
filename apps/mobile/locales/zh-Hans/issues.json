@@ -211,6 +211,10 @@
     "collapse": "收起",
     "collapse_a11y": "收起已解决讨论"
   },
+  "supersession": {
+    "superseded_by": "已被 rev-{{revision}} 取代",
+    "supersedes": "取代 rev-{{revision}}"
+  },
   "failed": {
     "send": "无法发送",
     "retry": "重试",

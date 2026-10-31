@@ -1658,6 +1658,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Get("/api/integrations/composio/callback", h.ComposioCallback)
 
 	daemonUpdate := loadDaemonUpdateSource()
+	h.DaemonUpdate = daemonUpdate
+
+	// The install script is the only public /api/daemon route (CHE-2641): a
+	// fresh host runs `curl <server>/api/daemon/install.sh | bash` before it has
+	// any token. It is static and holds no secret; the manifest and binary it
+	// downloads stay behind DaemonAuth below.
+	r.Get("/api/daemon/install.sh", handler.DaemonInstallScript)
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
@@ -2732,6 +2739,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.Get("/feed", h.ListDecisionFeed)
+				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
 				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
 				r.Get("/{id}/artifacts", h.ListDecisionArtifacts)
@@ -2905,6 +2914,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 
 	pat, err := pr.queries.GetPersonalAccessTokenByHash(ctx, hash)
 	if err != nil {
+		return "", false
+	}
+
+	// A scoped PAT never opens a realtime connection.
+	if len(pat.Scopes) > 0 {
 		return "", false
 	}
 

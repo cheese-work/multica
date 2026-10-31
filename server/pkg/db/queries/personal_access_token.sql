@@ -1,6 +1,6 @@
 -- name: CreatePersonalAccessToken :one
-INSERT INTO personal_access_token (user_id, name, token_hash, token_prefix, expires_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO personal_access_token (user_id, name, token_hash, token_prefix, expires_at, scopes)
+VALUES ($1, $2, $3, $4, $5, COALESCE(sqlc.narg('scopes')::text[], '{}'))
 RETURNING *;
 
 -- name: GetPersonalAccessTokenByHash :one

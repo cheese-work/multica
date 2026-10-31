@@ -72,6 +72,7 @@ function machine(runtimes: AgentRuntime[]): RuntimeMachine {
     deviceInfo: "x99",
     cliVersion: null,
     launchedBy: null,
+    update: { available: false, serverCommit: "", serverVersion: "", reason: "" },
     mode: "local",
     section: "remote",
     isCurrent: false,
