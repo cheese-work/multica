@@ -7,6 +7,6 @@ Run the design loop for the L4 banner audiences and the header status icon: a ba
 - Doop page: `CHE-2684 · banner audiences`, frame [B · One summary banner + count badge](https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=PX_YkzqAb-). File: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod
 - Status: selected direction B, approved when the lock PR merges
 
-Selection: Cheese chose B on decision request `e8e5a058-1bb5-4afe-b731-aa89fcacc53b` (31 Oct 2026 09:46 ICT), recorded on CHE-2684 as comment `01a18fda-6a9c-72c5-a3a4-f1bcd67ccea6`. A and B were scored PASS by x99-codex-luna-design (`01a18dc6-f22a-7ba3-91d6-4f7be87f8388` for B at `2026-10-30T16:58:01.161Z`; A was re-scored after Cheese's edit). The lock exports B at that exact version. Cheese approves by merging the lock PR.
+Selection: Cheese chose B on decision request `e8e5a058-1bb5-4afe-b731-aa89fcacc53b` (31 Oct 2026 09:46 ICT), recorded on CHE-2684 as comment `01a18fda-6a9c-72c5-a3a4-f1bcd67ccea6`. A and B were scored PASS by x99-codex-luna-design (`01a18ff2-ff1f-784c-a067-0c979f9c340b` for B at `2026-10-31T03:10:54.092Z`; A was re-scored after Cheese's edit). The lock exports B at that exact version. Cheese approves by merging the lock PR.
 
 Locked layer L1 design (machine card) stays in `design/machine-pause/approved/`.
