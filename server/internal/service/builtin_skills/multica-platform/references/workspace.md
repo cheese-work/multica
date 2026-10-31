@@ -107,6 +107,7 @@ export writes an audit row.
 multica github kill-switch status                      # active halts, read-only
 multica github kill-switch on --scope owner/repo       # halt GitHub-triggered dispatch
 multica github kill-switch off --scope owner/repo      # resume it
+multica github intake list --since <RFC3339> [--limit 50]  # read-only webhook deliveries; no payload or signature
 ```
 
 - `--scope` is `*` (org-wide, the default), an owner, or `owner/repo`.
