@@ -164,7 +164,7 @@ func (q *Queries) ListDecisionDeliveryAnswers(ctx context.Context, arg ListDecis
 }
 
 const listDecisionDeliveryRequests = `-- name: ListDecisionDeliveryRequests :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json, authority FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1
   AND (decision_intent_id = $2::uuid OR id = $3::uuid)
 ORDER BY id
@@ -213,6 +213,7 @@ func (q *Queries) ListDecisionDeliveryRequests(ctx context.Context, arg ListDeci
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
 			&i.Authority,
 		); err != nil {
@@ -264,7 +265,7 @@ func (q *Queries) ListDecisionDeliveryTargets(ctx context.Context, arg ListDecis
 }
 
 const listDecisionWakeCandidates = `-- name: ListDecisionWakeCandidates :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json, request.authority FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND request.status = 'answered' AND EXISTS (
     SELECT 1 FROM decision_answer answer
@@ -327,6 +328,7 @@ func (q *Queries) ListDecisionWakeCandidates(ctx context.Context, batchSize int3
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
 			&i.Authority,
 		); err != nil {

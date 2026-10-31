@@ -8,12 +8,14 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
     last_answer.chosen_option_index AS answer_chosen_option_index,
+    COALESCE(asker.name, '')::text AS asking_agent_name,
     pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 JOIN chat_message message ON message.chat_session_id = request.chat_session_id
     AND (message.id = request.ping_message_id OR request.id = ANY(message.decision_request_ids))
+LEFT JOIN agent asker ON asker.id = request.asking_agent_id AND asker.workspace_id = request.workspace_id
 LEFT JOIN comment source ON source.id = request.source_comment_id
     AND source.workspace_id = request.workspace_id AND source.issue_id = request.issue_id AND source.deleted_at IS NULL
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'

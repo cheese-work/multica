@@ -71,3 +71,19 @@ multica issue budget raise <issue-id> --runs <total> --output json
   issues on the workflow keep the workflow's cap.
 - `raise` is members only; the server rejects an agent. An agent that hit the
   cap reports the blocker and asks a person; it never raises its own budget.
+
+## Inbound webhook endpoints
+
+A step guard `webhook(name)` waits for a signed event posted to a named
+endpoint of the workflow. Writes are owner/admin only; the secret is printed
+once by `create` and `rotate` and cannot be read back.
+
+```bash
+multica workflow webhook create <workflow-id> --name <name> [--rate-per-min 60]
+multica workflow webhook rotate <workflow-id> --name <name>    # old secret valid 24 h
+multica workflow webhook disable <workflow-id> --name <name>   # cannot be undone
+multica workflow webhook list <workflow-id>                    # never shows secrets
+```
+
+`--name` is the name written in `webhook(name)`: 1-32 characters of
+`a-z`, `0-9`, `_` or `-`. `--rate-per-min` is 1-6000.

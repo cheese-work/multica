@@ -39,6 +39,71 @@ func (q *Queries) AcquireDecisionWorkerLease(ctx context.Context, arg AcquireDec
 	return i, err
 }
 
+const deleteDecisionOrphanAgentReliance = `-- name: DeleteDecisionOrphanAgentReliance :exec
+DELETE FROM decision_agent_reliance reliance
+WHERE reliance.instance_id = $1 AND reliance.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = reliance.issue_id AND issue.workspace_id = reliance.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentRelianceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentReliance(ctx context.Context, arg DeleteDecisionOrphanAgentRelianceParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentReliance, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentScope = `-- name: DeleteDecisionOrphanAgentScope :exec
+DELETE FROM decision_agent_scope scope
+WHERE scope.instance_id = $1 AND scope.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentScopeParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Authority-neutral orphan cleanup, before deleting the parent request.
+func (q *Queries) DeleteDecisionOrphanAgentScope(ctx context.Context, arg DeleteDecisionOrphanAgentScopeParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentScope, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentSettlement = `-- name: DeleteDecisionOrphanAgentSettlement :exec
+DELETE FROM decision_agent_settlement settlement
+WHERE settlement.instance_id = $1 AND settlement.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentSettlementParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentSettlement(ctx context.Context, arg DeleteDecisionOrphanAgentSettlementParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentSettlement, arg.ID, arg.WorkspaceID)
+	return err
+}
+
+const deleteDecisionOrphanAgentUndo = `-- name: DeleteDecisionOrphanAgentUndo :exec
+DELETE FROM decision_agent_undo undo
+WHERE undo.instance_id = $1 AND undo.workspace_id = $2
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id)
+`
+
+type DeleteDecisionOrphanAgentUndoParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDecisionOrphanAgentUndo(ctx context.Context, arg DeleteDecisionOrphanAgentUndoParams) error {
+	_, err := q.db.Exec(ctx, deleteDecisionOrphanAgentUndo, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const deleteDecisionOrphanIntent = `-- name: DeleteDecisionOrphanIntent :exec
 DELETE FROM decision_intent intent
 WHERE intent.workspace_id = $1 AND intent.id = $2
@@ -86,7 +151,7 @@ func (q *Queries) DeleteDecisionOrphanRequestAction(ctx context.Context, decisio
 }
 
 const listDecisionFinalizations = `-- name: ListDecisionFinalizations :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json, request.authority FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND EXISTS (
@@ -136,6 +201,7 @@ func (q *Queries) ListDecisionFinalizations(ctx context.Context, batchSize int32
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
 			&i.Authority,
 		); err != nil {
