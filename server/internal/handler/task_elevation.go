@@ -45,9 +45,9 @@ type authorizeElevatedOpRequest struct {
 // AuthorizeElevatedOp records one operation the caller is about to run with the
 // exact input it hashed. One transaction under the task's row lock checks grant
 // liveness, scope, state and epoch, so a fence either precedes the check or
-// waits for it. Task and issue taint also refuse, read under share locks (issue
-// row first, then task row, the order taint writers take) so a writer
-// serializes with it.
+// waits for it. Task and issue taint also refuse, read under share locks (task
+// row, then issue row, the order a taint writer takes through its trigger) so a
+// writer serializes with it.
 func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
 	if !ok {
@@ -82,12 +82,12 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
 	}
-	issueTaint, err := lockedIssueTaint(r.Context(), qtx, te.IssueID)
+	taint, err := qtx.LockTaskTaintIDs(r.Context(), task.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
 	}
-	taint, err := qtx.LockTaskTaintIDs(r.Context(), task.ID)
+	issueTaint, err := lockedIssueTaint(r.Context(), qtx, te.IssueID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return

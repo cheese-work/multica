@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -189,5 +190,76 @@ func TestIssueTaintArrivingAfterElevatedClaimRefusesAndFences(t *testing.T) {
 	fenceNow(t)
 	if state, epoch := f.state(t); state == "elevated" || epoch != 2 {
 		t.Fatalf("after sweep state = %q epoch = %d, want fenced at epoch 2", state, epoch)
+	}
+}
+
+func TestClearingIssueTaintBeforeAnySweepStillFencesTheOriginalTask(t *testing.T) {
+	f := claimElevated(t, "repo_write:1234")
+	agentID := seededReadyAgentID(t)
+	dbfx.Comment(t, f.issueID, "relay", testutil.Cols{"source_task_id": taintedTask(t, agentID, "t9")})
+
+	// A member clears the taint before the 10-second sweep ran.
+	postClearIssueTaint(t, f.issueID, map[string]any{}, nil).Want(http.StatusOK)
+	if got := issueTaintOf(t, f.issueID); len(got) != 0 {
+		t.Fatalf("issue taint = %v after the clear, want none", got)
+	}
+
+	// The original task never regains authority: the clear itself fenced it.
+	if state, epoch := f.state(t); state == "elevated" || epoch != 2 {
+		t.Fatalf("after the clear state = %q epoch = %d, want fenced at epoch 2", state, epoch)
+	}
+	f.authorize(t, 1, "repo_write:1234", hashA).Want(http.StatusForbidden)
+	f.authorize(t, 2, "repo_write:1234", hashA).Want(http.StatusForbidden)
+	fenceNow(t)
+	if state, _ := f.state(t); state == "elevated" {
+		t.Fatal("task is elevated again after the sweep")
+	}
+}
+
+// waitForBlockedShareLock polls until a backend waits on a row lock taken by a
+// FOR SHARE read of agent_task_queue (an authorization reached the task lock).
+func waitForBlockedShareLock(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if dbfx.Count(t, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%agent_task_queue%FOR SHARE%'`) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("authorization never waited on the task row lock")
+}
+
+// A taint writer updates the task row and, through its trigger, then locks the
+// issue. Authorization must take its locks in the same order (task, then
+// issue), or the two wait on each other and one aborts.
+func TestTaintUpdateAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+
+	writer, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin writer: %v", err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err := writer.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id = $1 FOR UPDATE`, f.taskID); err != nil {
+		t.Fatalf("writer locks task: %v", err)
+	}
+
+	authorized := make(chan *testutil.Response, 1)
+	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
+	waitForBlockedShareLock(t)
+
+	// The authorization now waits on the task row. The writer's trigger must
+	// reach the issue row without waiting on anything the authorization holds.
+	if _, err := writer.Exec(ctx, `UPDATE agent_task_queue SET taint_ids = ARRAY['tz'] WHERE id = $1`, f.taskID); err != nil {
+		t.Fatalf("writer update: %v", err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("writer commit: %v", err)
+	}
+	(<-authorized).Want(http.StatusForbidden)
+	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, f.taskID); n != 0 {
+		t.Fatalf("authorized operations = %d, want 0", n)
 	}
 }

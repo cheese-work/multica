@@ -91,6 +91,35 @@ func (q *Queries) CreateElevatedOp(ctx context.Context, arg CreateElevatedOpPara
 	return i, err
 }
 
+const fenceIssueTaskElevations = `-- name: FenceIssueTaskElevations :many
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE issue_id = $1 AND state = 'elevated'
+RETURNING task_id
+`
+
+// A member clearing the issue's taint fences every elevation still live on it
+// first, so the taint cannot vanish before the sweep saw it. Same update as the
+// sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+func (q *Queries) FenceIssueTaskElevations(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, fenceIssueTaskElevations, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var task_id pgtype.UUID
+		if err := rows.Scan(&task_id); err != nil {
+			return nil, err
+		}
+		items = append(items, task_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const fenceLapsedTaskElevations = `-- name: FenceLapsedTaskElevations :many
 UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
 WHERE te.state = 'elevated' AND (

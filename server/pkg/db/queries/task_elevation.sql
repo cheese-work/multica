@@ -55,6 +55,14 @@ WHERE t.id = te.task_id AND te.state = 'elevated'
   AND (sqlc.narg('task_id')::uuid IS NULL OR te.task_id = sqlc.narg('task_id')::uuid)
 RETURNING te.task_id;
 
+-- name: FenceIssueTaskElevations :many
+-- A member clearing the issue's taint fences every elevation still live on it
+-- first, so the taint cannot vanish before the sweep saw it. Same update as the
+-- sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE issue_id = $1 AND state = 'elevated'
+RETURNING task_id;
+
 -- name: LockTaskTaintIDs :one
 -- Share lock: a taint writer updates the task row, so it waits for an
 -- authorization in flight, and an authorization that starts after it sees it.
