@@ -17,8 +17,10 @@ import (
 
 // Step entry gates (CHE-2295): a status write into a step meets the step's
 // entry gates, checked in the write transaction against the locked issue and
-// the PR facts stored for it. Only explicit status writes are gated; every
-// writer that sets workflowWrite.system (edge, CI and run-budget moves) is not.
+// the PR facts stored for it. A write is gated when the status it ends on
+// differs from the issue's, whether the caller named it or a project move
+// remapped it; every writer that sets workflowWrite.system (edge, CI and
+// run-budget moves) is not.
 
 const maxEntryOverrideReason = 500
 
@@ -62,7 +64,7 @@ func validEntryOverrideReason(reason string) (string, bool) {
 // into. It runs under the issue lock, in the write transaction.
 func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Queries, locked db.Issue, params db.UpdateIssueParams) error {
 	w.entry.warnComment = ""
-	if w.system || !w.statusExplicit || !params.Status.Valid || params.Status.String == locked.Status {
+	if w.system || !params.Status.Valid || params.Status.String == locked.Status {
 		return nil
 	}
 	def, _, err := issueworkflow.ForIssue(ctx, q, locked.WorkspaceID, locked.WorkflowID, params.ProjectID)
