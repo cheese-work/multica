@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -129,6 +130,57 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": raised.Int32, "previous_max_runs": current})
 }
 
+// TopUpIssueRunBudget opens a new run-budget window on the issue without a
+// status move (CHE-2297 L2d): the window credit is the cap in force, and the
+// token allowance follows once token accounting is active. Members only, for
+// the same reason as a raise: an agent cannot pay for its own runs. The
+// activity row is the window's start, so it commits with the credit.
+func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	// resolveActor calls a machine credential without agent headers a member, so
+	// the credential check is separate (the route carries RequireHumanActor too).
+	if actorType != "member" || isMachineCredentialActor(r) {
+		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
+		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
+		return
+	}
+	max, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
+	if max == 0 {
+		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"max_runs": max})
+}
+
 // openRunBudgetWindowForMove opens the run-budget window a person's status move
 // started, so its token allowance is claimed when the move is recorded rather
 // than at the next admission or report. It runs after the event is published:
@@ -167,13 +219,15 @@ func (h *Handler) inRunBudgetTx(ctx context.Context, issueID pgtype.UUID, what s
 	}
 }
 
+const errRecoveryCaused = "a budget recovery run cannot start work, create children or wakeups, or top up"
+
 // grantRunBudgetStep grants the first entry of a status in the budget window
 // when an agent or a workflow edge moved the issue. It runs after the event is
 // published, like openRunBudgetWindowForMove: the activity listener has written
 // the move, and the window's first status is read from it.
 func (h *Handler) grantRunBudgetStep(ctx context.Context, issue db.Issue, prevStatus string) {
 	h.inRunBudgetTx(ctx, issue.ID, "grant step", func(q *db.Queries) error {
-		return service.GrantRunBudgetStep(ctx, q, issue, prevStatus, false)
+		return service.GrantRunBudgetStep(ctx, q, issue, prevStatus, dispatch.BudgetRecoveryCaller(ctx))
 	})
 }
 

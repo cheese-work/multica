@@ -384,14 +384,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 
 	var sinceTime pgtype.Timestamptz
 	if v := q.Get("since"); v != "" {
+		// RFC3339Nano parsing also accepts timestamps without fractional seconds.
 		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
-			// Fall back to RFC3339 for backwards-compat with the original CLI.
-			t, err = time.Parse(time.RFC3339, v)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
-				return
-			}
+			writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
+			return
 		}
 		sinceTime = pgtype.Timestamptz{Time: t, Valid: true}
 	}
@@ -520,11 +517,8 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	if beforeTimeStr != "" {
 		t, err := time.Parse(time.RFC3339Nano, beforeTimeStr)
 		if err != nil {
-			t, err = time.Parse(time.RFC3339, beforeTimeStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid before parameter; expected RFC3339 format")
-				return
-			}
+			writeError(w, http.StatusBadRequest, "invalid before parameter; expected RFC3339 format")
+			return
 		}
 		beforeCursor = pgtype.Timestamptz{Time: t, Valid: true}
 		uuid, perr := util.ParseUUID(beforeIDStr)
@@ -1475,6 +1469,9 @@ type CreateCommentRequest struct {
 	// has ended, or cannot take additional input, is never swapped for another
 	// one: its agent keeps the normal trigger.
 	SteerTaskIDs []string `json:"steer_task_ids"`
+	// Steer adds the comment to the current running turn of every recipient
+	// that has no turn in SteerTaskIDs, with the same fallback.
+	Steer bool `json:"steer"`
 }
 
 type CommentTriggerPreviewRequest struct {
@@ -1793,8 +1790,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// A running turn receives text only, so a comment that carries files is
 	// always a normal trigger.
+	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer}
 	if len(attachmentIDs) > 0 {
-		steerTaskIDs = nil
+		steer = commentSteerRequest{}
 	}
 
 	// Determine author identity: agent (via X-Agent-ID header) or member.
@@ -2133,8 +2131,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steerTaskIDs)
-	if len(steerTaskIDs) > 0 {
+	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steer)
+	if !steer.empty() {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
 
@@ -2185,9 +2183,9 @@ func isNoteComment(content string) bool {
 // deferred / blocked from enqueue. UI-suppressed triggers (the user unchecked
 // them) are removed before enqueue and produce no outcome.
 //
-// steerTaskIDs are the running turns the author chose: a recipient whose chosen
+// steer names the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
-func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
+func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID, steer commentSteerRequest) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
 	}
@@ -2200,7 +2198,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		}
 	}
 	routingActorType, routingActorID := commentTriggerActor(comment, actorType, actorID)
-	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
+	triggers, targets := computeCommentTriggers(h, ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
@@ -2209,7 +2207,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	gated := h.captureLeaderFallbackTriggers(ctx, issue, comment, routingActorType, triggers)
-	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, routingActorType, triggers, steerTaskIDs)
+	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, routingActorType, routingActorID, originatorUserID, triggers, steer)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	for agentID, result := range steered {
 		enqueued[agentID] = result
@@ -2240,8 +2238,15 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		reportedAgents[agentID] = struct{}{}
 	}
 	h.recordLeaderFallbackAdmissions(ctx, gated, enqueued)
-	return commentTriggerOutcomes(targets, enqueued)
+	outcomes := commentTriggerOutcomes(targets, enqueued)
+	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
+	return outcomes
 }
+
+// computeCommentTriggers resolves a posted comment's triggers. Tests swap it to
+// reach trigger states no current route produces, such as a rate-limited
+// trigger without a mention target.
+var computeCommentTriggers = (*Handler).computeCommentAgentTriggers
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
 // unusable runtime, whoever authored the trigger — see noteRuntimeUnusable for
@@ -4190,7 +4195,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, existing.ID)
-		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, nil)
+		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, commentSteerRequest{})
 	}
 
 	// Fetch reactions and attachments for the updated comment.

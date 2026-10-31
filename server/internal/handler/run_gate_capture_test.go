@@ -132,7 +132,7 @@ func TestRunGateRepeatedTriggerKeepsOneRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testHandler.triggerTasksForComment(context.Background(), issue, comment, nil, "member", testUserID, testUserID, nil, nil)
+	testHandler.triggerTasksForComment(context.Background(), issue, comment, nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
 	if e := readGateEvent(t, c.ID); e.seen != 2 {
 		t.Fatalf("seen_count = %d, want 2 for the same comment triggered twice", e.seen)
 	}
@@ -160,7 +160,7 @@ func TestRunGateConcurrentTriggersShareOneRow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			testHandler.triggerTasksForComment(context.Background(), issue, comment, nil, "member", testUserID, testUserID, nil, nil)
+			testHandler.triggerTasksForComment(context.Background(), issue, comment, nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
 		}()
 	}
 	wg.Wait()

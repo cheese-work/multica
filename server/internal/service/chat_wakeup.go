@@ -236,10 +236,11 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 	if s.Tasks.Bus != nil {
 		sessionID := util.UUIDToString(session.ID)
 		s.Tasks.Bus.Publish(events.Event{
-			Type:          protocol.EventChatMessage,
-			WorkspaceID:   util.UUIDToString(session.WorkspaceID),
-			ActorType:     "system",
-			ChatSessionID: sessionID,
+			Type:               protocol.EventChatMessage,
+			WorkspaceID:        util.UUIDToString(session.WorkspaceID),
+			ActorType:          "system",
+			ChatSessionID:      sessionID,
+			ChatSessionOwnerID: util.UUIDToString(session.CreatorID),
 			Payload: protocol.ChatMessagePayload{
 				ChatSessionID: sessionID,
 				MessageID:     util.UUIDToString(sent.Message.ID),

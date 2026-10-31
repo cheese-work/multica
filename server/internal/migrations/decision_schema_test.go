@@ -28,7 +28,7 @@ var decisionSchemaMigrations = []string{
 	"615_decision_request_comment_v2_index", "616_decision_request_comment_index_retire",
 	"617_decision_comment_request_check", "618_decision_comment_request_validate",
 	"690_decision_contract", "730_decision_card_answer", "745_decision_card_answer", "773_decision_request_ask_identity", "795_decision_receipt_loop", "800_decision_record_excerpt",
-	"808_decision_authority", "813_decision_answer_feed",
+	"808_decision_authority", "813_decision_answer_feed", "821_decision_request_project",
 }
 
 func TestDecisionSchemaV14(test *testing.T) {

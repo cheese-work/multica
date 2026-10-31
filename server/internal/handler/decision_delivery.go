@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -275,6 +276,19 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			eligible = false
 		} else if err != nil {
 			return false, err
+		}
+	}
+	if snapshot.kind == "" && eligible {
+		for _, request := range snapshot.requests {
+			if request.Status == "cancelled" {
+				continue
+			}
+			var refusal decisionIntentRefusal
+			if err := requireRequestAuthority(ctx, queries, snapshot.issue, request, http.StatusConflict); errors.As(err, &refusal) {
+				eligible = false
+			} else if err != nil {
+				return false, err
+			}
 		}
 	}
 	if snapshot.kind == "" {

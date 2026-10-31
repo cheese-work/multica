@@ -44,10 +44,10 @@ SELECT pg_current_xact_id()::text::bigint;
 SELECT COALESCE(pg_xact_status(sqlc.arg('xid')::bigint::text::xid8), 'unknown')::text;
 
 -- name: LatestMemberStatusChange :one
--- When a person last changed the issue's status: a person who moves a blocked
--- issue on starts its run budget over.
+-- When a person last changed the issue's status or topped up its run budget: a
+-- person who moves a blocked issue on, or tops it up, starts its run budget over.
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1;
 
 -- name: HasIssueReviewAdmission :one
@@ -67,9 +67,9 @@ WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uui
 RETURNING max_runs_override;
 
 -- name: ListMemberStatusChangesAfter :many
--- Every time a person moved the issue's status after a point: each one opened a
--- run-budget window, whether or not anything was admitted in it.
+-- Every time a person moved the issue's status or topped up its run budget after
+-- a point: each one opened a run-budget window, whether or not anything was admitted in it.
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
   AND created_at > sqlc.arg('after')::timestamptz
 ORDER BY created_at;

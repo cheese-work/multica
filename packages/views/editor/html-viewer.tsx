@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Code, Copy, Download, RotateCw } from "lucide-react";
+import { Code, Copy, Download, RotateCw } from "@multica/ui/icons";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { MediaLinkAction, ViewerActions } from "../media/media-context";
 import { CodeBlockIframe } from "./code-block-iframe";

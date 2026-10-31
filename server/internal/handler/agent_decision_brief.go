@@ -289,7 +289,12 @@ func (h *Handler) deliverAgentDecisionNotices(ctx context.Context) error {
 				h.publish(protocol.EventInboxNew, workspace, "system", "", map[string]any{"item": inboxToResponse(item)})
 			}
 			for _, message := range messages {
-				h.publishChat(protocol.EventChatMessage, workspace, "system", "", uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
+				session, err := h.Queries.GetChatSession(ctx, message.ChatSessionID)
+				if err != nil {
+					failures = errors.Join(failures, err)
+					continue
+				}
+				h.publishChatFor(protocol.EventChatMessage, workspace, "system", "", uuidToString(session.CreatorID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 			}
 			continue
 		}

@@ -330,6 +330,12 @@ function MessageRow({
     );
   }
 
+  // The agent-only summary a continued DM starts with: collapsed, never the
+  // visible first reply (CHE-2119). Web: ContinuationSummary.
+  if (message.message_kind === "continuation_summary") {
+    return <ContinuationSummary message={message} isSelecting={isSelecting} />;
+  }
+
   // Assistant: timeline fold + markdown + elapsed caption. See
   // AssistantRow for why timeline is lifted into its own component.
   return (
@@ -340,6 +346,41 @@ function MessageRow({
       onQuickAction={onQuickAction}
       quickActionsDisabled={quickActionsDisabled}
     />
+  );
+}
+
+function ContinuationSummary({
+  message,
+  isSelecting,
+}: {
+  message: ChatMessage;
+  isSelecting: boolean;
+}) {
+  const { t } = useT("chat");
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <View
+          accessibilityRole="button"
+          accessibilityLabel={t("continuation_summary")}
+          className="flex-row items-center gap-1 active:opacity-70"
+        >
+          <Ionicons name="chevron-forward" size={12} color="#71717a" />
+          <Text className="text-xs text-muted-foreground">
+            {t("continuation_summary")}
+          </Text>
+        </View>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <View className="mt-1">
+          <Markdown
+            content={message.content}
+            attachments={message.attachments}
+            selectable={isSelecting}
+          />
+        </View>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

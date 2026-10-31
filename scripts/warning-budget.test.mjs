@@ -159,7 +159,7 @@ else if (endpoint.includes('/actions/workflows/3/runs?')) {
 else if (endpoint.includes('/jobs?')) {
   const baseline = endpoint.includes('/runs/1/')
   const older = endpoint.includes('/runs/3/')
-  const name = renamed ? (scenario.includes('cursor') ? 'cursor-background-lifecycle' : 'installer') + ' (' + (baseline ? 'ubuntu-latest' : 'ubuntu-24.04') + ')' : !baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build'
+  const name = renamed ? (scenario.includes('cursor') ? 'cursor-background-lifecycle' : 'installer') + ' (' + (baseline ? 'ubuntu-latest' : 'ubuntu-24.04') + ')' : !baseline&&!older&&scenario==='pr-only-source-guard'?'upstream-update-source-guard':!baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build'
   result = {jobs:[{id:older?13:baseline?11:12,name,status:scenario==='incomplete'?'in_progress':'completed',conclusion:baseline&&skipped?'skipped':'success',check_run_url:'https://api.github.com/check-runs/'+(older?23:baseline?21:22)}]}
   if (scenario.startsWith('cache-warm') && !baseline && !older) result.jobs.push(...['push-go-cache-warm', 'push-turbo-cache-warm'].map(name => ({name,status:'in_progress',conclusion:null})))
 } else if (endpoint.includes('/annotations?')) result = []
@@ -176,7 +176,7 @@ else if (endpoint.endsWith('/logs')) {
 } else throw new Error('Unexpected API request '+endpoint)
 process.stdout.write(JSON.stringify(result))
 `, { mode: 0o700 })
-    for (const [scenario, expected] of [["cache-warm", 0], ["cache-warm-new-warning", 1], ["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0], ["renamed-cursor", 0], ["renamed-cursor-extra-warning", 1], ["renamed-installer", 0], ["renamed-installer-extra-warning", 1]]) {
+    for (const [scenario, expected] of [["cache-warm", 0], ["cache-warm-new-warning", 1], ["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0], ["pr-only-source-guard", 0], ["renamed-cursor", 0], ["renamed-cursor-extra-warning", 1], ["renamed-installer", 0], ["renamed-installer-extra-warning", 1]]) {
       const result = spawnSync(process.execPath, [command], { cwd: directory, encoding: "utf8", env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", BUDGET_FIXTURE: scenario, GITHUB_STEP_SUMMARY: "" } })
       assert.equal(result.status, expected, `${scenario}: ${result.stderr}`)
       if (["new-warning", "ansi-warning", "cache-warm-new-warning"].includes(scenario)) {
@@ -194,7 +194,7 @@ process.stdout.write(JSON.stringify(result))
       }
       if (scenario.startsWith("pr-only")) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
-        assert.deepEqual(report.zero_baseline_jobs, ["image-budget"])
+        assert.deepEqual(report.zero_baseline_jobs, [scenario === "pr-only-source-guard" ? "upstream-update-source-guard" : "image-budget"])
         assert.deepEqual(report.baseline, {})
       }
       if (scenario.startsWith("renamed-")) {
