@@ -1397,6 +1397,7 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 type DaemonHeartbeatRequest struct {
 	RuntimeID           string `json:"runtime_id"`
 	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	InFlightTasks       *int   `json:"in_flight_tasks,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1538,7 +1539,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	updateMs = time.Since(updateStart).Milliseconds()
 
-	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport)
+	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1574,6 +1575,9 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	if ack.Paused != nil {
+		resp["paused"] = ack.Paused
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1582,7 +1586,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // captured each runtime's liveness state in a connection lease, so the hot
 // path never reads agent_runtime. HTTP heartbeat remains the stateless lookup
 // fallback for a daemon that stops receiving WebSocket acknowledgements.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, inFlightTasks *int) (*protocol.DaemonHeartbeatAckPayload, error) {
 	lease := identity.RuntimeLeases[runtimeID]
 	if lease == nil {
 		return nil, fmt.Errorf("runtime not in connection lease")
@@ -1602,7 +1606,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 		}
 		return nil, err
 	}
-	ack, _, err := h.processHeartbeat(ctx, runtimeID, supportsBatchImport)
+	ack, _, err := h.processHeartbeat(ctx, runtimeID, supportsBatchImport, inFlightTasks)
 	return ack, err
 }
 
@@ -1742,7 +1746,7 @@ type heartbeatMetrics struct {
 // heartbeats using only the runtime ID. Each transport records liveness first:
 // HTTP uses its stateless runtime row, while WebSocket uses the connection
 // lease. Auth and request decoding also remain transport-specific.
-func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
+func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, supportsBatchImport bool, inFlightTasks *int) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 
 	slog.Debug("daemon heartbeat", "runtime_id", runtimeID)
@@ -1751,6 +1755,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, suppor
 		RuntimeID:          runtimeID,
 		Status:             "ok",
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
+		Paused:             h.heartbeatPause(ctx, runtimeID, inFlightTasks),
 	}
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
@@ -2871,8 +2876,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	resp.LeaderRoleResolved = true
 	// CHE-2216 plan 3.1: always answer, so an absent profile on the wire means a
 	// server that predates the resolver.
-	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID)
-	resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+	// A resumed session can add taint below, so the answer is re-applied then.
+	applyRunProfile := func() {
+		rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID, task.TaintIds)
+		resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+	}
+	applyRunProfile()
+	resp.IntakeRun, resp.PinnedBranch, resp.PinnedRepo = h.intakePinForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.ID)
 	// Agent-trigger plugin hooks, as tools. A failure here degrades to no
 	// tools rather than failing the claim: a plugin that cannot be listed must
 	// not stop an agent from working on the issue.
@@ -3481,7 +3491,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.PriorSessionResumeUnavailable = true
 				}
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
-					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired {
+					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired &&
+					h.inheritSessionTaint(r.Context(), task, src.SessionID.String) {
+					applyRunProfile()
 					resp.PriorSessionID = src.SessionID.String
 					resumedRunStartedAt = src.StartedAt
 					// The deltas date from the run we actually resume, which on
@@ -3532,7 +3544,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						"issue_id", uuidToString(task.IssueID),
 					)
 				}
-				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
+				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) && h.inheritSessionTaint(r.Context(), task, prior.SessionID.String) {
+					applyRunProfile()
 					resp.PriorSessionID = prior.SessionID.String
 					resumedRunStartedAt = prior.StartedAt
 					// Same rule as the rerun path: date the deltas from the run
@@ -4310,6 +4323,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.InitiatorID = originator.ID
 		resp.InitiatorName = originator.Name
 		resp.InitiatorEmail = originator.Email
+	}
+
+	// The issue was read above, after the task left the queue. A tainted
+	// assignment written before that read has put its taint on this task by now,
+	// so read the taint last and answer with it.
+	if task.IssueID.Valid {
+		latest, err := h.Queries.GetTaskTaintIDs(r.Context(), task.ID)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, err, "taint", uuidToString(task.ID))
+		}
+		if len(latest) != len(task.TaintIds) {
+			task.TaintIds = latest
+			applyRunProfile()
+		}
 	}
 
 	return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, nil
@@ -6198,7 +6226,14 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Redact sensitive information before persisting or broadcasting.
-		msg.Content = redact.Text(msg.Content)
+		// Agent prose (text/thinking) only loses provider-shaped tokens: the
+		// keyword rule would mangle ordinary sentences such as a "Token: input"
+		// table cell. Machine output (tool, error) gets the full rule set.
+		if msg.Type == string(agent.MessageText) || msg.Type == string(agent.MessageThinking) {
+			msg.Content = redact.Prose(msg.Content)
+		} else {
+			msg.Content = redact.Text(msg.Content)
+		}
 		msg.Output = redact.Text(msg.Output)
 		msg.Input = redact.InputMap(msg.Input)
 
@@ -7222,4 +7257,23 @@ func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
 		"status":       task.Status,
 		"completed_at": task.CompletedAt.Time,
 	})
+}
+
+// inheritSessionTaint carries the taint of the session being resumed onto the
+// claimed task (CHE-2216 plan 3.7): the resumed transcript holds whatever
+// tainted input the earlier runs read. It reports false when the taint cannot
+// be recorded, and the caller then starts a fresh session instead, since a
+// resume that is not marked would run with a grant the transcript has not earned.
+func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
+	taint, err := h.Queries.InheritSessionTaint(ctx, db.InheritSessionTaintParams{
+		ID:        task.ID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		slog.Warn("daemon claim: could not record session taint; starting fresh",
+			"task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	task.TaintIds = taint
+	return true
 }

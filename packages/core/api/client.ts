@@ -1,5 +1,5 @@
 import type { ZodType } from "zod";
-import type { OpenDecisionRequest } from "../types/decision";
+import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -278,6 +278,7 @@ import { parseWithFallback } from "./schema";
 import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
+  DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -4103,6 +4104,14 @@ export class ApiClient {
 
   async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  /** The files a decision request approves, with the changed hunks against the revision each supersedes. */
+  async listDecisionArtifacts(requestId: string): Promise<DecisionArtifact[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/${encodeURIComponent(requestId)}/artifacts`);
+    return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
+      endpoint: "GET /api/decisions/:id/artifacts",
+    }).artifacts;
   }
 
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {

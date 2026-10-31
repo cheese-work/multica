@@ -25,7 +25,7 @@ var decisionGetCmd = &cobra.Command{
 }
 
 var decisionListCmd = &cobra.Command{
-	Use: "list", Short: "List decision requests on an issue", Args: cobra.NoArgs, RunE: runDecisionList,
+	Use: "list", Short: "List decision requests on an issue, or a member's open asks", Args: cobra.NoArgs, RunE: runDecisionList,
 }
 
 var decisionWithdrawCmd = &cobra.Command{
@@ -33,16 +33,22 @@ var decisionWithdrawCmd = &cobra.Command{
 }
 
 func init() {
-	for _, command := range []*cobra.Command{decisionRequestCmd, decisionListCmd} {
-		command.Flags().String("issue", "", "Issue UUID or identifier")
-		_ = command.MarkFlagRequired("issue")
-	}
+	decisionRequestCmd.Flags().String("issue", "", "Issue UUID or identifier")
+	_ = decisionRequestCmd.MarkFlagRequired("issue")
+	decisionListCmd.Flags().String("issue", "", "Issue UUID or identifier (or use --for with --state open)")
+	decisionListCmd.Flags().String("for", "", "Member's user ID: list that member's open asks workspace-wide (needs --state open)")
+	decisionListCmd.Flags().String("state", "", "With --for: open")
+	decisionListCmd.Flags().Bool("section", false, "With --for: print the evening brief section (Markdown) instead of JSON")
+	decisionListCmd.Flags().Int("older-than-hours", 24, "With --section: only asks open at least this long (24 is PROPOSED, not agreed)")
+	decisionListCmd.Flags().Int("max-lines", 5, "With --section: line budget for the section, header and omitted count included")
+	decisionListCmd.Flags().Int("brief-lines-used", 0, "With --section: brief lines used outside this section, including lines still to come; the section stays within the 30-line brief maximum")
+	decisionListCmd.Flags().StringSlice("exclude-issue", nil, "With --section: skip asks on these issue IDs (already listed in the 08:00 digest)")
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue; must be eligible (it discussed this issue)")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Create a DM for this issue only, when no listed lane discussed it")
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id, and for an ask that approves a file: subject \"artifact_approval\" with artifacts[{attachment_id, label, sha256, supersedes_attachment_id, signed_by{reviewer, comment_id}}]")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id, and for an ask that approves a file: subject \"artifact_approval\" with artifacts[{attachment_id, label, sha256, supersedes_attachment_id, signed_by{reviewer, comment_id}, supersedes_signed_by{reviewer, comment_id}}]")
 	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
@@ -215,6 +221,12 @@ func runDecisionGet(command *cobra.Command, args []string) error {
 
 func runDecisionList(command *cobra.Command, _ []string) error {
 	issueRef, _ := command.Flags().GetString("issue")
+	if memberID, _ := command.Flags().GetString("for"); memberID != "" {
+		if issueRef != "" {
+			return fmt.Errorf("use --issue or --for, not both")
+		}
+		return runDecisionListOpenAsks(command, memberID)
+	}
 	if issueRef == "" {
 		return fmt.Errorf("--issue is required")
 	}

@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimDaemonPauseDrainNotice = `-- name: ClaimDaemonPauseDrainNotice :one
+UPDATE daemon_pause SET drained_notified_at = now()
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3 AND drained_notified_at IS NULL
+RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at
+`
+
+type ClaimDaemonPauseDrainNoticeParams struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+}
+
+// Marks this pause (identified by its paused_at) as notified. No row means it
+// was already notified or the machine was paused again since the caller read it.
+func (q *Queries) ClaimDaemonPauseDrainNotice(ctx context.Context, arg ClaimDaemonPauseDrainNoticeParams) (DaemonPause, error) {
+	row := q.db.QueryRow(ctx, claimDaemonPauseDrainNotice, arg.MachineOwnerID, arg.DaemonID, arg.PausedAt)
+	var i DaemonPause
+	err := row.Scan(
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.WorkspaceID,
+		&i.Reason,
+		&i.PausedBy,
+		&i.PausedAt,
+		&i.DrainedNotifiedAt,
+	)
+	return i, err
+}
+
 const countRunningTasksByMachine = `-- name: CountRunningTasksByMachine :many
 SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id, COUNT(*)::int AS running_tasks
 FROM agent_task_queue t
@@ -71,6 +100,36 @@ func (q *Queries) DeleteDaemonPause(ctx context.Context, arg DeleteDaemonPausePa
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getLiveDaemonPauseByRuntime = `-- name: GetLiveDaemonPauseByRuntime :one
+SELECT dp.machine_owner_id, dp.daemon_id, dp.workspace_id, dp.reason, dp.paused_by, dp.paused_at, dp.drained_notified_at FROM daemon_pause dp
+JOIN agent_runtime rt ON COALESCE(rt.owner_id, rt.workspace_id) = dp.machine_owner_id AND rt.daemon_id = dp.daemon_id
+WHERE rt.id = $1
+  AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
+`
+
+type GetLiveDaemonPauseByRuntimeParams struct {
+	ID              pgtype.UUID `json:"id"`
+	MaintenanceSecs int32       `json:"maintenance_secs"`
+	OtherSecs       int32       `json:"other_secs"`
+}
+
+// The heartbeat's lookup: the live pause of the machine a runtime sits on, by
+// runtime id, so the WS heartbeat needs no separate runtime read.
+func (q *Queries) GetLiveDaemonPauseByRuntime(ctx context.Context, arg GetLiveDaemonPauseByRuntimeParams) (DaemonPause, error) {
+	row := q.db.QueryRow(ctx, getLiveDaemonPauseByRuntime, arg.ID, arg.MaintenanceSecs, arg.OtherSecs)
+	var i DaemonPause
+	err := row.Scan(
+		&i.MachineOwnerID,
+		&i.DaemonID,
+		&i.WorkspaceID,
+		&i.Reason,
+		&i.PausedBy,
+		&i.PausedAt,
+		&i.DrainedNotifiedAt,
+	)
+	return i, err
 }
 
 const listAffectedMachines = `-- name: ListAffectedMachines :many
@@ -161,7 +220,7 @@ func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMach
 }
 
 const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
-SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at FROM daemon_pause
+SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at FROM daemon_pause
 WHERE machine_owner_id = ANY($1::uuid[])
   AND daemon_id = ANY($2::text[])
   AND paused_at + make_interval(secs => CASE reason WHEN 'maintenance' THEN $3::int ELSE $4::int END) > now()
@@ -198,6 +257,7 @@ func (q *Queries) ListLiveDaemonPauses(ctx context.Context, arg ListLiveDaemonPa
 			&i.Reason,
 			&i.PausedBy,
 			&i.PausedAt,
+			&i.DrainedNotifiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -291,13 +351,30 @@ func (q *Queries) LockWorkspaceForMachinePause(ctx context.Context, id pgtype.UU
 	return id_2, err
 }
 
+const releaseDaemonPauseDrainNotice = `-- name: ReleaseDaemonPauseDrainNotice :exec
+UPDATE daemon_pause SET drained_notified_at = NULL
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3
+`
+
+type ReleaseDaemonPauseDrainNoticeParams struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+}
+
+// Undoes the claim when the notice could not be written, so the next heartbeat retries.
+func (q *Queries) ReleaseDaemonPauseDrainNotice(ctx context.Context, arg ReleaseDaemonPauseDrainNoticeParams) error {
+	_, err := q.db.Exec(ctx, releaseDaemonPauseDrainNotice, arg.MachineOwnerID, arg.DaemonID, arg.PausedAt)
+	return err
+}
+
 const upsertDaemonPause = `-- name: UpsertDaemonPause :one
 INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, paused_by)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
 SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason,
-    paused_by = EXCLUDED.paused_by, paused_at = now()
-RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at
+    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL
+RETURNING machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at
 `
 
 type UpsertDaemonPauseParams struct {
@@ -326,6 +403,7 @@ func (q *Queries) UpsertDaemonPause(ctx context.Context, arg UpsertDaemonPausePa
 		&i.Reason,
 		&i.PausedBy,
 		&i.PausedAt,
+		&i.DrainedNotifiedAt,
 	)
 	return i, err
 }

@@ -5,7 +5,7 @@ INSERT INTO daemon_pause (machine_owner_id, daemon_id, workspace_id, reason, pau
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (machine_owner_id, daemon_id) DO UPDATE
 SET workspace_id = EXCLUDED.workspace_id, reason = EXCLUDED.reason,
-    paused_by = EXCLUDED.paused_by, paused_at = now()
+    paused_by = EXCLUDED.paused_by, paused_at = now(), drained_notified_at = NULL
 RETURNING *;
 
 -- name: DeleteDaemonPause :execrows
@@ -88,3 +88,23 @@ LEFT JOIN daemon_pause dp
  AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now()
 WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
 ORDER BY w.machine_owner_id, w.daemon_id;
+
+-- name: GetLiveDaemonPauseByRuntime :one
+-- The heartbeat's lookup: the live pause of the machine a runtime sits on, by
+-- runtime id, so the WS heartbeat needs no separate runtime read.
+SELECT dp.* FROM daemon_pause dp
+JOIN agent_runtime rt ON COALESCE(rt.owner_id, rt.workspace_id) = dp.machine_owner_id AND rt.daemon_id = dp.daemon_id
+WHERE rt.id = $1
+  AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN @maintenance_secs::int ELSE @other_secs::int END) > now();
+
+-- name: ClaimDaemonPauseDrainNotice :one
+-- Marks this pause (identified by its paused_at) as notified. No row means it
+-- was already notified or the machine was paused again since the caller read it.
+UPDATE daemon_pause SET drained_notified_at = now()
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3 AND drained_notified_at IS NULL
+RETURNING *;
+
+-- name: ReleaseDaemonPauseDrainNotice :exec
+-- Undoes the claim when the notice could not be written, so the next heartbeat retries.
+UPDATE daemon_pause SET drained_notified_at = NULL
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND paused_at = $3;
