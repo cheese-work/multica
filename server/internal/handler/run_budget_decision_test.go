@@ -416,3 +416,102 @@ func TestRunBudgetDecisionRequestChatEventsRouteToRecipient(t *testing.T) {
 		t.Fatalf("recipient chat events: session-created %d, message %d, want 1 and at least 1", created, messages)
 	}
 }
+
+// archiveAllAgents archives every active agent in the workspace until the test
+// ends, as when a workspace has retired its agents and never provisioned Mika.
+func archiveAllAgents(t *testing.T) {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(), `UPDATE agent SET archived_at=now() WHERE workspace_id=$1 AND archived_at IS NULL RETURNING id::text`, testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	t.Cleanup(func() { dbfx.Exec(t, `UPDATE agent SET archived_at=NULL WHERE id=ANY($1::uuid[])`, ids) })
+}
+
+// The request is the platform's whatever the workspace's agents are: with every
+// agent archived it is still created once, and the lifecycle pass keeps it.
+func TestRunBudgetDecisionRequestWithNoActiveAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDecisionLease(t)
+	runner := decisionRunnerFor(t, testHandler)
+	c := newBudgetCase(t, 2318040, mergeEdgeSteps, 2)
+	c.memberRequester(t, "che2318-noagent@multica.test")
+	c.spend(t, 2)
+	archiveAllAgents(t)
+	// The same event twice is a retried delivery: one window, one request.
+	e := service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindExhausted, Runs: 2, Max: 2, Since: time.Now().Add(-time.Hour)}
+	testHandler.writeRunBudgetNotice(context.Background(), e, "This issue used up its run budget.")
+	if n := c.decisionRows(t); n != 1 {
+		t.Fatalf("decision requests = %d, want 1", n)
+	}
+	testHandler.writeRunBudgetNotice(context.Background(), e, "This issue used up its run budget.")
+	if n := c.decisionRows(t); n != 1 {
+		t.Fatalf("decision requests after a retry = %d, want 1", n)
+	}
+	id, _ := c.requestRow(t)
+	decisionPass(t, runner)
+	decisionPass(t, runner)
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND status='open'`, id); n != 1 {
+		t.Fatal("lifecycle pass cancelled the request because its asker is archived")
+	}
+}
+
+// The person's answer to the platform's request is recorded, but no run starts
+// as an agent they may not invoke: the fallback asker can be a private agent.
+func TestRunBudgetDecisionAnswerDoesNotRunUninvokableAsker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	resetDecisionLease(t)
+	runner := decisionRunnerFor(t, testHandler)
+	c := newBudgetCase(t, 2318041, mergeEdgeSteps, 2)
+	member := c.memberRequester(t, "che2318-private@multica.test")
+	var mode, owner string
+	if err := testPool.QueryRow(context.Background(), `SELECT permission_mode, owner_id::text FROM agent WHERE id=$1`, c.agentID).Scan(&mode, &owner); err != nil {
+		t.Fatal(err)
+	}
+	dbfx.Exec(t, `UPDATE agent SET permission_mode='private', owner_id=$2 WHERE id=$1`, c.agentID, testUserID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE agent SET permission_mode=$2, owner_id=$3 WHERE id=$1`, c.agentID, mode, owner)
+	})
+	c.spend(t, 2)
+	c.refuse(t)
+	c.waitDecisions(t, 1)
+	id, _ := c.requestRow(t)
+	if asker := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND asking_agent_id=$2`, id, c.agentID); asker != 1 {
+		t.Fatal("test needs the private assignee as the asker")
+	}
+	// A top-up opens a new window, so the answer's wake is no longer refused by
+	// the budget and only the invoke check can stop it.
+	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since=now() WHERE id=$1`, c.workflowID)
+	runs := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id=$1`, c.agentID)
+
+	request := newRequest(http.MethodPost, "/api/decision-requests/"+id+"/answer", map[string]any{"option": "No action"})
+	request.Header.Set("X-User-ID", member)
+	request.Header.Set("X-Actor-Source", "interactive_jwt")
+	response := httptest.NewRecorder()
+	testHandler.AnswerDecisionRequest(response, withURLParam(request, "id", id))
+	if response.Code >= 300 {
+		t.Fatalf("answer: status %d body %s", response.Code, response.Body.String())
+	}
+	decisionPass(t, runner)
+	decisionPass(t, runner)
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_answer WHERE decision_request_id=$1`, id); n != 1 {
+		t.Fatalf("answers recorded = %d, want 1", n)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id=$1`, c.agentID); got != runs {
+		t.Fatalf("runs of the private agent went %d -> %d for a person who cannot invoke it", runs, got)
+	}
+}

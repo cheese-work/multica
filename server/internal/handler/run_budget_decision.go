@@ -30,9 +30,9 @@ func isServerDecision(request db.DecisionRequest) bool {
 
 // runBudgetAsker is the agent a budget request is asked as: the workspace's
 // built-in agent, else the issue's agent assignee or its squad's leader, else
-// the oldest agent. It is only the name on the request; nothing runs as it and
-// no recipient needs permission to invoke it. ok is false only when the
-// workspace has no agent at all.
+// the oldest active agent, else the oldest archived one. It is only the name on
+// the request; delivery runs it for an answer only when the person can invoke
+// it. ok is false only when the workspace has no agent row at all.
 func runBudgetAsker(ctx context.Context, q *db.Queries, issue db.Issue) (agent db.Agent, ok bool, err error) {
 	agent, err = q.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{WorkspaceID: issue.WorkspaceID, SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true}})
 	if err == nil {
@@ -60,9 +60,17 @@ func runBudgetAsker(ctx context.Context, q *db.Queries, issue db.Issue) (agent d
 			return agent, true, nil
 		}
 	}
-	agents, err := q.ListAgents(ctx, issue.WorkspaceID)
+	// An archived agent is still a name for the request: nothing runs as the
+	// asker, and the lifecycle pass keeps a server-origin request whose asker
+	// is archived.
+	agents, err := q.ListAllAgents(ctx, issue.WorkspaceID)
 	if err != nil || len(agents) == 0 {
 		return agent, false, err
+	}
+	for _, candidate := range agents {
+		if !candidate.ArchivedAt.Valid {
+			return candidate, true, nil
+		}
 	}
 	return agents[0], true, nil
 }
