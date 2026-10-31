@@ -2371,8 +2371,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
-					r.Put("/", h.UpdateProject)
-					r.Delete("/", h.DeleteProject)
+					r.With(denyRunToken).Put("/", h.UpdateProject)
+					r.With(denyRunToken).Delete("/", h.DeleteProject)
 					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
@@ -2693,7 +2693,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/messages", h.ListChatMessages)
 					r.Get("/messages/page", h.ListChatMessagesPage)
 					r.Get("/pending-task", h.GetPendingChatTask)
-					r.Delete("/queued-tasks", h.ClearQueuedChatTasks)
+					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
 					r.Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
 					r.Post("/read", h.MarkChatSessionRead)
 					// Deferred-cancellation draft restores (#5219):

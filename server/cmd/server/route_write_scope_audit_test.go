@@ -56,11 +56,14 @@ var scopedWriteRoutes = []string{
 
 // deniedRunTokenRoutes change issues or tasks of other runs without naming
 // them (agent cancel/archive cascade to tasks, a project workflow remaps issue
-// statuses, deleting a label, squad, runtime, chat session, workspace or member
-// detaches, reassigns or cancels). A run token answers 403 on each
+// statuses, pausing a project cancels its tasks, deleting a project, label,
+// squad, runtime, chat session, workspace or member detaches, reassigns or
+// cancels, clearing a chat's queue cancels its tasks). A run token answers 403 on each
 // (DenyTaskTokenWrites); TestTaskTokenDeniedOnCrossIssueRoutes drives them.
 var deniedRunTokenRoutes = []string{
 	"DELETE /api/chat/sessions/{sessionId}/",
+	"DELETE /api/chat/sessions/{sessionId}/queued-tasks",
+	"DELETE /api/projects/{id}/",
 	"DELETE /api/labels/{id}/",
 	"DELETE /api/runtimes/{runtimeId}/",
 	"DELETE /api/squads/{id}/",
@@ -70,6 +73,7 @@ var deniedRunTokenRoutes = []string{
 	"POST /api/agents/{id}/archive",
 	"POST /api/agents/{id}/cancel-tasks",
 	"POST /api/projects/{id}/workflow",
+	"PUT /api/projects/{id}/",
 	"POST /api/runtimes/{runtimeId}/archive-agents-and-delete",
 	"POST /api/runtimes/{runtimeId}/revoke-workspace-access",
 	"POST /api/runtimes/{runtimeId}/unbind-agents-and-delete",
@@ -92,7 +96,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/agents":                   {16, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {20, byOwnRow},
+	"api/chat":                     {19, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
@@ -121,7 +125,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/notification-preferences": {2, byOwnRow},
 	"api/passkeys":                 {6, byHuman},
 	"api/pins":                     {3, byOwnRow},
-	"api/projects":                 {12, byWorkspace},
+	"api/projects":                 {10, byWorkspace},
 	"api/properties":               {2, byWorkspace},
 	"api/provenance":               {1, byHuman},
 	"api/push":                     {2, byHuman},

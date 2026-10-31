@@ -43,6 +43,11 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 	fixture.Cleanup(t, `DELETE FROM issue_to_label WHERE issue_id = $1`, foreignIssue)
 	squad := fixture.Squad(t, "Deny squad", foreignAgent)
 	chat := fixture.ChatSession(t, foreignAgent)
+	chatTask := fixture.Task(t, foreignAgent, testutil.Cols{"chat_session_id": chat, "runtime_id": foreignRuntime, "status": "queued"})
+	pausedProject := fixture.Project(t, "Deny paused project")
+	pausedIssue := fixture.Issue(t, "Deny paused project issue", testutil.Cols{"assignee_type": "agent", "assignee_id": foreignAgent, "project_id": pausedProject})
+	pausedTask := fixture.Task(t, foreignAgent, testutil.Cols{"issue_id": pausedIssue, "runtime_id": foreignRuntime, "status": "queued"})
+	deletedProject := fixture.Project(t, "Deny deleted project")
 	// One runtime per runtime route: the first to run would delete the rest.
 	runtimeWithTask := func(name string) (runtimeID, taskID string) {
 		runtimeID = fixture.Runtime(t, name)
@@ -79,6 +84,12 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 			`SELECT count(*) FROM agent WHERE id = $1 AND archived_at IS NULL`, []any{foreignAgent}, "", ""},
 		{"set project workflow", "POST", "/api/projects/" + project + "/workflow", `{"workflow_id":null}`,
 			`SELECT count(*) FROM issue WHERE id = $1 AND status = 'todo' AND project_id = $2`, []any{foreignIssue, project}, "", ""},
+		{"pause project", "PUT", "/api/projects/" + pausedProject + "/", `{"status":"paused"}`,
+			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, []any{pausedTask}, "", ""},
+		{"delete project", "DELETE", "/api/projects/" + deletedProject + "/", ``,
+			`SELECT count(*) FROM project WHERE id = $1`, []any{deletedProject}, "", ""},
+		{"clear queued chat tasks", "DELETE", "/api/chat/sessions/" + chat + "/queued-tasks", ``,
+			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, []any{chatTask}, "", ""},
 		{"delete label", "DELETE", "/api/labels/" + label, ``,
 			`SELECT count(*) FROM issue_to_label WHERE issue_id = $1 AND label_id = $2`, []any{foreignIssue, label}, "", ""},
 		{"delete squad", "DELETE", "/api/squads/" + squad, ``,
