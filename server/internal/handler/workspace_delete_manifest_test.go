@@ -207,6 +207,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protected_path_policy":              workspaceDelete,
 	"task_elevation":                     workspaceDelete,
 	"elevated_op":                        workspaceDelete,
+	"issue_taint":                        workspaceDelete,
+	"issue_taint_clear":                  workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
