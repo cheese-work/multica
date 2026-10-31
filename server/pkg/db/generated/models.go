@@ -797,6 +797,17 @@ type DecisionAction struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DecisionAgentNotice struct {
+	InstanceID    pgtype.UUID        `json:"instance_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	Attempts      int32              `json:"attempts"`
+	LastError     string             `json:"last_error"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+}
+
 type DecisionAgentReliance struct {
 	ID          pgtype.UUID        `json:"id"`
 	InstanceID  pgtype.UUID        `json:"instance_id"`
@@ -831,13 +842,15 @@ type DecisionAgentScope struct {
 }
 
 type DecisionAgentSettlement struct {
-	InstanceID   pgtype.UUID        `json:"instance_id"`
-	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
-	IssueID      pgtype.UUID        `json:"issue_id"`
-	EffectiveAt  pgtype.Timestamptz `json:"effective_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	RevokedBy    pgtype.UUID        `json:"revoked_by"`
-	RevokeReason pgtype.Text        `json:"revoke_reason"`
+	InstanceID    pgtype.UUID        `json:"instance_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	EffectiveAt   pgtype.Timestamptz `json:"effective_at"`
+	RevokedAt     pgtype.Timestamptz `json:"revoked_at"`
+	RevokedBy     pgtype.UUID        `json:"revoked_by"`
+	RevokeReason  pgtype.Text        `json:"revoke_reason"`
+	UndoOwnerType pgtype.Text        `json:"undo_owner_type"`
+	UndoOwnerID   pgtype.UUID        `json:"undo_owner_id"`
 }
 
 type DecisionAgentUndo struct {
