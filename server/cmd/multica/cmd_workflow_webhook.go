@@ -85,7 +85,8 @@ func runWorkflowWebhookCreate(cmd *cobra.Command, args []string) error {
 	}
 	return changeWorkflowWebhook(cmd, args[0], "create", func(ctx context.Context, c *cli.APIClient) (map[string]any, error) {
 		var ep map[string]any
-		return ep, c.PostJSON(ctx, workflowWebhooksPath(args[0]), body, &ep)
+		err := c.PostJSON(ctx, workflowWebhooksPath(args[0]), body, &ep)
+		return ep, err
 	})
 }
 
@@ -112,7 +113,8 @@ func actOnWorkflowWebhook(cmd *cobra.Command, workflowID, verb string) error {
 		for _, ep := range endpoints {
 			if strVal(ep, "name") == name {
 				var out map[string]any
-				return out, c.PostJSON(ctx, workflowWebhooksPath(workflowID)+"/"+strVal(ep, "id")+"/"+verb, nil, &out)
+				err := c.PostJSON(ctx, workflowWebhooksPath(workflowID)+"/"+strVal(ep, "id")+"/"+verb, nil, &out)
+				return out, err
 			}
 		}
 		return nil, fmt.Errorf("workflow has no webhook endpoint named %q", name)
