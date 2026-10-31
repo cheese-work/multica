@@ -106,6 +106,9 @@ type IssueCreateParams struct {
 	// actually lands on, and its answer replaces any assignee the caller
 	// resolved earlier from an unlocked read.
 	HandoffResolver CreateHandoffResolver
+	// EntryGate, when set, checks the entry gates of the step the issue lands
+	// on, under the same locks. Platform spawns leave it nil and are not gated.
+	EntryGate CreateEntryGate
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
@@ -116,6 +119,9 @@ type IssueCreateParams struct {
 // the workflow step a new issue enters. It returns no assignee when the step
 // resolves to nobody.
 type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
+
+// CreateEntryGate refuses a create the landing step's block entry gates stop.
+type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step) error
 
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
@@ -396,6 +402,13 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 					return IssueCreateResult{}, err
 				}
 				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+			}
+		}
+	}
+	if p.EntryGate != nil && def != nil {
+		if step, ok := def.Step(p.Status); ok {
+			if err := p.EntryGate(ctx, qtx, step); err != nil {
+				return IssueCreateResult{}, err
 			}
 		}
 	}

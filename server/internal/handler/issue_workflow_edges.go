@@ -79,7 +79,7 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			return err
 		}
 	}
-	facts, err := h.loadEdgeFacts(ctx, issue, edges, def, w.CreatedAt.Time, sub)
+	facts, err := h.loadEdgeFacts(ctx, h.Queries, issue, edges, def, w.CreatedAt.Time, sub)
 	if err != nil {
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 		return err
@@ -159,10 +159,10 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 // (on a sub-workflow step, every child of the step's stage); the status of
 // each issue an issue_status guard names, and which webhook guards have a
 // success event since the issue entered the step.
-func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
+func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	includeChildren := def.IncludeChildPRs
 	var facts issueworkflow.Facts
-	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	children, err := q.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
 	}
@@ -178,19 +178,19 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 		}
 		joined++
 		if facts.ChildrenDone {
-			cat := issuestatus.Category(ctx, h.Queries, c.WorkspaceID, c.Status)
+			cat := issuestatus.Category(ctx, q, c.WorkspaceID, c.Status)
 			facts.ChildrenDone = cat == issuestatus.CategoryDone || cat == issuestatus.CategoryClosed
 		}
 	}
 	facts.ChildrenDone = facts.ChildrenDone && joined > 0
-	prs, err := h.Queries.ListEdgePullRequests(ctx, ids)
+	prs, err := q.ListEdgePullRequests(ctx, ids)
 	if err != nil {
 		return facts, err
 	}
 	for _, p := range prs {
 		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
-	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges); err != nil {
+	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, q, issue.WorkspaceID, edges); err != nil {
 		return facts, err
 	}
 	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
@@ -200,7 +200,7 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 // guardedIssueStatuses resolves the identifiers named by issue_status guards
 // in the workspace; an identifier that names no issue here is left out, so its
 // guard never holds.
-func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.UUID, edges []issueworkflow.Edge) (map[string]string, error) {
+func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, edges []issueworkflow.Edge) (map[string]string, error) {
 	var out map[string]string
 	prefix := ""
 	for _, e := range edges {
@@ -218,7 +218,7 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, workspaceID pgtype.U
 		if !strings.EqualFold(parts.prefix, prefix) {
 			continue
 		}
-		target, err := h.Queries.GetIssueByNumber(ctx, db.GetIssueByNumberParams{WorkspaceID: workspaceID, Number: parts.number})
+		target, err := q.GetIssueByNumber(ctx, db.GetIssueByNumberParams{WorkspaceID: workspaceID, Number: parts.number})
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}

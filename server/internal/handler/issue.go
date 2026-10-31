@@ -3570,6 +3570,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		EntryGate:       h.createEntryGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
@@ -3741,6 +3742,10 @@ type UpdateIssueRequest struct {
 	// project move without it is administrative. Batch updates ignore it.
 	// (MUL-7420)
 	EnterWorkflowStep bool `json:"enter_workflow_step,omitempty"`
+	// EntryGateOverrideReason (1-500 chars) passes a status write that fails
+	// block entry gates the step lets a person override. Honored for a person's
+	// own credential only; batch updates and creates have no override. (CHE-2295)
+	EntryGateOverrideReason *string `json:"entry_gate_override_reason,omitempty"`
 	// DuplicateOfIssueID marks this issue as a duplicate of another issue in
 	// the same workspace (MUL-7349). A duplicate is an ordinary cancelled issue
 	// that remembers its original, so this also sets status to cancelled.
@@ -4203,11 +4208,23 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A handoff assignee passes the same gate as a hand-picked one.
 	// An agent's run may only move the issue from the step it works on.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if req.EntryGateOverrideReason != nil {
+		reason, valid := validEntryOverrideReason(*req.EntryGateOverrideReason)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "entry_gate_override_reason must be 1 to 500 characters")
+			return
+		}
+		req.EntryGateOverrideReason = &reason
+	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
+		if req.EntryGateOverrideReason != nil {
+			workflowWrite.entry.overrideReason = *req.EntryGateOverrideReason
+		}
 	}
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
@@ -4282,6 +4299,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+	h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
@@ -4942,6 +4960,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	// The issues this batch wrote; the rest were skipped by a per-issue guard.
 	updatedIDs := []string{}
+	failed := []map[string]any{}
 	var triggerOutcomes []CommentTriggerOutcome
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
@@ -5111,6 +5130,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID}
 		// The client previewed no handoff for this batch. An issue that would
 		// hand off now is skipped: nobody confirmed it. verify checks again under
 		// the locks, for a handler that appears between here and the write.
@@ -5159,6 +5179,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeIssueStatusRaceError(w, err) {
 				return
 			}
+			var gated *EntryGateError
+			if errors.As(err, &gated) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
+				continue
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
@@ -5166,6 +5191,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+		h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -5268,6 +5294,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{"updated": updated, "updated_ids": updatedIDs}
 	if len(triggerOutcomes) > 0 {
 		response["trigger_outcomes"] = triggerOutcomes
+	}
+	if len(failed) > 0 {
+		response["failed"] = failed
 	}
 	writeJSON(w, http.StatusOK, response)
 }

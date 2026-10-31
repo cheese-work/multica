@@ -727,8 +727,8 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID)
 	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
-		HandoffResolver: handoffResolver,
-		WorkspaceID:     workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
+		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID),
+		WorkspaceID: workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
 		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID, RequestedByID: userID,
 		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, StartDate: startDate, DueDate: dueDate,
 		AttachmentIDs: attachmentIDs, LabelIDs: labelIDs, Properties: properties, Stage: stage,
@@ -745,6 +745,9 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 	var handoffErr *createHandoffError
 	if errors.As(err, &handoffErr) {
 		writeError(w, handoffErr.status, handoffErr.message)
+		return errSourceContextResponseWritten
+	}
+	if writeIssueWorkflowError(w, err) {
 		return errSourceContextResponseWritten
 	}
 	if err != nil {
