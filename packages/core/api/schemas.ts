@@ -1215,6 +1215,23 @@ const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(un
     return parsed.success ? [parsed.data] : [];
   }));
 
+// Supersession links (CHE-2121). Lenient: a malformed link reads as absent
+// instead of failing the whole comment or timeline.
+const CommentSupersedeLinkSchema = z.object({
+  comment_id: z.string(),
+  resolved: z.boolean().optional().catch(undefined),
+  skipped_reason: z.string().optional().catch(undefined),
+}).loose();
+
+const supersessionShape = {
+  superseded_by_id: z.string().nullable().optional().catch(undefined),
+  supersedes: z.array(z.unknown()).optional().catch(undefined).transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentSupersedeLinkSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    })),
+};
+
 const TimelineEntrySchema = z.object({
   type: z.string(),
   id: z.string(),
@@ -1233,6 +1250,7 @@ const TimelineEntrySchema = z.object({
   reactions: z.array(ReactionSchema).optional(),
   attachments: z.array(AttachmentSchema).optional(),
   source_task_id: z.string().nullable().optional(),
+  ...supersessionShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1418,6 +1436,7 @@ export const CommentSchema = z.object({
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
   hints: z.array(z.string()).optional().catch(undefined),
+  ...supersessionShape,
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),

@@ -673,7 +673,11 @@
     "restart_failed": "沒能停止當前執行，訊息還沒有傳送。",
     "you": "你",
     "thread_show_more_other": "顯示另外 {{count}} 條回復",
-    "thread_show_less": "收起"
+    "thread_show_less": "收起",
+    "supersession": {
+      "superseded_by": "已被 rev-{{revision}} 取代",
+      "supersedes": "取代 rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "回覆...",

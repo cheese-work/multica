@@ -51,6 +51,10 @@ type TimelineEntry struct {
 	ResolvedByType *string              `json:"resolved_by_type,omitempty"`
 	ResolvedByID   *string              `json:"resolved_by_id,omitempty"`
 	SourceTaskID   *string              `json:"source_task_id,omitempty"`
+	// Supersession links (CHE-2121): the newer comment that replaced this one,
+	// and the older threads this one replaced.
+	SupersededByID *string           `json:"superseded_by_id,omitempty"`
+	Supersedes     []SupersedeResult `json:"supersedes,omitempty"`
 	// Set only on a tombstone: a comment deleted while it still had replies.
 	DeletedAt *string `json:"deleted_at,omitempty"`
 	// Supplements lists every running turn this comment steered; the single
@@ -337,6 +341,7 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 			out[i].SupplementDeliveredAt = receipts[0].DeliveredAt
 		}
 	}
+	h.attachTimelineSupersessions(r.Context(), comments, out)
 	return out
 }
 
