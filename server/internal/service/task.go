@@ -3636,6 +3636,24 @@ func chatInputOwnerID(task db.AgentTaskQueue) pgtype.UUID {
 	return task.ID
 }
 
+// chatReplySessionID is the DM a chat task's reply belongs in: the one the task
+// ran in, or its newest continuation. An agent calls `continue` before its run
+// ends, so the reply of that run would otherwise land only in the archived DM
+// (CHE-2119). The resume pointer stays on the task's own session on purpose:
+// the continuation must start fresh from the summary.
+func chatReplySessionID(ctx context.Context, qtx *db.Queries, sessionID pgtype.UUID) (pgtype.UUID, error) {
+	for {
+		session, err := qtx.GetChatSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !session.ContinuedIntoSessionID.Valid {
+			return sessionID, nil
+		}
+		if err != nil {
+			return sessionID, fmt.Errorf("get chat session: %w", err)
+		}
+		sessionID = session.ContinuedIntoSessionID
+	}
+}
+
 // createAssistantChatMessage writes an assistant outcome and reanchors the
 // newly-visible queued direct head in the caller's transaction. Keeping the two
 // statements together is the transcript-order boundary: readers must not see
@@ -5281,7 +5299,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			}
 			chatAssistantMsg = msg
 			if msg != nil {
-				if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, *msg); err != nil {
+				if dmNotified, err = dmnotify.Reply(ctx, qtx, msg.ChatSessionID, *msg); err != nil {
 					return fmt.Errorf("notify DM reply: %w", err)
 				}
 			}
@@ -5398,13 +5416,19 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		// pending flag and the pass that resolves it can never disagree: a
 		// client only shows the skeleton placeholder when generation is
 		// actually about to run.
-		suggest := s.chatQuickActionsEligible(ctx, task, chatAssistantMsg)
-		s.broadcastChatDone(ctx, task, chatAssistantMsg, suggest)
+		replyTask := task
+		if chatAssistantMsg != nil {
+			// The DM the reply was written into; differs from the task's own
+			// after an agent rollover (chatReplySessionID).
+			replyTask.ChatSessionID = chatAssistantMsg.ChatSessionID
+		}
+		suggest := s.chatQuickActionsEligible(ctx, replyTask, chatAssistantMsg)
+		s.broadcastChatDone(ctx, replyTask, chatAssistantMsg, suggest)
 		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
 			// Detached: the reply is already delivered and the user's next turn
 			// must never wait on suggestions.
-			s.GenerateChatQuickActionsAsync(task, ChatQuickActionsAutomatic)
+			s.GenerateChatQuickActionsAsync(replyTask, ChatQuickActionsAutomatic)
 		}
 	}
 
@@ -5509,9 +5533,13 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		}
 	}
 
+	replySessionID, err := chatReplySessionID(ctx, qtx, task.ChatSessionID)
+	if err != nil {
+		return nil, err
+	}
 	params := db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
-		ChatSessionID: task.ChatSessionID,
+		ChatSessionID: replySessionID,
 		Role:          "assistant",
 		TaskID:        task.ID,
 		ElapsedMs:     computeChatElapsedMs(task),
@@ -5982,9 +6010,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
 				return fmt.Errorf("release onboarding kickoff: %w", err)
 			}
+			replySessionID, err := chatReplySessionID(ctx, qtx, t.ChatSessionID)
+			if err != nil {
+				return err
+			}
 			failure, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 				ID:            dbid.NewV7(),
-				ChatSessionID: t.ChatSessionID,
+				ChatSessionID: replySessionID,
 				Role:          "assistant",
 				Content:       redact.Text(errMsg),
 				TaskID:        t.ID,
@@ -5994,7 +6026,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err != nil {
 				return fmt.Errorf("write chat failure outcome: %w", err)
 			}
-			if dmNotified, err = dmnotify.Reply(ctx, qtx, t.ChatSessionID, failure); err != nil {
+			if dmNotified, err = dmnotify.Reply(ctx, qtx, replySessionID, failure); err != nil {
 				return fmt.Errorf("notify DM failure: %w", err)
 			}
 		}
