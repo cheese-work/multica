@@ -741,12 +741,13 @@ type DaemonConnection struct {
 }
 
 type DaemonPause struct {
-	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
-	DaemonID       string             `json:"daemon_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	Reason         string             `json:"reason"`
-	PausedBy       pgtype.UUID        `json:"paused_by"`
-	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+	MachineOwnerID    pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID          string             `json:"daemon_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Reason            string             `json:"reason"`
+	PausedBy          pgtype.UUID        `json:"paused_by"`
+	PausedAt          pgtype.Timestamptz `json:"paused_at"`
+	DrainedNotifiedAt pgtype.Timestamptz `json:"drained_notified_at"`
 }
 
 type DaemonToken struct {
