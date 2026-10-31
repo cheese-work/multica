@@ -322,7 +322,7 @@ func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Conte
 // analogue of hermesExceptionVerifyAndSwapWorkspaceContext. squad.instructions
 // is a plain non-nullable string column (unlike workspace.context), so there
 // is no NULL case to handle.
-func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Context, squadID string, req hermesExceptionRequest) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
+func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Context, r *http.Request, workspaceID, squadID string, req hermesExceptionRequest) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
 	if !isWellFormedDigestHex(req.ExpectedBeforeDigest) {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectMalformedDigest, nil
 	}
@@ -361,11 +361,16 @@ func (h *Handler) hermesExceptionVerifyAndSwapSquadInstructions(ctx context.Cont
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
+	result := hermesExceptionSwapResult{BeforeDigest: beforeDigest, AfterDigest: afterDigest, BeforeText: currentInstructions, AfterText: req.NewContent}
+	if err := h.auditGovernedWrite(ctx, tx, r, ownerCASSquadInstructions, workspaceID, squadID, result); err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
-	return hermesExceptionSwapResult{BeforeDigest: beforeDigest, AfterDigest: afterDigest}, hermesExceptionRejectNone, nil
+	return result, hermesExceptionRejectNone, nil
 }
 
 // hermesExceptionWriteRejection maps a hermesExceptionRejectReason to the
