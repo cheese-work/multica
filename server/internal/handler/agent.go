@@ -1776,6 +1776,18 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	createdTargets, err := qtx.ListAgentInvocationTargets(r.Context(), created.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.create", WorkspaceID: wsUUID, TargetID: created.ID,
+		After: agentAuditFields(created, createdTargets),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.create")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit agent create")
 		return

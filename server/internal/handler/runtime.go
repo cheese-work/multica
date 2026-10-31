@@ -585,6 +585,31 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSpace(*req.CustomName)
 		customName := pgtype.Text{String: trimmed, Valid: trimmed != ""}
 
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+
+		// The row lock makes the audited before-name the one this rename replaces.
+		current, err := qtx.LockAgentRuntimeForAccessChange(r.Context(), runtimeUUID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "runtime not found")
+				return
+			}
+			slog.Error("lock runtime for rename failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		audit := auditInput{
+			Kind: "runtime.rename", WorkspaceID: rt.WorkspaceID, TargetID: runtimeUUID,
+			Before: map[string]any{"custom_name": auditText(current.CustomName)},
+			After:  map[string]any{"custom_name": auditText(customName)},
+		}
+
 		if req.ApplyToMachine && rt.DaemonID.Valid {
 			// Non-admins may only relabel their own runtimes on the machine;
 			// owners/admins rename every runtime sharing the daemon_id. A NULL
@@ -593,7 +618,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			if !roleAllowed(member.Role, "owner", "admin") {
 				ownerFilter = member.UserID
 			}
-			rows, err := h.Queries.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
+			rows, err := qtx.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
 				CustomName:  customName,
 				WorkspaceID: rt.WorkspaceID,
 				DaemonID:    rt.DaemonID,
@@ -604,6 +629,9 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to update runtime")
 				return
 			}
+			// One row on the addressed runtime plus the fan-out count keeps the
+			// rename atomic without a row per machine runtime.
+			audit.After["runtimes_renamed"] = len(rows)
 			// The actor always owns (or admins) the runtime addressed by :id,
 			// so it is among the updated rows — surface it in the response.
 			for _, row := range rows {
@@ -612,9 +640,8 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			changed = true
 		} else {
-			updated, err := h.Queries.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
+			updated, err := qtx.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
 				CustomName: customName,
 				ID:         runtimeUUID,
 			})
@@ -624,8 +651,16 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rt = updated
-			changed = true
 		}
+		if err := h.writeAudit(r.Context(), qtx, r, audit); err != nil {
+			writeAuditFailure(w, r, err, "runtime.rename")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		changed = true
 	}
 
 	if changed {
