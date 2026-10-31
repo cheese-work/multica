@@ -2,7 +2,7 @@
 SELECT DISTINCT request.workspace_id, request.human_user_id
 FROM decision_request request
 JOIN member ON member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id
-WHERE request.status = 'cancelled' AND request.cancel_reason = 'expired'
+WHERE request.authority = 'human' AND request.status = 'cancelled' AND request.cancel_reason = 'expired'
     AND NOT EXISTS (SELECT 1 FROM decision_expiry_digest_request item WHERE item.request_id = request.id)
     AND NOT EXISTS (
         SELECT 1 FROM decision_expiry_digest digest
@@ -14,7 +14,7 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 
 -- name: ListDecisionExpiryDigestRequests :many
 SELECT request.* FROM decision_request request
-WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.human_user_id = sqlc.arg('human_user_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.human_user_id = sqlc.arg('human_user_id')
     AND request.status = 'cancelled' AND request.cancel_reason = 'expired'
     AND NOT EXISTS (SELECT 1 FROM decision_expiry_digest_request item WHERE item.request_id = request.id)
 ORDER BY request.created_at, request.id

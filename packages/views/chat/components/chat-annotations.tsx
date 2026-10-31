@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { MessageSquare, Pencil, X } from "lucide-react";
+import { MessageSquare, Pencil, X } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";

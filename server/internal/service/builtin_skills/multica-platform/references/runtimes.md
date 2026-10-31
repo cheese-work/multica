@@ -33,7 +33,14 @@ multica runtime delete <runtime-id>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 multica repo checkout <url> --fresh
+multica git push [origin] [HEAD|branch]
 ```
+
+`multica git push` pushes the checked-out task branch through the run's push
+broker socket (`MULTICA_BROKER_SOCKET`). The run holds no credential. The
+broker accepts only the pinned branch, never a force, tag or delete, and the
+command refuses `--force`, `--force-with-lease` and `-f`. Without a broker
+socket it fails with "no push broker".
 
 Runtime and repo commands affect active agent execution. Do not restart daemons,
 update runtimes, or check out arbitrary repos just to test.

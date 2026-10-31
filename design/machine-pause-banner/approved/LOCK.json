@@ -1,0 +1,26 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:che-2684",
+  "screens": [
+    {
+      "screen": "machine-pause-banner (direction B, one summary banner and header icon with count; desktop 780 and phone 390)",
+      "frame_id": "PX_YkzqAb-",
+      "updatedAt": "2026-10-31T03:10:54.092Z",
+      "content_sha256": "ef9c44916c5169b4f9f107d96cc453ed41425e006eaf599c1f78768e3e0bcc64"
+    }
+  ],
+  "export_sha256": "dbe3d11c735799896c6ed67e13e212d50dbbf3803e14d97a4b236456003aed61",
+  "export_sha256_method": "sha256 of the two lines '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "banner-audiences-b-1240.webp": "b4b2e88a2dd3a3369aa2def81e88650b001d8cce075f7e5ed15108999c7bfb53",
+    "banner-audiences-b.html": "ef9c44916c5169b4f9f107d96cc453ed41425e006eaf599c1f78768e3e0bcc64"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, no external fetch); written as read from doop, without the trailing newline",
+  "exported_at": "2026-10-31 10:16 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2684",
+  "selection_id": "01a18fda-6a9c-72c5-a3a4-f1bcd67ccea6",
+  "ux_verdict_id": "01a18ff2-ff1f-784c-a067-0c979f9c340b"
+}

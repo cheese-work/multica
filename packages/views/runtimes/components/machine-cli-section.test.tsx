@@ -41,6 +41,13 @@ function runtime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
   };
 }
 
+const MACHINE_UPDATE = {
+  available: true,
+  serverCommit: "0123456789abcdef0123456789abcdef01234567",
+  serverVersion: "0.7.1-20261029-2357",
+  reason: "",
+};
+
 function machine(runtimes: AgentRuntime[]): RuntimeMachine {
   const launchedBy = runtimes
     .filter((item) => item.status === "online")
@@ -56,6 +63,7 @@ function machine(runtimes: AgentRuntime[]): RuntimeMachine {
     deviceInfo: "dev.local",
     cliVersion: "0.3.17",
     launchedBy: launchedBy ?? null,
+    update: MACHINE_UPDATE,
     mode: "local",
     section: "remote",
     isCurrent: false,
@@ -100,6 +108,7 @@ describe("MachineCliSection", () => {
       currentVersion: "0.3.17",
       isOnline: true,
       launchedBy: "desktop",
+      updateStatus: MACHINE_UPDATE,
     });
   });
 
@@ -130,6 +139,7 @@ describe("MachineCliSection", () => {
       currentVersion: "0.3.17",
       isOnline: false,
       launchedBy: null,
+      updateStatus: MACHINE_UPDATE,
     });
   });
 
@@ -160,6 +170,7 @@ describe("MachineCliSection", () => {
       currentVersion: "0.3.17",
       isOnline: true,
       launchedBy: null,
+      updateStatus: MACHINE_UPDATE,
     });
   });
 
@@ -186,6 +197,7 @@ describe("MachineCliSection", () => {
       currentVersion: "0.3.17",
       isOnline: false,
       launchedBy: null,
+      updateStatus: MACHINE_UPDATE,
     });
   });
 
@@ -214,6 +226,7 @@ describe("MachineCliSection", () => {
       currentVersion: "0.3.17",
       isOnline: false,
       launchedBy: "desktop",
+      updateStatus: MACHINE_UPDATE,
     });
   });
 });

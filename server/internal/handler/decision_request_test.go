@@ -78,6 +78,36 @@ func requireRequestRefusal(test *testing.T, err error) {
 	}
 }
 
+func TestDecisionNonAssigneeIssueTaskFlow(test *testing.T) {
+	for _, assignee := range []string{"member", "other_agent", "other_squad", "unassigned"} {
+		test.Run(assignee, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			var kind, id any
+			switch assignee {
+			case "member":
+				kind, id = "member", fixture.humanID
+			case "other_agent":
+				kind, id = "agent", createHandlerTestAgent(test, "Assigned agent", []byte("[]"))
+			case "other_squad":
+				kind, id = "squad", dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Other squad", "creator_id": testUserID, "leader_id": createHandlerTestAgent(test, "Other leader", []byte("[]"))})
+			}
+			dbfx.Exec(test, `UPDATE issue SET assignee_type = $1, assignee_id = $2 WHERE id = $3`, kind, id, fixture.issueID)
+			// The mention-triggered task must open its own intent, discover its
+			// own lane and send, regardless of the current issue assignee.
+			fixture.intentID, fixture.tagID = openLaneIntent(test, fixture.intentFixture, fixture.mention())
+			testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture.intentFixture, "&for="+fixture.humanID)).Want(http.StatusOK)
+			result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
+			if err != nil {
+				test.Fatal(err)
+			}
+			if result.Request.AskingAgentID != parseUUID(fixture.agentID) || result.Comment.SourceTaskID != parseUUID(fixture.taskID) {
+				test.Fatalf("wrong request provenance: %+v", result.Request)
+			}
+			fixture.assertCounts(test, 1)
+		})
+	}
+}
+
 func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 	for _, squad := range []bool{false, true} {
 		test.Run(map[bool]string{false: "agent", true: "squad"}[squad], func(test *testing.T) {
@@ -122,7 +152,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 }
 
 func TestDecisionRequestCoreRefusals(test *testing.T) {
-	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "non_assignee", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
+	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
 		test.Run(reason, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			request, input := fixture.request(), fixture.input()
@@ -147,8 +177,6 @@ func TestDecisionRequestCoreRefusals(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET chat_session_id = $1 WHERE id = $2`, fixture.sessionID, fixture.taskID)
 			case "other_issue":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "wrong issue"), fixture.taskID)
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_type = NULL, assignee_id = NULL WHERE id = $1`, fixture.issueID)
 			case "archived_agent":
 				dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
 			case "private_agent":

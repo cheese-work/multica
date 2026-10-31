@@ -750,7 +750,7 @@ func buildCodeArtsEnv(extra map[string]string) []string {
 	for key, value := range extra {
 		defaults[key] = value
 	}
-	return mergeEnv(os.Environ(), defaults)
+	return mergeEnv(BaseEnviron(), defaults)
 }
 
 // buildCodeArtsMCPConfigContent uses the configuration schema shared by the

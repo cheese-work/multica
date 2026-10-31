@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Settings, Workflow } from "lucide-react";
+import { Check, Settings, Workflow } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { clientErrorMessage } from "@multica/core/api";
 import { useFeatureEnabled } from "@multica/core/config";

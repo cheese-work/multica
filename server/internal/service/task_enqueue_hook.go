@@ -21,3 +21,21 @@ func notifyTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 		fn(task)
 	}
 }
+
+// deferEnqueuedTaskHook holds the caller's hook until the enqueue transaction
+// commits: the hook reads the row through the pool, where an uncommitted insert
+// is invisible. It returns the context to enqueue under and the call to make
+// after commit.
+func deferEnqueuedTaskHook(ctx context.Context) (context.Context, func()) {
+	fn, ok := ctx.Value(enqueuedTaskHookKey{}).(func(db.AgentTaskQueue))
+	if !ok {
+		return ctx, func() {}
+	}
+	var tasks []db.AgentTaskQueue
+	held := WithEnqueuedTaskHook(ctx, func(t db.AgentTaskQueue) { tasks = append(tasks, t) })
+	return held, func() {
+		for _, t := range tasks {
+			fn(t)
+		}
+	}
+}

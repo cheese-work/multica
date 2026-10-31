@@ -111,6 +111,16 @@ Things to know:
 
 > Note: setting `ALLOW_SIGNUP=false` enables invite-only account creation. A new user with a live pending workspace invitation can create an account with the invited email; users without an allowlist match or a valid invitation remain blocked. Invitations also permit emails outside configured allowlists when `ALLOW_SIGNUP=true`. Revocation does not delete accounts already created using an invitation or prevent those accounts from signing in. Combine this with `DISABLE_WORKSPACE_CREATION=true` when invitees must join an existing workspace instead of creating their own.
 
+### Web Push (Optional)
+
+| Variable | Description |
+|----------|-------------|
+| `MULTICA_VAPID_PUBLIC_KEY` | VAPID public key. The web app reads it from `GET /api/push/config` |
+| `MULTICA_VAPID_PRIVATE_KEY` | VAPID private key. Keep it secret |
+| `MULTICA_VAPID_SUBJECT` | Contact the push services can reach, as `mailto:you@example.com` or an `https://` URL |
+
+Push is off until all three are set. Generate one key pair per deployment with the `web-push` tool: `npx web-push generate-vapid-keys`. Changing the key pair ends every existing browser subscription, because a subscription is bound to the key it was created with.
+
 ### File Storage (Optional)
 
 Uploads and attachments are written to local disk by default. Set `S3_BUCKET` to

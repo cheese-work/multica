@@ -416,14 +416,17 @@ assigned to the agent before you archive it.
 
 ```bash
 multica issue cancel-task <run-id> [--issue <issue-id>]   # stop one run
-multica issue rerun <issue-id> --reason "why"             # fresh run for the current assignee
+multica issue rerun-task <run-id> [--issue <issue-id>] [--fresh] --reason "why"  # repeat one run
+multica issue rerun <issue-id> --reason "why"             # deprecated: rerun the current assignee
 ```
 
 `cancel-task` takes the short run id shown by `issue runs`; pass `--issue` when
 a short prefix is ambiguous. It interrupts the in-flight agent so it stops
-emitting tool calls. `rerun` re-enqueues the issue's current agent assignment as
-a new run and starts real work. `--reason` goes to the server audit log only;
-it is not stored on the run.
+emitting tool calls. `rerun-task` repeats that run with its original agent and
+trigger, even after a reassignment, and starts real work; it reuses the source
+working directory and session when safe, and `--fresh` starts with new ones.
+The deprecated `rerun` re-enqueues the issue's current agent assignment. On
+both, `--reason` goes to the server audit log only; it is not stored on the run.
 
 **Runtime-local skills.** `multica agent skills runtime-set <agent-id>` turns one
 skill that lives on the runtime off or back on:

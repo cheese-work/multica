@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { type UseQueryResult } from "@tanstack/react-query";
-import { Check, Minus } from "lucide-react";
+import { Check, Minus } from "@multica/ui/icons";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useRemoveJevCredential, useSetJevCredential } from "@multica/core/workspace/mutations";
