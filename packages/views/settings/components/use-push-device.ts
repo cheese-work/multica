@@ -71,11 +71,13 @@ export function usePushDevice() {
       const permission = await requestWebNotificationPermission();
       setPermissionReads((n) => n + 1);
       if (permission !== "granted") return;
+      // The user's request, kept even if the steps below fail: the next app
+      // load retries it (reRegisterThisDevice) instead of dropping it.
+      setPushIntent("on");
       const registration = await ensurePushRegistration();
       const body = await subscribeThisDevice(registration, config.data.public_key);
       if (!body) throw new Error("subscription has no keys");
       await api.registerPushSubscription(body);
-      setPushIntent("on");
       setSubscribed(true);
     } catch {
       setFailed("enable");

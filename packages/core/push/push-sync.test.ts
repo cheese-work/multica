@@ -60,6 +60,23 @@ describe("reRegisterThisDevice", () => {
     expect(api.registerPushSubscription).not.toHaveBeenCalled();
   });
 
+  it("respects an opt-out even when storage refused to record it", async () => {
+    vi.resetModules();
+    const intent = await import("./push-intent");
+    const sync = await import("./push-sync");
+    vi.stubGlobal("localStorage", {
+      getItem: () => "on",
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    });
+    stubBrowser({ existing: subscription() });
+    intent.setPushIntent("off");
+    const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+    await expect(sync.reRegisterThisDevice(api)).resolves.toBe("skipped");
+    expect(api.registerPushSubscription).not.toHaveBeenCalled();
+  });
+
   it("recovers a subscription the browser dropped while push is wanted", async () => {
     stubStorage("on");
     const pushManager = stubBrowser({ existing: null });

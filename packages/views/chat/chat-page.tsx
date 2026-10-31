@@ -23,7 +23,7 @@ import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
@@ -33,6 +33,7 @@ import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
+import { hasInFlightPendingTask } from "./components/use-chat-controller";
 import { useChatRename } from "./components/use-chat-rename";
 import { useChatFork } from "./components/use-chat-fork";
 import { useDmSessionSurface } from "./components/use-dm-session-surface";
@@ -87,6 +88,7 @@ export function ChatPage() {
   const isCurrentChatRoute = pathname === wsPaths.chat();
   const isCompact = useIsCompact();
 
+  const qc = useQueryClient();
   const c = useChatController({
     isActive: isCurrentChatRoute && getCurrentSlug() === workspaceSlug,
   });
@@ -155,13 +157,26 @@ export function ChatPage() {
   // strips `?session=`, so the page remembers the id to say so instead of
   // landing on a silent blank pane.
   const [unavailableSessionId, setUnavailableSessionId] = useState<string | null>(null);
+  // A session created a moment ago is not in the list yet; the controller
+  // keeps it while its first task is in flight, so the page must not call it
+  // gone. The notice also clears once the conversation shows up in the list.
   useEffect(() => {
-    if (urlSession && c.sessionsLoaded && !c.sessions.some((s) => s.id === urlSession)) {
+    const inList = (id: string) => c.sessions.some((s) => s.id === id);
+    if (
+      urlSession &&
+      c.sessionsLoaded &&
+      !inList(urlSession) &&
+      !hasInFlightPendingTask(qc, urlSession)
+    ) {
       setUnavailableSessionId(urlSession);
-    } else if (c.activeSessionId && c.activeSessionId !== unavailableSessionId) {
+    } else if (
+      unavailableSessionId &&
+      (inList(unavailableSessionId) ||
+        (c.activeSessionId && c.activeSessionId !== unavailableSessionId))
+    ) {
       setUnavailableSessionId(null);
     }
-  }, [urlSession, c.sessionsLoaded, c.sessions, c.activeSessionId, unavailableSessionId]);
+  }, [urlSession, c.sessionsLoaded, c.sessions, c.activeSessionId, unavailableSessionId, qc]);
   const showUnavailable =
     unavailableSessionId !== null &&
     !composingNew &&

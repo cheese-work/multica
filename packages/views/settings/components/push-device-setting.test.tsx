@@ -176,6 +176,34 @@ describe("PushDeviceSetting", () => {
     expect(screen.getByRole("switch", { name: "Push on this device" })).not.toBeChecked();
   });
 
+  it("keeps the requested intent when registration fails, so a reload retries it", async () => {
+    mocks.registerPushSubscription.mockRejectedValue(new Error("503"));
+    renderSetting();
+    const control = await screen.findByRole("switch", { name: "Push on this device" });
+    await waitFor(() => expect(control).not.toHaveAttribute("aria-disabled","true"));
+    await userEvent.click(control);
+    expect(await screen.findByText(enSettings.notifications.device.failed)).toBeInTheDocument();
+    expect(mocks.setPushIntent).toHaveBeenCalledWith("on");
+    expect(mocks.setPushIntent).not.toHaveBeenCalledWith("off");
+    // Recorded before the request that can fail, not after it.
+    expect(mocks.setPushIntent.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.registerPushSubscription.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("records no intent when the permission prompt is declined", async () => {
+    mocks.requestPermission.mockImplementation(async () => {
+      mocks.permission = "denied";
+      return "denied";
+    });
+    renderSetting();
+    const control = await screen.findByRole("switch", { name: "Push on this device" });
+    await waitFor(() => expect(control).not.toHaveAttribute("aria-disabled","true"));
+    await userEvent.click(control);
+    await waitFor(() => expect(mocks.requestPermission).toHaveBeenCalled());
+    expect(mocks.setPushIntent).not.toHaveBeenCalled();
+  });
+
   it("says push is not set up when the server has no keys", async () => {
     mocks.config = { enabled: false, public_key: "" };
     renderSetting();

@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
+import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
@@ -183,7 +184,11 @@ vi.mock("@multica/core/chat", async (importOriginal) => {
 
 vi.mock("./components/use-chat-controller", async () => {
   const { useChatStore } = await import("@multica/core/chat");
+  const { hasInFlightPendingTask } = await vi.importActual<
+    typeof import("./components/use-chat-controller")
+  >("./components/use-chat-controller");
   return {
+    hasInFlightPendingTask,
     useChatController: () => {
       const activeSession = useChatStore((state) => state.activeSessionId);
       return {
@@ -268,7 +273,10 @@ const agent: Agent = {
 
 const NO_ACCESS_MSG = "You don't have access to chat with this agent.";
 
-function renderPage(search: string, { strict = false } = {}) {
+function renderPage(
+  search: string,
+  { strict = false, seed }: { strict?: boolean; seed?: (qc: QueryClient) => void } = {},
+) {
   const replace = vi.fn();
   let navigation: NavigationAdapter = {
     push: vi.fn(),
@@ -284,6 +292,7 @@ function renderPage(search: string, { strict = false } = {}) {
   // ChatPage reads the client-only quick-actions pending marker via useQuery,
   // so the page needs a QueryClient like it has in the real app shell.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seed?.(qc);
   const makeUi = () => {
     const page = (
       <QueryClientProvider client={qc}>
@@ -543,6 +552,26 @@ describe("ChatPage unavailable DM (CHE-1798)", () => {
     renderPage("session=session-gone");
     expect(screen.getByRole("status").textContent).toContain(NOTICE);
     fireEvent.click(screen.getByRole("button", { name: "select-thread" }));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("stays quiet for a conversation just created, before the list has it", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    renderPage("session=session-new", {
+      seed: (qc) =>
+        qc.setQueryData(chatKeys.pendingTask("session-new"), { task_id: "task-1" }),
+    });
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("clears the notice once the conversation arrives in the list", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    const { rerender } = renderPage("session=session-late");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    sessionsRef.current = [{ id: "session-1" }, { id: "session-late" }];
+    rerender();
     expect(screen.queryByText(NOTICE)).toBeNull();
   });
 
