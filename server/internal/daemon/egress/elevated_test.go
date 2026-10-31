@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,7 +176,7 @@ func expectHelloRefused(t *testing.T, r *rig, host string, hello []byte) {
 	if code != 200 {
 		t.Fatalf("CONNECT %s: status %d, want 200 before the hello", host, code)
 	}
-	io.WriteString(c, string(hello))
+	c.Write(hello)
 	if _, err := br.ReadByte(); err == nil {
 		t.Fatalf("hello refused case: proxy answered instead of closing")
 	}
@@ -299,6 +300,51 @@ func TestElevatedAbsoluteFormRefused(t *testing.T) {
 	}
 	if r.sink.conns != 0 || r.res.calls.Load() != 0 {
 		t.Fatal("proxy acted on an absolute-form request")
+	}
+	if d := r.p.Dests(); len(d) != 1 || d[0].Allowed || d[0].Reason == "" {
+		t.Fatalf("refusal not logged with a reason: %+v", d)
+	}
+}
+
+// Requests refused before the policy runs are still logged (T17: a proxy log
+// line wherever the proxy saw the request).
+func TestElevatedEarlyRefusalsAreLogged(t *testing.T) {
+	cases := map[string]struct {
+		req  string
+		code int
+	}{
+		"origin-form GET":  {"GET / HTTP/1.1\r\nHost: " + providerHost + "\r\n\r\n", 405},
+		"POST":             {"POST http://" + providerHost + "/ HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n", 405},
+		"no port":          {"CONNECT " + providerHost + " HTTP/1.1\r\nHost: " + providerHost + "\r\n\r\n", 400},
+		"non-numeric port": {rawConnect(providerHost + ":x"), 400},
+		"empty host":       {rawConnect(":443"), 400},
+		"encoded host":     {rawConnect("api%2eprovider.test:443"), 400},
+		"garbage":          {"\x00\x01 not http\r\n\r\n", 400},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := defaultRig(t)
+			code, _ := status(t, r.dial(), tc.req)
+			if code != tc.code {
+				t.Fatalf("status %d, want %d", code, tc.code)
+			}
+			d := r.p.Dests()
+			if len(d) != 1 || d[0].Allowed || d[0].Reason == "" {
+				t.Fatalf("refusal not logged with a reason: %+v", d)
+			}
+			if len(d[0].Host) > maxLoggedTarget {
+				t.Fatalf("logged host is %d bytes, cap is %d", len(d[0].Host), maxLoggedTarget)
+			}
+		})
+	}
+}
+
+func TestElevatedEarlyRefusalLogIsCapped(t *testing.T) {
+	r := defaultRig(t)
+	status(t, r.dial(), rawConnect(strings.Repeat("a", 3000)+":x"))
+	d := r.p.Dests()
+	if len(d) != 1 || len(d[0].Host) > maxLoggedTarget {
+		t.Fatalf("destination log = %d entries, host length %d", len(d), len(d[0].Host))
 	}
 }
 
@@ -470,6 +516,9 @@ func TestNewElevatedPolicyValidation(t *testing.T) {
 	if err := ok(multicaHost, []string{"443", "8443"}, []string{providerHost}); err != nil {
 		t.Fatalf("valid policy: %v", err)
 	}
+	if err := ok(multicaHost, []string{"443"}, []string{providerHost, "API.Provider.Test"}); err != nil {
+		t.Fatalf("one provider host named twice: %v", err)
+	}
 	for name, err := range map[string]error{
 		"ip multica host":   ok("100.64.0.1", []string{"443"}, []string{providerHost}),
 		"ip provider host":  ok(multicaHost, []string{"443"}, []string{"203.0.113.10"}),
@@ -477,6 +526,7 @@ func TestNewElevatedPolicyValidation(t *testing.T) {
 		"empty host":        ok("", []string{"443"}, []string{providerHost}),
 		"empty provider":    ok(multicaHost, []string{"443"}, []string{""}),
 		"no provider":       ok(multicaHost, []string{"443"}, nil),
+		"two providers":     ok(multicaHost, []string{"443"}, []string{providerHost, "other.provider.test"}),
 		"wildcard":          ok(multicaHost, []string{"443"}, []string{"*.provider.test"}),
 		"host with port":    ok(multicaHost, []string{"443"}, []string{providerHost + ":443"}),
 		"bad multica port":  ok(multicaHost, []string{"https"}, []string{providerHost}),

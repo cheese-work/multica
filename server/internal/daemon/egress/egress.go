@@ -24,6 +24,8 @@ import (
 const (
 	headerTimeout = 10 * time.Second
 	dialTimeout   = 10 * time.Second
+	// maxLoggedTarget caps the request-target text kept for a refused request.
+	maxLoggedTarget = 256
 )
 
 // Dest is one CONNECT target the run asked for.
@@ -86,22 +88,22 @@ func (p *Proxy) handle(c net.Conn) {
 	br := bufio.NewReader(c)
 	req, err := http.ReadRequest(br)
 	if err != nil {
-		reply(c, http.StatusBadRequest)
+		p.badRequest(c, http.StatusBadRequest, "", "unparsable request")
 		return
 	}
 	// CONNECT only: absolute-form and origin-form requests get 405.
 	if req.Method != http.MethodConnect {
-		reply(c, http.StatusMethodNotAllowed)
+		p.badRequest(c, http.StatusMethodNotAllowed, req.Method+" "+req.RequestURI, "not CONNECT")
 		return
 	}
 	host, port, err := net.SplitHostPort(req.Host)
 	if err != nil || host == "" {
-		reply(c, http.StatusBadRequest)
+		p.badRequest(c, http.StatusBadRequest, req.RequestURI, "CONNECT target is not host:port")
 		return
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 1 || n > 65535 || strings.Contains(host, "%") { // no zones, no encoded hosts
-		reply(c, http.StatusBadRequest)
+		p.badRequest(c, http.StatusBadRequest, req.RequestURI, "bad port or encoded host")
 		return
 	}
 	if p.Elevated != nil {
@@ -144,6 +146,15 @@ func (p *Proxy) control(_, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("egress: %s is a host-local address", ip)
 	}
 	return nil
+}
+
+// badRequest refuses a request that never reached the policy. Under the
+// elevated policy it is logged too, with the target cut to maxLoggedTarget.
+func (p *Proxy) badRequest(c net.Conn, code int, target, reason string) {
+	if p.Elevated != nil {
+		p.record(strings.ToValidUTF8(target[:min(len(target), maxLoggedTarget)], "?"), "", false, reason)
+	}
+	reply(c, code)
 }
 
 // record logs one destination and returns its index for refuse.

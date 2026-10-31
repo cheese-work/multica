@@ -82,16 +82,22 @@ func NewElevatedPolicy(multicaHost string, multicaPorts, providerHosts []string,
 		}
 		e.allow(mh, p)
 	}
-	if len(providerHosts) == 0 {
-		return nil, errors.New("egress: no provider host")
-	}
+	// Plan 3.3: the Multica host and the runtime's one provider host, nothing else.
+	provider := ""
 	for _, h := range providerHosts {
 		ph, err := allowlistHost(h)
 		if err != nil {
 			return nil, fmt.Errorf("egress: provider host: %w", err)
 		}
-		e.allow(ph, httpsPort)
+		if provider != "" && ph != provider {
+			return nil, fmt.Errorf("egress: more than one provider host (%q, %q)", provider, ph)
+		}
+		provider = ph
 	}
+	if provider == "" {
+		return nil, errors.New("egress: no provider host")
+	}
+	e.allow(provider, httpsPort)
 	return e, nil
 }
 
@@ -307,7 +313,7 @@ func parseSNI(hs []byte) (string, error) {
 		return "", errors.New("not a ClientHello")
 	}
 	l := r.take(3)
-	if l == nil || int(l[0])<<16|int(l[1])<<8|int(l[2]) != len(r.b) {
+	if len(l) != 3 || int(l[0])<<16|int(l[1])<<8|int(l[2]) != len(r.b) {
 		return "", errors.New("ClientHello does not fill its record")
 	}
 	r.take(2 + 32)  // version, random
@@ -338,7 +344,7 @@ func parseSNI(hs []byte) (string, error) {
 		return "", errors.New("malformed extensions")
 	}
 	if seen[extECH] || seen[extLegacyESNI] {
-		return "", errors.New("Encrypted ClientHello")
+		return "", errors.New("encrypted ClientHello present")
 	}
 	if !seen[extServerName] {
 		return "", errors.New("no SNI")
