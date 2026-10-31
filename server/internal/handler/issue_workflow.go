@@ -630,6 +630,13 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
 		return
 	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, pgtype.UUID{}, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+		return
+	}
 	if status, msg := h.validateHandoffHandlers(ctx, r, workspaceID, steps, nil); status != 0 {
 		writeErrorCode(w, status, "invalid_handoff", msg)
 		return
@@ -857,6 +864,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	} else if msg != "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", msg)
+		return
+	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, current.ID, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	} else if msg != "" {
@@ -1341,6 +1355,22 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 			writeDecisionError(w, err, "workflow write")
 			return
 		}
+	}
+	// A copy is a new workflow and starts with no endpoints, so every webhook
+	// edge it would carry is unbacked.
+	endpointsOn := current.ID
+	if copyFor.Valid {
+		endpointsOn = pgtype.UUID{}
+	}
+	if msg, err := missingWebhookEndpoint(ctx, qtx, wsUUID, endpointsOn, def.Steps); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save handoff")
+		return
+	} else if msg != "" {
+		if copyFor.Valid {
+			msg += " (a project copy does not inherit endpoints)"
+		}
+		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", msg)
+		return
 	}
 	raw, err := issueworkflow.EncodeSteps(def.Steps)
 	if err != nil {

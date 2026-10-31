@@ -234,7 +234,6 @@ function InstructionsStep({ onClose }: { onClose: () => void }) {
               labels={{
                 group: t(($) => $.connect.platform_group),
                 macosLinux: t(($) => $.connect.platform_macos_linux),
-                windows: t(($) => $.connect.platform_windows),
               }}
             >
               {(cmd) => (

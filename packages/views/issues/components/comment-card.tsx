@@ -33,6 +33,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useTimeAgo } from "../../i18n";
 import { RichTableDeferContext } from "../../rich-content";
 import { bodyPrefix } from "../../rich-content/body-prefix";
+import { SupersedesLine } from "./supersession-links";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -716,6 +717,7 @@ function CommentBody({ entry, forceOpen, findOpen }: { entry: TimelineEntry; for
   const prefix = useMemo(() => (deferred ? bodyPrefix(content, BODY_PREFIX_CHARS) : ""), [deferred, content]);
   return (
     <RichTableDeferContext.Provider value={content.length > LONG_BODY_CHARS && !findOpen}>
+      <SupersedesLine entry={entry} />
       <ReadonlyContent content={deferred ? prefix : content} attachments={entry.attachments} />
       {deferred && (
         <Button type="button" size="sm" variant="ghost" className="mt-1 text-muted-foreground" onClick={() => setExpanded(true)}>

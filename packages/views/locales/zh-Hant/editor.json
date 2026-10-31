@@ -235,5 +235,37 @@
   },
   "next_self_mention": {
     "label": "下一個提到我的"
+  },
+  "plan_revision": {
+    "added": "新增：",
+    "removed": "刪除：",
+    "revision": "修訂版 {{number}}",
+    "readonly": "唯讀",
+    "issue": "來源任務",
+    "diff": "差異",
+    "split": "並排",
+    "unify": "合併",
+    "compare": "比較基準",
+    "choose_base": "選擇基準修訂版",
+    "change": "變更 {{current}} / {{total}}",
+    "previous": "上一處變更",
+    "next": "下一處變更",
+    "download": "下載",
+    "close": "關閉",
+    "more": "更多選項",
+    "base": "基準",
+    "current": "目前",
+    "loading_revisions": "正在載入修訂版…",
+    "revisions_error": "無法載入修訂版",
+    "no_earlier": "沒有更早的修訂版",
+    "loading": "正在載入文件…",
+    "current_error": "無法載入文件",
+    "loading_diff": "正在載入比較…",
+    "comparison_error": "無法載入比較",
+    "too_large": "比較內容過大。請下載檔案，在本機比較。",
+    "identical": "修訂版之間沒有變更",
+    "empty": "此文件為空",
+    "unchanged": "{{count}} 行未變更",
+    "retry": "重試"
   }
 }

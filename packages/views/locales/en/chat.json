@@ -376,6 +376,7 @@
   },
   "decision": {
     "request_title": "Decision request",
+    "asked_by": "from {{agent}}",
     "request_label": "Decision request: {{state}}",
     "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "picked_up": "Picked up", "not_picked_up": "Not picked up", "disclaimed": "Disclaimed" },
     "picked_up_by": "Picked up by {{agent}}",

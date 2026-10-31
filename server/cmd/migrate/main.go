@@ -144,6 +144,9 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"815_agent_decision_reliance_instance":                      "agent_decision_reliance_instance_idx",
+	"810_agent_decision_events_index":                           "agent_decision_events_idx",
+	"811_agent_decision_scope_candidate_gate_index":             "agent_decision_scope_candidate_gate_uidx",
 	"747_decision_action_request_index":                         "idx_decision_action_request",
 	"787_passkey_assertion_open":                                "uq_passkey_assertion_open",
 	"788_passkey_enroll_open":                                   "uq_passkey_enroll_open",
@@ -169,8 +172,13 @@ var concurrentIndexCleanups = map[string]string{
 	"741_github_webhook_worker_due":                             "idx_github_webhook_worker_due",
 	"723_github_webhook_delivery_unique_index":                  "idx_github_webhook_delivery_guid",
 	"724_github_webhook_revision_unique_index":                  "idx_github_webhook_revision_key",
+	"704_workflow_webhook_endpoint_name_index":                  "workflow_webhook_endpoint_workflow_name_uidx",
+	"705_workflow_webhook_nonce_seen_index":                     "workflow_webhook_nonce_endpoint_seen_idx",
+	"706_workflow_webhook_event_ref_index":                      "workflow_webhook_event_ref_uidx",
+	"707_workflow_webhook_event_issue_index":                    "workflow_webhook_event_endpoint_issue_idx",
 	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
 	"802_idx_run_capability_grant_issue":                        "idx_run_capability_grant_issue",
+	"849_idx_provider_failure_recovery_wakeup":                  "provider_failure_recovery_wakeup_idx",
 	"797_chat_wakeup_fired_task_index":                          "idx_chat_wakeup_fired_task",
 	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
 	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
@@ -213,6 +221,7 @@ var concurrentIndexCleanups = map[string]string{
 	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
 	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
 	"677_issue_workflow_override_index":                         "idx_issue_workflow_override",
+	"851_comment_supersession_issue_index":                      "idx_comment_supersession_issue",
 	"700_comment_trigger_rate_limit_unique_index":               "comment_trigger_rate_limit_issue_agent_uidx",
 	"675_issue_ci_advance_index":                                "idx_issue_ci_advance_issue_head",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",

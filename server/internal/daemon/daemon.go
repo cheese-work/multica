@@ -2978,6 +2978,9 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
+		"cli_commit":        d.cfg.CLICommit,
+		"cli_os":            runtime.GOOS,
+		"cli_arch":          runtime.GOARCH,
 		"launched_by":       d.cfg.LaunchedBy,
 		"runtimes":          runtimes,
 		"failed_profiles":   failedProfiles,
@@ -3023,6 +3026,9 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
+		"cli_commit":        d.cfg.CLICommit,
+		"cli_os":            runtime.GOOS,
+		"cli_arch":          runtime.GOARCH,
 		"launched_by":       d.cfg.LaunchedBy,
 		"runtimes":          runtimes,
 		// Deliberately empty: this call carries no profiles, so it must not
@@ -5039,6 +5045,16 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	})
 
 	output, err := d.runUpdateFn(update.TargetVersion)
+	if errors.Is(err, cli.ErrForkUpToDate) {
+		// Already on the server's build: nothing was installed, so report
+		// success and keep the healthy daemon running.
+		d.logger.Info("CLI already on the server build; no restart", "runtime_id", runtimeID, "update_id", update.ID)
+		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+			"status": "completed",
+			"output": "Already on the server build",
+		})
+		return
+	}
 	if err != nil {
 		d.logger.Error("CLI update failed", "error", err, "output", output)
 		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{

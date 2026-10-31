@@ -87,3 +87,24 @@ WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg(
 -- transaction, before DeleteDecisionOrphanRequest.
 DELETE FROM decision_action
 WHERE decision_request_id = $1;
+
+-- name: DeleteDecisionOrphanAgentScope :exec
+-- Authority-neutral orphan cleanup, before deleting the parent request.
+DELETE FROM decision_agent_scope scope
+WHERE scope.instance_id = sqlc.arg('id') AND scope.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = scope.issue_id AND issue.workspace_id = scope.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentReliance :exec
+DELETE FROM decision_agent_reliance reliance
+WHERE reliance.instance_id = sqlc.arg('id') AND reliance.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = reliance.issue_id AND issue.workspace_id = reliance.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentSettlement :exec
+DELETE FROM decision_agent_settlement settlement
+WHERE settlement.instance_id = sqlc.arg('id') AND settlement.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = settlement.issue_id AND issue.workspace_id = settlement.workspace_id);
+
+-- name: DeleteDecisionOrphanAgentUndo :exec
+DELETE FROM decision_agent_undo undo
+WHERE undo.instance_id = sqlc.arg('id') AND undo.workspace_id = sqlc.arg('workspace_id')
+  AND NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = undo.issue_id AND issue.workspace_id = undo.workspace_id);

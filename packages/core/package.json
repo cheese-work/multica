@@ -52,6 +52,7 @@
     "./issues/mutations": "./issues/mutations.ts",
     "./issues/timeline-sort": "./issues/timeline-sort.ts",
     "./issues/comment-deletion": "./issues/comment-deletion.ts",
+    "./issues/supersession": "./issues/supersession.ts",
     "./issues/decision-fields": "./issues/decision-fields.ts",
     "./issues/decision-disclaim": "./issues/decision-disclaim.ts",
     "./issues/decision-answer": "./issues/decision-answer.ts",

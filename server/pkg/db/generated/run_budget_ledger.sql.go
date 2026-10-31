@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countIssueRunBudgetGrants = `-- name: CountIssueRunBudgetGrants :one
+SELECT COUNT(*)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND window_id = $2::text
+  AND kind IN ('step', 'head', 'stale_pr')
+`
+
+type CountIssueRunBudgetGrantsParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// The automatic grants a window already holds: the 3-per-window cap counts them.
+func (q *Queries) CountIssueRunBudgetGrants(ctx context.Context, arg CountIssueRunBudgetGrantsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueRunBudgetGrants, arg.IssueID, arg.WindowID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countIssueRunsSinceExcept = `-- name: CountIssueRunsSinceExcept :one
 SELECT COUNT(*)::bigint FROM agent_task_queue
 WHERE issue_id = $1::uuid AND created_at > $2::timestamptz
@@ -28,6 +47,26 @@ type CountIssueRunsSinceExceptParams struct {
 func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueRunsSinceExceptParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countIssueRunsSinceExcept, arg.IssueID, arg.Since, arg.ExceptTaskID)
 	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const firstStatusInWindow = `-- name: FirstStatusInWindow :one
+SELECT COALESCE(details->>'from', '')::text FROM activity_log
+WHERE issue_id = $1::uuid AND action = 'status_changed' AND created_at >= $2::timestamptz
+ORDER BY created_at ASC LIMIT 1
+`
+
+type FirstStatusInWindowParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Since   pgtype.Timestamptz `json:"since"`
+}
+
+// The status the issue held when the window opened: where the earliest status
+// move at or after the window start came from.
+func (q *Queries) FirstStatusInWindow(ctx context.Context, arg FirstStatusInWindowParams) (string, error) {
+	row := q.db.QueryRow(ctx, firstStatusInWindow, arg.IssueID, arg.Since)
+	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
 }
@@ -55,6 +94,33 @@ func (q *Queries) GetIssueRunBudgetEntry(ctx context.Context, arg GetIssueRunBud
 	return i, err
 }
 
+const hasIssueRunBudgetEntryInWindow = `-- name: HasIssueRunBudgetEntryInWindow :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_run_budget_entry
+  WHERE issue_id = $1::uuid AND window_id = $2::text
+    AND kind = $3::text AND event_key = $4::text
+)
+`
+
+type HasIssueRunBudgetEntryInWindowParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+	Kind     string      `json:"kind"`
+	EventKey string      `json:"event_key"`
+}
+
+func (q *Queries) HasIssueRunBudgetEntryInWindow(ctx context.Context, arg HasIssueRunBudgetEntryInWindowParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueRunBudgetEntryInWindow,
+		arg.IssueID,
+		arg.WindowID,
+		arg.Kind,
+		arg.EventKey,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasIssueRunBudgetWindow = `-- name: HasIssueRunBudgetWindow :one
 SELECT EXISTS (
   SELECT 1 FROM issue_run_budget_entry
@@ -69,6 +135,51 @@ type HasIssueRunBudgetWindowParams struct {
 
 func (q *Queries) HasIssueRunBudgetWindow(ctx context.Context, arg HasIssueRunBudgetWindowParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasIssueRunBudgetWindow, arg.IssueID, arg.WindowID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasMemberMoveToStatusSince = `-- name: HasMemberMoveToStatusSince :one
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+    AND created_at >= $2::timestamptz AND details->>'to' = $3::text
+)
+`
+
+type HasMemberMoveToStatusSinceParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Since   pgtype.Timestamptz `json:"since"`
+	Status  string             `json:"status"`
+}
+
+// Whether a person moved the issue into this status at or after the window
+// start: the person's target counts as visited.
+func (q *Queries) HasMemberMoveToStatusSince(ctx context.Context, arg HasMemberMoveToStatusSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasMemberMoveToStatusSince, arg.IssueID, arg.Since, arg.Status)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasRunBudgetNotice = `-- name: HasRunBudgetNotice :one
+SELECT EXISTS (
+  SELECT 1 FROM run_budget_notice
+  WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = $3::text
+)
+`
+
+type HasRunBudgetNoticeParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+	Kind     string      `json:"kind"`
+}
+
+// Whether the window's notice of this kind was claimed: for kind exhausted, the
+// window is spent and stays closed to automatic grants until a person acts.
+func (q *Queries) HasRunBudgetNotice(ctx context.Context, arg HasRunBudgetNoticeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasRunBudgetNotice, arg.IssueID, arg.WindowID, arg.Kind)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -106,6 +217,39 @@ func (q *Queries) InsertIssueRunBudgetEntry(ctx context.Context, arg InsertIssue
 	return err
 }
 
+const insertIssueRunBudgetGrant = `-- name: InsertIssueRunBudgetGrant :exec
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, tokens_delta, cap_delta)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING
+`
+
+type InsertIssueRunBudgetGrantParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WindowID    string      `json:"window_id"`
+	Kind        string      `json:"kind"`
+	EventKey    string      `json:"event_key"`
+	RunsDelta   int32       `json:"runs_delta"`
+	TokensDelta int64       `json:"tokens_delta"`
+}
+
+// A progress grant or refund (L2c): runs and tokens in one row, no cap change.
+// A replayed event (same issue, kind, key) is a no-op.
+func (q *Queries) InsertIssueRunBudgetGrant(ctx context.Context, arg InsertIssueRunBudgetGrantParams) error {
+	_, err := q.db.Exec(ctx, insertIssueRunBudgetGrant,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.WindowID,
+		arg.Kind,
+		arg.EventKey,
+		arg.RunsDelta,
+		arg.TokensDelta,
+	)
+	return err
+}
+
 const insertIssueRunBudgetTokenEntry = `-- name: InsertIssueRunBudgetTokenEntry :exec
 INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, tokens_delta)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -135,6 +279,40 @@ func (q *Queries) InsertIssueRunBudgetTokenEntry(ctx context.Context, arg Insert
 		arg.TokensDelta,
 	)
 	return err
+}
+
+const listIssueTaskIDsWithUsageSince = `-- name: ListIssueTaskIDsWithUsageSince :many
+SELECT t.id FROM agent_task_queue t
+WHERE t.issue_id = $1::uuid AND t.created_at >= $2::timestamptz
+  AND EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id)
+ORDER BY t.created_at, t.id
+`
+
+type ListIssueTaskIDsWithUsageSinceParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Since   pgtype.Timestamptz `json:"since"`
+}
+
+// The tasks of an issue created at or after a time that already reported
+// usage: what token activation settles.
+func (q *Queries) ListIssueTaskIDsWithUsageSince(ctx context.Context, arg ListIssueTaskIDsWithUsageSinceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueTaskIDsWithUsageSince, arg.IssueID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockIssueRunBudget = `-- name: LockIssueRunBudget :one
@@ -192,6 +370,19 @@ func (q *Queries) SumIssueRunBudgetTaskTokens(ctx context.Context, arg SumIssueR
 	return i, err
 }
 
+const sumIssueRunBudgetTokens = `-- name: SumIssueRunBudgetTokens :one
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid
+`
+
+// The issue's token balance: every token entry, in any window.
+func (q *Queries) SumIssueRunBudgetTokens(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetTokens, issueID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sumIssueRunBudgetWindow = `-- name: SumIssueRunBudgetWindow :one
 SELECT COALESCE(SUM(runs_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = $1::uuid AND window_id = $2::text
@@ -204,6 +395,25 @@ type SumIssueRunBudgetWindowParams struct {
 
 func (q *Queries) SumIssueRunBudgetWindow(ctx context.Context, arg SumIssueRunBudgetWindowParams) (int64, error) {
 	row := q.db.QueryRow(ctx, sumIssueRunBudgetWindow, arg.IssueID, arg.WindowID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const sumIssueRunBudgetWindowAllowance = `-- name: SumIssueRunBudgetWindowAllowance :one
+SELECT COALESCE(SUM(tokens_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = 'allowance'
+`
+
+type SumIssueRunBudgetWindowAllowanceParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// The token allowance a window holds (credited once, by activation or by the
+// window's opening).
+func (q *Queries) SumIssueRunBudgetWindowAllowance(ctx context.Context, arg SumIssueRunBudgetWindowAllowanceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetWindowAllowance, arg.IssueID, arg.WindowID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

@@ -68,6 +68,7 @@ export function MachineCliSection({
       currentVersion={machine.cliVersion}
       isOnline={updateRuntime?.status === "online"}
       launchedBy={machine.launchedBy}
+      updateStatus={machine.update}
     />
   );
 }

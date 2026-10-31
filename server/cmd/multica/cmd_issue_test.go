@@ -564,6 +564,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().StringSlice("steer", nil, "")
 	cmd.Flags().Bool("steer-active", false, "")
+	cmd.Flags().StringSlice("supersedes", nil, "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -7012,5 +7013,46 @@ func TestRunIssuePullRequestsTableRendersHeadCISnapshot(t *testing.T) {
 				t.Fatalf("null checks_rollup row must never render \"passed\":\n%s", line)
 			}
 		}
+	}
+}
+
+func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "comment-2", "supersedes": []map[string]any{
+				{"comment_id": "old-1", "resolved": true},
+				{"comment_id": "old-2", "skipped_reason": "human_reply"},
+			}})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+	t.Chdir(t.TempDir())
+
+	cmd := newIssueCommentAddTestCmd()
+	_ = cmd.Flags().Set("content", "plan rev-2")
+	_ = cmd.Flags().Set("supersedes", "old-1")
+	_ = cmd.Flags().Set("supersedes", "old-2")
+	stderr := captureStderr(t)
+	if err := runIssueCommentAdd(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueCommentAdd: %v", err)
+	}
+	got, _ := body["supersedes"].([]any)
+	if len(got) != 2 || got[0] != "old-1" || got[1] != "old-2" {
+		t.Fatalf("supersedes = %#v, want [old-1 old-2]", body["supersedes"])
+	}
+	out := stderr.read()
+	if !strings.Contains(out, "old-1 superseded and resolved") || !strings.Contains(out, "old-2 superseded, left open (human_reply)") {
+		t.Fatalf("stderr should report each superseded thread, got %q", out)
 	}
 }
