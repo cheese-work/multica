@@ -93,6 +93,10 @@ const (
 	// daemon puts on the agent's PATH has `issue comment add --steer`. The
 	// server tells a squad leader about steering only then.
 	DaemonCapabilityCLICommentSteerV1 = "cli-comment-steer-v1"
+	// DaemonCapabilityAppliedSettingsV1 advertises that the daemon reports the
+	// launch selection it passed to the CLI (model, thinking level, service
+	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
+	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
