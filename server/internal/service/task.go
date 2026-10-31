@@ -4105,6 +4105,8 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		}
 		stopped = &row
 		payload.Outcome = protocol.ChatCancelOutcomeStopped
+		// Clients cache the row under the payload's session: name the DM it is in.
+		payload.ChatSessionID = util.UUIDToString(row.ChatSessionID)
 		payload.MessageID = util.UUIDToString(row.ID)
 		payload.Content = row.Content
 		payload.MessageKind = row.MessageKind
@@ -4140,7 +4142,7 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 		WorkspaceID:   workspaceID,
 		ActorType:     "system",
 		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
+		ChatSessionID: payload.ChatSessionID,
 		Payload:       payload,
 	})
 }

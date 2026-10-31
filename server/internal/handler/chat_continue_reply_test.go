@@ -106,6 +106,42 @@ func TestRolloverCancelLandsInTheNewDMAndIsAnnounced(t *testing.T) {
 	assertOutcomeLandedInSuccessor(t, sessionID, successorID, taskID, announced())
 }
 
+// The deferred path settles after the daemon's transcript flush. Its
+// chat:cancel_finalized payload must name the DM the "Stopped." row is in:
+// web inserts the row into the cache of the payload's session.
+func TestRolloverDeferredCancelFinalizedTargetsTheNewDM(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	sessionID, successorID, taskID := rolloverRunning(t, "rollover deferred cancel")
+	announced := chatMessageSessions(taskID)
+	var mu sync.Mutex
+	var finalized []string
+	testHandler.Bus.Subscribe(protocol.EventChatCancelFinalized, func(e events.Event) {
+		payload, ok := e.Payload.(protocol.ChatCancelFinalizedPayload)
+		if !ok || payload.TaskID != taskID {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		finalized = append(finalized, payload.ChatSessionID+"/"+e.ChatSessionID)
+	})
+	if _, err := testHandler.TaskService.CancelTask(ctx, parseUUID(taskID)); err != nil {
+		t.Fatal(err)
+	}
+	insertTaskTranscriptRow(t, ctx, taskID)
+	if !testHandler.TaskService.FinalizeDeferredCancelledChat(ctx, parseUUID(taskID)) {
+		t.Fatal("deferred cancel was not settled")
+	}
+	assertOutcomeLandedInSuccessor(t, sessionID, successorID, taskID, announced())
+	mu.Lock()
+	defer mu.Unlock()
+	if want := successorID + "/" + successorID; len(finalized) != 1 || finalized[0] != want {
+		t.Fatalf("chat:cancel_finalized payload/envelope sessions = %v, want [%s]", finalized, want)
+	}
+}
+
 func TestRolloverFinalReplyIsTheNewDMsFirstVisibleMessage(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
