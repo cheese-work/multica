@@ -93,12 +93,12 @@ func TestEntryGateValidation(t *testing.T) {
 		tooMany[i] = gate("pr.ready", "block")
 	}
 	cases := map[string][]map[string]any{
-		"agent_done":    {gate("agent_done", "block")},
-		"agent_verdict": {gate("agent_verdict(approved)", "block")},
-		"webhook":       {gate("webhook(ci)", "block")},
-		"unknown guard": {gate("pr.nope", "block")},
-		"bad mode":      {gate("pr.ready", "sometimes")},
-		"nine gates":    tooMany,
+		"agent_done":     {gate("agent_done", "block")},
+		"agent_verdict":  {gate("agent_verdict(approved)", "block")},
+		"agent_done off": {gate("agent_done", "off")},
+		"unknown guard":  {gate("pr.nope", "block")},
+		"bad mode":       {gate("pr.ready", "sometimes")},
+		"nine gates":     tooMany,
 	}
 	for name, entry := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -106,6 +106,28 @@ func TestEntryGateValidation(t *testing.T) {
 				"name":  "Invalid gate " + workflowTestSuffix(),
 				"steps": gateSteps(entry...),
 			})).Want(http.StatusBadRequest)
+		})
+	}
+}
+
+// webhook is in the entry catalog: only agent_done and agent_verdict are not.
+func TestEntryGateAcceptsWebhookGuard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
+	for _, mode := range []string{"off", "warn", "block"} {
+		t.Run(mode, func(t *testing.T) {
+			wf := createTestWorkflowSteps(t, "Webhook gate "+workflowTestSuffix(), gateSteps(gate("webhook(ci)", mode)))
+			var inReview *IssueWorkflowStepPayload
+			for i := range wf.Steps {
+				if wf.Steps[i].StatusKey == "in_review" {
+					inReview = &wf.Steps[i]
+				}
+			}
+			if inReview == nil || len(inReview.Entry) != 1 || inReview.Entry[0].Guard != "webhook(ci)" {
+				t.Fatalf("stored steps = %+v, want the webhook gate kept", wf.Steps)
+			}
 		})
 	}
 }

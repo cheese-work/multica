@@ -64,7 +64,7 @@ func validateEntry(s Step) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if !g.readsFacts() || g.Kind == GuardWebhook {
+		if !g.readsFacts() {
 			return invalid("entry gate %q cannot be checked when a status is written", e.Guard)
 		}
 		switch e.Mode {

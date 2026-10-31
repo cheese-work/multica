@@ -63,6 +63,12 @@ func TestEvaluateEntryTerminalAndOtherUseFactsHolds(t *testing.T) {
 	if got := EvaluateEntry(gates(EntryModeBlock, "children_done"), Facts{}); len(got) != 1 {
 		t.Errorf("children_done without done children must fail")
 	}
+	if got := EvaluateEntry(gates(EntryModeBlock, "webhook(ci)"), Facts{Webhooks: map[string]bool{"ci": true}}); len(got) != 0 {
+		t.Errorf("received webhook on webhook(ci): %v", got)
+	}
+	if got := EvaluateEntry(gates(EntryModeBlock, "webhook(ci)"), Facts{}); len(got) != 1 {
+		t.Errorf("webhook(ci) without a received webhook must fail")
+	}
 	if got := EvaluateEntry(gates(EntryModeBlock, "issue_status(MUL-1,done)"), Facts{IssueStatuses: map[string]string{"MUL-1": "todo"}}); len(got) != 1 || !strings.Contains(got[0].Fact, "todo") {
 		t.Errorf("issue_status gate: %+v", got)
 	}
@@ -102,13 +108,18 @@ func TestEntryMemberOverrideDefaultsToTrue(t *testing.T) {
 
 func TestValidateEntry(t *testing.T) {
 	ok := func(g ...EntryGate) bool { return validateEntry(Step{Entry: g}) == nil }
-	if !ok(gates(EntryModeBlock, "pr.ready", "children_done", "pr.merged")...) {
-		t.Fatal("catalog fact guards must validate")
+	if !ok(gates(EntryModeBlock, "pr.ready", "children_done", "pr.merged", "webhook(ci)")...) {
+		t.Fatal("catalog fact guards, webhook included, must validate")
+	}
+	if !ok(EntryGate{Guard: "webhook(ci)", Mode: EntryModeOff}) {
+		t.Fatal("webhook in mode off must validate")
+	}
+	if ok(EntryGate{Guard: "agent_done", Mode: EntryModeOff}) {
+		t.Fatal("agent_done must be rejected even in mode off")
 	}
 	for _, bad := range []EntryGate{
 		{Guard: "agent_done", Mode: EntryModeBlock},
 		{Guard: "agent_verdict(approved)", Mode: EntryModeBlock},
-		{Guard: "webhook(ci)", Mode: EntryModeBlock},
 		{Guard: "nope", Mode: EntryModeBlock},
 		{Guard: "pr.ready", Mode: "sometimes"},
 		{Guard: "pr.ready"},
