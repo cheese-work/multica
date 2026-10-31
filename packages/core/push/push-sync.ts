@@ -6,7 +6,7 @@ import {
   registrationBody,
   subscribeThisDevice,
 } from "./push-client";
-import { isPushWanted, withDeviceLock } from "./push-intent";
+import { isPushWanted, withAutomaticLock } from "./push-intent";
 
 export type PushSyncResult = "registered" | "skipped";
 
@@ -26,14 +26,15 @@ type Resubscriber = Registrar & { getPushConfig: () => Promise<PushConfig> };
  * browser dropped the subscription and the user still wants push, subscribe
  * again. Does nothing unless the stored choice is positively "on": after an
  * opt-out, or when the choice cannot be read, a retained subscription is not
- * registered. Never prompts. Never throws, so a page
+ * registered; nor where Web Locks is missing (no ordering with an opt-out).
+ * Never prompts. Never throws, so a page
  * load cannot break on it.
  */
 export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncResult> {
   if (!isGranted()) return "skipped";
   // The choice is read inside the device lock, so an opt-out that was running
   // (here or in another tab) has finished and is seen.
-  return withDeviceLock(async () => {
+  return withAutomaticLock(async () => {
     if (!(await isPushWanted())) return "skipped";
     try {
       const subscription = await getThisDeviceSubscription();
@@ -45,7 +46,7 @@ export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncR
     } catch {
       return "skipped";
     }
-  });
+  }, "skipped");
 }
 
 /**
@@ -54,7 +55,7 @@ export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncR
  */
 export async function resubscribeThisDevice(api: Resubscriber): Promise<PushSyncResult> {
   if (!isGranted()) return "skipped";
-  return withDeviceLock(async () => ((await isPushWanted()) ? subscribeAndRegister(api) : "skipped"));
+  return withAutomaticLock(async () => ((await isPushWanted()) ? subscribeAndRegister(api) : "skipped"), "skipped");
 }
 
 async function subscribeAndRegister(api: Resubscriber): Promise<PushSyncResult> {

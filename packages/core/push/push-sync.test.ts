@@ -23,7 +23,7 @@ function subscription(endpoint = "https://push.example/1") {
   };
 }
 
-function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof subscription> | null; locks?: unknown }) {
+function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof subscription> | null; locks?: unknown | null }) {
   const pushManager = {
     getSubscription: vi.fn(async () => opts.existing ?? null),
     subscribe: vi.fn(async () => subscription("https://push.example/new")),
@@ -38,7 +38,8 @@ function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof s
   vi.stubGlobal("navigator", {
     userAgent: "Chrome",
     maxTouchPoints: 0,
-    locks: opts.locks,
+    // Default: a lock manager that runs at once. null models a browser without Web Locks.
+    locks: opts.locks === null ? undefined : (opts.locks ?? { request: (_name: string, run: () => Promise<unknown>) => run() }),
     serviceWorker: {
       register: vi.fn(async () => registration),
       ready: Promise.resolve(registration),
@@ -119,6 +120,48 @@ describe("reRegisterThisDevice", () => {
       const pushManager = stubBrowser({ existing: null, locks: optOutFirst() });
       const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
       await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");
+      expect(pushManager.subscribe).not.toHaveBeenCalled();
+      expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("without Web Locks", () => {
+    // No ordering with an opt-out is possible, so nothing registers on its own.
+    it("does not re-register a retained subscription", async () => {
+      await stubStorage("on");
+      stubBrowser({ existing: subscription(), locks: null });
+      const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+      await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
+      expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    });
+
+    it("does not recover a dropped subscription, on load or after a worker message", async () => {
+      await stubStorage("on");
+      const pushManager = stubBrowser({ existing: null, locks: null });
+      const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+      await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
+      await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");
+      expect(pushManager.subscribe).not.toHaveBeenCalled();
+      expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    });
+
+    it("leaves a backend that an opt-out cleaned empty when the opt-out finishes mid-recovery", async () => {
+      await stubStorage("on");
+      const pushManager = stubBrowser({ existing: null, locks: null });
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const api = {
+        registerPushSubscription: vi.fn(),
+        getPushConfig: vi.fn(async () => {
+          await gate;
+          return { enabled: true, public_key: KEY };
+        }),
+      };
+      const recovery = resubscribeThisDevice(api);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await setPushIntent("off"); // the opt-out and its server DELETE finish here
+      release();
+      await recovery;
       expect(pushManager.subscribe).not.toHaveBeenCalled();
       expect(api.registerPushSubscription).not.toHaveBeenCalled();
     });

@@ -17,7 +17,8 @@ const OFF_COOKIE = "multica_push_off";
 const ONE_YEAR = 60 * 60 * 24 * 365;
 // Held for a whole opt-out and for each registration, here and in the worker
 // (`public/sw.js`, same name), so they never interleave. Without Web Locks
-// (older browsers) there is no ordering, only the re-read of the choice.
+// (older browsers) there is no ordering: an opt-out still runs, but nothing
+// registers on its own (see withAutomaticLock).
 const DEVICE_LOCK = "multica-push-device";
 
 // A choice storage could not keep. It wins for this page until a write works.
@@ -82,10 +83,23 @@ export async function isPushWanted(): Promise<boolean> {
   return (await getPushIntent()) === "on";
 }
 
+/** The opt-out: takes the lock where there is one, and always runs. */
 export function withDeviceLock<T>(run: () => Promise<T>): Promise<T> {
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
   // request() resolves with what the callback's promise resolves to.
   return locks ? (locks.request(DEVICE_LOCK, run) as Promise<T>) : run();
+}
+
+/**
+ * The one guard for registration the user did not just ask for (app load,
+ * recovery after the worker's message). It runs only where Web Locks orders it
+ * against an opt-out, and returns `skipped` everywhere else, so a new automatic
+ * caller cannot race an opt-out by forgetting the check. The switch in
+ * Settings is an explicit action and does not use it.
+ */
+export function withAutomaticLock<T>(run: () => Promise<T>, skipped: T): Promise<T> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  return locks ? (locks.request(DEVICE_LOCK, run) as Promise<T>) : Promise.resolve(skipped);
 }
 
 export async function setPushIntent(intent: PushIntent): Promise<void> {
