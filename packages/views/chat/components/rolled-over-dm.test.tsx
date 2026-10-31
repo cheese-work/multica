@@ -51,7 +51,7 @@ const summary: ChatMessage = {
 };
 const finalReply: ChatMessage = {
   id: "reply", chat_session_id: NEW, role: "assistant", content: "Final reply text", task_id: TASK,
-  created_at: "2026-10-31T00:01:00Z",
+  created_at: "2026-10-31T00:01:00Z", carried_from_session_id: OLD,
 };
 const steps: TaskMessagePayload[] = [
   { task_id: TASK, seq: 0, type: "tool_use", tool: "Bash", input: { command: "go test ./..." } },
@@ -109,9 +109,18 @@ describe("rolled-over DM opening (CHE-2767)", () => {
     expect(screen.queryByText(/steps?\b/i)).not.toBeInTheDocument();
   });
 
-  it("keeps the steps of a turn the person asked for in this DM", () => {
+  it("hides the old turn's steps even when the person has written since", () => {
     const asked: ChatMessage = { id: "u1", chat_session_id: NEW, role: "user", content: "Run it", task_id: null, created_at: "2026-10-31T00:00:30Z" };
     renderRolledOver([summary, asked, finalReply]);
+    expect(screen.getByText("Final reply text")).toBeInTheDocument();
+    expect(screen.queryByText(/go test/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/steps?\b/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the steps of a turn that ran in this DM", () => {
+    const asked: ChatMessage = { id: "u1", chat_session_id: NEW, role: "user", content: "Run it", task_id: TASK, created_at: "2026-10-31T00:00:30Z" };
+    const ownReply: ChatMessage = { ...finalReply, id: "own", carried_from_session_id: null };
+    renderRolledOver([summary, asked, ownReply]);
     expect(screen.getAllByText(/step/i).length).toBeGreaterThan(0);
   });
 });

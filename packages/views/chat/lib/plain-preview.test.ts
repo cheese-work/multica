@@ -17,4 +17,8 @@ describe("plainPreview", () => {
   it("leaves unknown entities alone", () => {
     expect(plainPreview("&bogus; stays")).toBe("&bogus; stays");
   });
+
+  it("leaves numeric entities that are not characters alone instead of throwing", () => {
+    expect(plainPreview("a &#x110000; b &#999999999; c &#xD800; d")).toBe("a &#x110000; b &#999999999; c &#xD800; d");
+  });
 });

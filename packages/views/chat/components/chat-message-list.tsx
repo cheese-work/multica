@@ -466,18 +466,12 @@ export function ChatMessageList({
   //
   // A rolled-over DM opens with the agent's summary and, when the old run was
   // still going, that run's final reply (CHE-2119). The summary moves into the
-  // continuation block; the reply keeps only its text, because the tool steps
-  // belong to the earlier DM.
+  // continuation block; the reply (carried_from_session_id) keeps only its
+  // text, because the tool steps belong to the earlier DM.
   const continuationSummary = useMemo(
     () => (hasOlderMessages ? undefined : messages.find((m) => m.message_kind === "continuation_summary")),
     [messages, hasOlderMessages],
   );
-  const carriedReplyMessage = useMemo(() => {
-    const first = messages.find(
-      (m) => m.message_kind !== "continuation_summary" && m.message_kind !== "onboarding_kickoff" && m.message_kind !== "compact_notice",
-    );
-    return first?.role === "assistant" && first.task_id ? first : undefined;
-  }, [messages]);
   const renderItems: ChatRenderItem[] = useMemo(() => {
     const items: ChatRenderItem[] = messages
       .filter(
@@ -494,13 +488,13 @@ export function ChatMessageList({
         message,
         taskId: message.task_id ?? null,
         dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
-        carriedReply: !!continuedFromSessionId && !hasOlderMessages && message === carriedReplyMessage,
+        carriedReply: !!message.carried_from_session_id,
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
     }
     return items;
-  }, [messages, hasLive, pendingTaskId, continuationSummary, continuedFromSessionId, hasOlderMessages, carriedReplyMessage]);
+  }, [messages, hasLive, pendingTaskId, continuationSummary]);
 
   // Jump to a message: scroll once it is loaded, ask for older pages until it
   // is, and settle "missing" when none are left. The target is settled once so

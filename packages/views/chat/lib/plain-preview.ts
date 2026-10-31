@@ -4,7 +4,11 @@ const NAMED_ENTITIES: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", g
 export function plainPreview(content: string): string {
   return content
     .replace(/&(?:#(\d+)|#x([0-9a-f]+)|(\w+));/gi, (entity, dec, hex, name) => {
-      if (dec || hex) return String.fromCodePoint(parseInt(dec ?? hex, dec ? 10 : 16));
+      if (dec || hex) {
+        const code = parseInt(dec ?? hex, dec ? 10 : 16);
+        const isScalar = code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff);
+        return isScalar ? String.fromCodePoint(code) : entity;
+      }
       return NAMED_ENTITIES[name.toLowerCase()] ?? entity;
     })
     .replace(/^[ \t]{0,3}(?:>[ \t]?)+/gm, "")
