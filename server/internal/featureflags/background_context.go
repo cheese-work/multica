@@ -23,10 +23,9 @@ var ErrBlankWorkspaceID = errors.New("featureflags: blank workspace id")
 // server-side substrate (for example a workspace UUID loaded from the DB
 // row the job is processing) — never a value taken from unauthenticated
 // input. A blank workspaceID returns [ErrBlankWorkspaceID] instead of a
-// context: an evaluation with no workspace would otherwise be denied later
-// by [JevProductionGate] (or fall through to Default for any other flag)
-// for a reason that isn't obvious at the call site, so the empty case is
-// rejected here instead.
+// context: an evaluation with no workspace would otherwise fall through to
+// the flag's Default for a reason that isn't obvious at the call site, so
+// the empty case is rejected here instead.
 //
 // The background actor source is stamped unconditionally to
 // [ActorSourceBackground] — this function takes no actor-source or agent-id

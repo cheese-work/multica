@@ -878,9 +878,6 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
-		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
-	}
 	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
 	// condition is a 30-day cache; drop rows with no event for that long.
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
