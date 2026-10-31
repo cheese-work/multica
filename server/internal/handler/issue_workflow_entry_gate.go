@@ -169,12 +169,19 @@ func entryWarningText(step string, warning []issueworkflow.EntryFailure) string 
 	return fmt.Sprintf("Entry gate warning: this issue moved to %s while %s. The gate is in warn mode, so the move was allowed.", step, strings.Join(parts, "; "))
 }
 
-// postEntryWarning posts the first-warning comment of a committed write.
-func (h *Handler) postEntryWarning(ctx context.Context, w *workflowWrite, issue db.Issue) {
+// postEntryWarning posts the first-warning comment of a committed write and
+// returns the issue as it stands after it: the comment bumps the revision, and
+// the response and event must carry the revision the next edit expects.
+func (h *Handler) postEntryWarning(ctx context.Context, w *workflowWrite, issue db.Issue) db.Issue {
 	if w == nil || w.entry.warnComment == "" {
-		return
+		return issue
 	}
 	h.noteTriggerFailure(ctx, issue, w.entry.warnComment, pgtype.UUID{})
+	current, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		return issue
+	}
+	return current
 }
 
 // createEntryGate checks a new issue against the entry gates of the step it

@@ -4299,7 +4299,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
-	h.postEntryWarning(r.Context(), workflowWrite, issue)
+	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
@@ -5191,7 +5191,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
-		h.postEntryWarning(r.Context(), workflowWrite, issue)
+		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
