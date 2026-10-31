@@ -20,9 +20,9 @@ WITH touched_issue AS (
 ), inserted_comment AS (
     INSERT INTO comment (id,issue_id,workspace_id,author_type,author_id,content,type,github_notify_only)
     SELECT $3,touched_issue.id,touched_issue.workspace_id,'system','00000000-0000-0000-0000-000000000000',$4,'comment',true
-    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only
+    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids
 )
-SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only,touched_issue.revision AS issue_revision
+SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids,touched_issue.revision AS issue_revision
 FROM inserted_comment JOIN touched_issue ON touched_issue.id=inserted_comment.issue_id
 `
 
@@ -59,6 +59,7 @@ type CreateGitHubNotifyCommentRow struct {
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
+	TaintIds            []string           `json:"taint_ids"`
 	IssueRevision       int64              `json:"issue_revision"`
 }
 
@@ -96,6 +97,7 @@ func (q *Queries) CreateGitHubNotifyComment(ctx context.Context, arg CreateGitHu
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
 		&i.GithubNotifyOnly,
+		&i.TaintIds,
 		&i.IssueRevision,
 	)
 	return i, err
@@ -127,6 +129,45 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 		arg.Reason,
 	)
 	return err
+}
+
+const getGitHubIntakePinForTask = `-- name: GetGitHubIntakePinForTask :one
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
+       COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
+FROM github_webhook_dispatch receipt
+LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
+LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
+WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
+LIMIT 1
+`
+
+type GetGitHubIntakePinForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+type GetGitHubIntakePinForTaskRow struct {
+	Branch       string `json:"branch"`
+	HeadRepoSame bool   `json:"head_repo_same"`
+	RepoOwner    string `json:"repo_owner"`
+	RepoName     string `json:"repo_name"`
+	HtmlUrl      string `json:"html_url"`
+}
+
+// The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
+// means the task is not an intake run; a receipt whose PR is gone still is one,
+// with an empty pin.
+func (q *Queries) GetGitHubIntakePinForTask(ctx context.Context, arg GetGitHubIntakePinForTaskParams) (GetGitHubIntakePinForTaskRow, error) {
+	row := q.db.QueryRow(ctx, getGitHubIntakePinForTask, arg.WorkspaceID, arg.TaskID)
+	var i GetGitHubIntakePinForTaskRow
+	err := row.Scan(
+		&i.Branch,
+		&i.HeadRepoSame,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.HtmlUrl,
+	)
+	return i, err
 }
 
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one

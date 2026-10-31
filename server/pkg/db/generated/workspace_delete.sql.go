@@ -257,6 +257,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
  DELETE FROM wakeup_aggregate_budget WHERE workspace_id=$1
+), deleted_wakeup_scoped_events AS (
+ DELETE FROM wakeup_scoped_event WHERE workspace_id=$1
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
@@ -372,6 +374,9 @@ deleted_github_dispatch_halts AS (
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
+deleted_comment_supersessions AS (
+    DELETE FROM comment_supersession WHERE workspace_id = $1
+),
 deleted_issue_reactions AS (
     DELETE FROM issue_reaction WHERE workspace_id = $1
 ),
@@ -383,6 +388,21 @@ deleted_stage_generations AS (
 ),
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
+),
+deleted_issue_run_budget_entries AS (
+    DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
+),
+deleted_run_capability_grants AS (
+    DELETE FROM run_capability_grant WHERE workspace_id = $1
+),
+deleted_protected_path_policies AS (
+    DELETE FROM protected_path_policy WHERE workspace_id = $1
+),
+deleted_task_elevations AS (
+    DELETE FROM task_elevation WHERE workspace_id = $1
+),
+deleted_elevated_ops AS (
+    DELETE FROM elevated_op WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -541,6 +561,16 @@ deleted_autopilot_subscribers AS (
 deleted_webhook_deliveries AS (
     DELETE FROM webhook_delivery WHERE workspace_id = $1
 ),
+deleted_workflow_webhook_nonces AS (
+    DELETE FROM workflow_webhook_nonce
+    WHERE endpoint_id IN (SELECT id FROM workflow_webhook_endpoint WHERE workspace_id = $1)
+),
+deleted_workflow_webhook_events AS (
+    DELETE FROM workflow_webhook_event WHERE workspace_id = $1
+),
+deleted_workflow_webhook_endpoints AS (
+    DELETE FROM workflow_webhook_endpoint WHERE workspace_id = $1
+),
 deleted_github_check_runs AS (
     DELETE FROM github_pull_request_check_run
     WHERE pr_id IN (SELECT id FROM ws_github_prs)
@@ -641,6 +671,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
 // CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
+// CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
+// CHE-2489 run capability grants: workspace-owned leaf, no FK.
+// CHE-2490 protected-path policies: workspace-owned leaf, no FK.
+// CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
@@ -655,6 +689,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // no database cascades by design, so every workspace-owned table is removed
 // explicitly before its workspace row.
 // CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
+// CHE-2031 inbound workflow webhook guard: workspace-owned leaves with no FK.
+// Nonces carry no workspace_id, so they go through their endpoint.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

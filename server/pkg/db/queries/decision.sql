@@ -15,7 +15,7 @@ UPDATE comment SET decision_intent_id = sqlc.arg('decision_intent_id')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id');
 
 -- name: AttachDecisionAskToComment :one
-UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask'
+UPDATE comment SET decision_request_id = sqlc.arg('decision_request_id'), decision_comment_kind = 'ask', content = sqlc.arg('content')
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('comment_id')
 RETURNING *;
 
@@ -48,32 +48,32 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_json)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.narg('ask_json')::jsonb)
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'))
 RETURNING *;
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id)
-VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
+VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'), sqlc.arg('excerpted')::boolean, sqlc.narg('answered_label'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
 SELECT * FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: GetDecisionAnswer :one
 SELECT answer.* FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
 
 -- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
 
 -- name: DecisionRecordEffectiveAt :one
 SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
-FROM decision_request WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+FROM decision_request WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: WithdrawDecisionAnswer :one
 UPDATE decision_answer answer
@@ -87,18 +87,18 @@ SET disclaimed_at = clock_timestamp(), disclaim_reason = sqlc.arg('disclaim_reas
     retraction_delivered_at = CASE WHEN sqlc.arg('suppress_retraction')::boolean THEN clock_timestamp() ELSE retraction_delivered_at END,
     retraction_outcome = CASE WHEN sqlc.arg('suppress_retraction')::boolean THEN 'suppressed_agent_veto' ELSE retraction_outcome END
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
   AND answer.id = sqlc.arg('id') AND answer.disclaimed_at IS NULL
 RETURNING answer.*;
 
 -- name: ReopenDecisionRequest :one
 UPDATE decision_request SET status = 'open'
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
 -- name: RaiseDecisionClass :one
 UPDATE decision_request SET escalation_class = sqlc.arg('escalation_class')
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 RETURNING *;
 
 -- name: CreateDecisionClassChange :exec
@@ -109,7 +109,7 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
 
 -- name: LockDecisionLiveAnswer :one
 SELECT answer.* FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND answer.disclaimed_at IS NULL
 FOR UPDATE OF answer;
@@ -120,20 +120,20 @@ UPDATE decision_answer answer SET
     effective_at = hold.held_until,
     wake_at = CASE WHEN wake_at IS NOT NULL THEN hold.held_until ELSE NULL END
 FROM decision_request request, hold
-WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
   AND answer.id = sqlc.arg('id') AND answer.disclaimed_at IS NULL AND answer.woken_at IS NULL
 RETURNING answer.*;
 
 -- name: CancelWithdrawnDecisionRequest :one
 UPDATE decision_request SET status = 'cancelled', cancel_reason = sqlc.arg('cancel_reason'),
     cancel_notice_posted_at = clock_timestamp()
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
 -- name: DecisionOpenLaneExists :one
 SELECT EXISTS (
     SELECT 1 FROM decision_request
-    WHERE workspace_id = sqlc.arg('workspace_id') AND chat_session_id = sqlc.arg('session_id') AND status = 'open'
+    WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND chat_session_id = sqlc.arg('session_id') AND status = 'open'
 )::boolean AS present;
 
 -- name: ListDecisionSessionReferences :many
@@ -141,7 +141,7 @@ SELECT DISTINCT COALESCE(workspace.issue_prefix || '-' || issue.number::text, re
 FROM decision_request request
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = sqlc.arg('workspace_id') AND (
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND (
     (request.status = 'open' AND request.chat_session_id = sqlc.arg('session_id'))
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
@@ -152,19 +152,19 @@ ORDER BY issue_key;
 
 -- name: ListDecisionRequestsByIssue :many
 SELECT * FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
 -- name: ListDecisionPingRetries :many
 SELECT * FROM decision_request
-WHERE origin = 'asked' AND ping_notified_at IS NULL
+WHERE authority = 'human' AND origin = 'asked' AND ping_notified_at IS NULL
 ORDER BY created_at, id
 LIMIT $1;
 
 -- name: MarkDecisionPingNotified :one
 UPDATE decision_request
 SET ping_notified_at = clock_timestamp()
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
   AND ping_notified_at IS NULL
 RETURNING *;
 
@@ -218,7 +218,7 @@ LEFT JOIN LATERAL (
         UNION ALL
         SELECT request.created_at
         FROM decision_request request
-        WHERE request.workspace_id = session.workspace_id AND request.issue_id = sqlc.narg('issue_id')::uuid
+        WHERE request.authority = 'human' AND request.workspace_id = session.workspace_id AND request.issue_id = sqlc.narg('issue_id')::uuid
           AND request.chat_session_id = session.id
     ) refs
 ) ref ON sqlc.narg('issue_id')::uuid IS NOT NULL
@@ -254,8 +254,8 @@ UPDATE chat_session SET agent_id = sqlc.arg('agent_id'), runtime_id = (SELECT ru
 WHERE chat_session.workspace_id = sqlc.arg('workspace_id') AND chat_session.id = sqlc.arg('id') AND chat_session.status = 'active';
 
 -- name: OpenDecisionAsksSince :many
-SELECT ask, created_at FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+SELECT ask, ask_identity, created_at FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
   AND asking_agent_id = sqlc.arg('asking_agent_id') AND human_user_id = sqlc.arg('human_user_id')
   AND status = 'open' AND created_at > now() - interval '24 hours'
 ORDER BY created_at DESC;
@@ -275,7 +275,7 @@ WITH scoped_mentions AS MATERIALIZED (
       AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
       AND message.content LIKE '%](mention://issue/%'
       AND message.failure_reason IS NULL
-      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE authority = 'human' AND ping_message_id = message.id)
 ), newest AS (
     SELECT DISTINCT ON (mention.chat_session_id, issue.id)
         mention.chat_session_id, issue.id AS issue_id,
@@ -369,12 +369,12 @@ FOR UPDATE OF target;
 
 -- name: LockDecisionRequest :one
 SELECT * FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE;
 
 -- name: LockDecisionAnswer :one
 SELECT answer.* FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id')
 FOR UPDATE OF answer;
 
@@ -391,14 +391,14 @@ SELECT (EXISTS (
       AND source.workspace_id = request.workspace_id AND source.deleted_at IS NULL
 )))::boolean AS removed
 FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.id = sqlc.arg('id');
 
 -- name: ListDecisionSourceChecks :many
 SELECT request.* FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
-WHERE EXISTS (
+WHERE request.authority = 'human' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
       AND (EXISTS (
@@ -431,12 +431,13 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- call serves the issue timeline and the DM list.
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
-       answer.chosen_option_index, request.options AS request_options,
+       answer.chosen_option_index, answer.excerpted, answer.answered_label, answer.content_snapshot,
+       answer.created_at AS answered_at, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
        request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix
 FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id
 JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id')
@@ -458,7 +459,7 @@ FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.chat_session_id = sqlc.arg('chat_session_id')
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < sqlc.arg('before')
 ORDER BY ping.created_at DESC, request.id DESC;
@@ -490,3 +491,15 @@ LIMIT 1;
 INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
+
+-- name: DecisionHumanAuthority :one
+-- is_owner: the person holds the workspace owner role. is_delegate: the person is
+-- listed in decision_delegates of the project the issue belongs to.
+SELECT (member.role = 'owner')::boolean AS is_owner,
+    COALESCE((
+        SELECT project.decision_delegates @> ARRAY[member.user_id]
+        FROM project
+        WHERE project.id = sqlc.narg('project_id') AND project.workspace_id = member.workspace_id
+    ), false)::boolean AS is_delegate
+FROM member
+WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');

@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/qoderruntime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -43,6 +44,7 @@ type IssueResponse struct {
 	WorkspaceID     string                  `json:"workspace_id"`
 	Number          int32                   `json:"number"`
 	Identifier      string                  `json:"identifier"`
+	WebURL          string                  `json:"web_url,omitempty"`
 	Title           string                  `json:"title"`
 	Description     *string                 `json:"description"`
 	Status          string                  `json:"status"`
@@ -287,7 +289,8 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, error) {
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil, func(q *db.Queries) error {
+	moveGuard := issueMoveGuardFrom(ctx)
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -298,6 +301,11 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		}
 		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
 			return err
+		}
+		if moveGuard != nil {
+			if err := moveGuard(ctx, q, &params); err != nil {
+				return err
+			}
 		}
 		var innerErr error
 		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
@@ -321,6 +329,13 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	// Same transaction as the write: a claim that reads the committed write
+	// finds this taint on its run.
+	if taint := issueWriteTaint(ctx); len(taint) > 0 {
+		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
 	}
 	var cancelled []db.AgentTaskQueue
 	if params.Status.Valid {
@@ -2504,6 +2519,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
+	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
@@ -3277,6 +3293,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	var parentIssueID pgtype.UUID
 	var projectID pgtype.UUID
 	if req.ParentIssueID != nil {
+		if dispatch.BudgetRecoveryCaller(r.Context()) {
+			writeError(w, http.StatusForbidden, errRecoveryCaused)
+			return
+		}
 		id, ok := parseUUIDOrBadRequest(w, *req.ParentIssueID, "parent_issue_id")
 		if !ok {
 			return
@@ -3652,6 +3672,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
 
 	resp := issueToResponse(issue, prefix)
+	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	fillCreated(&resp)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 	resp.Attachments = buildAttachmentResponses(res.Attachments)
@@ -4218,6 +4239,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	if assigneeSupplied || handoff != nil {
+		var ok bool
+		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
+			return
+		}
+	}
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -4336,6 +4363,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	if statusChanged && actorType == "member" {
+		h.openRunBudgetWindowForMove(r.Context(), issue)
+	} else if statusChanged && actorType == "agent" {
+		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
+	}
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -4371,7 +4403,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote) {
+		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
 	}
@@ -5099,6 +5131,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		if assigneeSupplied || handoff != nil {
+			var ok bool
+			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
+				return
+			}
+		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5172,6 +5210,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 		}
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
+		if statusChanged && actorType == "member" {
+			h.openRunBudgetWindowForMove(r.Context(), issue)
+		} else if statusChanged && actorType == "agent" {
+			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
+		}
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.
@@ -5183,7 +5226,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			if h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote) {
+			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
 				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 			}
 		}

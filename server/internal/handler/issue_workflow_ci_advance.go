@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -91,6 +92,16 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 // and whether the move started a run for the next step's handler, so the caller
 // does not wake the same owner twice.
 func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool) {
+	moved, ranHandler, err := h.tryMoveIssueOnEdge(ctx, issue, to, source, extra, startHandler)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("workflow edge: move failed", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
+	}
+	return moved, ranHandler
+}
+
+// tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
+// move did not happen: pgx.ErrNoRows means a concurrent writer won.
+func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
 		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
@@ -105,15 +116,11 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 	}
 	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
 	if err != nil {
-		slog.Warn("workflow edge: workflow refused the move", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
-		return false, false
+		return false, false, fmt.Errorf("workflow refused the move: %w", err)
 	}
 	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("workflow edge: status write failed", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
-		}
-		return false, false
+		return false, false, fmt.Errorf("status write failed: %w", err)
 	}
 
 	assigneeChanged := handoff != nil &&
@@ -145,6 +152,11 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
 	}
 	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
+	// The block an exhausted budget causes is a consequence of exhaustion, and
+	// it lands before the window's exhaustion claim: it must not grant.
+	if source != "run_budget" {
+		h.grantRunBudgetStep(ctx, updated, issue.Status)
+	}
 	if willRun {
 		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
 		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
@@ -152,7 +164,7 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 	if updated.ParentIssueID.Valid || issue.ParentIssueID.Valid {
 		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
 	}
-	return true, ranHandler
+	return true, ranHandler, nil
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.

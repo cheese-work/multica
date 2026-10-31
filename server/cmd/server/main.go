@@ -615,6 +615,7 @@ func main() {
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
+	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
@@ -765,6 +766,8 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	go runWebhookNonceSweeper(sweepCtx, queries)
+	go h.RunElevationFenceSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -780,6 +783,7 @@ func main() {
 	if h.DecisionWorker != nil {
 		go h.DecisionWorker.Run(sweepCtx)
 	}
+	pushWorker := startPushWorker(sweepCtx, pool, queries)
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
@@ -856,6 +860,9 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
+		slog.Error("scheduler: register idle started guard", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -965,6 +972,11 @@ func main() {
 		JoinDecisionWorker: func() {
 			if h.DecisionWorker != nil && !h.DecisionWorker.WaitWithTimeout(5*time.Second) {
 				slog.Warn("decision worker did not exit within shutdown timeout")
+			}
+		},
+		JoinPushWorker: func() {
+			if pushWorker != nil && !pushWorker.WaitWithTimeout(5*time.Second) {
+				slog.Warn("push worker did not exit within shutdown timeout")
 			}
 		},
 		JoinTelegram: func() {

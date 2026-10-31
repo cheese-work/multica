@@ -126,7 +126,7 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 		ParentID: current.IssueCommentID, MessageIDs: []pgtype.UUID{sent.Message.ID},
 	}, decisionRecordSource{
 		TaskID: sent.Task.ID, AgentID: decision.AskingAgentID, SessionID: session.ID, SourceSessionID: session.ID,
-		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content),
+		CommentID: dbid.NewV7(), Snapshot: content, Quote: blockQuote(content), ReplyText: content,
 	}, root)
 	if err != nil {
 		return nil, err
@@ -151,7 +151,7 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	h.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": response, "issue_title": issue.Title, "issue_status": issue.Status})
 	h.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	h.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, issue.ID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
-	h.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatMessagePayload{
+	h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(result.Message.ID), Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
 	return &sent, nil

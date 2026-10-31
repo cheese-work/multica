@@ -12,6 +12,14 @@ import (
 )
 
 func (handler *Handler) GetIssueRelations(writer http.ResponseWriter, request *http.Request) {
+	includeMentions := false
+	if values, exists := request.URL.Query()["include"]; exists {
+		if len(values) != 1 || values[0] != "mentions" {
+			writeError(writer, http.StatusBadRequest, "include must be mentions")
+			return
+		}
+		includeMentions = true
+	}
 	depth := 1
 	if values, exists := request.URL.Query()["depth"]; exists {
 		if len(values) != 1 || (values[0] != "1" && values[0] != "2") {
@@ -44,7 +52,7 @@ func (handler *Handler) GetIssueRelations(writer http.ResponseWriter, request *h
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 	defer cancel()
 	var graph json.RawMessage
-	err := handler.DB.QueryRow(ctx, issueRelationsSQL, issue.WorkspaceID, issue.ID, depth, agents, handler.getIssuePrefix(ctx, issue.WorkspaceID)).Scan(&graph)
+	err := handler.DB.QueryRow(ctx, issueRelationsSQL(includeMentions), issue.WorkspaceID, issue.ID, depth, agents, handler.getIssuePrefix(ctx, issue.WorkspaceID)).Scan(&graph)
 	if err != nil {
 		slog.ErrorContext(ctx, "load issue relations failed", "issue_id", uuidToString(issue.ID), "error", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load issue relations")
@@ -53,7 +61,10 @@ func (handler *Handler) GetIssueRelations(writer http.ResponseWriter, request *h
 	writeJSON(writer, http.StatusOK, graph)
 }
 
-const issueRelationsEdgesSQL = `
+func issueRelationsSQL(includeMentions bool) string {
+	mentionCTE, mentionEdges := "", ""
+	if includeMentions {
+		mentionCTE = `
 forward_mentions AS MATERIALIZED (
  SELECT i.id AS source,lower(ref[1]) AS target
  FROM frontier i
@@ -62,7 +73,21 @@ forward_mentions AS MATERIALIZED (
  SELECT i.id,lower(ref[1])
  FROM frontier i JOIN comment c ON c.issue_id=i.id
  CROSS JOIN LATERAL regexp_matches(c.content,'mention://issue/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})','g') ref
-), raw_edges AS (
+), `
+		mentionEdges = `
+ UNION ALL
+ SELECT mention.source,target.id,'mention'
+ FROM forward_mentions mention JOIN workspace_issues target ON target.id::text=mention.target
+ UNION ALL
+ SELECT i.id,target.id,'mention'
+ FROM workspace_issues i JOIN frontier target
+  ON lower(coalesce(i.description,'')) LIKE '%mention://issue/'||target.id::text||'%'
+ UNION ALL
+ SELECT i.id,target.id,'mention'
+ FROM workspace_issues i JOIN comment c ON c.issue_id=i.id
+ JOIN frontier target ON lower(c.content) LIKE '%mention://issue/'||target.id::text||'%'`
+	}
+	edgesSQL := mentionCTE + `raw_edges AS (
  SELECT parent_issue_id AS source,id AS target,'parent'::text AS type
  FROM frontier WHERE parent_issue_id IS NOT NULL
  UNION ALL
@@ -89,17 +114,7 @@ forward_mentions AS MATERIALIZED (
   AND w.disabled_at IS NULL AND w.condition->>'type'='children_done'
   AND (w.condition->>'stage' IS NULL OR child.stage::text=w.condition->>'stage')
   AND (child.id IN (SELECT id FROM frontier) OR w.issue_id IN (SELECT id FROM frontier))
- UNION ALL
- SELECT mention.source,target.id,'mention'
- FROM forward_mentions mention JOIN workspace_issues target ON target.id::text=mention.target
- UNION ALL
- SELECT i.id,target.id,'mention'
- FROM workspace_issues i JOIN frontier target
-  ON lower(coalesce(i.description,'')) LIKE '%mention://issue/'||target.id::text||'%'
- UNION ALL
- SELECT i.id,target.id,'mention'
- FROM workspace_issues i JOIN comment c ON c.issue_id=i.id
- JOIN frontier target ON lower(c.content) LIKE '%mention://issue/'||target.id::text||'%'
+` + mentionEdges + `
  UNION ALL
  SELECT least(first.issue_id,second.issue_id),greatest(first.issue_id,second.issue_id),'shared_pr'
  FROM frontier JOIN issue_pull_request first ON first.issue_id=frontier.id
@@ -114,7 +129,7 @@ forward_mentions AS MATERIALIZED (
 )
 `
 
-const issueRelationsSQL = `
+	return `
 WITH RECURSIVE
 workspace_issues AS NOT MATERIALIZED (
  SELECT id,number,title,status,description,parent_issue_id,duplicate_of_issue_id,stage
@@ -126,7 +141,7 @@ workspace_issues AS NOT MATERIALIZED (
  FROM walk CROSS JOIN LATERAL (
   WITH frontier AS MATERIALIZED (
    SELECT * FROM workspace_issues WHERE id=ANY(walk.ids)
-  ), ` + issueRelationsEdgesSQL + `
+  ), ` + edgesSQL + `
   SELECT coalesce(array_agg(id),'{}'::uuid[]) AS ids
   FROM (SELECT source AS id FROM edges UNION SELECT target FROM edges) candidates
   WHERE NOT (id=ANY(walk.seen))
@@ -144,7 +159,7 @@ workspace_issues AS NOT MATERIALIZED (
   SELECT * FROM selected_issues
  ), frontier AS MATERIALIZED (
   SELECT * FROM workspace_issues
- ), ` + issueRelationsEdgesSQL + `
+ ), ` + edgesSQL + `
  SELECT * FROM edges
 )
 SELECT jsonb_build_object(
@@ -158,3 +173,4 @@ SELECT jsonb_build_object(
  'omitted_count',(SELECT count(*) FROM reachable)-(SELECT count(*) FROM selected),
  'depth',$3::int
 )`
+}

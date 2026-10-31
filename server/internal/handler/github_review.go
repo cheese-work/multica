@@ -191,7 +191,7 @@ func githubReviewContent(mention string, pull db.GithubPullRequest, payload *ghR
 func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, authorID, userID, pullID pgtype.UUID, reviewID int64, content string) error {
 	key := githubReviewKey(issue.ID, pullID, reviewID)
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
-	params, err := h.TaskService.PrepareTaskForMention(ctx, issue, authorID, commentID, userID, service.OriginDerived)
+	params, err := h.TaskService.PrepareTaskForMention(ctx, h.Queries, issue, authorID, commentID, userID, service.OriginDerived)
 	if err != nil {
 		return err
 	}

@@ -11,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/dmnotify"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,6 +23,7 @@ type ChatContinueResponse struct {
 	Session           ChatSessionResponse `json:"session"`
 	PreviousSessionID string              `json:"previous_session_id"`
 	URL               string              `json:"url"`
+	WebURL            string              `json:"web_url,omitempty"`
 }
 
 func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "the continuation is no longer available")
 			return
 		}
-		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+		writeJSON(w, http.StatusOK, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID), WebURL: weblink.Build(h.cfg.AppURL, chatURL(next.ID))})
 		return
 	}
 	if session.Status != "active" {
@@ -159,18 +160,13 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	// An agent rollover archives the DM the run was replying in, so that reply
-	// cannot notify. The summary is the agent's message: notify in the new DM.
-	// A continue the DM creator submitted stays silent.
 	// The archived source DM gets no more notifications, so the ones it already
-	// raised close with it, whoever asked for the continuation.
+	// raised close with it, whoever asked for the continuation. An agent
+	// rollover's own reply lands in the new DM and notifies there when the run
+	// ends (chatReplySessionID); the agent-only summary never notifies.
 	var closedRecords []db.InboxItem
 	if err == nil {
 		closedRecords, err = qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
-	}
-	var dmNotified *dmnotify.Notified
-	if err == nil && r.Header.Get("X-Actor-Source") == "task_token" {
-		dmNotified, err = dmnotify.Reply(r.Context(), qtx, next.ID, summary)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to continue chat session")
@@ -180,7 +176,6 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit continuation")
 		return
 	}
-	dmnotify.Publish(h.Bus, dmNotified)
 	creatorID := uuidToString(session.CreatorID)
 	h.publishDMRepliesRead(workspaceID, creatorID, closedRecords)
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(next.ID), protocol.ChatSessionCreatedPayload{
@@ -192,13 +187,13 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 		ChatSessionID: uuidToString(session.ID), Title: session.Title, Status: &status, Pinned: &pinned,
 		UpdatedAt: timestampToString(session.UpdatedAt), ContinuedIntoSessionID: uuidToString(next.ID),
 	})
-	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID)})
+	writeJSON(w, http.StatusCreated, ChatContinueResponse{Session: chatSessionToResponse(next), PreviousSessionID: uuidToString(session.ID), URL: chatURL(next.ID), WebURL: weblink.Build(h.cfg.AppURL, chatURL(next.ID))})
 }
 
 // compactSummaryContent is the new DM's first message: the agent's summary and
 // the link back, led by the automatic compaction's reason when there is one.
 func compactSummaryContent(reason, summary, previousURL string) string {
-	content := strings.TrimSpace(redact.Text(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
+	content := strings.TrimSpace(redact.Prose(summary)) + fmt.Sprintf("\n\n[Previous DM](%s)", previousURL)
 	if reason == "" {
 		return content
 	}

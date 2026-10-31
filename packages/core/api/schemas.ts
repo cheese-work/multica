@@ -22,6 +22,7 @@ import type {
   ChatPendingTask,
   ChatSession,
   ChatSessionUsage,
+  ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -1008,6 +1009,10 @@ const decisionCommentShape = {
   decision_source_message_id: z.string().optional().catch(undefined),
   decision_request_session_id: z.string().optional().catch(undefined),
   decision_request_message_id: z.string().optional().catch(undefined),
+  decision_answered_label: z.string().optional().catch(undefined),
+  decision_full_message: z.string().optional().catch(undefined),
+  decision_answered_at: z.string().optional().catch(undefined),
+  decision_woken_at: z.string().nullable().optional().catch(undefined),
 };
 
 const DecisionCardSchema = z.object({
@@ -1034,6 +1039,7 @@ const DecisionRequestCardSchema = z.object({
   issue_identifier: z.string().default(""),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
+  asking_agent_name: z.string().optional().catch(undefined),
   options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
   state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
   created_at: z.string(),
@@ -1041,11 +1047,40 @@ const DecisionRequestCardSchema = z.object({
   reason: z.string().optional().catch(undefined),
   record_comment_id: z.string().nullish().catch(undefined),
   answer: z.object({
-    state: z.enum(["recorded", "delivered", "disclaimed"]).catch("recorded"),
+    state: z.enum(["recorded", "delivered", "picked_up", "disclaimed"]).catch("recorded"),
+    run: z.object({ id: z.string(), agent_name: z.string().default("") }).loose().optional().catch(undefined),
     chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
+}).loose();
+
+export const DecisionArtifactListSchema = z.object({
+  artifacts: z.array(z.object({
+    attachment_id: z.string(),
+    label: z.string().catch(""),
+    sha256: z.string().catch(""),
+    supersedes_attachment_id: z.string().optional().catch(undefined),
+    signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
+    supersedes_signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
+    attachment: z.object({
+      id: z.string(),
+      filename: z.string().catch(""),
+      content_type: z.string().catch(""),
+      size_bytes: z.number().catch(0),
+      download_url: z.string().catch(""),
+      attachment_download_url: z.string().optional().catch(undefined),
+    }).loose().optional().catch(undefined),
+    diff: z.object({
+      previous_filename: z.string().catch(""),
+      hunks: z.array(z.object({
+        old_start: z.number().catch(0),
+        new_start: z.number().catch(0),
+        lines: z.array(z.string()).catch([]),
+      }).loose()).catch([]),
+      problem: z.enum(["not_text", "too_large", "unavailable"]).optional().catch("unavailable"),
+    }).loose().optional().catch(undefined),
+  }).loose()).catch([]),
 }).loose();
 
 export const OpenDecisionRequestListSchema = z.array(z.object({
@@ -1180,6 +1215,23 @@ const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(un
     return parsed.success ? [parsed.data] : [];
   }));
 
+// Supersession links (CHE-2121). Lenient: a malformed link reads as absent
+// instead of failing the whole comment or timeline.
+const CommentSupersedeLinkSchema = z.object({
+  comment_id: z.string(),
+  resolved: z.boolean().optional().catch(undefined),
+  skipped_reason: z.string().optional().catch(undefined),
+}).loose();
+
+const supersessionShape = {
+  superseded_by_id: z.string().nullable().optional().catch(undefined),
+  supersedes: z.array(z.unknown()).optional().catch(undefined).transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentSupersedeLinkSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    })),
+};
+
 const TimelineEntrySchema = z.object({
   type: z.string(),
   id: z.string(),
@@ -1198,6 +1250,7 @@ const TimelineEntrySchema = z.object({
   reactions: z.array(ReactionSchema).optional(),
   attachments: z.array(AttachmentSchema).optional(),
   source_task_id: z.string().nullable().optional(),
+  ...supersessionShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1383,6 +1436,7 @@ export const CommentSchema = z.object({
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
   hints: z.array(z.string()).optional().catch(undefined),
+  ...supersessionShape,
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
@@ -2438,6 +2492,18 @@ export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
   continued_into_session_id: null,
   forked_from_session_id: null,
 };
+
+const ChatWakeupSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  fire_at: z.string(),
+  instruction: z.string().default(""),
+  status: z.string().default("pending"),
+}).loose();
+
+export const ChatWakeupsSchema = z.array(ChatWakeupSchema);
+
+export const EMPTY_CHAT_WAKEUPS: ChatWakeup[] = [];
 
 export const EMPTY_CHAT_CONTINUE_RESPONSE = {
   session: EMPTY_CHAT_SESSION,

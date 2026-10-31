@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "Graphe",
+    "list": "Liste",
+    "sub_issues": "Sous-tâches",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sous-tâches",
+    "done_count": "terminées",
+    "in_progress_count": "en cours",
+    "todo_count": "à faire",
+    "closed_count": "fermées",
+    "no_parent": "Aucun parent",
+    "mentions_hint": "Chargé à l’activation",
+    "navigation_hint": "Cliquer pour ouvrir · survoler pour le titre complet · ← → ↑ ↓ déplacer le focus · Échap pour fermer",
     "title": "Graphe des relations",
     "direction": "Les flèches vont du parent à l’enfant, d’une tâche surveillée à celle qu’elle réveille, et d’une mention à sa cible. La tâche actuelle a une bordure épaisse.",
     "depth": "Profondeur",
@@ -497,6 +509,7 @@
     "agents_group": "Agents",
     "mark_done_tooltip": "Marquer comme terminé",
     "archive_tooltip": "Archiver",
+    "restore_to_inbox_tooltip": "Restaurer dans la boîte de réception",
     "pin_tooltip": "Épingler à la barre latérale",
     "unpin_tooltip": "Détacher de la barre latérale",
     "quick_jump_label": "Navigation rapide",
@@ -529,7 +542,8 @@
     "pull_requests_empty_title": "Aucune pull request associée."
   },
   "timeline": {
-    "loading": "Chargement..."
+    "loading": "Chargement...",
+    "jump_to_latest": "Aller au plus récent"
   },
   "activity": {
     "created": "a créé cette tâche",
@@ -714,7 +728,11 @@
     "recipient_count_other": "{{count}} agents recevront ce message",
     "steer_attachment_notice": "Seul du texte peut rejoindre une exécution en cours : un message avec des fichiers sera traité après.",
     "restart_send": "Arrêter et envoyer",
-    "restart_failed": "Impossible d'arrêter l'exécution en cours. Votre message n'a pas été envoyé."
+    "restart_failed": "Impossible d'arrêter l'exécution en cours. Votre message n'a pas été envoyé.",
+    "supersession": {
+      "superseded_by": "Remplacé par rev-{{revision}}",
+      "supersedes": "Remplace rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "Laisser une réponse...",
@@ -819,13 +837,13 @@
     "trigger_image": "[Image]",
     "summary_runs_one": "{{count}} exécution",
     "summary_runs_other": "{{count}} exécutions",
-    "latest": "Récentes",
     "open_timeline": "Ouvrir la chronologie",
     "more_runs_one": "Afficher {{count}} de plus",
     "more_runs_other": "Afficher {{count}} de plus",
     "strip_aria": "Coût par exécution — ouvrir la chronologie",
     "strip_no_usage": "Aucune consommation enregistrée",
-    "sparkline_now": "Maintenant"
+    "queued_count_one": "{{count}} en attente",
+    "queued_count_other": "{{count}} en attente"
   },
   "runs_timeline": {
     "title": "Exécutions",
@@ -1600,11 +1618,12 @@
       "handoffs_one": "{{count}} étape de passage",
       "handoffs_other": "{{count}} étapes de passage",
       "no_handoffs": "Sans passage de relais",
-      "used_by_one": "Utilisé par {{count}} projet : {{names}}",
-      "used_by_other": "Utilisé par {{count}} projets : {{names}}",
-      "used_by_default_one": "Utilisé par {{count}} projet : {{names}}, et les tâches sans projet",
-      "used_by_default_other": "Utilisé par {{count}} projets : {{names}}, et les tâches sans projet",
-      "used_by_default_none": "Utilisé par les tâches sans projet",
+      "usage_default_one": "{{count}} projet + tâches sans projet",
+      "usage_default_other": "{{count}} projets + tâches sans projet",
+      "usage_default_none": "Tâches sans projet",
+      "filter_projects": "Filtrer les projets",
+      "no_matching_projects": "Aucun projet correspondant",
+      "default_covers_no_project": "S'applique aussi aux tâches sans projet",
       "new_blank": "Workflow vide",
       "from_template": "À partir d’un modèle"
     },
@@ -1915,6 +1934,12 @@
     "withdrawn_body": "Ce clic n'a rien modifié.",
     "review_action": "Consulter",
     "failed_notice": "Retrait impossible. La décision est inchangée.",
-    "try_again_action": "Réessayer"
+    "try_again_action": "Réessayer",
+    "full_message": "Message complet",
+    "agent_note": "Note de l'agent",
+    "timing_disclaimed": "Désavoué le {{time}}",
+    "timing_effective": "En vigueur depuis le {{time}}",
+    "timing_pending_window": "En attente. Prend effet le {{time}} ; {{minutes}} min pour désavouer.",
+    "timing_pending_wake": "En attente. Prend effet dès que l'agent est réveillé."
   }
 }

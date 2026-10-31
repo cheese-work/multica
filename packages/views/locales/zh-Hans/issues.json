@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "图表",
+    "list": "列表",
+    "sub_issues": "子任务",
+    "parent_summary": "父任务",
+    "parent_filter": "父任务 / 子任务",
+    "done_count": "已完成",
+    "in_progress_count": "进行中",
+    "todo_count": "待办",
+    "closed_count": "已关闭",
+    "no_parent": "无父任务",
+    "mentions_hint": "启用时加载",
+    "navigation_hint": "点击卡片打开 · 悬停查看完整标题 · ← → ↑ ↓ 移动焦点 · Esc 关闭",
     "title": "任务关系图",
     "direction": "箭头从父任务指向子任务，从被监测的任务指向待唤醒的任务，从提及来源指向目标。当前任务以粗边框标出。",
     "depth": "深度",
@@ -403,7 +415,6 @@
     "metadata_restore": "恢复弹窗大小",
     "metadata_copy_failed": "复制元数据失败",
     "metadata_description": "智能体和集成记录的键值数据，用于衔接工作流程。",
-
     "section_load_failed_retry": "加载失败，点击重试",
     "not_found": "这个任务不存在或已在该工作区被删除。",
     "breadcrumb_project_unknown": "未知项目",
@@ -490,6 +501,7 @@
     "agents_group": "智能体",
     "mark_done_tooltip": "标记为已完成",
     "archive_tooltip": "归档",
+    "restore_to_inbox_tooltip": "恢复到收件箱",
     "pin_tooltip": "固定到侧边栏",
     "unpin_tooltip": "从侧边栏取消固定",
     "quick_jump_label": "快捷跳转",
@@ -523,7 +535,8 @@
     "pull_requests_empty_title": "暂无关联 PR。"
   },
   "timeline": {
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "jump_to_latest": "跳到最新"
   },
   "activity": {
     "created": "创建了这个任务",
@@ -693,7 +706,11 @@
     "recipient_count_other": "{{count}} 个智能体会收到",
     "steer_attachment_notice": "插话只支持文字，带附件的消息会在本轮结束后处理。",
     "restart_send": "停止并发送",
-    "restart_failed": "没能停止当前运行，消息还没有发送。"
+    "restart_failed": "没能停止当前运行，消息还没有发送。",
+    "supersession": {
+      "superseded_by": "已被 rev-{{revision}} 取代",
+      "supersedes": "取代 rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "回复...",
@@ -788,12 +805,11 @@
     "trigger_wakeup": "由唤醒触发 · {{condition}}",
     "trigger_image": "[图片]",
     "summary_runs_other": "{{count}} 次运行",
-    "latest": "最近",
     "open_timeline": "打开时间线",
     "more_runs_other": "显示其余 {{count}} 次运行",
     "strip_aria": "每次运行的费用——打开运行时间线",
     "strip_no_usage": "没有用量记录",
-    "sparkline_now": "现在"
+    "queued_count_other": "{{count}} 个排队中"
   },
   "runs_timeline": {
     "title": "运行记录",
@@ -1545,9 +1561,11 @@
       "statuses_other": "{{count}} 个状态",
       "handoffs_other": "{{count}} 步自动交接",
       "no_handoffs": "无自动交接",
-      "used_by_other": "用于 {{count}} 个项目：{{names}}",
-      "used_by_default_other": "用于 {{count}} 个项目：{{names}}，以及没有项目的任务",
-      "used_by_default_none": "用于没有项目的任务",
+      "usage_default_other": "{{count}} 个项目 + 没有项目的任务",
+      "usage_default_none": "没有项目的任务",
+      "filter_projects": "筛选项目",
+      "no_matching_projects": "没有匹配的项目",
+      "default_covers_no_project": "也适用于没有项目的任务",
       "new_blank": "空白工作流",
       "from_template": "从模板创建"
     },
@@ -1844,6 +1862,12 @@
     "withdrawn_body": "此次点击未更改任何内容。",
     "review_action": "查看",
     "failed_notice": "无法撤回，决定保持不变。",
-    "try_again_action": "重试"
+    "try_again_action": "重试",
+    "full_message": "完整消息",
+    "agent_note": "智能体备注",
+    "timing_disclaimed": "已于 {{time}} 撤销",
+    "timing_effective": "自 {{time}} 起生效",
+    "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分钟内可撤销。",
+    "timing_pending_wake": "待生效。智能体被唤醒后立即生效。"
   }
 }

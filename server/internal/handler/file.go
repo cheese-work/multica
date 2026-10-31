@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -68,6 +69,7 @@ type AttachmentResponse struct {
 	Filename      string  `json:"filename"`
 	URL           string  `json:"url"`
 	DownloadURL   string  `json:"download_url"`
+	WebURL        string  `json:"web_url,omitempty"`
 	// AttachmentDownloadURL is a credential-free URL that forces a
 	// Content-Disposition: attachment across every storage mode, for the
 	// download BUTTON — unlike DownloadURL, which is load-intent and keeps
@@ -605,7 +607,9 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 			}
-			writeJSON(w, http.StatusOK, h.attachmentToResponse(att.Attachment(), attachmentURLModeFromRequest(r)))
+			resp := h.attachmentToResponse(att.Attachment(), attachmentURLModeFromRequest(r))
+			resp.WebURL = h.workspaceWebURL(r.Context(), att.Attachment().WorkspaceID, func(ws db.Workspace) string { return weblink.Attachment(ws.Slug, resp.ID) })
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 

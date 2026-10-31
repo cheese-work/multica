@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -86,6 +87,10 @@ const (
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
 	repoCheckoutModeIsolated = "isolated"
+	// repoCheckoutModeShared is the isolated layout with objects borrowed from
+	// the repo cache through read-only alternates, for sandboxed tasks that
+	// cannot read the cache's refs or config (CHE-2216 slice A2c).
+	repoCheckoutModeShared = "shared"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
 	// execution-environment setup, and the StartTask request itself. It is
@@ -657,6 +662,9 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+	// Sticky for this process: a finished task can leave independent processes
+	// behind even after activeTasks reaches zero.
+	cleanupUnconfirmed atomic.Bool
 	// runningTasks counts live provider execution sessions, beginning only after
 	// backend.Execute returns. It can briefly lag the server-side running state,
 	// which starts during preparation before provider launch. resourceWaitTasks
@@ -686,6 +694,10 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+
+	// pause is the server-reported machine pause, refreshed by every heartbeat
+	// ack (see pause.go). nil when the machine is not paused.
+	pause atomic.Pointer[heldPause]
 
 	// maintMu guards maint, the owner maintenance lease (see maintenance.go).
 	// The lease holds `updating` + the claim barrier; it adds no second flag.
@@ -775,6 +787,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	// Tag every daemon HTTP request with the daemon's CLI version so the
 	// server can split logs/metrics by client version (parallel to the CLI).
 	client.SetVersion(cfg.CLIVersion)
+	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
 		client:                      client,
@@ -2397,6 +2410,8 @@ const (
 	// Deterministic like the two above — the same binary keeps refusing until
 	// someone installs the profile — and the reason carries that repair.
 	builtinProbeMissingProfile
+	// A bridge is configured but cannot safely serve work; manual migration only.
+	builtinProbeProfileMigration
 	// builtinProbeIncompatibleProfile: something answered `--probe`, with a
 	// protocol version this daemon does not drive — a bundle older than the
 	// check, or a newer one this build has yet to catch up with. Reported, and
@@ -2427,7 +2442,7 @@ const (
 // learned this round.
 func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 	switch verdict {
-	case builtinProbeBelowMinimum, builtinProbeNotExecutable, builtinProbeMissingProfile:
+	case builtinProbeBelowMinimum, builtinProbeNotExecutable, builtinProbeMissingProfile, builtinProbeProfileMigration:
 		return true
 	}
 	return false
@@ -2438,7 +2453,7 @@ func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 //
 // Only builtinProbeBelowMinimum does not: it is a pure function of a version
 // string this round already parsed, so a second look reaches the same
-// conclusion. The other two are deterministic about the state they describe but
+// conclusion. The other demotable verdicts describe deterministic states but
 // rest on an observation that is not — an installer overwriting the bin entry in
 // place (the very repair we tell users to run) or a DSH upgrade moving the
 // profile under a probe. Requiring a second sighting a window later makes those
@@ -2447,6 +2462,8 @@ func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 func builtinProbeNeedsConfirmation(verdict builtinProbeVerdict) bool {
 	return verdict != builtinProbeBelowMinimum
 }
+
+const dshProfileMigrationReason = "the multica DSH profile needs manual migration; back up the profile, build a compatible " + dshMulticaRuntimePackage + " bundle from https://github.com/multica-ai/dsh-multica-runtime following its README, install the directory or tarball with dsh plugin, and update dsh.profile.bundles to load " + dshMulticaRuntimePackage + " instead of " + dshLegacyRuntimePackage + "; a dependencies entry alone does not load the runtime"
 
 // dshMissingProfileReason is the user-facing explanation for a
 // builtinProbeMissingProfile drop. It names the repair because nothing else in
@@ -2508,7 +2525,7 @@ func newRuntimeVerdict(verdict builtinProbeVerdict, reason, execPath string, ins
 			offline.Repair = &repair
 		}
 		return runtimeVerdict{reason: reason, offline: offline}
-	case builtinProbeMissingProfile:
+	case builtinProbeMissingProfile, builtinProbeProfileMigration:
 		// The same class of finding as an unrunnable file: the machine is
 		// reachable and the CLI cannot serve work, so the server must refuse
 		// the trigger and say what is missing rather than queue behind a wait
@@ -2519,7 +2536,7 @@ func newRuntimeVerdict(verdict builtinProbeVerdict, reason, execPath string, ins
 		offline := &RuntimeOfflineReason{
 			Code:       RuntimeOfflineCodeDshProfile,
 			Detail:     reason,
-			Installing: installing,
+			Installing: installing && verdict != builtinProbeProfileMigration,
 		}
 		repair := dshProfileRepair()
 		offline.Repair = &repair
@@ -2669,14 +2686,19 @@ probeLoop:
 		// above.
 		if name == "dsh" {
 			// What the probe said decides what may happen next. Only a
-			// confirmed-absent profile may install a bundle or condemn the
-			// runtime. An incompatible one is reported and neither installed
+			// confirmed-absent profile may install a bundle. A configuration
+			// needing migration may demote the runtime but is never overwritten.
+			// A protocol-incompatible profile is reported and neither installed
 			// over nor demoted — the profile is deliberately there, and this
 			// daemon may be the stale side of the skew. A probe that merely
 			// failed is transient, on the same rule every other provider's
 			// version probe gets.
 			switch probeDshMulticaProfile(ctx, resolved.Path) {
 			case dshProbeOK:
+			case dshProbeNeedsMigration:
+				d.logger.Warn("skip registering runtime: DSH Multica runtime profile needs manual migration",
+					"name", name, "path", resolved.Path)
+				return "", dshProfileMigrationReason, builtinProbeProfileMigration
 			case dshProbeMissingProfile:
 				d.logger.Warn("skip registering runtime: DSH Multica runtime profile is not installed",
 					"name", name, "path", resolved.Path)
@@ -2965,6 +2987,9 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
+		"cli_commit":        d.cfg.CLICommit,
+		"cli_os":            runtime.GOOS,
+		"cli_arch":          runtime.GOARCH,
 		"launched_by":       d.cfg.LaunchedBy,
 		"runtimes":          runtimes,
 		"failed_profiles":   failedProfiles,
@@ -3010,6 +3035,9 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
+		"cli_commit":        d.cfg.CLICommit,
+		"cli_os":            runtime.GOOS,
+		"cli_arch":          runtime.GOARCH,
 		"launched_by":       d.cfg.LaunchedBy,
 		"runtimes":          runtimes,
 		// Deliberately empty: this call carries no profiles, so it must not
@@ -4507,7 +4535,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4542,6 +4570,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	if resp == nil {
 		return
 	}
+	d.applyHeartbeatPause(resp.Paused)
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
@@ -4652,7 +4681,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -4840,7 +4869,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID string) {
 	d.logger.Info("runtime local skills requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
-	skills, supported, err := listRuntimeLocalSkills(rt.Provider)
+	skills, supported, err := d.listLocalSkills(ctx, rt)
 	if err != nil {
 		d.reportLocalSkillListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
@@ -4867,7 +4896,7 @@ func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID
 func (d *Daemon) handleLocalSkillImport(ctx context.Context, rt Runtime, pending PendingLocalSkillImport) {
 	d.logger.Info("runtime local skill import requested", "runtime_id", rt.ID, "request_id", pending.ID, "provider", rt.Provider, "skill_key", pending.SkillKey)
 
-	skill, supported, err := loadRuntimeLocalSkillBundle(rt.Provider, pending.SkillKey)
+	skill, supported, err := d.loadLocalSkillBundle(ctx, rt, pending.SkillKey)
 	if err != nil {
 		d.reportLocalSkillImportResult(ctx, rt, pending.ID, map[string]any{
 			"status": "failed",
@@ -5025,6 +5054,16 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	})
 
 	output, err := d.runUpdateFn(update.TargetVersion)
+	if errors.Is(err, cli.ErrForkUpToDate) {
+		// Already on the server's build: nothing was installed, so report
+		// success and keep the healthy daemon running.
+		d.logger.Info("CLI already on the server build; no restart", "runtime_id", runtimeID, "update_id", update.ID)
+		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+			"status": "completed",
+			"output": "Already on the server build",
+		})
+		return
+	}
 	if err != nil {
 		d.logger.Error("CLI update failed", "error", err, "output", output)
 		d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
@@ -5192,7 +5231,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims {
+	if d.pauseClaims || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
@@ -5355,13 +5394,7 @@ func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) er
 			// poller between ClaimTasksWSFirst and taskWG.Add(1) cannot race
 			// taskWG.Wait at a zero counter.
 			<-pollerDone
-			waitDone := make(chan struct{})
-			go func() { taskWG.Wait(); close(waitDone) }()
-			select {
-			case <-waitDone:
-			case <-time.After(30 * time.Second):
-				d.logger.Warn("timed out waiting for in-flight tasks")
-			}
+			d.waitForTaskCleanup(&taskWG, 30*time.Second)
 			return ctx.Err()
 		case <-runtimeSetCh:
 			// The batch poller re-derives allRuntimeIDs() each cycle; nudge it to
@@ -8180,7 +8213,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			d.markActiveStore(store)
 			defer d.unmarkActiveStore(store)
 		}
-		// The overlay links state.db here so the conversation transcript
+		// The conversation store is the isolated home, so its ordinary state.db
 		// survives the task and a follow-up turn can actually resume it
 		// (GH #6806). Keyed on (agent, resolved source home, conversation):
 		// tasks of one conversation are serial, so the shard has a single
@@ -8704,6 +8737,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	// CHE-2216 A2b: per-run HOME and read-only provider credential copy. Set
+	// after custom_env so a configured HOME cannot point the run back at the
+	// daemon user's home. A no-op unless MULTICA_SANDBOX_MODE is on or audit.
+	userHome, _ := os.UserHomeDir()
+	homeDone, err := applyRestrictedHome(d.cfg.SandboxMode, homeLayout{
+		RootDir: env.RootDir, UserHome: userHome, Template: d.cfg.SandboxHomeTemplate,
+		Provider: provider, CodexHome: env.CodexHome,
+	}, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
+	}
+	defer homeDone()
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8719,7 +8764,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
-	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
+	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, agent.BaseEnviron(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
 	// The overlay is authoritative once built, so nothing on the command line
@@ -8753,6 +8798,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+	}
+	if hermesOverlayActive {
+		// Retire an owner left by a crashed/interrupted daemon before it can
+		// execute tools with the preceding task's frozen environment.
+		if err := agent.StopHermesTaskGateway(backendConfig, env.HermesHome); err != nil {
+			return TaskResult{}, err
+		}
+		defer func() {
+			if err := agent.StopHermesTaskGateway(backendConfig, env.HermesHome); err != nil {
+				d.logger.Warn("failed to stop task Hermes gateway", "home", env.HermesHome, "error", err)
+			}
+		}()
 	}
 	// Register retirement before any fresh-session launch can fail. The check
 	// uses the backend's final binary, environment, working directory and MCP
@@ -8935,6 +8992,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentName:       task.Agent.Name,
 		WorkDir:         env.WorkDir,
 		IssueIdentifier: task.IssueIdentifier,
+		IntakeRun:       task.IntakeRun,
+		PinnedBranch:    task.PinnedBranch,
+		PinnedRepo:      task.PinnedRepo,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
@@ -9583,7 +9643,12 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (finalResult agent.Result, finalTools int32, finalErr error) {
+	defer func() {
+		if finalResult.Status == "cleanup_unconfirmed" {
+			d.cleanupUnconfirmed.Store(true)
+		}
+	}()
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the

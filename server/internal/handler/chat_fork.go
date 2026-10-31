@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -33,6 +34,7 @@ type ChatForkResponse struct {
 	Session           ChatSessionResponse  `json:"session"`
 	PreviousSessionID string               `json:"previous_session_id"`
 	URL               string               `json:"url"`
+	WebURL            string               `json:"web_url,omitempty"`
 	Message           *ChatMessageResponse `json:"message,omitempty"`
 	// AttachmentIDs are the draft attachments bound to the first message.
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
@@ -249,7 +251,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	h.publishChat(protocol.EventChatSessionCreated, workspaceID, "member", creatorID, uuidToString(child.ID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: workspaceID, ChatSessionID: uuidToString(child.ID), AgentID: uuidToString(child.AgentID), CreatorID: creatorID, Title: child.Title,
 	})
-	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID)}
+	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(session.ID), URL: forkChatURL(workspace.Slug, child.ID), WebURL: weblink.Build(h.cfg.AppURL, forkChatURL(workspace.Slug, child.ID))}
 	if sendFirst {
 		h.TaskService.RecordHumanDelegation(r.Context(), plan.Attribution)
 		h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(child.ID), protocol.ChatMessagePayload{
@@ -313,7 +315,7 @@ func (h *Handler) writeForkReplay(w http.ResponseWriter, r *http.Request, source
 		writeError(w, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
-	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(source.ID), URL: forkChatURL(workspace.Slug, child.ID)}
+	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(source.ID), URL: forkChatURL(workspace.Slug, child.ID), WebURL: weblink.Build(h.cfg.AppURL, forkChatURL(workspace.Slug, child.ID))}
 	if first, err := h.Queries.GetChatForkFirstMessage(r.Context(), child.ID); err == nil {
 		message := chatMessageToResponse(first, nil)
 		response.Message = &message
