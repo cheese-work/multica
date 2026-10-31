@@ -114,6 +114,8 @@
     "copied_count_other": "已複製 {{count}} 條消息",
     "fork_hint": "發送一條消息即可開始此分支。",
     "continuation_summary": "對話摘要",
+    "compaction_divider": "於 {{time}} ICT 壓縮",
+    "compaction_divider_untimed": "已壓縮",
     "earlier_dm": "較早的私信",
     "quote_message": "引用",
     "speaker_you": "你",
