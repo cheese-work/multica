@@ -18,6 +18,7 @@
     "from": "From",
     "unread_only": "Unread only",
     "no_agents_working": "No agents working",
+    "mentions_only": "Mentions me",
     "notification_count_one": "{{count}} notification",
     "notification_count_other": "{{count}} notifications",
     "clear": "Clear filters",

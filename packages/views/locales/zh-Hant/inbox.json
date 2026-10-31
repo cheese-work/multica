@@ -17,6 +17,7 @@
     "from": "來自",
     "unread_only": "只看未讀",
     "no_agents_working": "沒有智慧體在工作",
+    "mentions_only": "提到我的",
     "notification_count_other": "{{count}} 條通知",
     "clear": "清除篩選",
     "empty": "沒有符合篩選條件的通知"

@@ -37,7 +37,7 @@ export function archivedInboxListOptions(wsId: string) {
   });
 }
 
-// Lists the archived dimensions explicitly, so an `idleOnly` carried in from
+// Lists the archived dimensions explicitly, so an `idleOnly`/`mentionsOnly` carried in from
 // the active inbox never changes the key or refetches the archive.
 function normalizedInboxFilters(filters: ArchivedInboxFilters): ArchivedInboxFilters {
   return { statuses: [...filters.statuses].sort(), priorities: [...filters.priorities].sort(),

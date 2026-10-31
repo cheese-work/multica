@@ -209,6 +209,29 @@ describe("idle filtering", () => {
   });
 });
 
+describe("mentions-me filtering", () => {
+  it("keeps only rows where the viewer was mentioned and counts as one filter", () => {
+    const rows = [
+      item("mention", "todo", "high", { type: "mentioned" }),
+      item("comment", "todo", "high", { type: "new_comment" }),
+      item("assigned", "todo", "high", { type: "issue_assigned" }),
+    ];
+    const filters = { ...EMPTY_INBOX_FILTERS, mentionsOnly: true };
+
+    expect(filterInboxItems(rows, filters).map((row) => row.id)).toEqual(["mention"]);
+    expect(inboxFilterCount(filters)).toBe(1);
+  });
+
+  it("toggles per workspace and clears with the rest", () => {
+    const { toggleMentionsOnly, clearFilters } = useInboxFilterStore.getState();
+    toggleMentionsOnly("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.mentionsOnly).toBe(true);
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-2"]).toBeUndefined();
+    clearFilters("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]).toBeUndefined();
+  });
+});
+
 describe("pinned row with idle filtering", () => {
   it("keeps the open notification after an agent starts on its issue", () => {
     const filters = { ...EMPTY_INBOX_FILTERS, idleOnly: true };
