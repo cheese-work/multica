@@ -30,7 +30,7 @@ func newProcHostCollector() func() (*protocol.DaemonHostSample, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &protocol.DaemonHostSample{SampledAt: time.Now().UTC().Truncate(time.Second), CPUPercent: cpu, RAMPercent: ram, Disks: readDisks()}, nil
+		return &protocol.DaemonHostSample{SampledAt: time.Now().UTC().Truncate(time.Minute), CPUPercent: cpu, RAMPercent: ram, Disks: readDisks()}, nil
 	}
 }
 

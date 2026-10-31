@@ -17,7 +17,7 @@ import (
 
 func testHostSample(at time.Time) *protocol.DaemonHostSample {
 	return &protocol.DaemonHostSample{
-		SampledAt:  at.UTC().Truncate(time.Second),
+		SampledAt:  at.UTC().Truncate(time.Minute),
 		CPUPercent: 12.5,
 		RAMPercent: 40,
 		Disks:      []protocol.DaemonHostDisk{{MountPath: "/", Percent: 61}, {MountPath: "/mnt/data", Percent: 7}},
@@ -100,7 +100,7 @@ func TestHostSample_TwoRuntimesOneDaemonStoreOneRowSet(t *testing.T) {
 	}
 
 	// A new sample adds a new row set.
-	httpHeartbeat(t, a, testHostSample(time.Now().Add(time.Minute-time.Second)))
+	httpHeartbeat(t, a, testHostSample(time.Now().Add(time.Minute)))
 	if got := hostSampleRows(t, daemonID); got != 6 {
 		t.Fatalf("rows after a second sample = %d, want 6", got)
 	}
@@ -184,5 +184,67 @@ func TestHostSample_RejectsBadSamples(t *testing.T) {
 		if got := hostSampleRows(t, daemonID); got != 0 {
 			t.Fatalf("%s sample stored %d rows, want 0", name, got)
 		}
+	}
+}
+
+func TestHostSample_SameMinuteSharesOneRowSet(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const daemonID = "host-sample-same-minute"
+	cleanHostSamples(t, daemonID)
+	a, _ := seedTwoRuntimes(t, daemonID)
+	base := time.Now().UTC().Truncate(time.Minute).Add(-2 * time.Minute)
+
+	// A sampler restart inside one minute produces a second timestamp in that minute.
+	first, second := testHostSample(base), testHostSample(base)
+	first.SampledAt = base.Add(5 * time.Second)
+	second.SampledAt = base.Add(40 * time.Second)
+	httpHeartbeat(t, a, first)
+	httpHeartbeat(t, a, second)
+	if got := hostSampleRows(t, daemonID); got != 3 {
+		t.Fatalf("rows for two samples in one minute = %d, want 3 (one minute key)", got)
+	}
+}
+
+// A locked host_sample table must not hold the heartbeat (and, on WS, the read
+// pump) past the ingest budget; the sample is dropped and the heartbeat acks.
+func TestHostSample_BlockedStorageDoesNotStallHeartbeat(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const daemonID = "host-sample-blocked"
+	cleanHostSamples(t, daemonID)
+	a, _ := seedTwoRuntimes(t, daemonID)
+	ctx := context.Background()
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			tx.Rollback(ctx)
+		}
+	}
+	defer release()
+	if _, err := tx.Exec(ctx, `LOCK TABLE host_sample IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	// Safety net so a regression shows as a slow heartbeat, not a hung suite.
+	timer := time.AfterFunc(hostSampleIngestTimeout+3*time.Second, release)
+	defer timer.Stop()
+
+	start := time.Now()
+	httpHeartbeat(t, a, testHostSample(time.Now()))
+	wsHeartbeat(t, daemonID, a, testHostSample(time.Now().Add(-time.Minute)))
+	if took := time.Since(start); took > 2*hostSampleIngestTimeout+time.Second {
+		t.Fatalf("two heartbeats took %v with host_sample locked, want under %v", took, 2*hostSampleIngestTimeout+time.Second)
+	}
+	release()
+	if got := hostSampleRows(t, daemonID); got != 0 {
+		t.Fatalf("rows = %d, want 0 (timed-out samples dropped)", got)
 	}
 }

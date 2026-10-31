@@ -159,3 +159,12 @@ func TestHeartbeatRequestWithoutSampler(t *testing.T) {
 		t.Fatalf("req = %+v, want runtime only", req)
 	}
 }
+
+// The WS sender and heartbeat loop read d.hostSampler; it must exist before Run
+// starts any goroutine, so New builds it.
+func TestNewDaemonBuildsHostSampler(t *testing.T) {
+	d := New(Config{WorkspacesRoot: t.TempDir()}, slog.Default())
+	if d.hostSampler == nil {
+		t.Fatal("New left hostSampler nil")
+	}
+}

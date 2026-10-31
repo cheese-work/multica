@@ -18,5 +18,8 @@ func TestProcHostCollectorLive(t *testing.T) {
 	if s.RAMPercent <= 0 || s.RAMPercent > 100 || s.CPUPercent < 0 || s.CPUPercent > 100 || s.SampledAt.IsZero() {
 		t.Fatalf("sample out of range: %+v", s)
 	}
+	if !s.SampledAt.Equal(s.SampledAt.Truncate(time.Minute)) {
+		t.Fatalf("SampledAt %v is not a minute key", s.SampledAt)
+	}
 	t.Logf("live sample: %+v", s)
 }
