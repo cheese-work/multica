@@ -289,7 +289,8 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, error) {
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
+	moveGuard := issueMoveGuardFrom(ctx)
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -300,6 +301,11 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		}
 		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
 			return err
+		}
+		if moveGuard != nil {
+			if err := moveGuard(ctx, q, &params); err != nil {
+				return err
+			}
 		}
 		var innerErr error
 		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
@@ -3287,6 +3293,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	var parentIssueID pgtype.UUID
 	var projectID pgtype.UUID
 	if req.ParentIssueID != nil {
+		if dispatch.BudgetRecoveryCaller(r.Context()) {
+			writeError(w, http.StatusForbidden, errRecoveryCaused)
+			return
+		}
 		id, ok := parseUUIDOrBadRequest(w, *req.ParentIssueID, "parent_issue_id")
 		if !ok {
 			return

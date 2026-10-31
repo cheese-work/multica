@@ -47,3 +47,12 @@ describe("restart during a long daemon drain", () => {
     expect(start).not.toHaveBeenCalled();
   });
 });
+
+describe("forced stop on quit", () => {
+  // `daemon stop --force` waits up to 40s for the profile lock, then kills.
+  it("lets a forced stop finish its lock wait instead of killing the CLI", async () => {
+    const stop = execDaemonStop("multica", ["daemon", "stop", "--force"], fakeExec(50_000));
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(await stop).toEqual({ success: true });
+  });
+});

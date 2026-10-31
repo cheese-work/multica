@@ -1,6 +1,6 @@
 "use client";
 
-import { Server } from "lucide-react";
+import { Server } from "@multica/ui/icons";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";

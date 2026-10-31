@@ -62,6 +62,7 @@ workspace's own change process before running it.
 ```bash
 multica issue budget get <issue-id> --output json
 multica issue budget raise <issue-id> --runs <total> --output json
+multica issue budget top-up <issue-id> --output json
 ```
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
@@ -69,7 +70,10 @@ multica issue budget raise <issue-id> --runs <total> --output json
 - `raise` sets this issue's own cap to `--runs` total runs. `--runs` must be
   above the cap now in force (the workflow's, or an earlier raise). Other
   issues on the workflow keep the workflow's cap.
-- `raise` is members only; the server rejects an agent. An agent that hit the
+- `top-up` opens a new run window on the issue, as a person's status move
+  does, without moving its status. The window credit is the workflow's cap;
+  usage history is kept.
+- `raise` and `top-up` are members only; the server rejects an agent. An agent that hit the
   cap reports the blocker and asks a person; it never raises its own budget.
 
 ## Inbound webhook endpoints

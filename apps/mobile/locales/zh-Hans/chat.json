@@ -169,6 +169,7 @@
   },
   "picker.title": "选择智能体",
   "no_response": "本轮已结束，智能体没有返回文字回复。",
+  "continuation_summary": "对话摘要",
   "failure_reason": {
     "default": "运行失败",
     "queued_expired": "排队已过期",

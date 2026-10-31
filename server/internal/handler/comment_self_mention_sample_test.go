@@ -70,7 +70,7 @@ func TestHandoffSampleSelfEchoReplay(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			testHandler.triggerTasksForComment(ctx, issue, comment, nil, "agent", authorID, testUserID, nil, nil)
+			testHandler.triggerTasksForComment(ctx, issue, comment, nil, "agent", authorID, testUserID, nil, commentSteerRequest{})
 			if got := countQueuedOrDispatched(test, authorID, issueID); got != 0 {
 				test.Fatalf("self_echo_runs=%d, want zero", got)
 			}

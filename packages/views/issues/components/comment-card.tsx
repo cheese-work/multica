@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ChevronRight, CornerUpLeft, ListChevronsDownUp, Copy, Link2, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, CornerUpLeft, ListChevronsDownUp, Copy, Link2, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
@@ -33,6 +33,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useTimeAgo } from "../../i18n";
 import { RichTableDeferContext } from "../../rich-content";
 import { bodyPrefix } from "../../rich-content/body-prefix";
+import { SupersedesLine } from "./supersession-links";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -716,6 +717,7 @@ function CommentBody({ entry, forceOpen, findOpen }: { entry: TimelineEntry; for
   const prefix = useMemo(() => (deferred ? bodyPrefix(content, BODY_PREFIX_CHARS) : ""), [deferred, content]);
   return (
     <RichTableDeferContext.Provider value={content.length > LONG_BODY_CHARS && !findOpen}>
+      <SupersedesLine entry={entry} />
       <ReadonlyContent content={deferred ? prefix : content} attachments={entry.attachments} />
       {deferred && (
         <Button type="button" size="sm" variant="ghost" className="mt-1 text-muted-foreground" onClick={() => setExpanded(true)}>
@@ -829,7 +831,7 @@ function CommentRow({
         <Tooltip>
           <TooltipTrigger
             render={
-              <span className="text-caption text-muted-foreground cursor-default">
+              <span className="text-label text-muted-foreground cursor-default">
                 {timeAgo(entry.created_at)}
               </span>
             }
@@ -1353,7 +1355,7 @@ function CommentCardImpl({
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <span className="shrink-0 text-caption text-muted-foreground cursor-default">
+                        <span className="shrink-0 text-label text-muted-foreground cursor-default">
                           {timeAgo(entry.created_at)}
                         </span>
                       }
@@ -1372,12 +1374,12 @@ function CommentCardImpl({
               )}
 
               {!open && contentPreview && (
-                <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate text-label text-muted-foreground">
                   {contentPreview}
                 </span>
               )}
               {!open && replyCount > 0 && (
-                <span className="shrink-0 text-caption text-muted-foreground">
+                <span className="shrink-0 text-label text-muted-foreground">
                   {t(($) => $.comment.reply_count, { count: replyCount })}
                 </span>
               )}

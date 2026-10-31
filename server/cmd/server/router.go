@@ -673,7 +673,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// backfills) take it directly; the constructor-based services
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
-				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
+				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{AppURL: appURLFromEnv()})
 				if store != nil && patcher.SetAttachments(store) {
 					h.DeclareChannelFileDelivery(string(channel.TypeFeishu))
 				}
@@ -1068,8 +1068,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Same store the Router claims on, so the receipt this
 					// adapter sends before the Router sees the message cannot
 					// also be answered there.
-					Dedup:  wecom.NewDeduper(wecomStore),
-					Logger: slog.Default(),
+					Dedup: wecom.NewDeduper(wecomStore),
+					// The receipt for a message the bot cannot read is written
+					// in the sender's profile language in a 1:1.
+					Languages: queries,
+					Logger:    slog.Default(),
 				})
 				// Streaming replies: WeCom's smart-bot protocol has no
 				// typing indicator, no reaction and no read receipt, so the
@@ -1658,6 +1661,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Get("/api/integrations/composio/callback", h.ComposioCallback)
 
 	daemonUpdate := loadDaemonUpdateSource()
+	h.DaemonUpdate = daemonUpdate
+
+	// The install script is the only public /api/daemon route (CHE-2641): a
+	// fresh host runs `curl <server>/api/daemon/install.sh | bash` before it has
+	// any token. It is static and holds no secret; the manifest and binary it
+	// downloads stay behind DaemonAuth below.
+	r.Get("/api/daemon/install.sh", handler.DaemonInstallScript)
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
@@ -1744,6 +1754,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// /v1 prevents the Public API from accepting session cookies.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
+		r.Use(handler.RejectRecoveryWrites)
 		r.Route(pluginBridgePrefix, func(r chi.Router) {
 			registerPluginActionRoutes(r, h)
 			// ui / manual only. `event` is dispatched by the host off the event
@@ -1755,6 +1766,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
+		r.Use(handler.RejectRecoveryWrites)
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
 		// session after a surface asks for something over the postMessage
@@ -2200,6 +2212,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Post("/run-budget", h.RaiseIssueRunBudget)
+					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					r.Put("/workflow", h.SetIssueWorkflow)
@@ -2617,6 +2630,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Tasks (user-facing, with ownership check)
 			r.Post("/api/tasks/{taskId}/cancel", h.CancelTaskByUser)
+			r.Post("/api/tasks/{taskId}/rerun", h.RerunTaskByUser)
 
 			// Workspace-wide agent task snapshot for presence derivation:
 			// every active task + each agent's most recent terminal task.
@@ -2730,6 +2744,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.Get("/feed", h.ListDecisionFeed)
+				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
 				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
 				r.Get("/{id}/artifacts", h.ListDecisionArtifacts)
@@ -2903,6 +2919,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 
 	pat, err := pr.queries.GetPersonalAccessTokenByHash(ctx, hash)
 	if err != nil {
+		return "", false
+	}
+
+	// A scoped PAT never opens a realtime connection.
+	if len(pat.Scopes) > 0 {
 		return "", false
 	}
 

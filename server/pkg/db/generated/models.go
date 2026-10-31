@@ -717,6 +717,14 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentSupersession struct {
+	SupersededCommentID  pgtype.UUID        `json:"superseded_comment_id"`
+	SupersedingCommentID pgtype.UUID        `json:"superseding_comment_id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
 type CommentTriggerRateLimit struct {
 	IssueID     pgtype.UUID        `json:"issue_id"`
 	AgentID     pgtype.UUID        `json:"agent_id"`
@@ -898,6 +906,8 @@ type DecisionAnswer struct {
 	ContextMessageID        pgtype.UUID        `json:"context_message_id"`
 	Excerpted               bool               `json:"excerpted"`
 	AnsweredLabel           pgtype.Text        `json:"answered_label"`
+	StateVersion            int64              `json:"state_version"`
+	HindsightAckedVersion   int64              `json:"hindsight_acked_version"`
 }
 
 type DecisionBoundWrite struct {
@@ -987,6 +997,7 @@ type DecisionRequest struct {
 	AskIdentity           string             `json:"ask_identity"`
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
+	ProjectID             pgtype.UUID        `json:"project_id"`
 }
 
 type DecisionWorkerLease struct {
@@ -2121,6 +2132,7 @@ type PersonalAccessToken struct {
 	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
 	Revoked     bool               `json:"revoked"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Scopes      []string           `json:"scopes"`
 }
 
 type PinnedItem struct {
@@ -2235,20 +2247,21 @@ type PluginStorage struct {
 }
 
 type Project struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Title       string             `json:"title"`
-	Description pgtype.Text        `json:"description"`
-	Icon        pgtype.Text        `json:"icon"`
-	Status      string             `json:"status"`
-	LeadType    pgtype.Text        `json:"lead_type"`
-	LeadID      pgtype.UUID        `json:"lead_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	Priority    string             `json:"priority"`
-	StartDate   pgtype.Date        `json:"start_date"`
-	DueDate     pgtype.Date        `json:"due_date"`
-	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Title             string             `json:"title"`
+	Description       pgtype.Text        `json:"description"`
+	Icon              pgtype.Text        `json:"icon"`
+	Status            string             `json:"status"`
+	LeadType          pgtype.Text        `json:"lead_type"`
+	LeadID            pgtype.UUID        `json:"lead_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Priority          string             `json:"priority"`
+	StartDate         pgtype.Date        `json:"start_date"`
+	DueDate           pgtype.Date        `json:"due_date"`
+	WorkflowID        pgtype.UUID        `json:"workflow_id"`
+	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
 }
 
 type ProjectResource struct {

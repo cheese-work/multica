@@ -830,6 +830,76 @@ func (q *Queries) GetLatestMemberCommentForIssueSince(ctx context.Context, arg G
 	return i, err
 }
 
+const getThreadLatestComment = `-- name: GetThreadLatestComment :one
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $2 AND c.workspace_id = $3
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $2 AND c.workspace_id = $3
+)
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT 1
+`
+
+type GetThreadLatestCommentParams struct {
+	TargetID    pgtype.UUID `json:"target_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The newest live comment in @target_id's thread (root plus every descendant,
+// same walk as CountThreadCommentsSince). Supersede reads its author: a thread
+// whose newest comment is a human's is never auto-resolved.
+func (q *Queries) GetThreadLatestComment(ctx context.Context, arg GetThreadLatestCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, getThreadLatestComment, arg.TargetID, arg.IssueID, arg.WorkspaceID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.DecisionRequestID,
+		&i.DecisionAnswerID,
+		&i.DecisionIntentID,
+		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
+		&i.TaintIds,
+	)
+	return i, err
+}
+
 const getThreadRoot = `-- name: GetThreadRoot :one
 WITH RECURSIVE root_of AS (
     SELECT c.id, c.parent_id
@@ -1124,6 +1194,42 @@ func (q *Queries) ListCommentAncestorPath(ctx context.Context, arg ListCommentAn
 			&i.Depth,
 			&i.Cycle,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentSupersessionsForIssue = `-- name: ListCommentSupersessionsForIssue :many
+SELECT superseded_comment_id, superseding_comment_id
+FROM comment_supersession
+WHERE issue_id = $1 AND workspace_id = $2
+`
+
+type ListCommentSupersessionsForIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type ListCommentSupersessionsForIssueRow struct {
+	SupersededCommentID  pgtype.UUID `json:"superseded_comment_id"`
+	SupersedingCommentID pgtype.UUID `json:"superseding_comment_id"`
+}
+
+func (q *Queries) ListCommentSupersessionsForIssue(ctx context.Context, arg ListCommentSupersessionsForIssueParams) ([]ListCommentSupersessionsForIssueRow, error) {
+	rows, err := q.db.Query(ctx, listCommentSupersessionsForIssue, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCommentSupersessionsForIssueRow{}
+	for rows.Next() {
+		var i ListCommentSupersessionsForIssueRow
+		if err := rows.Scan(&i.SupersededCommentID, &i.SupersedingCommentID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1887,18 +1993,29 @@ const listReconcilableCommentsForIssueSince = `-- name: ListReconcilableComments
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, c.decision_request_id, c.decision_answer_id, c.decision_intent_id, c.decision_comment_kind, c.github_notify_only, c.taint_ids FROM comment c
 WHERE c.issue_id = $1
   AND (c.id = ANY($2::uuid[])
-       OR comment_thread_root_id(c.id) = $3::uuid)
+       OR comment_thread_root_id(c.id) = $3::uuid
+       -- An agent comment that steered this run but was never read took the
+       -- place of the follow-up its mention would have queued; replay it.
+       OR (c.author_type = 'agent' AND EXISTS (
+           SELECT 1 FROM task_supplement steered
+           WHERE steered.comment_id = c.id AND steered.task_id = $4::uuid
+             AND steered.status <> 'delivered'
+       )))
   -- A deleted comment is no longer input, even when replies keep its row.
   AND c.deleted_at IS NULL
-  -- A comment that steered this agent's running turn belongs to that turn,
-  -- regardless of delivery status: failed delivery must not become an automatic
-  -- new run. The same comment still reconciles normally for any other agent
-  -- it addressed without steering.
+  -- A member comment that steered this agent's running turn belongs to that
+  -- turn, regardless of delivery status: failed delivery must not become an
+  -- automatic new run, because the member sees the failure and can retry or
+  -- send it as a new run. No one watches an agent's steering receipt, so an
+  -- agent comment belongs to the turn only once delivered; otherwise it is
+  -- replayed like any other mention. The same comment still reconciles
+  -- normally for any other agent it addressed without steering.
   AND NOT EXISTS (
       SELECT 1 FROM task_supplement s
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
-        AND bound.agent_id = $4
+        AND bound.agent_id = $5
+        AND (c.author_type <> 'agent' OR s.status = 'delivered')
   )
   -- An explicit member/agent cancellation acknowledges the planned input for
   -- this agent only for completing tasks already in flight at cancellation;
@@ -1907,12 +2024,12 @@ WHERE c.issue_id = $1
       SELECT 1
       FROM agent_task_queue cancelled
       WHERE cancelled.issue_id = c.issue_id
-        AND cancelled.agent_id = $4
+        AND cancelled.agent_id = $5
         AND cancelled.status = 'cancelled'
         AND cancelled.cancelled_by_type IN ('member', 'agent')
         AND cancelled.cancelled_by_id IS NOT NULL
         AND cancelled.completed_at IS NOT NULL
-        AND cancelled.completed_at >= $5
+        AND cancelled.completed_at >= $6
         AND c.updated_at <= cancelled.completed_at
         AND (
             cancelled.trigger_comment_id = c.id
@@ -1920,11 +2037,11 @@ WHERE c.issue_id = $1
         )
   )
   -- Nor does a comment whose author chose not to start this agent for it.
-  AND NOT COALESCE($4::uuid = ANY(c.suppressed_agent_ids), false)
+  AND NOT COALESCE($5::uuid = ANY(c.suppressed_agent_ids), false)
   AND (
       (
           c.author_type IN ('member', 'agent')
-          AND (c.created_at > $5 OR c.id = ANY($2::uuid[]))
+          AND (c.created_at > $6 OR c.id = ANY($2::uuid[]))
       )
       OR (
           c.author_type = 'system'
@@ -1940,6 +2057,7 @@ type ListReconcilableCommentsForIssueSinceParams struct {
 	IssueID           pgtype.UUID        `json:"issue_id"`
 	PlannedCommentIds []pgtype.UUID      `json:"planned_comment_ids"`
 	CommentThreadID   pgtype.UUID        `json:"comment_thread_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
 	AgentID           pgtype.UUID        `json:"agent_id"`
 	Since             pgtype.Timestamptz `json:"since"`
 }
@@ -1975,6 +2093,7 @@ func (q *Queries) ListReconcilableCommentsForIssueSince(ctx context.Context, arg
 		arg.IssueID,
 		arg.PlannedCommentIds,
 		arg.CommentThreadID,
+		arg.TaskID,
 		arg.AgentID,
 		arg.Since,
 	)
@@ -2963,4 +3082,31 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (U
 		&i.IssueRevision,
 	)
 	return i, err
+}
+
+const upsertCommentSupersession = `-- name: UpsertCommentSupersession :exec
+INSERT INTO comment_supersession (superseded_comment_id, superseding_comment_id, workspace_id, issue_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (superseded_comment_id)
+DO UPDATE SET superseding_comment_id = EXCLUDED.superseding_comment_id,
+              created_at = clock_timestamp()
+`
+
+type UpsertCommentSupersessionParams struct {
+	SupersededCommentID  pgtype.UUID `json:"superseded_comment_id"`
+	SupersedingCommentID pgtype.UUID `json:"superseding_comment_id"`
+	WorkspaceID          pgtype.UUID `json:"workspace_id"`
+	IssueID              pgtype.UUID `json:"issue_id"`
+}
+
+// Links a superseded thread root to the comment that superseded it. The latest
+// superseding comment wins.
+func (q *Queries) UpsertCommentSupersession(ctx context.Context, arg UpsertCommentSupersessionParams) error {
+	_, err := q.db.Exec(ctx, upsertCommentSupersession,
+		arg.SupersededCommentID,
+		arg.SupersedingCommentID,
+		arg.WorkspaceID,
+		arg.IssueID,
+	)
+	return err
 }

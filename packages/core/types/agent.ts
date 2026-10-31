@@ -124,9 +124,32 @@ export interface RuntimeDevice {
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Commit-based update verdict computed by the server (CHE-2641). Older
+   * backends omit all four; treat missing as "no update, no reason".
+   */
+  update_available?: boolean;
+  /** Full commit of the daemon build the server carries. */
+  server_commit?: string;
+  /** Version string of that build. */
+  server_version?: string;
+  /**
+   * Why there is no firm verdict: `unknown_commit` (local build),
+   * `no_build` (server carries none for this platform), `unsupported_os`.
+   * Empty when the verdict is firm.
+   */
+  update_reason?: string;
 }
 
 export type AgentRuntime = RuntimeDevice;
+
+/** Per-machine view of the server's update verdict. */
+export interface RuntimeUpdateInfo {
+  available: boolean;
+  serverCommit: string;
+  serverVersion: string;
+  reason: string;
+}
 
 // Custom runtime profiles (MUL-3284)
 //
