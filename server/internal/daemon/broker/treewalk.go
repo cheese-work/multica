@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -34,7 +35,14 @@ const (
 var (
 	errBudget = errors.New("push changes too many paths to check")
 	errTooBig = errors.New("object too big")
+	// errRefuse marks a push the check will not reason about: it is refused
+	// outright rather than guessed at.
+	errRefuse = errors.New("push refused")
 )
+
+// canonicalModes are the only tree entry modes git itself writes. A raw mode
+// such as 040000 names a directory but is not the string the walk compares.
+var canonicalModes = map[string]bool{modeTree: true, "100644": true, "100755": true, modeSymlink: true, "160000": true}
 
 type treeEntry struct{ mode, name, oid string }
 
@@ -120,13 +128,22 @@ func (o *objReader) tree(oid string) ([]treeEntry, error) {
 	}
 	rawLen := len(oid) / 2
 	var es []treeEntry
+	names := map[string]bool{}
 	for len(body) > 0 {
 		sp := bytes.IndexByte(body, ' ')
 		nul := bytes.IndexByte(body, 0)
 		if sp < 0 || nul < sp || len(body) < nul+1+rawLen {
 			return nil, errors.New("malformed tree")
 		}
-		es = append(es, treeEntry{mode: string(body[:sp]), name: string(body[sp+1 : nul]), oid: fmt.Sprintf("%x", body[nul+1:nul+1+rawLen])})
+		e := treeEntry{mode: string(body[:sp]), name: string(body[sp+1 : nul]), oid: fmt.Sprintf("%x", body[nul+1:nul+1+rawLen])}
+		if !canonicalModes[e.mode] {
+			return nil, fmt.Errorf("%w: tree entry %q has non-canonical mode %q", errRefuse, e.name, e.mode)
+		}
+		if names[e.name] {
+			return nil, fmt.Errorf("%w: tree lists %q twice", errRefuse, e.name)
+		}
+		names[e.name] = true
+		es = append(es, e)
 		body = body[nul+1+rawLen:]
 	}
 	return es, nil
@@ -142,7 +159,15 @@ type walker struct {
 	max   int
 }
 
-func (w *walker) emit(p string) error {
+// emit reports one changed path with the entries it was before and after. A
+// change to a symlink is refused: where a link leads is not something this
+// check resolves.
+func (w *walker) emit(p string, es ...treeEntry) error {
+	for _, e := range es {
+		if e.mode == modeSymlink {
+			return fmt.Errorf("%w: push adds, changes or removes the symlink %q", errRefuse, p)
+		}
+	}
 	if w.paths++; w.paths > w.max {
 		return errBudget
 	}
@@ -182,13 +207,13 @@ func (w *walker) diff(base, tip, prefix string, depth int) error {
 			err = w.diff(b.oid, t.oid, p+"/", depth+1)
 		case t.isTree():
 			if had { // a file became a directory: the path itself changed too
-				err = w.emit(p)
+				err = w.emit(p, b)
 			}
 			if err == nil {
 				err = w.all(t.oid, p+"/", depth+1)
 			}
 		default:
-			err = w.emit(p)
+			err = w.emit(p, t, b)
 			if err == nil && had && b.isTree() {
 				err = w.all(b.oid, p+"/", depth+1)
 			}
@@ -204,7 +229,7 @@ func (w *walker) diff(base, tip, prefix string, depth int) error {
 		if b.isTree() {
 			err = w.all(b.oid, prefix+b.name+"/", depth+1)
 		} else {
-			err = w.emit(prefix + b.name)
+			err = w.emit(prefix+b.name, b)
 		}
 		if err != nil {
 			return err
@@ -226,7 +251,7 @@ func (w *walker) all(oid, prefix string, depth int) error {
 		if e.isTree() {
 			err = w.all(e.oid, prefix+e.name+"/", depth+1)
 		} else {
-			err = w.emit(prefix + e.name)
+			err = w.emit(prefix+e.name, e)
 		}
 		if err != nil {
 			return err
@@ -241,12 +266,19 @@ type symlink struct{ at, to string }
 
 // symlinks lists the symlinks of a tree. Subtrees are memoised by object ID, so
 // a subtree reused under many names is read once; the number of links returned
-// is capped.
+// is capped. A link is accepted only if its target is a plain in-tree path: not
+// empty, not absolute, no ".." step, and no step before the last one is itself
+// a link. Then the target needs no resolution, only a prefix match. Any other
+// link refuses the push; the check does not emulate the file system.
 func (w *walker) symlinks(root string) ([]symlink, error) {
 	memo := map[string][]treeLink{}
 	links, err := w.treeLinks(root, memo, 0)
 	if err != nil {
 		return nil, err
+	}
+	isLink := make(map[string]bool, len(links))
+	for _, l := range links {
+		isLink[strings.ToLower(l.at)] = true
 	}
 	var out []symlink
 	blobs := map[string]string{}
@@ -255,7 +287,7 @@ func (w *walker) symlinks(root string) ([]symlink, error) {
 		if !ok {
 			body, err := w.o.read(l.blob, "blob", maxLinkTarget)
 			if errors.Is(err, errTooBig) {
-				continue // an over-long target is no path
+				return nil, fmt.Errorf("%w: symlink %q has an over-long target", errRefuse, l.at)
 			}
 			if err != nil {
 				return nil, err
@@ -263,17 +295,20 @@ func (w *walker) symlinks(root string) ([]symlink, error) {
 			target = string(body)
 			blobs[l.blob] = target
 		}
-		if target == "" || strings.HasPrefix(target, "/") {
-			continue
+		if target == "" || strings.HasPrefix(target, "/") || slices.Contains(strings.Split(target, "/"), "..") {
+			return nil, fmt.Errorf("%w: symlink %q has an empty, absolute or \"..\" target", errRefuse, l.at)
 		}
 		to := path.Join(path.Dir(l.at), target)
-		if to == ".." || strings.HasPrefix(to, "../") {
-			continue // leaves the repository
-		}
 		if to == "." {
 			to = ""
 		}
-		out = append(out, symlink{at: strings.ToLower(l.at), to: strings.ToLower(to)})
+		to = strings.ToLower(to)
+		for i := 0; i < len(to); i++ {
+			if to[i] == '/' && isLink[to[:i]] {
+				return nil, fmt.Errorf("%w: symlink %q passes through the symlink %q", errRefuse, l.at, to[:i])
+			}
+		}
+		out = append(out, symlink{at: strings.ToLower(l.at), to: to})
 	}
 	return out, nil
 }

@@ -158,8 +158,11 @@ func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, p
 const checkTimeout = 2 * time.Minute
 
 func walkStatus(err error) int {
-	if errors.Is(err, errBudget) {
+	switch {
+	case errors.Is(err, errBudget):
 		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, errRefuse):
+		return http.StatusForbidden
 	}
 	return http.StatusInternalServerError
 }

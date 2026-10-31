@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -80,8 +81,11 @@ func TestPushRefusesProtectedPaths(t *testing.T) {
 			edit(r, t)
 			r.start(t)
 			code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
-			if code != 403 || !strings.Contains(body, "protected path") {
-				t.Fatalf("status %d (%s), want 403 protected path", code, body)
+			if code != 403 {
+				t.Fatalf("status %d (%s), want 403", code, body)
+			}
+			if name != "lone" && name != "new" && !strings.Contains(body, "protected path") { // those two add a link: refused as such
+				t.Fatalf("refused for another reason: %s", body)
 			}
 			if got := r.remoteRef(t, r.pin.Ref); got != "" {
 				t.Fatalf("remote gained %s at %s", r.pin.Ref, got)
@@ -424,6 +428,7 @@ func (r *rig) symlink(t testing.TB, link, target string) {
 	t.Helper()
 	full := filepath.Join(r.work, link)
 	_ = os.MkdirAll(filepath.Dir(full), 0o755)
+	_ = os.Remove(full)
 	if err := os.Symlink(target, full); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +453,7 @@ func TestPushRefusesDirAlias(t *testing.T) {
 			r.write(t, "payload/skills/example/SKILL.md", "x\n")
 		},
 		"chain": func(r *rig, t testing.TB) {
-			r.seedUpstream(t, map[string]string{"real/keep": "k\n"}, map[string]string{".claude": "p1", "p1/sub": "../real"})
+			r.seedUpstream(t, map[string]string{"real/keep": "k\n"}, map[string]string{".claude": "hop", "hop": "real"})
 			r.write(t, "real/x", "x\n")
 		},
 		"top": func(r *rig, t testing.TB) {
@@ -463,8 +468,11 @@ func TestPushRefusesDirAlias(t *testing.T) {
 			edit(r, t)
 			r.start(t)
 			code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
-			if code != 403 || !strings.Contains(body, "protected path") {
-				t.Fatalf("status %d (%s), want 403 protected path", code, body)
+			if code != 403 {
+				t.Fatalf("status %d (%s), want 403", code, body)
+			}
+			if name != "lone" && name != "new" && !strings.Contains(body, "protected path") { // those two add a link: refused as such
+				t.Fatalf("refused for another reason: %s", body)
 			}
 			if got := r.remoteRef(t, r.pin.Ref); got != "" {
 				t.Fatalf("remote gained %s at %s", r.pin.Ref, got)
@@ -473,15 +481,76 @@ func TestPushRefusesDirAlias(t *testing.T) {
 	}
 }
 
-// An alias into an unprotected tree is not a reason to refuse.
+// An existing alias into an unprotected tree is not a reason to refuse.
 func TestPushAllowsAliasToUnprotectedTree(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	r.symlink(t, "docs/link", "../src")
+	r.seedUpstream(t, nil, map[string]string{"srclink": "src"})
 	r.write(t, "src/a.go", "package a // changed\n")
 	r.start(t)
 	if code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t))); code != 200 {
 		t.Fatalf("status %d (%s)", code, body)
+	}
+}
+
+// The check does not emulate symlink resolution; it refuses what it cannot
+// read off the tree. Each case is a way to make a protected path resolve
+// somewhere the pattern match does not look.
+func TestPushRefusesWhatItCannotResolve(t *testing.T) {
+	t.Parallel()
+	for name, edit := range map[string]func(*rig, testing.TB){
+		// A directory entry written 040000 instead of 40000 is still a directory.
+		"rawmode": func(r *rig, t testing.TB) {
+			blob := git(t, r.work, "rev-parse", "HEAD:src/a.go")
+			inner := mktree(t, r.work, "100644 blob "+blob+"\tAGENTS.md\n")
+			root := rawTree(t, r.work, git(t, r.work, "ls-tree", "HEAD"), "040000", "hidden", inner)
+			git(t, r.work, "reset", "-q", "--hard", git(t, r.work, "commit-tree", root, "-p", "HEAD", "-m", "raw mode"))
+		},
+		// .claude -> pointer/config, and only pointer moves.
+		"retarget": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, map[string]string{"real/config/k": "k\n", "other/config/k": "k\n"},
+				map[string]string{".claude": "pointer/config", "pointer": "real"})
+			r.symlink(t, "pointer", "other")
+		},
+		// The same layout with an ordinary file changed: the link is the problem.
+		"through": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, map[string]string{"real/config/k": "k\n"},
+				map[string]string{".claude": "pointer/config", "pointer": "real"})
+			r.write(t, "src/a.go", "package a // changed\n")
+		},
+		// .claude -> bridge/../cfg: "bridge/.." is not "." when bridge is a link.
+		"dotdot": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, map[string]string{"cfg/k": "k\n", "sub/k": "k\n"},
+				map[string]string{".claude": "bridge/../cfg", "bridge": "sub"})
+			r.write(t, "src/a.go", "package a // changed\n")
+		},
+		"absolute": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, nil, map[string]string{"etc": "/etc"})
+			r.write(t, "src/a.go", "package a // changed\n")
+		},
+		"remove": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, nil, map[string]string{"srclink": "src"})
+			git(t, r.work, "rm", "-q", "srclink")
+			git(t, r.work, "commit", "-qm", "drop link")
+		},
+		"change": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, nil, map[string]string{"srclink": "src"})
+			r.symlink(t, "srclink", "docs")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			edit(r, t)
+			r.start(t)
+			code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
+			if code != 403 {
+				t.Fatalf("status %d (%s), want 403", code, body)
+			}
+			if got := r.remoteRef(t, r.pin.Ref); got != "" {
+				t.Fatalf("remote gained %s at %s", r.pin.Ref, got)
+			}
+		})
 	}
 }
 
@@ -518,6 +587,38 @@ func mktree(t testing.TB, dir, entries string) string {
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("mktree: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// rawTree writes a tree object from `ls-tree` lines plus one extra entry whose
+// mode is given verbatim, which mktree would normalise away.
+func rawTree(t testing.TB, dir, lsTree, mode, name, oidHex string) string {
+	t.Helper()
+	var raw bytes.Buffer
+	type ent struct{ key, body string }
+	var es []ent
+	for _, l := range strings.Split(strings.TrimSpace(lsTree), "\n") {
+		meta, n, _ := strings.Cut(l, "\t")
+		f := strings.Fields(meta)
+		sum, _ := hex.DecodeString(f[2])
+		key := n
+		if f[1] == "tree" {
+			key += "/"
+		}
+		es = append(es, ent{key, strings.TrimPrefix(f[0], "0") + " " + n + "\x00" + string(sum)})
+	}
+	sum, _ := hex.DecodeString(oidHex)
+	es = append(es, ent{name + "/", mode + " " + name + "\x00" + string(sum)})
+	sort.Slice(es, func(i, j int) bool { return es[i].key < es[j].key })
+	for _, e := range es {
+		raw.WriteString(e.body)
+	}
+	cmd := exec.Command("git", "-C", dir, "hash-object", "-t", "tree", "-w", "--literally", "--stdin")
+	cmd.Stdin = &raw
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
 	}
 	return strings.TrimSpace(string(out))
 }
