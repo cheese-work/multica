@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -513,5 +515,47 @@ func TestRunBudgetDecisionAnswerDoesNotRunUninvokableAsker(t *testing.T) {
 	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id=$1`, c.agentID); got != runs {
 		t.Fatalf("runs of the private agent went %d -> %d for a person who cannot invoke it", runs, got)
+	}
+}
+
+// The notice transaction must not need a second pool connection while it holds
+// one: concurrent refusals each hold a connection waiting on the winner's claim,
+// so a winner that asks the pool for another connection never gets it.
+func TestRunBudgetDecisionRequestDoesNotStarveThePool(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const writers = 6
+	cfg := testPool.Config()
+	cfg.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	// A copy of the shared handler on a small pool; New would take over the
+	// global budget hooks.
+	small := *testHandler
+	small.Queries = db.New(pool)
+	small.TxStarter = pool
+	c := newBudgetCase(t, 2318050, mergeEdgeSteps, 2)
+	c.spend(t, 2)
+	e := service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindExhausted, Runs: 2, Max: 2, Since: time.Now().Add(-time.Hour)}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			small.writeRunBudgetNotice(ctx, e, "This issue used up its run budget.")
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		t.Fatal("concurrent notices starved the connection pool")
+	}
+	if n := c.decisionRows(t); n != 1 {
+		t.Fatalf("decision requests = %d, want 1", n)
 	}
 }

@@ -160,7 +160,7 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return nil, err
 	}
-	ref := h.issueBudgetRef(ctx, issue)
+	ref := issueBudgetRef(issuePrefixForWorkspace(workspace), issue)
 	ask := runBudgetDecisionAsk(issue, ref, notice)
 	if err := ask.Validate(); err != nil {
 		return nil, fmt.Errorf("budget ask: %w", err)
