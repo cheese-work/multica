@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// TestMain lets the test binary double as the in-sandbox bridge helper.
+// TestMain lets the test binary double as the in-sandbox bridge, probe and fake MCP helper.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == BridgeHelperArg {
-		os.Exit(BridgeMain(os.Args[2:]))
+	if code, ok := helperMain(); ok {
+		os.Exit(code)
 	}
 	os.Exit(m.Run())
 }
