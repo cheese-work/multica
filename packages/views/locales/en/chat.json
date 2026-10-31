@@ -84,6 +84,7 @@
     "speaker_you": "You",
     "load_older_messages": "Load older messages",
     "show_details": "Show details",
+    "show_earlier_context": "Show earlier context",
     "replied_in": "Replied in {{elapsed}}",
     "failed_after": "Failed after {{elapsed}}",
     "finished_in": "Finished in {{elapsed}}",
