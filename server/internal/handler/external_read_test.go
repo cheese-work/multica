@@ -170,3 +170,41 @@ func TestDaemonMarksTaskExternalRead(t *testing.T) {
 		t.Fatalf("second report cleared the mark")
 	}
 }
+
+// An admin-path edit clears source_task_id, so the comment trigger cannot
+// inherit the writer's mark. The edit itself must carry it (Sol review, P1).
+func TestMarkedTaskEditOfOthersCommentStoresMark(t *testing.T) {
+	chain := newCrossIssueChain(t, testUserID, testUserID)
+	marked := markedTask(t, chain.CoordinatorID, true)
+	clean := markedTask(t, chain.CoordinatorID, false)
+	edit := func(commentID, taskID, content string) {
+		testutil.Call(t, testHandler.UpdateComment, withURLParam(
+			asRun(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{"content": content}), chain.CoordinatorID, taskID),
+			"commentId", commentID,
+		)).Want(http.StatusOK)
+	}
+	const q = `SELECT external_read FROM comment WHERE id = $1`
+
+	byMember := dbfx.Comment(t, chain.IssueX, "member")
+	edit(byMember, clean, "edited by a clean task")
+	if flag(t, q, byMember) {
+		t.Fatalf("edit by clean task is marked")
+	}
+	edit(byMember, marked, "edited by a marked task")
+	if !flag(t, q, byMember) {
+		t.Errorf("edit of another author's comment by marked task: external_read = false")
+	}
+	edit(byMember, clean, "edited again by a clean task")
+	if !flag(t, q, byMember) {
+		t.Errorf("clean edit cleared the comment mark")
+	}
+
+	// An unchanged save by a marked task writes no new text: no mark.
+	unchanged := dbfx.Comment(t, chain.IssueX, "member")
+	var existing string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, unchanged).Scan(&existing)
+	edit(unchanged, marked, existing)
+	if flag(t, q, unchanged) {
+		t.Errorf("unchanged save by marked task is marked")
+	}
+}

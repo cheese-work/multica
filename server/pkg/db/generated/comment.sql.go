@@ -2998,10 +2998,13 @@ WITH locked_issue AS MATERIALIZED (
     UPDATE comment SET
         content = $2,
         source_task_id = $3::uuid,
+        -- Text written by a marked task keeps the mark even when the edit clears
+        -- source_task_id (admin or member edit). Grow-only: never clears.
+        external_read = comment.external_read OR COALESCE($6::boolean, false),
         -- New text re-decides which agents it must not start, under the same
         -- revision check as the text itself.
         suppressed_agent_ids = CASE WHEN target.content IS DISTINCT FROM $2
-                                    THEN $6::uuid[]
+                                    THEN $7::uuid[]
                                     ELSE comment.suppressed_agent_ids END,
         revision = comment.revision + CASE WHEN target.did_change THEN 1 ELSE 0 END,
         updated_at = CASE WHEN target.did_change THEN now() ELSE comment.updated_at END
@@ -3044,6 +3047,7 @@ type UpdateCommentParams struct {
 	SourceTaskID       pgtype.UUID   `json:"source_task_id"`
 	ExpectedRevision   pgtype.Int8   `json:"expected_revision"`
 	ContentBase        pgtype.Text   `json:"content_base"`
+	MarkExternalRead   pgtype.Bool   `json:"mark_external_read"`
 	SuppressedAgentIds []pgtype.UUID `json:"suppressed_agent_ids"`
 }
 
@@ -3080,6 +3084,7 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (U
 		arg.SourceTaskID,
 		arg.ExpectedRevision,
 		arg.ContentBase,
+		arg.MarkExternalRead,
 		arg.SuppressedAgentIds,
 	)
 	var i UpdateCommentRow
