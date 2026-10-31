@@ -1535,6 +1535,11 @@ RETURNING *;
 -- both track emptyContentRe / historyMessageLocatorRe in
 -- pkg/taskfailure/resume.go (GH #6066).
 --
+-- Both scans are scoped to the chat's current compaction_epoch: a session from
+-- before an in-place /compact is never resumed, whatever the pointer says. A
+-- task is stamped with the epoch at first dispatch, so a follow-up that began
+-- before the boundary but was dispatched after it counts as current.
+--
 -- Selection is per-session, not per-row, and retired sessions are excluded —
 -- both mirroring GetLastTaskSession, which this query had drifted away from.
 -- A plain row-level filter reopens the poisoning wormhole GH #5975 closed on
@@ -1564,6 +1569,7 @@ WITH retired_sessions AS (
         sqlc.narg('channel_context_revision')::bigint IS NULL
         OR COALESCE(t.channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
       )
+      AND COALESCE(t.chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
       AND t.status = 'failed'
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1579,6 +1585,7 @@ WITH retired_sessions AS (
         sqlc.narg('channel_context_revision')::bigint IS NULL
         OR COALESCE(t.channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
       )
+      AND COALESCE(t.chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
       AND t.session_id IS NOT NULL
       AND t.status IN ('completed', 'failed', 'cancelled')
     ORDER BY t.session_id, t.completed_at DESC
@@ -2185,3 +2192,12 @@ FROM agent_task_queue
 WHERE chat_session_id = ANY($1::uuid[])
   AND status = 'completed'
 ORDER BY chat_session_id, completed_at DESC, id DESC;
+
+-- name: GetLatestCompactionSummary :one
+-- The newest in-place compaction summary of a DM: the seed of its next turn
+-- while the resume pointer is empty. Messages after it are the post-boundary
+-- history.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
