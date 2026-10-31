@@ -21,7 +21,12 @@
     "notification_count_one": "{{count}} notification",
     "notification_count_other": "{{count}} notifications",
     "clear": "Clear filters",
-    "empty": "No notifications match your filters"
+    "empty": "No notifications match your filters",
+    "empty_dm": "No direct message notifications",
+    "quick_label": "Quick filters",
+    "chip_all": "All",
+    "chip_unread": "Unread",
+    "chip_dm": "Direct messages"
   },
   "context_menu": {
     "mark_read": "Mark as read",
@@ -83,7 +88,8 @@
     "autopilot_paused": "Autopilot paused",
     "children_done": "Sub-issues finished",
     "autopilot_quota_exceeded": "Autopilot run limit reached",
-    "machine_drained": "Safe to shut down"
+    "machine_drained": "Safe to shut down",
+    "dm_reply": "Direct message reply"
   },
   "labels": {
     "set_status_to": "Set status to",
@@ -98,7 +104,11 @@
     "created_with_agent": "Created with agent: {{identifier}}",
     "failed_with_detail": "Failed: {{detail}}",
     "autopilot_quota_blocked": "Run blocked because the limit was reached",
-    "children_done_stage": "Stage {{stage}}'s sub-issues finished"
+    "children_done_stage": "Stage {{stage}}'s sub-issues finished",
+    "dm_new_reply": "New reply",
+    "dm_new_replies_one": "{{count}} new reply",
+    "dm_new_replies_other": "{{count}} new replies",
+    "dm_decision_needed": "Decision needed"
   },
   "toasts": {
     "source_context_retry_started": "Retry started with the original context",

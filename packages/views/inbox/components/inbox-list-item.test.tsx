@@ -77,7 +77,12 @@ vi.mock("./inbox-detail-label", () => ({
     autopilot_quota_exceeded: "Autopilot run limit reached",
   }),
 }));
-vi.mock("../../i18n", () => ({ useT: () => ({ t: () => "label" }) }));
+vi.mock("../../i18n", () => ({
+  useT: () => ({
+    t: (_key: unknown, opts?: { count?: number }) =>
+      opts?.count != null ? `count:${opts.count}` : "label",
+  }),
+}));
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
   return {
@@ -334,6 +339,85 @@ describe("InboxListItem link semantics", () => {
   });
 });
 
+
+describe("InboxListItem direct messages", () => {
+  const dm = (overrides: Partial<InboxItem> = {}) =>
+    item({
+      type: "dm_reply",
+      issue_id: null,
+      chat_session_id: "chat-1",
+      title: "Deploy plan",
+      ...overrides,
+    });
+  const rowOf = () =>
+    screen.getByTestId("actor-avatar").closest('[role="button"]')!;
+
+  it("marks a DM row with a chat glyph and shows the DM title", () => {
+    const { container } = renderRow({ item: dm(), view: "inbox" });
+    const glyph = container.querySelector(".lucide-message-square");
+    expect(glyph).not.toBeNull();
+    expect(glyph!.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Deploy plan")).toBeTruthy();
+  });
+
+  it("leaves an issue row without the chat glyph", () => {
+    const { container } = renderRow({ item: item(), view: "inbox" });
+    expect(container.querySelector(".lucide-message-square")).toBeNull();
+  });
+
+  it("shows when the last reply arrived, not when the record was created", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T09:00:00Z"));
+    try {
+      renderRow({
+        item: dm({
+          created_at: "2026-06-10T09:00:00Z",
+          updated_at: "2026-06-15T08:53:00Z",
+        }),
+        view: "inbox",
+      });
+      expect(screen.getByText("count:7")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens a DM in a background tab on cmd-click, even without an issue", () => {
+    const onClick = vi.fn();
+    const openInNewTab = vi.fn();
+    renderRow({
+      item: dm(),
+      view: "inbox",
+      onClick,
+      adapter: makeAdapter({ openInNewTab }),
+    });
+
+    fireEvent.click(rowOf(), { metaKey: true });
+    expect(openInNewTab).toHaveBeenCalledWith("/acme/chat?session=chat-1", undefined);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("opens the DM, not the issue, for a decision ping that has an issue", () => {
+    const openInNewTab = vi.fn();
+    renderRow({
+      item: dm({ type: "mentioned", issue_id: "issue-9" }),
+      view: "inbox",
+      adapter: makeAdapter({ openInNewTab }),
+    });
+
+    fireEvent.click(rowOf(), { metaKey: true });
+    expect(openInNewTab).toHaveBeenCalledWith("/acme/chat?session=chat-1", undefined);
+  });
+
+  it("activates with Enter and Space like plain click", () => {
+    const onClick = vi.fn();
+    renderRow({ item: dm(), view: "inbox", onClick });
+
+    fireEvent.keyDown(rowOf(), { key: "Enter" });
+    fireEvent.keyDown(rowOf(), { key: " " });
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // MUL-6395 — the row's only status affordance is one glyph, and the glyph set

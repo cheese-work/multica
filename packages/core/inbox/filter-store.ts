@@ -9,13 +9,15 @@ export interface InboxFilters {
   readonly unreadOnly: boolean;
   /** Only issues no agent is running or queued on. Active inbox only. */
   readonly idleOnly: boolean;
+  /** Only rows linked to a DM (`chat_session_id`). Active inbox only. */
+  readonly dmOnly: boolean;
 }
 
 /**
- * The dimensions the server-filtered archive understands. It has no idle
- * dimension, so `idleOnly` never reaches its endpoints or query keys.
+ * The dimensions the server-filtered archive understands. It has no idle or
+ * DM dimension, so neither reaches its endpoints or query keys.
  */
-export type ArchivedInboxFilters = Omit<InboxFilters, "idleOnly">;
+export type ArchivedInboxFilters = Omit<InboxFilters, "idleOnly" | "dmOnly">;
 
 /**
  * Stable identity for "who this notification came from", used as the value of
@@ -52,6 +54,7 @@ export const EMPTY_INBOX_FILTERS: InboxFilters = Object.freeze({
   actors: Object.freeze([]),
   unreadOnly: false,
   idleOnly: false,
+  dmOnly: false,
 });
 
 /** True when nothing is selected in any dimension. */
@@ -66,6 +69,9 @@ interface InboxFilterState {
   toggleActorFilter: (wsId: string, actor: string) => void;
   toggleUnreadOnly: (wsId: string) => void;
   toggleIdleOnly: (wsId: string) => void;
+  toggleDmOnly: (wsId: string) => void;
+  /** The Inbox chips: exactly one of all / unread / DMs, other filters untouched. */
+  setQuickFilter: (wsId: string, mode: "all" | "unread" | "dm") => void;
   clearPriorityFilters: (wsId: string) => void;
   clearFilters: (wsId: string) => void;
 }
@@ -132,6 +138,33 @@ export const useInboxFilterStore = create<InboxFilterState>()((set) => ({
           ...state.filtersByWorkspace,
           [wsId]: { ...current, idleOnly: !current.idleOnly },
         },
+      };
+    }),
+  toggleDmOnly: (wsId) =>
+    set((state) => {
+      const current = state.filtersByWorkspace[wsId] ?? EMPTY_INBOX_FILTERS;
+      return {
+        filtersByWorkspace: {
+          ...state.filtersByWorkspace,
+          [wsId]: { ...current, dmOnly: !current.dmOnly },
+        },
+      };
+    }),
+  setQuickFilter: (wsId, mode) =>
+    set((state) => {
+      const current = state.filtersByWorkspace[wsId] ?? EMPTY_INBOX_FILTERS;
+      const next = {
+        ...current,
+        unreadOnly: mode === "unread",
+        dmOnly: mode === "dm",
+      };
+      if (isEmptyInboxFilters(next)) {
+        const { [wsId]: _removed, ...filtersByWorkspace } =
+          state.filtersByWorkspace;
+        return { filtersByWorkspace };
+      }
+      return {
+        filtersByWorkspace: { ...state.filtersByWorkspace, [wsId]: next },
       };
     }),
   clearPriorityFilters: (wsId) =>
@@ -216,12 +249,14 @@ export interface InboxFilterContext {
 }
 
 /**
- * The archive is filtered server-side and the backend has no idle dimension,
- * so a selection kept from the active inbox stays dormant there instead of
- * narrowing whichever archived pages happen to be loaded.
+ * The archive is filtered server-side and the backend has no idle or DM
+ * dimension, so a selection kept from the active inbox stays dormant there
+ * instead of narrowing whichever archived pages happen to be loaded.
  */
 export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
-  return filters.idleOnly ? { ...filters, idleOnly: false } : filters;
+  return filters.idleOnly || filters.dmOnly
+    ? { ...filters, idleOnly: false, dmOnly: false }
+    : filters;
 }
 
 /**
@@ -279,6 +314,7 @@ export function filterInboxItems(
         (item.issue_priority != null && priorities.has(item.issue_priority))) &&
       (actors.size === 0 || (actor != null && actors.has(actor)));
     if (!matchesOtherDimensions) return false;
+    if (filters.dmOnly && !item.chat_session_id) return false;
     const key = item.issue_id ?? item.id;
     const matchesUnread =
       !filters.unreadOnly ||
@@ -298,6 +334,7 @@ export function inboxFilterCount(filters: InboxFilters): number {
     filters.priorities.length +
     filters.actors.length +
     (filters.unreadOnly ? 1 : 0) +
-    (filters.idleOnly ? 1 : 0)
+    (filters.idleOnly ? 1 : 0) +
+    (filters.dmOnly ? 1 : 0)
   );
 }

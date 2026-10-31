@@ -19,7 +19,12 @@
     "no_agents_working": "작업 중인 에이전트 없음",
     "notification_count_other": "알림 {{count}}개",
     "clear": "필터 지우기",
-    "empty": "필터와 일치하는 알림이 없습니다"
+    "empty": "필터와 일치하는 알림이 없습니다",
+    "empty_dm": "다이렉트 메시지 알림이 없습니다",
+    "quick_label": "빠른 필터",
+    "chip_all": "전체",
+    "chip_unread": "읽지 않음",
+    "chip_dm": "다이렉트 메시지"
   },
   "context_menu": {
     "mark_read": "읽음으로 표시",
@@ -81,7 +86,8 @@
     "autopilot_paused": "자동화 일시 중지됨",
     "children_done": "하위 태스크가 모두 끝났습니다",
     "autopilot_quota_exceeded": "자동화 실행 한도 도달",
-    "machine_drained": "종료해도 안전합니다"
+    "machine_drained": "종료해도 안전합니다",
+    "dm_reply": "다이렉트 메시지 답장"
   },
   "labels": {
     "set_status_to": "상태 변경:",
@@ -96,7 +102,10 @@
     "created_with_agent": "에이전트가 생성: {{identifier}}",
     "failed_with_detail": "실패: {{detail}}",
     "autopilot_quota_blocked": "한도에 도달하여 실행이 차단됨",
-    "children_done_stage": "{{stage}}단계 하위 태스크가 모두 끝났습니다"
+    "children_done_stage": "{{stage}}단계 하위 태스크가 모두 끝났습니다",
+    "dm_new_reply": "새 답장",
+    "dm_new_replies_other": "새 답장 {{count}}개",
+    "dm_decision_needed": "결정이 필요합니다"
   },
   "toasts": {
     "source_context_retry_started": "원본 컨텍스트로 재시도를 시작했습니다",

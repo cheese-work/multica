@@ -39,6 +39,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
     machine_drained: t(($) => $.types.machine_drained),
     children_done: t(($) => $.types.children_done),
+    dm_reply: t(($) => $.types.dm_reply),
   };
 }
 
@@ -59,6 +60,18 @@ export function InboxDetailLabel({ item }: { item: InboxItem }) {
   const { categoryOf, colorOf, iconOf } = useIssueStatuses(item.workspace_id);
   const statusLabelOf = useStatusLabel(item.workspace_id);
   const details = item.details ?? {};
+
+  // A DM link outranks the type: a dm_reply counts replies, anything else
+  // linked to a DM (e.g. "mentioned") is a decision ping.
+  if (item.chat_session_id) {
+    if (item.type !== "dm_reply") {
+      return <span>{t(($) => $.labels.dm_decision_needed)}</span>;
+    }
+    // Arrives as a JSON number or a string; missing or garbage reads as one.
+    const count = Number(details.reply_count);
+    if (!(count > 1)) return <span>{t(($) => $.labels.dm_new_reply)}</span>;
+    return <span>{t(($) => $.labels.dm_new_replies, { count })}</span>;
+  }
 
   switch (item.type) {
     case "status_changed": {

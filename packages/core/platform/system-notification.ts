@@ -27,6 +27,8 @@ export interface SystemNotificationPayload {
   issueKey: string;
   title: string;
   body: string;
+  /** The DM a DM-linked record opens; absent for issue notifications. */
+  chatSessionId?: string | null;
 }
 
 type ClickHandler = (payload: SystemNotificationPayload) => void;

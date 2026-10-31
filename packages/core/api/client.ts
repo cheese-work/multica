@@ -182,6 +182,8 @@ import type {
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
   NotificationChannelsResponse,
+  PushConfig,
+  PushSubscriptionRequest,
   NotificationPreferenceResponse,
   NotificationPreferences,
   UpdateNotificationChannelRequest,
@@ -443,6 +445,8 @@ import {
   EMPTY_INBOX_ITEMS,
   NotificationChannelsResponseSchema,
   EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
+  PushConfigSchema,
+  EMPTY_PUSH_CONFIG,
   NotificationPreferenceResponseSchema,
   EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
   LabelSchema,
@@ -3207,6 +3211,20 @@ export class ApiClient {
       EMPTY_NOTIFICATION_CHANNELS_RESPONSE,
       { endpoint: "PATCH /api/notification-channels" },
     );
+  }
+
+  // Web Push. The routes are human-only and need a browser session.
+  async getPushConfig(): Promise<PushConfig> {
+    const raw = await this.fetch<unknown>("/api/push/config");
+    return parseWithFallback(raw, PushConfigSchema, EMPTY_PUSH_CONFIG, { endpoint: "GET /api/push/config" });
+  }
+
+  async registerPushSubscription(body: PushSubscriptionRequest): Promise<void> {
+    await this.fetch("/api/push/subscriptions", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async deletePushSubscription(endpoint: string): Promise<void> {
+    await this.fetch("/api/push/subscriptions", { method: "DELETE", body: JSON.stringify({ endpoint }) });
   }
 
   // App Config

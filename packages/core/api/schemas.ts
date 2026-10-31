@@ -75,6 +75,7 @@ import type {
   IssueStatusEntry,
   ListIssueStatusesResponse,
   NotificationChannelsResponse,
+  PushConfig,
   NotificationPreferenceResponse,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -1376,6 +1377,13 @@ export const NotificationChannelsResponseSchema = z.object({
     dm: notificationChannelSwitchesSchema(false),
   }).default({ inbox: { in_app: true, push: false }, dm: { in_app: false, push: false } }),
 }).loose();
+
+export const PushConfigSchema = z.object({
+  enabled: z.boolean(),
+  public_key: z.string().default(""),
+}).loose();
+
+export const EMPTY_PUSH_CONFIG: PushConfig = { enabled: false, public_key: "" };
 
 export const EMPTY_NOTIFICATION_CHANNELS_RESPONSE: NotificationChannelsResponse = {
   workspace_id: "",

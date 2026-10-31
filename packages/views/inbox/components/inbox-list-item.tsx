@@ -7,7 +7,7 @@ import {
 } from "../../issues/components/issue-agent-activity-indicator";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { DeferredTooltip } from "../../common/deferred-tooltip";
-import { Archive, ArchiveRestore } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquare } from "lucide-react";
 import type { InboxItem } from "@multica/core/types";
 import type { InboxView } from "./inbox-view";
 import { InboxDetailLabel, useTypeLabels } from "./inbox-detail-label";
@@ -68,10 +68,14 @@ export function InboxListItem({
   // tests and could render outside a workspace route; without a slug the
   // modifier-click affordance simply stays off.
   const slug = useWorkspaceSlug();
-  const issueHref =
-    slug && item.issue_id
-      ? paths.workspace(slug).issueDetail(item.issue_id)
-      : null;
+  // A DM link wins over an issue link: a decision ping can carry both.
+  const openHref = !slug
+    ? null
+    : item.chat_session_id
+      ? paths.workspace(slug).chatSession(item.chat_session_id)
+      : item.issue_id
+        ? paths.workspace(slug).issueDetail(item.issue_id)
+        : null;
   const intentNavigate = useIntentNavigate();
   const displayTitle = isAutopilotQuotaNotice(item.type)
     ? typeLabels[item.type]
@@ -105,10 +109,10 @@ export function InboxListItem({
       onClick={(e) => {
         // Plain click keeps the master-detail selection; a modifier click on
         // a row that references an issue opens that issue as its own tab.
-        if (issueHref) {
+        if (openHref) {
           const intent = resolveClickIntent(e);
           if (intent !== "push") {
-            intentNavigate(issueHref, intent);
+            intentNavigate(openHref, intent);
             return;
           }
         }
@@ -116,9 +120,9 @@ export function InboxListItem({
       }}
       onKeyDown={(e) => handleRowActivationKey(e, onClick)}
       onAuxClick={(e) => {
-        if (e.defaultPrevented || e.button !== 1 || !issueHref) return;
+        if (e.defaultPrevented || e.button !== 1 || !openHref) return;
         e.preventDefault();
-        intentNavigate(issueHref, "background-tab");
+        intentNavigate(openHref, "background-tab");
       }}
       // Right-click opens the list's shared menu (mark read/unread, archive).
       // `select-none` mirrors what Base UI's own trigger used to merge in, so
@@ -143,6 +147,12 @@ export function InboxListItem({
           <div className="flex min-w-0 items-center gap-1.5">
             {showUnread && (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+            )}
+            {item.chat_session_id && (
+              <MessageSquare
+                aria-hidden="true"
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              />
             )}
             <span
               className={`truncate text-body ${showUnread ? "font-medium" : "text-muted-foreground"}`}
@@ -208,7 +218,7 @@ export function InboxListItem({
               />
             )}
             <span className={`text-caption ${showUnread ? "text-muted-foreground" : "text-muted-foreground"}`}>
-              {timeAgo(item.created_at)}
+              {timeAgo(item.chat_session_id ? (item.updated_at ?? item.created_at) : item.created_at)}
             </span>
           </div>
         </div>

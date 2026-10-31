@@ -5,6 +5,7 @@ import { DashboardLayout } from "@multica/views/layout";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { SearchTrigger } from "@multica/views/search";
 import { FloatingChat } from "@multica/views/chat/floating-chat";
+import { PushSync } from "@multica/views/settings/push-sync";
 import { WebNotificationBridge } from "@/components/web-notification-bridge";
 import { WorkspaceDocumentTitle } from "@/platform/workspace-document-title";
 import { WorkspaceSearchCommand } from "@/components/workspace-search-command";
@@ -27,6 +28,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <WorkspaceSearchCommand />
             </Suspense>
             <WebNotificationBridge />
+            <PushSync />
             <FloatingChat />
           </>
         }

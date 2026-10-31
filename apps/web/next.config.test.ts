@@ -24,3 +24,12 @@ describe("next.config dev route retention", () => {
     expect(nextConfig.onDemandEntries?.pagesBufferLength).toBeGreaterThanOrEqual(30);
   });
 });
+
+describe("next.config service worker headers", () => {
+  // A cached worker script would keep old push handling alive after a deploy.
+  it("serves /sw.js revalidated on every load", async () => {
+    const rules = (await nextConfig.headers?.()) ?? [];
+    const rule = rules.find((r) => r.source === "/sw.js");
+    expect(rule?.headers).toContainEqual({ key: "Cache-Control", value: "no-cache" });
+  });
+});

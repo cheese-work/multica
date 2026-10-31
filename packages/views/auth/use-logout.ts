@@ -3,11 +3,14 @@
 import { useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { clearClientSessionData } from "@multica/core/platform";
 import { paths } from "@multica/core/paths";
+import { unsubscribeThisDevice } from "@multica/core/push";
 import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
+import { isDesktopShell } from "../platform";
 
 /**
  * Performs a complete logout: ends the server session, then clears per-workspace
@@ -43,6 +46,11 @@ export function useLogout() {
 
   return useCallback((): Promise<boolean> => {
     inFlight.current ??= (async () => {
+      // Web only, and before the session ends: the server delete needs it.
+      // Best effort, so a push failure never keeps the user signed in.
+      if (!isDesktopShell()) {
+        await unsubscribeThisDevice(api).catch(() => {});
+      }
       try {
         await endServerSession();
       } catch {

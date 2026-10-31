@@ -143,6 +143,8 @@ export type {
   NotificationChannelSource,
   NotificationChannelSwitches,
   NotificationChannelsResponse,
+  PushConfig,
+  PushSubscriptionRequest,
   NotificationGroupKey,
   NotificationGroupValue,
   NotificationPreferences,

@@ -76,6 +76,8 @@
     "./notification-preferences/queries": "./notification-preferences/queries.ts",
     "./notification-preferences/mutations": "./notification-preferences/mutations.ts",
     "./notification-preferences/patch": "./notification-preferences/patch.ts",
+    "./notification-preferences/channels": "./notification-preferences/channels.ts",
+    "./push": "./push/index.ts",
     "./chat": "./chat/index.ts",
     "./chat/commands": "./chat/commands.ts",
     "./chat/queries": "./chat/queries.ts",

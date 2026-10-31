@@ -838,6 +838,29 @@
       "granted": "当前浏览器可以弹出通知横幅。",
       "denied": "已被浏览器拦截。请在浏览器设置中为本站点开启通知权限。",
       "enabled_badge": "已启用"
+    },
+    "channels": {
+      "in_app": "应用内",
+      "push": "推送"
+    },
+    "dm": {
+      "title": "私信"
+    },
+    "device": {
+      "title": "此设备",
+      "push_label": "在此设备上推送",
+      "failed": "无法在此设备上开启推送，请重试。",
+      "blocked": "此浏览器已屏蔽通知。请在网站设置中允许后重试。",
+      "unsupported": "此浏览器无法接收推送通知。",
+      "not_configured": "此服务器未配置推送。",
+      "load_failed": "无法检查此设备的推送状态。请刷新后重试。",
+      "blocked_banner": "此浏览器已屏蔽通知",
+      "ios": {
+        "title": "将 Multica 添加到主屏幕以接收通知",
+        "step_share": "在 Safari 中点按“分享”按钮。",
+        "step_add": "选择“添加到主屏幕”。",
+        "step_sign_in": "从主屏幕打开 Multica 并重新登录。"
+      }
     }
   },
   "tokens": {

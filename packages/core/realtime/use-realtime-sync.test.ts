@@ -850,7 +850,7 @@ describe("handleInboxNew", () => {
       itemId: "item-1",
       issueKey: "issue-1",
       title: "Mentioned you",
-      body: "in a comment",
+      body: "",
     });
   });
 
@@ -1027,6 +1027,133 @@ describe("handleInboxNew", () => {
     await handleInboxNew(qc, inboxItem());
 
     expect(webBanners).toHaveLength(0);
+  });
+
+  describe("DM records", () => {
+    const dmRecord = (overrides: Partial<InboxItem> = {}) =>
+      inboxItem({
+        id: "record-1",
+        type: "dm_reply",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        issue_id: null,
+        title: "Secret plan for the launch",
+        body: "message text that must not leak",
+        chat_session_id: "session-1",
+        details: { reply_count: "1" },
+        ...overrides,
+      });
+
+    function warmCaches(qc: ReturnType<typeof createQueryClient>) {
+      qc.setQueryData<Workspace[]>(workspaceKeys.list(), [workspace()]);
+      qc.setQueryData(notificationPreferenceKeys.all("ws-a"), {
+        preferences: { system_notifications: "all" },
+      });
+      qc.setQueryData(workspaceKeys.agents("ws-a"), [{ id: "agent-1", name: "Atlas" }]);
+    }
+
+    afterEach(() => {
+      delete (globalThis as Record<string, unknown>).document;
+      delete (globalThis as Record<string, unknown>).location;
+    });
+
+    it("titles a DM banner with the sender and never copies the DM title or message text", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      installBrowserNotification("granted");
+
+      await handleInboxNew(qc, dmRecord());
+
+      expect(webBanners).toHaveLength(1);
+      expect(webBanners[0]?.title).toBe("Atlas");
+      expect(webBanners[0]?.options?.body).toBe("New reply");
+      expect(JSON.stringify(webBanners)).not.toContain("Secret plan");
+      expect(JSON.stringify(webBanners)).not.toContain("must not leak");
+      // Same tag as the service worker push for this record: one banner.
+      expect(webBanners[0]?.options?.tag).toBe("record-1");
+    });
+
+    it("counts coalesced replies", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      installBrowserNotification("granted");
+
+      await handleInboxNew(qc, dmRecord({ details: { reply_count: "3" } }));
+
+      expect(webBanners[0]?.options?.body).toBe("3 new replies");
+    });
+
+    it("says a decision is needed for a DM-linked item that is not a reply", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      installBrowserNotification("granted");
+
+      await handleInboxNew(
+        qc,
+        dmRecord({ type: "mentioned", details: null }),
+      );
+
+      expect(webBanners[0]?.options?.body).toBe("Decision needed");
+    });
+
+    it("falls back to a neutral title when the sender is not cached", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      qc.setQueryData(workspaceKeys.agents("ws-a"), []);
+      installBrowserNotification("granted");
+
+      await handleInboxNew(qc, dmRecord());
+
+      expect(webBanners[0]?.title).toBe("Multica");
+    });
+
+    it("hands the desktop bridge the DM id so a click opens the DM", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      const showNotification = stubDesktopAPI();
+
+      await handleInboxNew(qc, dmRecord());
+
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ chatSessionId: "session-1", title: "Atlas", body: "New reply" }),
+      );
+    });
+
+    it("shows no banner while that DM is open in a visible tab", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      installBrowserNotification("granted");
+      (globalThis as Record<string, unknown>).document = {
+        hasFocus: () => false,
+        visibilityState: "visible",
+      };
+      (globalThis as Record<string, unknown>).location = {
+        pathname: "/workspace-a/chat",
+        search: "?session=session-1",
+      };
+
+      await handleInboxNew(qc, dmRecord());
+
+      expect(webBanners).toHaveLength(0);
+    });
+
+    it("still shows the banner for a different open DM", async () => {
+      const qc = createQueryClient();
+      warmCaches(qc);
+      installBrowserNotification("granted");
+      (globalThis as Record<string, unknown>).document = {
+        hasFocus: () => false,
+        visibilityState: "visible",
+      };
+      (globalThis as Record<string, unknown>).location = {
+        pathname: "/workspace-a/chat",
+        search: "?session=session-2",
+      };
+
+      await handleInboxNew(qc, dmRecord());
+
+      expect(webBanners).toHaveLength(1);
+    });
   });
 });
 

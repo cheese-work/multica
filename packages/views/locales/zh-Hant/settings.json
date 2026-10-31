@@ -707,7 +707,30 @@
       "denied": "已被瀏覽器攔截。請在瀏覽器設定中為本站點開啟通知權限。",
       "enabled_badge": "已啟用"
     },
-    "focused_delivery": "僅接收決策和分配給我的 issue 通知"
+    "focused_delivery": "僅接收決策和分配給我的 issue 通知",
+    "channels": {
+      "in_app": "應用程式內",
+      "push": "推播"
+    },
+    "dm": {
+      "title": "私訊"
+    },
+    "device": {
+      "title": "此裝置",
+      "push_label": "在此裝置上推播",
+      "failed": "無法在此裝置上開啟推播，請再試一次。",
+      "blocked": "此瀏覽器已封鎖通知。請在網站設定中允許後再試一次。",
+      "unsupported": "此瀏覽器無法接收推播通知。",
+      "not_configured": "此伺服器尚未設定推播。",
+      "load_failed": "無法檢查此裝置的推播狀態。請重新整理後再試一次。",
+      "blocked_banner": "此瀏覽器已封鎖通知",
+      "ios": {
+        "title": "將 Multica 加入主畫面以接收通知",
+        "step_share": "在 Safari 中點一下「分享」按鈕。",
+        "step_add": "選擇「加入主畫面」。",
+        "step_sign_in": "從主畫面開啟 Multica 並重新登入。"
+      }
+    }
   },
   "tokens": {
     "title": "API Token",

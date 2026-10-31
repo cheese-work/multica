@@ -1,14 +1,26 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import {
+  notificationChannelOptions,
+  useUpdateNotificationChannel,
+} from "@multica/core/notification-preferences/channels";
 import { notificationPreferenceOptions } from "@multica/core/notification-preferences/queries";
 import { useUpdateNotificationPreferences } from "@multica/core/notification-preferences/mutations";
-import type { NotificationGroupKey, NotificationPreferences } from "@multica/core/types";
+import type {
+  NotificationChannel,
+  NotificationChannelSource,
+  NotificationGroupKey,
+  NotificationPreferences,
+} from "@multica/core/types";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { toast } from "sonner";
 import { useT } from "../../i18n";
+import { isDesktopShell } from "../../platform";
 import { BrowserNotificationSetting } from "./browser-notification-setting";
+import { PushDeviceSetting } from "./push-device-setting";
 import {
   SettingsCard,
   SettingsRow,
@@ -28,11 +40,54 @@ const INBOX_GROUP_KEYS = [
 ] as const;
 type InboxGroupKey = (typeof INBOX_GROUP_KEYS)[number];
 
+const CHANNELS: readonly NotificationChannel[] = ["in_app", "push"];
+
 export function NotificationsTab() {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const { data } = useQuery(notificationPreferenceOptions(wsId));
+  const { data: channelData } = useQuery(notificationChannelOptions(wsId));
   const mutation = useUpdateNotificationPreferences();
+  const channelMutation = useUpdateNotificationChannel();
+
+  // Push is web-only. The desktop shell is only known after mount, so the first
+  // paint matches the server markup.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const showPush = mounted && !isDesktopShell();
+
+  const handleChannel = (
+    source: NotificationChannelSource,
+    channel: NotificationChannel,
+    enabled: boolean,
+  ) => {
+    channelMutation.mutate(
+      { source, channel, enabled },
+      {
+        onError: (err) =>
+          toast.error(
+            err instanceof Error && err.message
+              ? err.message
+              : t(($) => $.notifications.toast_failed),
+          ),
+      },
+    );
+  };
+
+  const channelRows = (source: NotificationChannelSource) =>
+    CHANNELS.filter((channel) => channel === "in_app" || showPush).map((channel) => (
+      <SettingsRow
+        key={channel}
+        anchor={`${source}_${channel}`}
+        label={t(($) => $.notifications.channels[channel])}
+      >
+        <Switch
+          checked={channelData?.channels[source][channel] ?? false}
+          aria-label={t(($) => $.notifications.channels[channel])}
+          onCheckedChange={(checked) => handleChannel(source, channel, checked)}
+        />
+      </SettingsRow>
+    ));
 
   const preferences = data?.preferences ?? {};
 
@@ -66,6 +121,7 @@ export function NotificationsTab() {
         anchor="inbox"
       >
         <SettingsCard>
+            {channelRows("inbox")}
             <SettingsRow
               anchor="unassigned_activity"
               label={t(($) => $.notifications.focused_delivery)}
@@ -96,6 +152,10 @@ export function NotificationsTab() {
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection title={t(($) => $.notifications.dm.title)} anchor="dm">
+        <SettingsCard>{channelRows("dm")}</SettingsCard>
+      </SettingsSection>
+
       <SettingsSection
         title={t(($) => $.notifications.system.title)}
       >
@@ -116,6 +176,12 @@ export function NotificationsTab() {
             desktop (OS-native delivery) or where the Notification API is absent. */}
         <BrowserNotificationSetting />
       </SettingsSection>
+
+      {showPush && (
+        <SettingsSection title={t(($) => $.notifications.device.title)} anchor="device">
+          <PushDeviceSetting />
+        </SettingsSection>
+      )}
     </SettingsTab>
   );
 }
