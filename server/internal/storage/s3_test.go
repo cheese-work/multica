@@ -658,6 +658,8 @@ func newS3SigningTestStore(t *testing.T, server *httptest.Server, endpoint strin
 	opts := store.client.Options()
 	opts.BaseEndpoint = aws.String(server.URL)
 	opts.HTTPClient = server.Client()
+	// The fake server sends no checksum header; skip the SDK's "no supported checksum" warning.
+	opts.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	opts.Retryer = retry.NewStandard(func(o *retry.StandardOptions) {
 		o.MaxAttempts = 2
 		o.MaxBackoff = time.Millisecond
