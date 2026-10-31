@@ -28,27 +28,43 @@ func isServerDecision(request db.DecisionRequest) bool {
 	return strings.HasPrefix(request.RequestFingerprint, serverDecisionFingerprint)
 }
 
-// runBudgetAsker is the agent a budget request is asked as: the issue's agent
-// assignee, else its squad's leader. ok is false when the issue has none.
+// runBudgetAsker is the agent a budget request is asked as: the workspace's
+// built-in agent, else the issue's agent assignee or its squad's leader, else
+// the oldest agent. It is only the name on the request; nothing runs as it and
+// no recipient needs permission to invoke it. ok is false only when the
+// workspace has no agent at all.
 func runBudgetAsker(ctx context.Context, q *db.Queries, issue db.Issue) (agent db.Agent, ok bool, err error) {
+	agent, err = q.GetAgentBySystemKey(ctx, db.GetAgentBySystemKeyParams{WorkspaceID: issue.WorkspaceID, SystemKey: pgtype.Text{String: service.MikaSystemKey, Valid: true}})
+	if err == nil {
+		return agent, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return agent, false, err
+	}
 	id := issue.AssigneeID
 	if issue.AssigneeType.String == "squad" && id.Valid {
 		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return agent, false, nil
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return agent, false, err
 		}
 		id = squad.LeaderID
 	} else if issue.AssigneeType.String != "agent" {
-		return agent, false, nil
+		id = pgtype.UUID{}
 	}
-	agent, err = q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: id})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return agent, false, nil
+	if id.Valid {
+		agent, err = q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: id})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return agent, false, err
+		}
+		if err == nil && !agent.ArchivedAt.Valid && agent.Kind != "system" {
+			return agent, true, nil
+		}
 	}
-	return agent, err == nil && !agent.ArchivedAt.Valid && agent.Kind != "system", err
+	agents, err := q.ListAgents(ctx, issue.WorkspaceID)
+	if err != nil || len(agents) == 0 {
+		return agent, false, err
+	}
+	return agents[0], true, nil
 }
 
 // runBudgetDecisionAsk is the structured ask: reopen the budget by a status
@@ -71,17 +87,66 @@ func runBudgetDecisionAsk(issue db.Issue, ref string, notice db.Comment) decisio
 	}
 }
 
-// openRunBudgetDecisions opens one decision request per recipient inside the
-// exhausted notice's transaction. The notice's claim row is the idempotency
-// key: only the transaction that inserted it gets here, so a concurrent
-// refusal, a retried hook and a re-delivered event open nothing more, and the
-// next window's new claim re-arms it. The request is asked as an agent but has
-// no task behind it. A recipient who cannot be asked is skipped, not an error:
-// the notice's comment and inbox item already reach them.
-func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetEvent, notice db.Comment, recipients []pgtype.UUID) ([]decisionRequestResult, error) {
+// runBudgetDecisionPlan is what the exhausted notice locks before it writes its
+// comment, so its locks follow the order every decision transaction uses:
+// workspace, topic lane and session, then the issue the comment locks.
+type runBudgetDecisionPlan struct {
+	asker db.Agent
+	topic decisionTopic
+	lanes []runBudgetLane
+}
+
+// runBudgetLane is one recipient and their existing topic DM, if any.
+type runBudgetLane struct {
+	human   pgtype.UUID
+	session db.ChatSession
+	reuse   bool
+}
+
+// planRunBudgetDecisions takes the decision locks for every recipient who is
+// still a member. It returns an empty plan when the workspace has no agent to
+// ask as; the notice's comment and inbox item still reach the recipients.
+func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, recipients []pgtype.UUID) (runBudgetDecisionPlan, error) {
+	plan := runBudgetDecisionPlan{}
 	asker, ok, err := runBudgetAsker(ctx, q, issue)
-	if err != nil || !ok {
-		return nil, err
+	if err != nil {
+		return plan, err
+	}
+	if !ok {
+		slog.Warn("run budget: no agent to ask the decision as", "issue_id", uuidToString(issue.ID))
+		return plan, nil
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
+		return plan, err
+	}
+	if plan.topic, err = resolveDecisionTopic(ctx, q, issue); err != nil {
+		return plan, err
+	}
+	plan.asker = asker
+	for _, human := range recipients {
+		if _, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: human, WorkspaceID: issue.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
+			continue
+		} else if err != nil {
+			return plan, err
+		}
+		session, reuse, err := topicLane(ctx, q, issue, plan.topic, human, asker.ID)
+		if err != nil {
+			return plan, err
+		}
+		plan.lanes = append(plan.lanes, runBudgetLane{human: human, session: session, reuse: reuse})
+	}
+	return plan, nil
+}
+
+// openRunBudgetDecisions opens one decision request per planned recipient inside
+// the exhausted notice's transaction, after the notice comment exists. The
+// notice's claim row is the idempotency key: only the transaction that inserted
+// it gets here, so a concurrent refusal, a retried hook and a re-delivered event
+// open nothing more, and the next window's new claim re-arms it. The request is
+// asked as an agent but has no task behind it.
+func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetEvent, notice db.Comment, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
+	if len(plan.lanes) == 0 {
+		return nil, nil
 	}
 	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
@@ -96,21 +161,17 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return nil, err
 	}
-	ask.AskedBy = asker.Name
+	ask.AskedBy = plan.asker.Name
 	input := decisionRequestInput{
 		Ask: ask.Content(workspace.Slug), Options: ask.Options, AskJSON: askJSON, EscalationClass: "reversible",
 		Fingerprint: serverDecisionFingerprint + "run_budget:" + e.Since.UTC().Format(time.RFC3339Nano),
 	}
 	var results []decisionRequestResult
-	for _, human := range recipients {
-		input.HumanUserID = human
-		result, ok, err := h.openRunBudgetDecision(ctx, q, issue, asker, input)
+	for _, lane := range plan.lanes {
+		input.HumanUserID = lane.human
+		result, err := h.openRunBudgetDecision(ctx, q, issue, plan, lane, input)
 		if err != nil {
 			return nil, err
-		}
-		if !ok {
-			slog.Warn("run budget: decision request skipped", "issue_id", uuidToString(issue.ID), "recipient", uuidToString(human))
-			continue
 		}
 		results = append(results, result)
 	}
@@ -119,68 +180,53 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 
 // openRunBudgetDecision is createSingleCallDecisionTx's body minus the running
 // task: the intent it seals carries the zero task id, and its target is
-// consumed by the request it anchors.
-func (h *Handler) openRunBudgetDecision(ctx context.Context, q *db.Queries, issue db.Issue, asker db.Agent, input decisionRequestInput) (decisionRequestResult, bool, error) {
+// consumed by the request it anchors. The recipient needs no permission to
+// invoke the asker: nothing is invoked, and a run keeps its own invocation checks.
+func (h *Handler) openRunBudgetDecision(ctx context.Context, q *db.Queries, issue db.Issue, plan runBudgetDecisionPlan, lane runBudgetLane, input decisionRequestInput) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
-	if _, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: input.HumanUserID, WorkspaceID: issue.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
-		return empty, false, nil
-	} else if err != nil {
-		return empty, false, err
-	}
-	if !h.canInvokeAgent(ctx, asker, "member", uuidToString(input.HumanUserID), "", uuidToString(issue.WorkspaceID)) {
-		return empty, false, nil
-	}
-	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
-		return empty, false, err
-	}
-	topic, err := resolveDecisionTopic(ctx, q, issue)
-	if err != nil {
-		return empty, false, err
-	}
-	session, reuse, err := topicLane(ctx, q, issue, topic, input.HumanUserID, asker.ID)
-	if err != nil {
-		return empty, false, err
-	}
+	session := lane.session
 	var created *db.ChatSession
-	if !reuse {
-		steward, err := h.decisionSteward(ctx, q, topic, asker, input.HumanUserID)
+	if !lane.reuse {
+		steward, err := h.decisionSteward(ctx, q, plan.topic, plan.asker, lane.human)
 		if err != nil {
-			return empty, false, err
+			return empty, err
 		}
-		if session, err = createDecisionDM(ctx, q, issue, db.ChatSession{AgentID: steward.ID, CreatorID: input.HumanUserID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}); err != nil {
-			return empty, false, err
+		if session, err = createDecisionDM(ctx, q, issue, db.ChatSession{AgentID: steward.ID, CreatorID: lane.human, Title: "Decisions: " + plan.topic.Title, DecisionTopicID: plan.topic.ID}); err != nil {
+			return empty, err
 		}
 		created = &session
 	}
 	commentID := dbid.NewV7()
-	intent, err := q.CreateDecisionIntent(ctx, db.CreateDecisionIntentParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: pgtype.UUID{Valid: true}, AgentID: asker.ID, CommentID: commentID})
+	intent, err := q.CreateDecisionIntent(ctx, db.CreateDecisionIntentParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: pgtype.UUID{Valid: true}, AgentID: plan.asker.ID, CommentID: commentID})
 	if err != nil {
-		return empty, false, err
+		return empty, err
 	}
-	if _, err := q.CreateDecisionIntentTarget(ctx, db.CreateDecisionIntentTargetParams{DecisionIntentID: intent.ID, HumanUserID: input.HumanUserID}); err != nil {
-		return empty, false, err
+	if _, err := q.CreateDecisionIntentTarget(ctx, db.CreateDecisionIntentTargetParams{DecisionIntentID: intent.ID, HumanUserID: lane.human}); err != nil {
+		return empty, err
 	}
 	result, err := insertDecisionAsk(ctx, q, issue, input, intent, session, created != nil, nil, pgtype.UUID{}, commentID, nil)
 	if err != nil {
-		return empty, false, err
+		return empty, err
 	}
 	if result.PingItem, err = decisiontx.NotifyPingTx(ctx, q, issue.WorkspaceID, result.Request.ID); err != nil {
-		return empty, false, err
+		return empty, err
 	}
 	result.PingRecorded = true
 	result.CreatedSession = created
-	return result, true, nil
+	return result, nil
 }
 
 // publishRunBudgetDecisions announces committed server-origin requests the way
-// the request endpoint announces an agent's.
+// the request endpoint announces an agent's: chat events go to the person who
+// owns the DM.
 func (h *Handler) publishRunBudgetDecisions(issue db.Issue, results []decisionRequestResult) {
 	workspaceID := uuidToString(issue.WorkspaceID)
 	for _, result := range results {
-		agentID := uuidToString(result.Request.AskingAgentID)
+		agentID, humanID := uuidToString(result.Request.AskingAgentID), uuidToString(result.Request.HumanUserID)
+		sessionID := uuidToString(result.Request.ChatSessionID)
 		if session := result.CreatedSession; session != nil {
-			h.publishChat(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
-				WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
+			h.publishChatFor(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, humanID, sessionID, protocol.ChatSessionCreatedPayload{
+				WorkspaceID: workspaceID, ChatSessionID: sessionID, AgentID: uuidToString(session.AgentID), CreatorID: humanID, Title: session.Title,
 			})
 		}
 		if item := result.PingItem; item != nil {
@@ -188,7 +234,12 @@ func (h *Handler) publishRunBudgetDecisions(issue db.Issue, results []decisionRe
 		}
 		h.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{
 			"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
-			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
+			"decision_intent_targets": []string{humanID},
+		})
+		h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, humanID, sessionID, protocol.ChatMessagePayload{
+			MessageKind:   result.Message.MessageKind,
+			ChatSessionID: sessionID, MessageID: uuidToString(result.Message.ID),
+			Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 		})
 	}
 	if len(results) > 0 {
