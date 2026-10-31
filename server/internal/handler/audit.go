@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -330,24 +331,36 @@ func workspaceAuditFields(ws db.Workspace) map[string]any {
 	}
 }
 
-// agentAuditFields snapshots the agent columns an admin can change. Env, args
-// and MCP config are snapshotted as text for the diff only: none is allowlisted.
-func agentAuditFields(a db.Agent) map[string]any {
+// agentAuditFields snapshots every agent column and related row set an admin
+// can change. Env, args, MCP config, runtime config and invocation targets are
+// snapshotted as text for the diff only: none is allowlisted, so a change
+// stores the marker "changed", never the value.
+func agentAuditFields(a db.Agent, targets []db.AgentInvocationTarget) map[string]any {
+	targetKeys := make([]string, 0, len(targets))
+	for _, tg := range targets {
+		targetKeys = append(targetKeys, tg.TargetType+":"+uuidToString(tg.TargetID))
+	}
+	sort.Strings(targetKeys)
 	return map[string]any{
-		"name":                 a.Name,
-		"description":          a.Description,
-		"instructions":         a.Instructions,
-		"runtime_id":           a.RuntimeID,
-		"model":                auditText(a.Model),
-		"thinking_level":       auditText(a.ThinkingLevel),
-		"service_tier":         auditText(a.ServiceTier),
-		"visibility":           a.Visibility,
-		"permission_mode":      a.PermissionMode,
-		"status":               a.Status,
-		"max_concurrent_tasks": a.MaxConcurrentTasks,
-		"avatar_url":           auditText(a.AvatarUrl),
-		"custom_args":          string(a.CustomArgs),
-		"mcp_config":           string(a.McpConfig),
+		"runtime_mode":               a.RuntimeMode,
+		"runtime_config":             string(a.RuntimeConfig),
+		"conversation_starters":      string(a.ConversationStarters),
+		"composio_toolkit_allowlist": strings.Join(a.ComposioToolkitAllowlist, ","),
+		"invocation_targets":         strings.Join(targetKeys, ","),
+		"name":                       a.Name,
+		"description":                a.Description,
+		"instructions":               a.Instructions,
+		"runtime_id":                 a.RuntimeID,
+		"model":                      auditText(a.Model),
+		"thinking_level":             auditText(a.ThinkingLevel),
+		"service_tier":               auditText(a.ServiceTier),
+		"visibility":                 a.Visibility,
+		"permission_mode":            a.PermissionMode,
+		"status":                     a.Status,
+		"max_concurrent_tasks":       a.MaxConcurrentTasks,
+		"avatar_url":                 auditText(a.AvatarUrl),
+		"custom_args":                string(a.CustomArgs),
+		"mcp_config":                 string(a.McpConfig),
 	}
 }
 

@@ -2525,6 +2525,19 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	updateQueries := h.Queries.WithTx(tx)
+	// The audit row's before-state is the row as locked here, not the pre-
+	// transaction read in existing: a concurrent edit that committed in between
+	// must not be attributed to this request.
+	before, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock agent")
+		return
+	}
+	beforeTargets, err := updateQueries.ListAgentInvocationTargets(r.Context(), existing.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
+		return
+	}
 	if req.RuntimeID != nil {
 		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
 		if !ok {
@@ -2622,11 +2635,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// existing was read before the transaction began; a concurrent edit between
-	// the two shows up in the audit row as part of this change.
+	afterTargets, err := updateQueries.ListAgentInvocationTargets(r.Context(), updated.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
+		return
+	}
 	if err := h.writeAudit(r.Context(), updateQueries, r, auditInput{
 		Kind: "agent.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
-		Before: agentAuditFields(existing), After: agentAuditFields(updated),
+		Before: agentAuditFields(before, beforeTargets), After: agentAuditFields(updated, afterTargets),
 	}); err != nil {
 		writeAuditFailure(w, r, err, "agent.update")
 		return

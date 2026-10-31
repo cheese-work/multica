@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -695,5 +696,101 @@ func TestDeleteWorkspace_RemovesItsAuditRows(t *testing.T) {
 	}
 	if got := auditCountFor(t, other); got != 1 {
 		t.Fatalf("another workspace's audit rows = %d; want 1", got)
+	}
+}
+
+// ── review round 1: agent.update before-state and snapshot coverage ───────
+
+// interposedTx runs before() once, just before the handler's transaction
+// begins: a stand-in for another request that commits between the handler's
+// pre-transaction read and its own transaction.
+type interposedTx struct {
+	inner  txStarter
+	before func()
+}
+
+func (i interposedTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	if i.before != nil {
+		i.before()
+	}
+	return i.inner.Begin(ctx)
+}
+
+func TestUpdateAgent_AuditBeforeStateIsTheLockedRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "che2774-before-state", nil)
+	dbfx.Exec(t, `UPDATE agent SET model = 'model-a' WHERE id = $1`, agentID)
+
+	h := *testHandler
+	h.TxStarter = interposedTx{inner: testHandler.TxStarter, before: func() {
+		// A concurrent request changes the model after this handler loaded the agent.
+		dbfx.Exec(t, `UPDATE agent SET model = 'model-b' WHERE id = $1`, agentID)
+	}}
+	req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+		"description": "name-free edit",
+	}), "id", agentID)
+	w := httptest.NewRecorder()
+	h.UpdateAgent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent: %d %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "agent.update", agentID)
+	if len(rows) != 1 {
+		t.Fatalf("agent.update audit rows = %d; want 1", len(rows))
+	}
+	if _, claimed := rows[0].After["model"]; claimed {
+		t.Errorf("this request did not change the model, but its audit row claims it: before=%v after=%v", rows[0].Before, rows[0].After)
+	}
+}
+
+func TestUpdateAgent_RuntimeConfigOnlyChangeLeavesChangedMarker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "che2774-runtime-config", nil)
+	req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+		"runtime_config": map[string]any{"api_key": "sk-must-not-leak"},
+	}), "id", agentID)
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent: %d %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "agent.update", agentID)
+	if len(rows) != 1 {
+		t.Fatalf("agent.update audit rows = %d; want 1", len(rows))
+	}
+	if rows[0].After["runtime_config"] != "changed" {
+		t.Errorf("runtime_config change not marked: after=%v", rows[0].After)
+	}
+	if encoded, _ := json.Marshal(rows[0]); strings.Contains(string(encoded), "sk-must-not-leak") {
+		t.Errorf("runtime_config value leaked: %s", encoded)
+	}
+}
+
+func TestUpdateAgent_InvocationTargetChangeLeavesChangedMarker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "che2774-targets", nil)
+	req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+		"permission_mode": "public_to",
+		"invocation_targets": []map[string]any{
+			{"target_type": "member", "target_id": testUserID},
+		},
+	}), "id", agentID)
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent: %d %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "agent.update", agentID)
+	if len(rows) != 1 {
+		t.Fatalf("agent.update audit rows = %d; want 1", len(rows))
+	}
+	if rows[0].After["invocation_targets"] != "changed" {
+		t.Errorf("invocation target change not marked: after=%v", rows[0].After)
 	}
 }
