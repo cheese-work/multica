@@ -91,9 +91,24 @@ func (h *Handler) PutJevCredential(w http.ResponseWriter, r *http.Request) {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}
+	var existed bool
+	if err := tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM governance_jev_credential WHERE workspace_id = $1)`, workspaceID).Scan(&existed); err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO governance_jev_credential (workspace_id, envelope, updated_by) VALUES ($1, $2, $3) ON CONFLICT (workspace_id) DO UPDATE SET envelope = EXCLUDED.envelope, updated_by = EXCLUDED.updated_by, updated_at = now()`, workspaceID, encoded, actorID)
 	if err != nil {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	kind := "jev.credential.set"
+	if existed {
+		kind = "jev.credential.rotate"
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: kind, WorkspaceID: workspaceID, TargetID: workspaceID, After: jevCredentialAuditFields(true),
+	}); err != nil {
+		writeAuditFailure(w, r, err, kind)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -108,7 +123,26 @@ func (h *Handler) DeleteJevCredential(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := h.DB.Exec(r.Context(), `DELETE FROM governance_jev_credential WHERE workspace_id = $1`, workspaceID); err != nil {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	deleted, err := tx.Exec(r.Context(), `DELETE FROM governance_jev_credential WHERE workspace_id = $1`, workspaceID)
+	if err != nil {
+		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
+		return
+	}
+	if deleted.RowsAffected() > 0 {
+		if err := h.writeAudit(r.Context(), h.Queries.WithTx(tx), r, auditInput{
+			Kind: "jev.credential.delete", WorkspaceID: workspaceID, TargetID: workspaceID, Before: jevCredentialAuditFields(true),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "jev.credential.delete")
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeGovernanceProblem(w, r, http.StatusServiceUnavailable, "configuration_unavailable")
 		return
 	}

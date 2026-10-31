@@ -110,9 +110,12 @@ func (h *Handler) PatchGovernanceConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	digest := sha256.Sum256(encodedPatch)
-	result, err := h.writeGovernanceConfig(r.Context(), workspaceID, actorID, requestUUID, hex.EncodeToString(digest[:]), patch)
+	result, err := h.writeGovernanceConfigAudited(r.Context(), r, workspaceID, actorID, requestUUID, hex.EncodeToString(digest[:]), patch)
 	if err != nil {
+		var auditErr auditWriteError
 		switch {
+		case errors.As(err, &auditErr):
+			writeAuditFailure(w, r, auditErr.err, "governance.config.update")
 		case errors.Is(err, errGovernanceConfigWorkspaceUnavailable):
 			writeGovernanceProblem(w, r, http.StatusNotFound, "workspace_not_found")
 		case errors.Is(err, errGovernanceConfigConflict):
@@ -176,6 +179,12 @@ func (h *Handler) governanceWorkspaceAccess(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) writeGovernanceConfig(ctx context.Context, workspaceID, actorID pgtype.UUID, requestID uuid.UUID, digest string, patch governanceConfigPatch) (governanceConfigWrite, error) {
+	return h.writeGovernanceConfigAudited(ctx, nil, workspaceID, actorID, requestID, digest, patch)
+}
+
+// writeGovernanceConfigAudited also writes the audit row for the change in the
+// same transaction. A nil request attributes the row to the system actor.
+func (h *Handler) writeGovernanceConfigAudited(ctx context.Context, r *http.Request, workspaceID, actorID pgtype.UUID, requestID uuid.UUID, digest string, patch governanceConfigPatch) (governanceConfigWrite, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return governanceConfigWrite{}, err
@@ -299,6 +308,13 @@ func (h *Handler) writeGovernanceConfig(ctx context.Context, workspaceID, actorI
 		RETURNING created_at
 	`, workspaceID, nextVersion, requestID, digest, actorID, beforeJSON, afterJSON, nextEpoch, rollbackVersion).Scan(&createdAt); err != nil {
 		return governanceConfigWrite{}, err
+	}
+	if err := h.writeAudit(ctx, h.Queries.WithTx(tx), r, auditInput{
+		Kind: "governance.config.update", WorkspaceID: workspaceID, TargetID: workspaceID,
+		Before: governanceSettingsAuditFields(beforeSettings, currentVersion),
+		After:  governanceSettingsAuditFields(settings, nextVersion),
+	}); err != nil {
+		return governanceConfigWrite{}, auditWriteError{err}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return governanceConfigWrite{}, err
