@@ -9,7 +9,14 @@
 -- An agent's state, in order: unbound, offline, busy (dispatched/running
 -- task), waiting_dir, available. ON CONFLICT DO NOTHING drops the duplicate
 -- from an overlapping server boot.
-WITH machine AS (
+-- live takes FOR KEY SHARE on each workspace row, the lock every other
+-- workspace-owned writer takes against DeleteWorkspace's FOR UPDATE. A workspace
+-- under teardown is skipped, and one that wins the lock is swept by the teardown
+-- that waits for this statement, so no row outlives the delete.
+WITH live AS MATERIALIZED (
+    SELECT id FROM workspace FOR KEY SHARE SKIP LOCKED
+),
+machine AS (
     SELECT r.id AS runtime_id, r.workspace_id, r.status,
            CASE WHEN r.daemon_id IS NULL OR r.daemon_id = '' THEN '__cloud__' ELSE r.daemon_id END AS key
     FROM agent_runtime r
@@ -70,6 +77,7 @@ SELECT k.workspace_id, k.key, @bucket_ts::timestamptz,
        COALESCE(ac.agents_waiting_dir, 0), COALESCE(ac.agents_available, 0),
        GREATEST(0, extract(epoch FROM sqlc.arg(bucket_ts)::timestamptz - tc.oldest))::int
 FROM keys k
+JOIN live ON live.id = k.workspace_id
 LEFT JOIN task_counts tc ON tc.workspace_id = k.workspace_id AND tc.key = k.key
 LEFT JOIN agent_counts ac ON ac.workspace_id = k.workspace_id AND ac.key = k.key
 ON CONFLICT (workspace_id, daemon_id, bucket_ts) DO NOTHING;
@@ -81,7 +89,11 @@ SELECT max(bucket_ts)::timestamptz AS bucket_ts FROM ops_snapshot_5m;
 -- name: RollupOpsSnapshot5m :execrows
 -- Folds raw rows in [from_ts, to_ts) into 5-minute intervals. Idempotent:
 -- a rerun recomputes from the raw rows still present. Intervals with no raw
--- row are not written (gap, not zero).
+-- row are not written (gap, not zero). Workspaces are locked as in
+-- InsertOpsSnapshot.
+WITH live AS MATERIALIZED (
+    SELECT id FROM workspace FOR KEY SHARE SKIP LOCKED
+)
 INSERT INTO ops_snapshot_5m (workspace_id, daemon_id, bucket_ts,
     queued_max, queued_last, dispatched_max, dispatched_last, waiting_dir_max, waiting_dir_last, running_max, running_last, agents_unbound_max, agents_unbound_last, agents_offline_max, agents_offline_last, agents_busy_max, agents_busy_last, agents_waiting_dir_max, agents_waiting_dir_last, agents_available_max, agents_available_last, oldest_unstarted_s_max, oldest_unstarted_s_last,
     sample_count, expected_count)
@@ -89,6 +101,7 @@ SELECT workspace_id, daemon_id, date_bin('5 minutes', bucket_ts, TIMESTAMPTZ 'ep
     max(queued), (array_agg(queued ORDER BY bucket_ts DESC))[1], max(dispatched), (array_agg(dispatched ORDER BY bucket_ts DESC))[1], max(waiting_dir), (array_agg(waiting_dir ORDER BY bucket_ts DESC))[1], max(running), (array_agg(running ORDER BY bucket_ts DESC))[1], max(agents_unbound), (array_agg(agents_unbound ORDER BY bucket_ts DESC))[1], max(agents_offline), (array_agg(agents_offline ORDER BY bucket_ts DESC))[1], max(agents_busy), (array_agg(agents_busy ORDER BY bucket_ts DESC))[1], max(agents_waiting_dir), (array_agg(agents_waiting_dir ORDER BY bucket_ts DESC))[1], max(agents_available), (array_agg(agents_available ORDER BY bucket_ts DESC))[1], max(oldest_unstarted_s), (array_agg(oldest_unstarted_s ORDER BY bucket_ts DESC))[1],
     count(*)::int, 10
 FROM ops_snapshot
+JOIN live ON live.id = ops_snapshot.workspace_id
 WHERE bucket_ts >= @from_ts::timestamptz AND bucket_ts < @to_ts::timestamptz
 GROUP BY workspace_id, daemon_id, interval_ts
 ON CONFLICT (workspace_id, daemon_id, bucket_ts) DO UPDATE SET

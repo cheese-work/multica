@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -327,6 +329,98 @@ func TestOpsJobConfiguration(t *testing.T) {
 	for _, c := range cases {
 		if c.job.Name != c.name || c.job.Cadence != c.cadence || c.job.Handler == nil || c.job.CatchUpMode != CatchUpLatestOnly {
 			t.Errorf("job %q misconfigured: %+v", c.name, c.job)
+		}
+	}
+}
+
+func (f *opsFixture) rowCount(t *testing.T, table string) int {
+	t.Helper()
+	var n int
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM `+table+` WHERE workspace_id = $1`, f.workspaceID).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+// Workspace teardown holds the workspace row FOR UPDATE for its whole
+// transaction. A sampler or rollup run that reads the old state must not insert
+// rows for that workspace once teardown has started, or they outlive the sweep.
+func TestOpsWritersSkipWorkspaceUnderTeardown(t *testing.T) {
+	f := newOpsFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	f.sample(t, now.Add(-3*time.Hour))
+	f.sample(t, now.Add(-3*time.Hour).Add(30*time.Second))
+
+	teardown, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin teardown: %v", err)
+	}
+	defer teardown.Rollback(ctx)
+	if _, err := teardown.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, f.workspaceID); err != nil {
+		t.Fatalf("lock workspace: %v", err)
+	}
+
+	rawBefore := f.rowCount(t, "ops_snapshot")
+	f.sample(t, now)
+	if got := f.rowCount(t, "ops_snapshot"); got != rawBefore {
+		t.Fatalf("sampler wrote %d rows for a workspace under teardown", got-rawBefore)
+	}
+	f.exec(t, `DELETE FROM ops_snapshot_5m`)
+	f.rollup(t, now)
+	if got := f.rowCount(t, "ops_snapshot_5m"); got != 0 {
+		t.Fatalf("rollup wrote %d rows for a workspace under teardown", got)
+	}
+
+	if err := teardown.Rollback(ctx); err != nil {
+		t.Fatalf("release teardown: %v", err)
+	}
+	f.sample(t, now)
+	if got := f.rowCount(t, "ops_snapshot"); got <= rawBefore {
+		t.Fatalf("sampler stayed blocked after teardown released the workspace: %d rows", got)
+	}
+}
+
+// The other interleaving: a writer that got the workspace first holds it until
+// it commits, so teardown waits for the write and then sweeps it.
+func TestOpsWritersHoldWorkspaceAgainstTeardown(t *testing.T) {
+	f := newOpsFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	f.sample(t, now.Add(-3*time.Hour))
+
+	for name, write := range map[string]func(q *db.Queries) error{
+		"sampler": func(q *db.Queries) error { _, err := q.InsertOpsSnapshot(ctx, ts(now)); return err },
+		"rollup": func(q *db.Queries) error {
+			_, err := q.RollupOpsSnapshot5m(ctx, db.RollupOpsSnapshot5mParams{FromTs: ts(now.Add(-4 * time.Hour)), ToTs: ts(now)})
+			return err
+		},
+	} {
+		writer, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("%s: begin writer: %v", name, err)
+		}
+		if err := write(f.queries.WithTx(writer)); err != nil {
+			writer.Rollback(ctx)
+			t.Fatalf("%s: write: %v", name, err)
+		}
+
+		teardown, err := f.pool.Begin(ctx)
+		if err != nil {
+			writer.Rollback(ctx)
+			t.Fatalf("%s: begin teardown: %v", name, err)
+		}
+		if _, err := teardown.Exec(ctx, `SET LOCAL lock_timeout = '300ms'`); err != nil {
+			t.Fatalf("%s: set lock_timeout: %v", name, err)
+		}
+		_, lockErr := teardown.Exec(ctx, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, f.workspaceID)
+		teardown.Rollback(ctx)
+		writer.Rollback(ctx)
+
+		var pgErr *pgconn.PgError
+		if !errors.As(lockErr, &pgErr) || pgErr.Code != "55P03" {
+			t.Fatalf("%s: teardown lock error = %v, want lock_not_available while the write is open", name, lockErr)
 		}
 	}
 }
