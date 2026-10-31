@@ -212,7 +212,7 @@ describe("idle filtering", () => {
 describe("mentions-me filtering", () => {
   it("keeps only rows where the viewer was mentioned and counts as one filter", () => {
     const rows = [
-      item("mention", "todo", "high", { type: "mentioned" }),
+      item("mention", "todo", "high", { type: "mentioned", details: { mention_source: "direct" } }),
       item("comment", "todo", "high", { type: "new_comment" }),
       item("assigned", "todo", "high", { type: "issue_assigned" }),
     ];
@@ -222,19 +222,19 @@ describe("mentions-me filtering", () => {
     expect(inboxFilterCount(filters)).toBe(1);
   });
 
-  it("matches direct and @all mentions but not squad-only ones", () => {
+  it("matches direct and @all mentions but not squad-only or unknown ones", () => {
     const rows = [
       item("direct", "todo", "high", { type: "mentioned", details: { mention_source: "direct" } }),
       item("all", "todo", "high", { type: "mentioned", details: { mention_source: "all" } }),
       item("squad", "todo", "high", { type: "mentioned", details: { mention_source: "squad" } }),
-      // Written before the server recorded provenance.
+      // Written before the server recorded provenance: unknown, so not matched.
       item("legacy", "todo", "high", { type: "mentioned" }),
       item("comment", "todo", "high", { type: "new_comment" }),
     ];
 
     expect(
       filterInboxItems(rows, { ...EMPTY_INBOX_FILTERS, mentionsOnly: true }).map((row) => row.id),
-    ).toEqual(["direct", "all", "legacy"]);
+    ).toEqual(["direct", "all"]);
   });
 
   it("toggles per workspace and clears with the rest", () => {

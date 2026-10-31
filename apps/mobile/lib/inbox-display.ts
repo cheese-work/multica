@@ -120,11 +120,11 @@ export function getInboxNavigationTarget(
  * True when the viewer was named directly or by `@all`. Mirrors
  * packages/core/inbox/filter-store.ts isViewerMention: the server writes
  * `mentioned` for `@squad` too, with `details.mention_source` telling them
- * apart; a row without it counts as a mention.
+ * apart; a row without it has an unknown origin and does not match.
  */
 export function isViewerMention(item: InboxItem): boolean {
   const source = item.details?.mention_source;
-  return source ? source === "direct" || source === "all" : item.type === "mentioned";
+  return source === "direct" || source === "all";
 }
 
 /**
@@ -177,7 +177,7 @@ export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
         details: {
           ...(newest.details ?? {}),
           ...(commentId ? { comment_id: commentId } : {}),
-          ...(mention ? { mention_source: mention.details?.mention_source ?? "direct" } : {}),
+          ...(mention ? { mention_source: mention.details?.mention_source } : {}),
         },
       });
       continue;

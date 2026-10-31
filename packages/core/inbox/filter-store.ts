@@ -39,12 +39,12 @@ export function inboxActorKey(item: InboxItem): string | null {
 /**
  * True when the viewer was named directly or by `@all`. The server writes
  * `mentioned` for `@squad` too and records which source it was in
- * `details.mention_source`; a row from before that was recorded has none and
- * counts as a mention.
+ * `details.mention_source`. A row from before that was recorded has no source,
+ * so its origin is unknown and it does not match.
  */
 export function isViewerMention(item: InboxItem): boolean {
   const source = item.details?.mention_source;
-  return source ? source === "direct" || source === "all" : item.type === "mentioned";
+  return source === "direct" || source === "all";
 }
 
 /** Inverse of `inboxActorKey`, for resolving a selection back to a directory. */

@@ -157,10 +157,10 @@ describe("mentions me", () => {
   const mention = (source?: string) =>
     item({ type: "mentioned", details: source ? { mention_source: source } : null });
 
-  it("matches direct, @all and provenance-less mentions but not squad-only ones", () => {
+  it("matches direct and @all mentions but not squad-only or provenance-less ones", () => {
     expect(isViewerMention(mention("direct"))).toBe(true);
     expect(isViewerMention(mention("all"))).toBe(true);
-    expect(isViewerMention(mention())).toBe(true);
+    expect(isViewerMention(mention())).toBe(false);
     expect(isViewerMention(mention("squad"))).toBe(false);
     expect(isViewerMention(item({ type: "new_comment" }))).toBe(false);
   });

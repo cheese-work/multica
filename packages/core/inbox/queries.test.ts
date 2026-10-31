@@ -122,8 +122,8 @@ describe("deduplicateInboxItems mentions", () => {
     expect(matches(rows).map((row) => row.id)).toEqual(["squad"]);
   });
 
-  it("treats an older mention without provenance as direct", () => {
-    expect(matches([mention("legacy", "2026-06-15T08:00:00Z"), comment("later", "2026-06-15T08:05:00Z")])).toHaveLength(1);
+  it("does not match an older mention without provenance", () => {
+    expect(matches([mention("legacy", "2026-06-15T08:00:00Z"), comment("later", "2026-06-15T08:05:00Z")])).toEqual([]);
   });
 });
 

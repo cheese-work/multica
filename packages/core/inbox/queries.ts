@@ -237,7 +237,7 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
         details: {
           ...(newest.details ?? {}),
           ...(commentId ? { comment_id: commentId } : {}),
-          ...(mention ? { mention_source: mention.details?.mention_source ?? "direct" } : {}),
+          ...(mention ? { mention_source: mention.details?.mention_source } : {}),
         },
       });
       continue;

@@ -305,7 +305,14 @@ describe("InboxFilterMenu", () => {
   });
 
   it("toggles mentions me and counts only mention rows", async () => {
-    renderMenu({ items: [...ITEMS, item("comment", "todo", "low", { type: "new_comment" })] });
+    renderMenu({
+      items: [
+        item("todo-high", "todo", "high", { details: { mention_source: "direct" } }),
+        item("done-low", "done", "low", { details: { mention_source: "all" } }),
+        item("squad", "todo", "low", { details: { mention_source: "squad" } }),
+        item("comment", "todo", "low", { type: "new_comment" }),
+      ],
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Filter inbox" }));
     fireEvent.click(
