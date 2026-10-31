@@ -73,6 +73,15 @@ type DecisionCommentFields struct {
 	// session: a continued DM answers in a newer session than the one that asked.
 	DecisionRequestSessionID string `json:"decision_request_session_id,omitempty"`
 	DecisionRequestMessageID string `json:"decision_request_message_id,omitempty"`
+	// DecisionAnsweredLabel is the offered-option label (for example D1) a
+	// record's excerpt answers. DecisionFullMessage is the whole source message,
+	// set only on an excerpted record so the card can disclose it on demand.
+	DecisionAnsweredLabel string `json:"decision_answered_label,omitempty"`
+	DecisionFullMessage   string `json:"decision_full_message,omitempty"`
+	// DecisionAnsweredAt is when the record was made; EffectiveAt minus it is the disclaim window.
+	DecisionAnsweredAt string `json:"decision_answered_at,omitempty"`
+	// DecisionWokenAt is when the answer became effective, set once it has.
+	DecisionWokenAt *string `json:"decision_woken_at,omitempty"`
 }
 
 // decisionAnswerState is pending until the wake delivers it, effective after,
@@ -200,6 +209,12 @@ func decisionCommentEntry(row db.ListDecisionCardsRow, viewer pgtype.UUID) Decis
 		DecisionIssueIdentifier:   fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
 		EffectiveAt:               timestampToPtr(row.EffectiveAt),
 		DisclaimedAt:              timestampToPtr(row.DisclaimedAt),
+		DecisionAnsweredAt:        timestampToString(row.AnsweredAt),
+		DecisionWokenAt:           timestampToPtr(row.WokenAt),
+	}
+	if row.Excerpted {
+		entry.DecisionFullMessage = row.ContentSnapshot
+		entry.DecisionAnsweredLabel = row.AnsweredLabel.String
 	}
 	if viewer.Valid && viewer == row.HumanUserID && len(row.ChatMessageIds) > 0 {
 		entry.DecisionSourceSessionID = uuidToString(row.SourceChatSessionID)

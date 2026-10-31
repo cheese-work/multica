@@ -13,20 +13,24 @@ import {
   PinOff,
   Square,
   Trash2,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
 import { api } from "@multica/core/api";
-import { pendingChatTasksOptions, chatKeys, sortChatSessions } from "@multica/core/chat/queries";
+import {
+  pendingChatTasksOptions,
+  chatKeys,
+  sortArchivedChatSessions,
+  sortChatSessions,
+} from "@multica/core/chat/queries";
 import {
   useDeleteChatSession,
-  useSetChatSessionArchived,
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
+import type { Agent, ChatSearchHit, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
@@ -38,22 +42,12 @@ import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
+import { useChatSessionActions } from "./use-chat-session-actions";
+import { ChatSearch } from "./chat-search";
+import { formatChatTime } from "./format-chat-time";
 import { NeedsYouList } from "./needs-you-list";
 
 const apiLogger = createLogger("chat.api");
-
-// IM-style timestamp: today → clock, this year → M/D, else full date.
-function formatChatTime(dateStr: string, locale: string): string {
-  const d = new Date(dateStr);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
-  }
-  if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString(locale, { month: "numeric", day: "numeric" });
-  }
-  return d.toLocaleDateString(locale);
-}
 
 // Collapse a (possibly markdown / multi-line) message into a one-line preview.
 function toPreview(content: string): string {
@@ -80,13 +74,32 @@ function toPreview(content: string): string {
  * unarchive + delete). Both views read the same flat sessions cache and split
  * on `status` locally.
  */
-export function ChatThreadList({
-  sessions,
-  agents,
-  activeSessionId,
-  onSelectSession,
-  onArchive,
-}: {
+export function ChatThreadList(props: ChatThreadListProps) {
+  const { sessions, agents, activeSessionId, onSelectSession, onArchive, onOpenSearchHit } = props;
+  const setPinned = useSetChatSessionPinned();
+  const sessionActions = useChatSessionActions();
+  return (
+    <ChatSearch
+      scope="page"
+      bindShortcut
+      sessions={sessions}
+      agents={agents}
+      activeSessionId={activeSessionId}
+      onOpenHit={(hit) => {
+        if (onOpenSearchHit) return onOpenSearchHit(hit);
+        const session = sessions.find((s) => s.id === hit.session_id);
+        if (session) onSelectSession(session);
+      }}
+      onUnarchive={(session) => void sessionActions.unarchive(session)}
+      onTogglePin={(session) => setPinned.mutate({ sessionId: session.id, pinned: !session.pinned })}
+      onArchive={onArchive}
+    >
+      <ChatThreadListBody {...props} />
+    </ChatSearch>
+  );
+}
+
+interface ChatThreadListProps {
   sessions: ChatSession[];
   agents: Agent[];
   activeSessionId: string | null;
@@ -95,7 +108,17 @@ export function ChatThreadList({
   // aware (desktop advances to the next chat; mobile drops back to the list)
   // and routes through the shared controller — see ChatPage.handleArchive.
   onArchive: (session: ChatSession) => void;
-}) {
+  /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
+  onOpenSearchHit?: (hit: ChatSearchHit) => void;
+}
+
+function ChatThreadListBody({
+  sessions,
+  agents,
+  activeSessionId,
+  onSelectSession,
+  onArchive,
+}: ChatThreadListProps) {
   const { t } = useT("chat");
   const locale = useLocale();
   const wsId = useWorkspaceId();
@@ -128,7 +151,7 @@ export function ChatThreadList({
     [rows],
   );
   const archivedSessions = useMemo(
-    () => sortChatSessions(rows.filter((s) => s.status === "archived")),
+    () => sortArchivedChatSessions(rows.filter((s) => s.status === "archived")),
     [rows],
   );
 
@@ -145,7 +168,7 @@ export function ChatThreadList({
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const deleteSession = useDeleteChatSession();
   const setPinned = useSetChatSessionPinned();
-  const setArchived = useSetChatSessionArchived();
+  const sessionActions = useChatSessionActions();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
 
@@ -286,7 +309,7 @@ export function ChatThreadList({
               icon: <ArchiveRestore className="size-3.5" />,
               label: t(($) => $.list.unarchive),
               onSelect: () =>
-                setArchived.mutate({ sessionId: session.id, archived: false }),
+                void sessionActions.unarchive(session),
             },
             {
               key: "delete",
@@ -329,6 +352,7 @@ export function ChatThreadList({
     return (
       <div
         key={session.id}
+        data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
@@ -385,7 +409,7 @@ export function ChatThreadList({
         <div className="min-w-0 flex-1">
           {/* Line 1: name + time (time stays put; hover actions overlay below) */}
           <div className="flex items-center gap-1.5">
-            {session.pinned && (
+            {session.pinned && session.status !== "archived" && (
               <Pin
                 aria-label={t(($) => $.list.pinned)}
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
@@ -478,6 +502,7 @@ export function ChatThreadList({
                 label={action.label}
                 danger={action.danger}
                 onClick={action.onSelect}
+                testId={`chat-thread-row-${action.key}-item`}
               />
             ))}
           </div>
@@ -503,7 +528,9 @@ export function ChatThreadList({
             {archivedSessions.length}
           </span>
         </button>
-        {archivedSessions.map(renderRow)}
+        <div className="contents" data-testid="chat-thread-group-archived">
+          {archivedSessions.map(renderRow)}
+        </div>
       </>
     );
   }
@@ -539,7 +566,9 @@ export function ChatThreadList({
   return (
     <>
       <NeedsYouList />
-      {historySessions.map(renderRow)}
+      <div className="contents" data-testid="chat-thread-group-recent">
+        {historySessions.map(renderRow)}
+      </div>
       {archivedEntry}
     </>
   );
@@ -550,11 +579,13 @@ function RowAction({
   label,
   onClick,
   danger,
+  testId,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   danger?: boolean;
+  testId?: string;
 }) {
   return (
     <DeferredTooltip
@@ -562,6 +593,7 @@ function RowAction({
       trigger={
         <button
           type="button"
+          data-testid={testId}
           aria-label={label}
           onPointerDown={(e) => {
             e.preventDefault();

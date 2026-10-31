@@ -284,6 +284,11 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					return
 				}
 
+				if len(pat.Scopes) > 0 {
+					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
+					return
+				}
+
 				userID := uuidToString(pat.UserID)
 				if rejectTemporarilyDisabledUser(w, r, userID, "", DaemonAuthPathPAT) {
 					return

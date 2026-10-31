@@ -31,6 +31,25 @@ WITH locked_task AS MATERIALIZED (
     SET status = 'delivered'
     FROM acked
     WHERE e.id = acked.event_id
+), consumed AS (
+    -- A legacy PR rule receipt still waiting for the cause this notice just
+    -- handled would start a redundant run after the live task ends (CHE-2600).
+    -- Same match as PREventCoveredByLegacyWake, limited to receipts no run took.
+    UPDATE issue_wakeup_receipt lr
+    SET processed_at = now()
+    FROM acked
+    JOIN issue_pr_event e ON e.id = acked.event_id
+    JOIN github_pull_request pr ON pr.id = e.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = e.issue_id
+    WHERE lr.wakeup_id = lw.id
+      AND lr.processed_at IS NULL AND lr.task_id IS NULL
+      AND lr.payload->>'head_sha' = e.head_sha
+      AND lr.payload->>'repo_owner' = pr.repo_owner
+      AND lr.payload->>'repo_name' = pr.repo_name
+      AND lr.payload->>'pr_number' = pr.pr_number::text
+      AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
+           OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
+               AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
 )
 SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at FROM acked
 `

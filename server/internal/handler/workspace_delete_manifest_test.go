@@ -38,6 +38,7 @@ const (
 // handler deletion graph must then implement that decision before CI passes.
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"cloud_agent_connection":             workspaceDelete,
+	"daemon_pause":                       workspaceDelete,
 	"activity_log":                       workspaceDelete,
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
@@ -77,11 +78,17 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_supersession":               workspaceDelete,
 	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
 	"decision_action":                    workspaceDeleteWorker,
+	"decision_agent_scope":               workspaceDeleteWorker, // immutable scope is removed before its orphan request by the decision worker.
+	"decision_agent_settlement":          workspaceDeleteWorker,
+	"decision_agent_notice":              workspaceDeleteWorker,
+	"decision_agent_reliance":            workspaceDeleteWorker,
+	"decision_agent_undo":                workspaceDeleteWorker,
 	"decision_answer":                    workspaceDeleteWorker,
 	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
 	"decision_class_change":              workspaceDeleteWorker,
@@ -146,6 +153,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_pull_request_exclusion":       workspaceDelete,
 	"issue_pr_event":                     workspaceDelete, // CHE-2298 a1 PR event store; no FKs, swept by DeleteWorkspace.
 	"issue_review_admission":             workspaceDelete,
+	"issue_run_budget_entry":             workspaceDelete,
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
@@ -167,6 +175,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_mcp_server":                   workspaceDelete,
 	"wakeup_aggregate_budget":            workspaceDelete,
 	"wakeup_aggregate_reservation":       workspaceDelete,
+	"wakeup_scoped_event":                workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
 	"notification_channel_preference":    workspaceDelete,
 	"notification_preference":            workspaceDelete,
@@ -189,8 +198,15 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
+	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
+	"push_session_end":                   workspaceDeleteKeep, // Ended login sessions, account-level, expire with the session lifetime (CHE-1795).
+	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
+	"run_capability_grant":               workspaceDelete,
+	"protected_path_policy":              workspaceDelete,
+	"task_elevation":                     workspaceDelete,
+	"elevated_op":                        workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -222,6 +238,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"vcs_pull_request":                   workspaceDelete,
 	"verification_code":                  workspaceDeleteKeep,
 	"webhook_delivery":                   workspaceDelete,
+	"workflow_webhook_endpoint":          workspaceDelete, // CHE-2031 inbound webhook guard; no FK.
+	"workflow_webhook_event":             workspaceDelete, // CHE-2031
+	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
@@ -311,7 +330,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_action", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}

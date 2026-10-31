@@ -2,7 +2,8 @@ package channel
 
 import (
 	"net/url"
-	"strings"
+
+	"github.com/multica-ai/multica/server/internal/weblink"
 )
 
 // IssueWebLink builds the Multica web deep link for a channel issue result.
@@ -13,9 +14,21 @@ import (
 // that forgets to plumb the slug through loses its link loudly, instead of
 // silently shipping the unroutable legacy /issues/{identifier} form again.
 func IssueWebLink(appURL, workspaceSlug, identifier string) string {
-	if appURL == "" || workspaceSlug == "" || identifier == "" {
+	return weblink.Build(appURL, weblink.Issue(workspaceSlug, identifier))
+}
+
+// ReferenceWebLink builds detail links for the navigable mention types.
+// Member references address users, not workspace membership rows.
+func ReferenceWebLink(appURL, workspaceSlug, kind, id string) string {
+	if kind == "issue" {
+		return IssueWebLink(appURL, workspaceSlug, id)
+	}
+	route := map[string]string{
+		"project": "projects", "agent": "agents",
+		"squad": "squads", "member": "members",
+	}[kind]
+	if workspaceSlug == "" || id == "" || route == "" {
 		return ""
 	}
-	return strings.TrimRight(appURL, "/") + "/" + url.PathEscape(workspaceSlug) +
-		"/issues/" + url.PathEscape(identifier)
+	return weblink.Build(appURL, "/"+url.PathEscape(workspaceSlug)+"/"+route+"/"+url.PathEscape(id))
 }

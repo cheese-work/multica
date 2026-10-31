@@ -12,19 +12,25 @@ import (
 )
 
 const attachDecisionAskToComment = `-- name: AttachDecisionAskToComment :one
-UPDATE comment SET decision_request_id = $1, decision_comment_kind = 'ask'
-WHERE workspace_id = $2 AND id = $3
-RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only
+UPDATE comment SET decision_request_id = $1, decision_comment_kind = 'ask', content = $2
+WHERE workspace_id = $3 AND id = $4
+RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids
 `
 
 type AttachDecisionAskToCommentParams struct {
 	DecisionRequestID pgtype.UUID `json:"decision_request_id"`
+	Content           string      `json:"content"`
 	WorkspaceID       pgtype.UUID `json:"workspace_id"`
 	CommentID         pgtype.UUID `json:"comment_id"`
 }
 
 func (q *Queries) AttachDecisionAskToComment(ctx context.Context, arg AttachDecisionAskToCommentParams) (Comment, error) {
-	row := q.db.QueryRow(ctx, attachDecisionAskToComment, arg.DecisionRequestID, arg.WorkspaceID, arg.CommentID)
+	row := q.db.QueryRow(ctx, attachDecisionAskToComment,
+		arg.DecisionRequestID,
+		arg.Content,
+		arg.WorkspaceID,
+		arg.CommentID,
+	)
 	var i Comment
 	err := row.Scan(
 		&i.ID,
@@ -52,6 +58,7 @@ func (q *Queries) AttachDecisionAskToComment(ctx context.Context, arg AttachDeci
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
 		&i.GithubNotifyOnly,
+		&i.TaintIds,
 	)
 	return i, err
 }
@@ -59,8 +66,8 @@ func (q *Queries) AttachDecisionAskToComment(ctx context.Context, arg AttachDeci
 const cancelWithdrawnDecisionRequest = `-- name: CancelWithdrawnDecisionRequest :one
 UPDATE decision_request SET status = 'cancelled', cancel_reason = $1,
     cancel_notice_posted_at = clock_timestamp()
-WHERE workspace_id = $2 AND id = $3 AND status = 'answered'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+WHERE authority = 'human' AND workspace_id = $2 AND id = $3 AND status = 'answered'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type CancelWithdrawnDecisionRequestParams struct {
@@ -100,7 +107,10 @@ func (q *Queries) CancelWithdrawnDecisionRequest(ctx context.Context, arg Cancel
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -176,9 +186,9 @@ func (q *Queries) ConsumeDecisionIntentTarget(ctx context.Context, arg ConsumeDe
 }
 
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::boolean, $14)
+RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version
 `
 
 type CreateDecisionAnswerParams struct {
@@ -194,6 +204,8 @@ type CreateDecisionAnswerParams struct {
 	ChosenOptionIndex   pgtype.Int4        `json:"chosen_option_index"`
 	ReplyText           pgtype.Text        `json:"reply_text"`
 	ContextMessageID    pgtype.UUID        `json:"context_message_id"`
+	Excerpted           bool               `json:"excerpted"`
+	AnsweredLabel       pgtype.Text        `json:"answered_label"`
 }
 
 func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAnswerParams) (DecisionAnswer, error) {
@@ -210,6 +222,8 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 		arg.ChosenOptionIndex,
 		arg.ReplyText,
 		arg.ContextMessageID,
+		arg.Excerpted,
+		arg.AnsweredLabel,
 	)
 	var i DecisionAnswer
 	err := row.Scan(
@@ -242,6 +256,10 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }
@@ -249,7 +267,7 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 const createDecisionCardAnswer = `-- name: CreateDecisionCardAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
 VALUES ($1, $2, 'card', '{}', $3, $4, $5, GREATEST($4::timestamptz, clock_timestamp()))
-RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id
+RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version
 `
 
 type CreateDecisionCardAnswerParams struct {
@@ -302,6 +320,10 @@ func (q *Queries) CreateDecisionCardAnswer(ctx context.Context, arg CreateDecisi
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }
@@ -400,9 +422,9 @@ func (q *Queries) CreateDecisionIntentTarget(ctx context.Context, arg CreateDeci
 }
 
 const createDecisionRequest = `-- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::jsonb, '[]'::jsonb), $16::jsonb)
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::jsonb, '[]'::jsonb), $16, $17::jsonb, $18)
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type CreateDecisionRequestParams struct {
@@ -421,7 +443,9 @@ type CreateDecisionRequestParams struct {
 	SourceContentSnapshot string      `json:"source_content_snapshot"`
 	RequestFingerprint    string      `json:"request_fingerprint"`
 	Options               []byte      `json:"options"`
+	AskIdentity           string      `json:"ask_identity"`
 	AskJson               []byte      `json:"ask_json"`
+	ProjectID             pgtype.UUID `json:"project_id"`
 }
 
 func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionRequestParams) (DecisionRequest, error) {
@@ -441,7 +465,9 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		arg.SourceContentSnapshot,
 		arg.RequestFingerprint,
 		arg.Options,
+		arg.AskIdentity,
 		arg.AskJson,
+		arg.ProjectID,
 	)
 	var i DecisionRequest
 	err := row.Scan(
@@ -472,7 +498,10 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -486,7 +515,7 @@ SELECT (EXISTS (
       AND source.workspace_id = request.workspace_id AND source.deleted_at IS NULL
 )))::boolean AS removed
 FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND answer.id = $2
 `
 
@@ -500,6 +529,37 @@ func (q *Queries) DecisionAnswerSourceRemoved(ctx context.Context, arg DecisionA
 	var removed bool
 	err := row.Scan(&removed)
 	return removed, err
+}
+
+const decisionHumanAuthority = `-- name: DecisionHumanAuthority :one
+SELECT (member.role = 'owner')::boolean AS is_owner,
+    COALESCE((
+        SELECT project.decision_delegates @> ARRAY[member.user_id]
+        FROM project
+        WHERE project.id = $1 AND project.workspace_id = member.workspace_id
+    ), false)::boolean AS is_delegate
+FROM member
+WHERE member.workspace_id = $2 AND member.user_id = $3
+`
+
+type DecisionHumanAuthorityParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+type DecisionHumanAuthorityRow struct {
+	IsOwner    bool `json:"is_owner"`
+	IsDelegate bool `json:"is_delegate"`
+}
+
+// is_owner: the person holds the workspace owner role. is_delegate: the person is
+// listed in decision_delegates of the project the issue belongs to.
+func (q *Queries) DecisionHumanAuthority(ctx context.Context, arg DecisionHumanAuthorityParams) (DecisionHumanAuthorityRow, error) {
+	row := q.db.QueryRow(ctx, decisionHumanAuthority, arg.ProjectID, arg.WorkspaceID, arg.UserID)
+	var i DecisionHumanAuthorityRow
+	err := row.Scan(&i.IsOwner, &i.IsDelegate)
+	return i, err
 }
 
 const decisionIntentRefusal = `-- name: DecisionIntentRefusal :one
@@ -565,7 +625,7 @@ func (q *Queries) DecisionLaneWindowOpen(ctx context.Context, arg DecisionLaneWi
 const decisionOpenLaneExists = `-- name: DecisionOpenLaneExists :one
 SELECT EXISTS (
     SELECT 1 FROM decision_request
-    WHERE workspace_id = $1 AND chat_session_id = $2 AND status = 'open'
+    WHERE authority = 'human' AND workspace_id = $1 AND chat_session_id = $2 AND status = 'open'
 )::boolean AS present
 `
 
@@ -583,7 +643,7 @@ func (q *Queries) DecisionOpenLaneExists(ctx context.Context, arg DecisionOpenLa
 
 const decisionRecordEffectiveAt = `-- name: DecisionRecordEffectiveAt :one
 SELECT (clock_timestamp() + CASE WHEN escalation_class = 'reversible' THEN interval '0 seconds' ELSE interval '10 minutes' END)::timestamptz AS effective_at
-FROM decision_request WHERE workspace_id = $1 AND id = $2
+FROM decision_request WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 `
 
 type DecisionRecordEffectiveAtParams struct {
@@ -599,8 +659,8 @@ func (q *Queries) DecisionRecordEffectiveAt(ctx context.Context, arg DecisionRec
 }
 
 const getDecisionAnswer = `-- name: GetDecisionAnswer :one
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND answer.id = $2
 `
 
@@ -642,6 +702,10 @@ func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerPa
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }
@@ -721,8 +785,8 @@ func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionI
 }
 
 const getDecisionRequest = `-- name: GetDecisionRequest :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
-WHERE workspace_id = $1 AND id = $2
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 `
 
 type GetDecisionRequestParams struct {
@@ -761,9 +825,36 @@ func (q *Queries) GetDecisionRequest(ctx context.Context, arg GetDecisionRequest
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
+}
+
+const getDecisionTopicLane = `-- name: GetDecisionTopicLane :one
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = $1 AND session.creator_id = $2
+  AND session.decision_topic_id = $3 AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.created_at, session.id
+LIMIT 1
+`
+
+type GetDecisionTopicLaneParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+}
+
+// The one DM a person has for a decision topic.
+func (q *Queries) GetDecisionTopicLane(ctx context.Context, arg GetDecisionTopicLaneParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getDecisionTopicLane, arg.WorkspaceID, arg.CreatorID, arg.TopicID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getLastAssistantMessageBefore = `-- name: GetLastAssistantMessageBefore :one
@@ -794,9 +885,9 @@ UPDATE decision_answer answer SET
     effective_at = hold.held_until,
     wake_at = CASE WHEN wake_at IS NOT NULL THEN hold.held_until ELSE NULL END
 FROM decision_request request, hold
-WHERE request.id = answer.decision_request_id AND request.workspace_id = $1
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = $1
   AND answer.id = $2 AND answer.disclaimed_at IS NULL AND answer.woken_at IS NULL
-RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id
+RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version
 `
 
 type HoldDecisionAnswerForClassParams struct {
@@ -837,35 +928,12 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
-}
-
-const latestDecisionRequestLane = `-- name: LatestDecisionRequestLane :one
-SELECT chat_session_id FROM decision_request
-WHERE workspace_id = $1 AND issue_id = $2
-  AND asking_agent_id = $3 AND human_user_id = $4
-ORDER BY created_at DESC, id DESC
-LIMIT 1
-`
-
-type LatestDecisionRequestLaneParams struct {
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	IssueID       pgtype.UUID `json:"issue_id"`
-	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
-	HumanUserID   pgtype.UUID `json:"human_user_id"`
-}
-
-func (q *Queries) LatestDecisionRequestLane(ctx context.Context, arg LatestDecisionRequestLaneParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, latestDecisionRequestLane,
-		arg.WorkspaceID,
-		arg.IssueID,
-		arg.AskingAgentID,
-		arg.HumanUserID,
-	)
-	var chat_session_id pgtype.UUID
-	err := row.Scan(&chat_session_id)
-	return chat_session_id, err
 }
 
 const listChatDecisionContext = `-- name: ListChatDecisionContext :many
@@ -876,7 +944,7 @@ FROM decision_request request
 JOIN chat_message ping ON ping.id = request.ping_message_id AND ping.chat_session_id = request.chat_session_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = $1 AND request.chat_session_id = $2
+WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.chat_session_id = $2
   AND request.origin = 'asked' AND request.status = 'open'
   AND ping.created_at < $3
 ORDER BY ping.created_at DESC, request.id DESC
@@ -975,12 +1043,13 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 const listDecisionCards = `-- name: ListDecisionCards :many
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
-       answer.chosen_option_index, request.options AS request_options,
+       answer.chosen_option_index, answer.excerpted, answer.answered_label, answer.content_snapshot,
+       answer.created_at AS answered_at, request.options AS request_options,
        request.issue_id, request.escalation_class, request.human_user_id, request.asking_agent_id,
        request.chat_session_id AS request_chat_session_id, request.ping_message_id AS request_ping_message_id,
        issue.number AS issue_number, workspace.issue_prefix
 FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id
 JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = $1
@@ -1007,6 +1076,10 @@ type ListDecisionCardsRow struct {
 	WakeOutcome          pgtype.Text        `json:"wake_outcome"`
 	DisclaimedAt         pgtype.Timestamptz `json:"disclaimed_at"`
 	ChosenOptionIndex    pgtype.Int4        `json:"chosen_option_index"`
+	Excerpted            bool               `json:"excerpted"`
+	AnsweredLabel        pgtype.Text        `json:"answered_label"`
+	ContentSnapshot      string             `json:"content_snapshot"`
+	AnsweredAt           pgtype.Timestamptz `json:"answered_at"`
 	RequestOptions       []byte             `json:"request_options"`
 	IssueID              pgtype.UUID        `json:"issue_id"`
 	EscalationClass      string             `json:"escalation_class"`
@@ -1047,6 +1120,10 @@ func (q *Queries) ListDecisionCards(ctx context.Context, arg ListDecisionCardsPa
 			&i.WakeOutcome,
 			&i.DisclaimedAt,
 			&i.ChosenOptionIndex,
+			&i.Excerpted,
+			&i.AnsweredLabel,
+			&i.ContentSnapshot,
+			&i.AnsweredAt,
 			&i.RequestOptions,
 			&i.IssueID,
 			&i.EscalationClass,
@@ -1119,7 +1196,7 @@ WITH scoped_mentions AS MATERIALIZED (
       AND message.role IN ('user', 'assistant') AND message.message_kind = 'message'
       AND message.content LIKE '%](mention://issue/%'
       AND message.failure_reason IS NULL
-      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE ping_message_id = message.id)
+      AND NOT EXISTS (SELECT 1 FROM decision_request WHERE authority = 'human' AND ping_message_id = message.id)
 ), newest AS (
     SELECT DISTINCT ON (mention.chat_session_id, issue.id)
         mention.chat_session_id, issue.id AS issue_id,
@@ -1190,7 +1267,7 @@ func (q *Queries) ListDecisionLaneMentions(ctx context.Context, arg ListDecision
 }
 
 const listDecisionLanes = `-- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.updated_at, ref.referenced_at::timestamptz AS referenced_at
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -1203,15 +1280,16 @@ LEFT JOIN LATERAL (
         UNION ALL
         SELECT request.created_at
         FROM decision_request request
-        WHERE request.workspace_id = session.workspace_id AND request.issue_id = $1::uuid
+        WHERE request.authority = 'human' AND request.workspace_id = session.workspace_id AND request.issue_id = $1::uuid
           AND request.chat_session_id = session.id
     ) refs
 ) ref ON $1::uuid IS NOT NULL
-WHERE session.workspace_id = $2 AND session.agent_id = $3
-  AND session.creator_id = $4 AND session.status = 'active'
+WHERE session.workspace_id = $2
+  AND (session.agent_id = $3 OR session.decision_topic_id = $4::uuid)
+  AND session.creator_id = $5 AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
-  AND ($5::uuid IS NULL OR session.id = $5::uuid)
+  AND ($6::uuid IS NULL OR session.id = $6::uuid)
 ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10
 `
@@ -1220,25 +1298,29 @@ type ListDecisionLanesParams struct {
 	IssueID     pgtype.UUID `json:"issue_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	AgentID     pgtype.UUID `json:"agent_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
 	CreatorID   pgtype.UUID `json:"creator_id"`
 	SessionID   pgtype.UUID `json:"session_id"`
 }
 
 type ListDecisionLanesRow struct {
-	ID           pgtype.UUID        `json:"id"`
-	Title        string             `json:"title"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
-	ReferencedAt pgtype.Timestamptz `json:"referenced_at"`
+	ID              pgtype.UUID        `json:"id"`
+	Title           string             `json:"title"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	DecisionTopicID pgtype.UUID        `json:"decision_topic_id"`
+	ReferencedAt    pgtype.Timestamptz `json:"referenced_at"`
 }
 
 // With issue_id, lanes that name the issue (a message mention or a decision
 // request on it) rank first, newest reference first, before the limit applies.
-// session_id narrows the result to one lane for an eligibility check.
+// session_id narrows the result to one lane for an eligibility check. A lane
+// of topic_id is listed whichever agent stewards it.
 func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesParams) ([]ListDecisionLanesRow, error) {
 	rows, err := q.db.Query(ctx, listDecisionLanes,
 		arg.IssueID,
 		arg.WorkspaceID,
 		arg.AgentID,
+		arg.TopicID,
 		arg.CreatorID,
 		arg.SessionID,
 	)
@@ -1253,6 +1335,7 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 			&i.ID,
 			&i.Title,
 			&i.UpdatedAt,
+			&i.DecisionTopicID,
 			&i.ReferencedAt,
 		); err != nil {
 			return nil, err
@@ -1266,8 +1349,8 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 }
 
 const listDecisionPingRetries = `-- name: ListDecisionPingRetries :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
-WHERE origin = 'asked' AND ping_notified_at IS NULL
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id FROM decision_request
+WHERE authority = 'human' AND origin = 'asked' AND ping_notified_at IS NULL
 ORDER BY created_at, id
 LIMIT $1
 `
@@ -1309,7 +1392,10 @@ func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]D
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -1322,8 +1408,8 @@ func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]D
 }
 
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
-WHERE workspace_id = $1 AND issue_id = $2
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2
 ORDER BY created_at, id
 `
 
@@ -1369,7 +1455,10 @@ func (q *Queries) ListDecisionRequestsByIssue(ctx context.Context, arg ListDecis
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -1434,7 +1523,7 @@ SELECT DISTINCT COALESCE(workspace.issue_prefix || '-' || issue.number::text, re
 FROM decision_request request
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
-WHERE request.workspace_id = $1 AND (
+WHERE request.authority = 'human' AND request.workspace_id = $1 AND (
     (request.status = 'open' AND request.chat_session_id = $2)
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
@@ -1470,10 +1559,10 @@ func (q *Queries) ListDecisionSessionReferences(ctx context.Context, arg ListDec
 }
 
 const listDecisionSourceChecks = `-- name: ListDecisionSourceChecks :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_json FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
-WHERE EXISTS (
+WHERE request.authority = 'human' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
       AND (EXISTS (
@@ -1525,7 +1614,10 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 			&i.WithdrawnByTaskID,
 			&i.WithdrawnByUserID,
 			&i.Options,
+			&i.AskIdentity,
 			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -1537,9 +1629,45 @@ func (q *Queries) ListDecisionSourceChecks(ctx context.Context, batchSize int32)
 	return items, nil
 }
 
+const listDecisionTopicSessions = `-- name: ListDecisionTopicSessions :many
+SELECT chat_session.id, chat_session.creator_id FROM chat_session
+WHERE chat_session.workspace_id = $1 AND chat_session.decision_topic_id = $2 AND chat_session.status = 'active' AND chat_session.agent_id <> $3
+`
+
+type ListDecisionTopicSessionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+type ListDecisionTopicSessionsRow struct {
+	ID        pgtype.UUID `json:"id"`
+	CreatorID pgtype.UUID `json:"creator_id"`
+}
+
+func (q *Queries) ListDecisionTopicSessions(ctx context.Context, arg ListDecisionTopicSessionsParams) ([]ListDecisionTopicSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionTopicSessions, arg.WorkspaceID, arg.TopicID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionTopicSessionsRow{}
+	for rows.Next() {
+		var i ListDecisionTopicSessionsRow
+		if err := rows.Scan(&i.ID, &i.CreatorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswer = `-- name: LockDecisionAnswer :one
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND answer.id = $2
 FOR UPDATE OF answer
 `
@@ -1582,6 +1710,10 @@ func (q *Queries) LockDecisionAnswer(ctx context.Context, arg LockDecisionAnswer
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }
@@ -1719,8 +1851,8 @@ func (q *Queries) LockDecisionIssue(ctx context.Context, arg LockDecisionIssuePa
 }
 
 const lockDecisionLiveAnswer = `-- name: LockDecisionLiveAnswer :one
-SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = $1 AND request.id = $2
   AND answer.disclaimed_at IS NULL
 FOR UPDATE OF answer
@@ -1764,6 +1896,10 @@ func (q *Queries) LockDecisionLiveAnswer(ctx context.Context, arg LockDecisionLi
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }
@@ -1821,8 +1957,8 @@ func (q *Queries) LockDecisionPendingIntent(ctx context.Context, arg LockDecisio
 }
 
 const lockDecisionRequest = `-- name: LockDecisionRequest :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json FROM decision_request
-WHERE workspace_id = $1 AND id = $2
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 FOR UPDATE
 `
 
@@ -1862,7 +1998,10 @@ func (q *Queries) LockDecisionRequest(ctx context.Context, arg LockDecisionReque
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -1918,12 +2057,28 @@ func (q *Queries) LockDecisionSourceMessages(ctx context.Context, arg LockDecisi
 	return items, nil
 }
 
+const lockDecisionTopicLane = `-- name: LockDecisionTopicLane :exec
+SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || $1::uuid::text || ':' || $2::uuid::text || ':' || $3::uuid::text, 0))
+`
+
+type LockDecisionTopicLaneParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	TopicID     pgtype.UUID `json:"topic_id"`
+}
+
+// Serializes the find-or-create of a person's DM for one topic.
+func (q *Queries) LockDecisionTopicLane(ctx context.Context, arg LockDecisionTopicLaneParams) error {
+	_, err := q.db.Exec(ctx, lockDecisionTopicLane, arg.WorkspaceID, arg.CreatorID, arg.TopicID)
+	return err
+}
+
 const markDecisionPingNotified = `-- name: MarkDecisionPingNotified :one
 UPDATE decision_request
 SET ping_notified_at = clock_timestamp()
-WHERE workspace_id = $1 AND id = $2
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2
   AND ping_notified_at IS NULL
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type MarkDecisionPingNotifiedParams struct {
@@ -1962,15 +2117,18 @@ func (q *Queries) MarkDecisionPingNotified(ctx context.Context, arg MarkDecision
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const markDecisionRequestAnswered = `-- name: MarkDecisionRequestAnswered :one
 UPDATE decision_request SET status = 'answered'
-WHERE workspace_id = $1 AND id = $2 AND status = 'open'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2 AND status = 'open'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type MarkDecisionRequestAnsweredParams struct {
@@ -2009,14 +2167,36 @@ func (q *Queries) MarkDecisionRequestAnswered(ctx context.Context, arg MarkDecis
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
+const moveDecisionSessionSteward = `-- name: MoveDecisionSessionSteward :execrows
+UPDATE chat_session SET agent_id = $1, runtime_id = (SELECT runtime_id FROM agent WHERE id = $1)
+WHERE chat_session.workspace_id = $2 AND chat_session.id = $3 AND chat_session.status = 'active'
+`
+
+type MoveDecisionSessionStewardParams struct {
+	AgentID     pgtype.UUID `json:"agent_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MoveDecisionSessionSteward(ctx context.Context, arg MoveDecisionSessionStewardParams) (int64, error) {
+	result, err := q.db.Exec(ctx, moveDecisionSessionSteward, arg.AgentID, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const openDecisionAsksSince = `-- name: OpenDecisionAsksSince :many
-SELECT ask, created_at FROM decision_request
-WHERE workspace_id = $1 AND issue_id = $2
+SELECT ask, ask_identity, created_at FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2
   AND asking_agent_id = $3 AND human_user_id = $4
   AND status = 'open' AND created_at > now() - interval '24 hours'
 ORDER BY created_at DESC
@@ -2030,8 +2210,9 @@ type OpenDecisionAsksSinceParams struct {
 }
 
 type OpenDecisionAsksSinceRow struct {
-	Ask       string             `json:"ask"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Ask         string             `json:"ask"`
+	AskIdentity string             `json:"ask_identity"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) OpenDecisionAsksSince(ctx context.Context, arg OpenDecisionAsksSinceParams) ([]OpenDecisionAsksSinceRow, error) {
@@ -2048,7 +2229,7 @@ func (q *Queries) OpenDecisionAsksSince(ctx context.Context, arg OpenDecisionAsk
 	items := []OpenDecisionAsksSinceRow{}
 	for rows.Next() {
 		var i OpenDecisionAsksSinceRow
-		if err := rows.Scan(&i.Ask, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.Ask, &i.AskIdentity, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2061,8 +2242,8 @@ func (q *Queries) OpenDecisionAsksSince(ctx context.Context, arg OpenDecisionAsk
 
 const raiseDecisionClass = `-- name: RaiseDecisionClass :one
 UPDATE decision_request SET escalation_class = $1
-WHERE workspace_id = $2 AND id = $3
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+WHERE authority = 'human' AND workspace_id = $2 AND id = $3
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type RaiseDecisionClassParams struct {
@@ -2102,15 +2283,18 @@ func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClass
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const reopenDecisionRequest = `-- name: ReopenDecisionRequest :one
 UPDATE decision_request SET status = 'open'
-WHERE workspace_id = $1 AND id = $2 AND status = 'answered'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_json
+WHERE authority = 'human' AND workspace_id = $1 AND id = $2 AND status = 'answered'
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
 `
 
 type ReopenDecisionRequestParams struct {
@@ -2149,7 +2333,10 @@ func (q *Queries) ReopenDecisionRequest(ctx context.Context, arg ReopenDecisionR
 		&i.WithdrawnByTaskID,
 		&i.WithdrawnByUserID,
 		&i.Options,
+		&i.AskIdentity,
 		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -2197,9 +2384,9 @@ SET disclaimed_at = clock_timestamp(), disclaim_reason = $1,
     retraction_delivered_at = CASE WHEN $7::boolean THEN clock_timestamp() ELSE retraction_delivered_at END,
     retraction_outcome = CASE WHEN $7::boolean THEN 'suppressed_agent_veto' ELSE retraction_outcome END
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = $8
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = $8
   AND answer.id = $9 AND answer.disclaimed_at IS NULL
-RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id
+RETURNING answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version
 `
 
 type WithdrawDecisionAnswerParams struct {
@@ -2257,6 +2444,10 @@ func (q *Queries) WithdrawDecisionAnswer(ctx context.Context, arg WithdrawDecisi
 		&i.ChosenOptionIndex,
 		&i.ReplyText,
 		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
 	)
 	return i, err
 }

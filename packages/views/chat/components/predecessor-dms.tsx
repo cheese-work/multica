@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Quote } from "lucide-react";
+import { ChevronDown, ChevronRight, Quote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Collapsible,

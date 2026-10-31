@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { TaskMessagePayload } from "../types/events";
 import type { ChatSession } from "../types/chat";
 import {
+  chatSessionUsageOptions,
   countUnreadChatSessions,
   isTaskMessageTaskId,
   mergeTaskMessagesBySeq,
@@ -214,5 +215,13 @@ describe("countUnreadChatSessions", () => {
     ];
 
     expect(countUnreadChatSessions(sessions)).toBe(0);
+  });
+});
+
+describe("chatSessionUsageOptions", () => {
+  it("is keyed per workspace and session and stays idle without a session", () => {
+    expect(chatSessionUsageOptions("ws-1", "s-1").queryKey).toEqual(["chat", "ws-1", "usage", "s-1"]);
+    expect(chatSessionUsageOptions("ws-1", "s-1").enabled).toBe(true);
+    expect(chatSessionUsageOptions("ws-1", null).enabled).toBe(false);
   });
 });

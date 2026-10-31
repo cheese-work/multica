@@ -42,12 +42,27 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: 7 } }).decision_request?.record_comment_id).toBeUndefined();
   });
 
+  it("keeps the asking agent name and drops a malformed one", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, asking_agent_name: "Sol" } }).decision_request?.asking_agent_name).toBe("Sol");
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, asking_agent_name: 7 } }).decision_request?.asking_agent_name).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request?.asking_agent_name).toBeUndefined();
+  });
+
   it("keeps the receipt fields and degrades a malformed answer on its own", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
     const answer = { state: "delivered", chosen_option_index: 1, option_label: "Hold", answered_at: "2026-10-26T06:00:00Z" };
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer } }).decision_request?.answer).toEqual(answer);
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: "x" } }).decision_request?.answer).toBeUndefined();
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: { ...answer, state: "future" } } }).decision_request?.answer?.state).toBe("recorded");
+  });
+
+  it("keeps the run that picked the answer up and degrades a malformed run on its own", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+    const answer = { state: "picked_up", run: { id: "task", agent_name: "Sol" }, answered_at: "2026-10-26T06:00:00Z" };
+    const parsed = (next: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, answer: next } }).decision_request?.answer;
+    expect(parsed(answer)).toEqual(answer);
+    expect(parsed({ ...answer, run: "x" })).toMatchObject({ state: "picked_up", run: undefined });
   });
 
   it("keeps request state, source and original ask from additive metadata", () => {

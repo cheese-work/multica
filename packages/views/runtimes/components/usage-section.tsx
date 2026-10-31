@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, ChevronRight, AlertCircle } from "lucide-react";
+import { BarChart3, ChevronRight, AlertCircle } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -23,17 +23,19 @@ import {
   cacheHitRatePercent,
   formatTokens,
   formatUsd,
-  estimateCost,
-  estimateCacheSavings,
   aggregateByDate,
   aggregateByWeek,
   aggregateCostByAgent,
   aggregateCostByModel,
-  collectUnmappedModels,
   pctChange,
   sliceWindow,
   type CostByKey,
 } from "../utils";
+import {
+  estimateCost,
+  estimateCacheSavings,
+  collectUnmappedModels,
+} from "@multica/core/runtimes/pricing";
 import { KpiCard } from "./shared";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {

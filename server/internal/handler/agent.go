@@ -30,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -634,6 +633,21 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+
+	// Profile, Scopes, Epoch and TaintIDs are claim-only (CHE-2216 plan 3.1): a
+	// launch hint, re-checked per operation. Mirror fields: internal/daemon/types.go.
+	Profile  string   `json:"profile,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Epoch    int64    `json:"epoch,omitempty"`
+	TaintIDs []string `json:"taint_ids,omitempty"`
+
+	// IntakeRun, PinnedBranch and PinnedRepo are claim-only (CHE-2216 plan 3.6):
+	// a run an intake item dispatched, the same-repository PR head ref it is
+	// pinned to and that PR's repository as host/owner/name.
+	// Mirror fields: internal/daemon/types.go.
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
+	PinnedRepo   string `json:"pinned_repo,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -1495,7 +1509,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != "" {
-		if tokens := jev.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
+		if tokens := util.EstimateInstructionTokens(req.Instructions); tokens > 4000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -2057,8 +2071,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := jev.EstimateInstructionTokens(existing.Instructions)
+		newTokens := util.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := util.EstimateInstructionTokens(existing.Instructions)
 		if newTokens > 4000 {
 			if *req.Instructions != existing.Instructions && (existingTokens <= 4000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("agent instructions exceed limit of 4000 tokens (estimated: %d tokens)", newTokens))
@@ -3079,6 +3093,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 			taskIDs[i] = t.ID
 		}
 	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), tasks, resp); err != nil {
+		slog.Warn("list agent tasks: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, agent.WorkspaceID, tasks, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 	if includeUsage {
@@ -3368,11 +3387,18 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	}
 
 	resp := make([]AgentTaskResponse, 0, len(tasks))
+	kept := make([]db.AgentTaskQueue, 0, len(tasks))
 	for _, t := range tasks {
 		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
 			continue
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
+		kept = append(kept, t)
+	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), kept, resp); err != nil {
+		slog.Warn("agent task snapshot: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
+		return
 	}
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 

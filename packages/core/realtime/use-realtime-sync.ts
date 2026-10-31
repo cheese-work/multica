@@ -128,6 +128,7 @@ import type {
   ChatSession,
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
+  AgentRuntime,
 } from "../types";
 
 const chatWsLogger = createLogger("chat.ws");
@@ -189,6 +190,26 @@ export function applyDecisionAnswerUpdated(
 }
 
 /**
+ * A task started or ended. A paused machine shows "N tasks left" from the
+ * runtime list, which no heartbeat refreshes, so refetch it while a pause is on
+ * screen. Without a pause the list is left alone: task events are frequent.
+ */
+export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
+  const lists = qc.getQueriesData<AgentRuntime[]>({ queryKey: runtimeKeys.list(wsId) });
+  const paused = lists.some(([, runtimes]) => runtimes?.some((runtime) => runtime.pause));
+  if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
+}
+
+/**
+ * An issue run started. A decision card in a DM shows the run that picked its
+ * answer up, and that run has no message of its own to push, so refresh them.
+ */
+export function applyIssueRunStarted(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
  * Apply a chat:message event: write the turn's USER message into the message
  * caches, then reconcile authoritatively (MUL-5711).
  *
@@ -233,6 +254,8 @@ export function applyChatMessageToCache(
   }
   invalidateChatMessageQueries(qc, sessionId);
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+  // A scheduled wakeup fires as a system user message; it leaves the DM's list.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
 }
 
 export function applyChatDoneToCache(
@@ -264,6 +287,9 @@ export function applyChatDoneToCache(
     // landed this row.
     upsertChatMessageToCaches(qc, sessionId, assistant);
   }
+  // The turn may have scheduled or cancelled a wakeup: creating one emits no
+  // event of its own, so the end of the turn is when the chip learns of it.
+  qc.invalidateQueries({ queryKey: chatKeys.wakeups(sessionId) });
   // Replacement is in the messages list now; remove only this task. If a
   // follow-up is queued, it becomes the next head in the same render tick.
   qc.setQueryData<ChatPendingTask>(
@@ -726,6 +752,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
   qc.invalidateQueries({ queryKey: chatKeys.pendingTaskAll() });
   qc.invalidateQueries({ queryKey: chatKeys.taskMessagesAll() });
+  qc.invalidateQueries({ queryKey: chatKeys.wakeupsAll() });
   // A chat:cancel_finalized broadcast missed while disconnected is exactly
   // what the durable draft-restore rows exist for (#5219) — re-pull them so
   // a mounted composer recovers the prompt without a remount.
@@ -989,6 +1016,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        refreshRuntimesWhilePaused(qc, wsId);
         // Working-agent projections have their own bounded refresh below.
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
@@ -1725,7 +1753,10 @@ export function useRealtimeSync(
     // would stay parked even after the daemon resumed work.
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
-      if (!payload.chat_session_id) return;
+      if (!payload.chat_session_id) {
+        if (payload.issue_id) applyIssueRunStarted(qc);
+        return;
+      }
       qc.setQueryData<ChatPendingTask>(
         chatKeys.pendingTask(payload.chat_session_id),
         (old) => promotePendingChatTask(old, payload.task_id, "running"),

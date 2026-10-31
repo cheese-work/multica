@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Keyboard, RotateCcw, Search, X } from "lucide-react";
+import { Keyboard, RotateCcw, Search, X } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -266,7 +266,7 @@ function ShortcutRow({
   const { t } = useT("settings");
   const label = t(($) => $.shortcuts.actions[action.id].label);
   // Keep descriptions in the search index, but only show non-obvious behavior.
-  const description = ["openSearch", "toggleRightSidebar", "archiveInboxItem", "send"].includes(action.id)
+  const description = ["openSearch", "toggleRightSidebar", "archiveInboxItem", "searchChat", "send"].includes(action.id)
     ? t(($) => $.shortcuts.actions[action.id].description)
     : undefined;
   const errorText = error?.kind === "reserved"

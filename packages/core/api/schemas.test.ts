@@ -660,6 +660,37 @@ describe("TimelineEntriesSchema", () => {
     expect(parsed).toHaveLength(1);
     expect(parsed[0]?.deleted_at).toBeUndefined();
   });
+
+  const supersessionEntry = (extra: Record<string, unknown>) => ({
+    type: "comment",
+    id: "comment-1",
+    actor_type: "agent",
+    actor_id: "agent-1",
+    created_at: "2026-01-01T00:00:00Z",
+    content: "plan",
+    ...extra,
+  });
+
+  it("preserves supersession links on timeline entries", () => {
+    const parsed = TimelineEntriesSchema.parse([
+      supersessionEntry({ superseded_by_id: "comment-2", supersedes: [{ comment_id: "comment-0" }] }),
+    ]);
+
+    expect(parsed[0]?.superseded_by_id).toBe("comment-2");
+    expect(parsed[0]?.supersedes).toEqual([{ comment_id: "comment-0" }]);
+  });
+
+  it("drops malformed supersession links instead of failing the timeline", () => {
+    const parsed = TimelineEntriesSchema.parse([
+      supersessionEntry({ superseded_by_id: 7, supersedes: [{ comment_id: "comment-0" }, { nope: true }, "x"] }),
+      supersessionEntry({ id: "comment-2", supersedes: "bad" }),
+    ]);
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.superseded_by_id).toBeUndefined();
+    expect(parsed[0]?.supersedes).toEqual([{ comment_id: "comment-0" }]);
+    expect(parsed[1]?.supersedes).toBeUndefined();
+  });
 });
 
 describe("AgentTaskListSchema", () => {
@@ -917,6 +948,10 @@ describe("SendChatMessageResponseSchema", () => {
 
   it("parses the server-authoritative queue position", () => {
     expect(SendChatMessageResponseSchema.parse({ ...base, queued: false }).queued).toBe(false);
+  });
+
+  it("accepts a send that started no task", () => {
+    expect(SendChatMessageResponseSchema.parse({ ...base, task_id: "" }).task_id).toBe("");
   });
 
   it("ignores a malformed additive queue position without losing the accepted send", () => {

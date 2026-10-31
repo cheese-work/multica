@@ -32,7 +32,9 @@ live_version="$(curl --proto '=https' --fail --silent --show-error --max-time 15
   });')"
 live_sha="$live_version"
 if [ "${#live_sha}" -ne 40 ]; then
-  live_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${live_version}" --jq '.sha')"
+  # A 7-char prefix can be ambiguous across the fork network (GitHub API 422); the checkout is full-depth.
+  live_sha="$(git rev-parse --verify --quiet "${live_version}^{commit}" 2>/dev/null \
+    || gh api "repos/${GITHUB_REPOSITORY}/commits/${live_version}" --jq '.sha')"
 fi
 [[ "$live_sha" =~ ^[a-f0-9]{40}$ && "$live_sha" == "$live_version"* ]]
 [ "$source_sha" != "$live_sha" ] || skip_candidate 'is already running on C00' "$live_sha"

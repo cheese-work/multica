@@ -44,7 +44,11 @@ import {
   type IssueIdentifierResolver,
 } from "./issue-identifier-autolink";
 import { SlashCommandExtension } from "./slash-command-extension";
-import { createSlashCommandSuggestion, createBuiltinCommandSuggestion } from "./slash-command-suggestion";
+import {
+  createSlashCommandSuggestion,
+  createBuiltinCommandSuggestion,
+  type DmClientCommand,
+} from "./slash-command-suggestion";
 import type { BuiltinCommandSuggestionOptions } from "./slash-command-suggestion";
 import { SuggestionTriggerArmingExtension } from "./suggestion-trigger-arming";
 import { CodeBlockView } from "./code-block-view";
@@ -172,6 +176,8 @@ export interface EditorExtensionsOptions {
   enableSlashCommands?: boolean;
   canRename?: () => boolean;
   canFork?: () => boolean;
+  canUseCommand?: (command: DmClientCommand) => boolean;
+  canCompact?: () => boolean;
   /**
    * Which `/` menu to attach when enableSlashCommands is true:
    * - "skill" (default) — the chat picker listing the active agent's skills.
@@ -300,7 +306,13 @@ export function createEditorExtensions(
         : options.slashCommandMode === "command"
           ? createBuiltinCommandSuggestion(options.quickActionMenu)
           : options.queryClient
-            ? createSlashCommandSuggestion(options.queryClient, options.canRename, options.canFork)
+            ? createSlashCommandSuggestion(
+              options.queryClient,
+              options.canRename,
+              options.canFork,
+              options.canUseCommand,
+              options.canCompact,
+            )
             : { char: "/", allow: () => false },
     }),
     Typography,

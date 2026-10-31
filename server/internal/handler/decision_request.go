@@ -31,11 +31,19 @@ type decisionRequestInput struct {
 	EscalationClass string
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
-	Action          *decisionActionDraft
+	// Parsed is the decoded caller ask. When set, the request is fingerprinted
+	// from it and enriched once, for a new request. Nil means finished text.
+	Parsed *decisiontx.Ask `json:"-"`
+	Slug   string          `json:"-"`
+	// LegacyFingerprint is the pre-D1d key, still looked up so a retry that
+	// crosses the deploy replays its stored row.
+	LegacyFingerprint string               `json:"-"`
+	Action            *decisionActionDraft `json:",omitempty"`
 	// Options are the card's answer buttons; the flat Ask carries their labels.
 	Options []decisiontx.AskOption
 	// AskJSON is the decoded structured Ask, stored whole for the card to render.
-	AskJSON []byte
+	// It stays out of the legacy fingerprint, which is pinned.
+	AskJSON []byte `json:"-"`
 }
 
 type decisionRequestResult struct {
@@ -97,13 +105,10 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 		if err != nil {
 			return empty, err
 		}
-		encoded, err := json.Marshal(input)
-		if err != nil {
+		if input.Fingerprint, input.LegacyFingerprint, err = input.fingerprints(); err != nil {
 			return empty, err
 		}
-		digest := sha256.Sum256(encoded)
-		input.Fingerprint = hex.EncodeToString(digest[:])
-		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input); err != nil || prior.Request.ID.Valid {
 			return prior, err
 		}
 	}
@@ -114,7 +119,7 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	finish := func(run func() (decisionRequestResult, error)) (decisionRequestResult, error) {
 		result, err := retryDecisionTx(request, run)
 		if err != nil && input.Fingerprint != "" {
-			prior, lookupErr := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint)
+			prior, lookupErr := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input)
 			if lookupErr == nil && prior.Request.ID.Valid {
 				return prior, nil
 			}
@@ -132,7 +137,7 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 		})
 	}
 	if !input.HumanUserID.Valid {
-		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input); err != nil || prior.Request.ID.Valid {
 			return prior, err
 		}
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request requires a named person (for) or an open intent naming the lane's person"}
@@ -142,15 +147,74 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	})
 }
 
-func findDecisionRequestRetry(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, taskID pgtype.UUID, fingerprint string) (decisionRequestResult, error) {
-	if fingerprint == "" {
-		return decisionRequestResult{}, nil
+// fingerprints returns the retry key of this call and the pre-D1d key. A caller
+// ask is keyed by its decoded input alone, so agent renames, comment edits and
+// the rendered text never change it. Finished text keeps the old key only.
+func (input decisionRequestInput) fingerprints() (current, legacy string, err error) {
+	hash := func(value any) (string, error) {
+		encoded, err := json.Marshal(value)
+		digest := sha256.Sum256(encoded)
+		return hex.EncodeToString(digest[:]), err
 	}
-	prior, err := queries.FindDecisionRequestRetry(ctx, db.FindDecisionRequestRetryParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, TaskID: taskID, Fingerprint: fingerprint})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return decisionRequestResult{}, nil
+	if legacy, err = hash(input); err != nil || input.Parsed == nil {
+		return legacy, "", err
 	}
-	return decisionRequestResult{Request: prior, Replayed: err == nil}, err
+	current, err = hash(struct {
+		Ask                                      decisiontx.Ask
+		Footer, EscalationClass                  string
+		NewDM                                    bool
+		SessionID, HumanUserID, ParentID, Source pgtype.UUID
+	}{*input.Parsed, input.Footer, input.EscalationClass, input.NewDM, input.SessionID, input.HumanUserID, input.ParentID, input.SourceCommentID})
+	return "v2:" + current, legacy, err
+}
+
+func findDecisionRequestRetry(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, taskID pgtype.UUID, input decisionRequestInput) (decisionRequestResult, error) {
+	for _, fingerprint := range []string{input.Fingerprint, input.LegacyFingerprint} {
+		if fingerprint == "" {
+			continue
+		}
+		prior, err := queries.FindDecisionRequestRetry(ctx, db.FindDecisionRequestRetryParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, TaskID: taskID, Fingerprint: fingerprint})
+		if err == nil {
+			return decisionRequestResult{Request: prior, Replayed: true}, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return decisionRequestResult{}, err
+		}
+	}
+	return decisionRequestResult{}, nil
+}
+
+// enrichDecisionAsk renders the stored ask of a new request: the asking agent's
+// name and comment excerpts are read once, here, and stay a snapshot.
+func enrichDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, input decisionRequestInput) (decisionRequestInput, error) {
+	if input.Parsed == nil {
+		return input, nil
+	}
+	agent, err := queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return input, err
+	}
+	ask := *input.Parsed
+	ask.AskedBy = agent.Name
+	ask, err = ask.WithExcerpts(func(commentID string) (string, error) {
+		id, err := util.ParseUUID(commentID)
+		if err != nil {
+			return "", nil
+		}
+		comment, err := queries.GetComment(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (comment.WorkspaceID != issue.WorkspaceID || comment.DeletedAt.Valid) {
+			return "", nil
+		}
+		return comment.Content, err
+	})
+	if err != nil {
+		return input, err
+	}
+	input.Ask = ask.Content(input.Slug)
+	if len(decisionAskContent(input)) > maxCommentContentBytes {
+		return input, decisionIntentRefusal{http.StatusBadRequest, "ask is too long"}
+	}
+	return input, nil
 }
 
 func retryDecisionTx(request *http.Request, run func() (decisionRequestResult, error)) (decisionRequestResult, error) {
@@ -183,9 +247,10 @@ func decisionAskContent(input decisionRequestInput) string {
 	return input.Ask + "\n\n" + input.Footer
 }
 
-// lockDecisionLane locks an existing DM and proves it is one of the agent's
-// listed decision lanes.
-func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+// lockDecisionLane locks an existing DM and proves it is a listed decision lane
+// of the agent or of the topic.
+func lockDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, topic decisionTopic, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+	workspaceID := issue.WorkspaceID
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: workspaceID, ID: sessionID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -197,10 +262,10 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 	if err != nil {
 		return db.ChatSession{}, err
 	}
-	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+	if !session.DecisionTopicID.Valid && session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return db.ChatSession{}, deny
 	}
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, CreatorID: session.CreatorID, SessionID: session.ID})
+	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: workspaceID, AgentID: agentID, TopicID: topic.ID, CreatorID: session.CreatorID, SessionID: session.ID})
 	if err != nil {
 		return db.ChatSession{}, err
 	}
@@ -213,39 +278,6 @@ func lockDecisionLane(ctx context.Context, queries *db.Queries, workspaceID, ses
 		return db.ChatSession{}, err
 	}
 	return session, nil
-}
-
-// defaultDecisionLane picks, among the agent's listed lanes with the person,
-// the lane of the latest request on this issue, else the newest lane that
-// mentions this issue. The zero value means: open a new Decisions DM.
-func defaultDecisionLane(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID) (pgtype.UUID, error) {
-	lanes, err := queries.ListDecisionLanes(ctx, db.ListDecisionLanesParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, IssueID: issue.ID})
-	if err != nil || len(lanes) == 0 {
-		return pgtype.UUID{}, err
-	}
-	latest, err := queries.LatestDecisionRequestLane(ctx, db.LatestDecisionRequestLaneParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return pgtype.UUID{}, err
-	}
-	ids := make([]pgtype.UUID, 0, len(lanes))
-	for _, lane := range lanes {
-		if err == nil && lane.ID == latest {
-			return lane.ID, nil
-		}
-		ids = append(ids, lane.ID)
-	}
-	mentions, err := queries.ListDecisionLaneMentions(ctx, db.ListDecisionLaneMentionsParams{WorkspaceID: issue.WorkspaceID, AgentID: agentID, CreatorID: humanID, SessionIds: ids})
-	if err != nil {
-		return pgtype.UUID{}, err
-	}
-	for _, lane := range lanes {
-		for _, mention := range mentions {
-			if mention.ChatSessionID == lane.ID && mention.IssueID == issue.ID {
-				return lane.ID, nil
-			}
-		}
-	}
-	return pgtype.UUID{}, nil
 }
 
 func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.Issue, input decisionRequestInput, located db.DecisionIntent) (decisionRequestResult, error) {
@@ -266,24 +298,39 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		}
 		return empty, err
 	}
-	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}
-	if input.NewDM {
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return empty, err
+	}
+	newDM := input.NewDM
+	if newDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
 			return empty, err
 		}
-		session = db.ChatSession{AgentID: agent.ID, CreatorID: targetID, Title: "Decisions: " + agent.Name}
+		var found bool
+		if session, found, err = topicLane(ctx, queries, issue, topic, targetID, located.AgentID); err != nil {
+			return empty, err
+		}
+		if newDM = !found; newDM {
+			steward, err := handler.decisionSteward(ctx, queries, topic, agent, targetID)
+			if err != nil {
+				return empty, err
+			}
+			session = db.ChatSession{AgentID: steward.ID, CreatorID: targetID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		}
 	} else {
-		session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, input.SessionID, located.AgentID)
+		session, err = lockDecisionLane(ctx, queries, issue, topic, input.SessionID, located.AgentID)
 		if err != nil {
 			return empty, err
 		}
 		if input.HumanUserID.Valid && session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
-		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
 	}
@@ -301,7 +348,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
@@ -321,6 +368,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
+		return empty, err
+	}
+	if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusConflict); err != nil {
 		return empty, err
 	}
 	intent, err := queries.LockDecisionIntent(ctx, db.LockDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: located.ID})
@@ -361,7 +411,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if input.NewDM {
+	if newDM {
 		session, err = createDecisionDM(ctx, queries, issue, session)
 		if err != nil {
 			return empty, err
@@ -381,7 +431,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 }
 
 func createDecisionDM(ctx context.Context, queries *db.Queries, issue db.Issue, lane db.ChatSession) (db.ChatSession, error) {
-	session, err := queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: lane.AgentID, CreatorID: lane.CreatorID, Title: lane.Title})
+	session, err := queries.CreateChatSession(ctx, db.CreateChatSessionParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, AgentID: lane.AgentID, CreatorID: lane.CreatorID, Title: lane.Title, DecisionTopicID: lane.DecisionTopicID})
 	if err != nil {
 		return session, err
 	}
@@ -412,12 +462,17 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		commentID = tag.ID
 	}
+	askIdentity := decisiontx.Identity(input.Ask)
+	input, err := enrichDecisionAsk(ctx, queries, issue, intent.AgentID, input)
+	if err != nil {
+		return empty, err
+	}
 	options, err := json.Marshal(append([]decisiontx.AskOption{}, input.Options...))
 	if err != nil {
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID})
 	if err != nil {
 		return empty, err
 	}
@@ -438,7 +493,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	}
 	var comment db.Comment
 	if attach {
-		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID})
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: decisionAskContent(input)})
 	} else {
 		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
 		if tag == nil {
@@ -495,23 +550,24 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		}
 		return empty, err
 	}
-	sessionID := input.SessionID
-	if !sessionID.Valid && !input.NewDM {
-		if sessionID, err = defaultDecisionLane(ctx, queries, issue, agentID, input.HumanUserID); err != nil {
-			return empty, err
-		}
+	topic, err := resolveDecisionTopic(ctx, queries, issue)
+	if err != nil {
+		return empty, err
 	}
 	var session db.ChatSession
-	if sessionID.Valid {
-		if session, err = lockDecisionLane(ctx, queries, issue.WorkspaceID, sessionID, agentID); err != nil {
+	reuse := input.SessionID.Valid
+	if reuse {
+		if session, err = lockDecisionLane(ctx, queries, issue, topic, input.SessionID, agentID); err != nil {
 			return empty, err
 		}
 		if session.CreatorID != input.HumanUserID {
 			return empty, deny
 		}
-		if err := requireLaneNamesIssue(ctx, queries, issue, session); err != nil {
+		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
+	} else if session, reuse, err = topicLane(ctx, queries, issue, topic, input.HumanUserID, agentID); err != nil {
+		return empty, err
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && root != nil && root.IssueID != issue.ID {
@@ -524,7 +580,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
-	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input.Fingerprint); err != nil || prior.Request.ID.Valid {
+	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}
 	if agent.Kind == "system" {
@@ -536,6 +592,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
 		return empty, err
 	}
+	if err := requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, http.StatusConflict); err != nil {
+		return empty, err
+	}
 	if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: input.HumanUserID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
@@ -543,8 +602,12 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	var createdSession *db.ChatSession
-	if !sessionID.Valid {
-		lane := db.ChatSession{AgentID: agent.ID, CreatorID: input.HumanUserID, Title: "Decisions: " + agent.Name}
+	if !reuse {
+		steward, err := handler.decisionSteward(ctx, queries, topic, agent, input.HumanUserID)
+		if err != nil {
+			return empty, err
+		}
+		lane := db.ChatSession{AgentID: steward.ID, CreatorID: input.HumanUserID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
 		if session, err = createDecisionDM(ctx, queries, issue, lane); err != nil {
 			return empty, err
 		}

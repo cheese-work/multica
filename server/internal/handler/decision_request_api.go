@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -73,6 +74,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
+		writeDecisionError(writer, err, "decision request")
+		return
+	}
 	if input.NewDM && (input.SessionID != "" || input.For == "") {
 		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
 		return
@@ -103,7 +108,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -120,7 +125,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
-		handler.publishChat(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
+		handler.publishChatFor(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
 		})
 	}
@@ -154,7 +159,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		})
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
 		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
@@ -174,31 +179,37 @@ type decisionRequestResponse struct {
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
+	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
+		writeJSON(writer, http.StatusOK, stored)
+	}
+}
+
+// loadDecisionForRead resolves {id} for a workspace member who can read the
+// request's issue; it writes the refusal itself when it returns false.
+func (handler *Handler) loadDecisionForRead(writer http.ResponseWriter, request *http.Request) (db.DecisionRequest, db.Issue, bool) {
 	workspaceID := handler.resolveWorkspaceID(request)
 	if _, ok := handler.requireWorkspaceMember(writer, request, workspaceID, "workspace not found"); !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	workspaceUUID, ok := parseUUIDOrBadRequest(writer, workspaceID, "workspace_id")
 	if !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	requestID, ok := parseUUIDOrBadRequest(writer, chi.URLParam(request, "id"), "id")
 	if !ok {
-		return
+		return db.DecisionRequest{}, db.Issue{}, false
 	}
 	stored, err := handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: workspaceUUID, ID: requestID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, http.StatusNotFound, "decision request not found")
-		return
+		return stored, db.Issue{}, false
 	}
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to read decision request")
-		return
+		return stored, db.Issue{}, false
 	}
-	if _, ok := handler.loadIssueForUser(writer, request, uuidToString(stored.IssueID)); !ok {
-		return
-	}
-	writeJSON(writer, http.StatusOK, stored)
+	issue, ok := handler.loadIssueForUser(writer, request, uuidToString(stored.IssueID))
+	return stored, issue, ok
 }
 
 func (handler *Handler) ListDecisions(writer http.ResponseWriter, request *http.Request) {
@@ -240,4 +251,56 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		requests = []db.ListOpenDecisionRequestsForHumanRow{}
 	}
 	writeJSON(writer, http.StatusOK, requests)
+}
+
+// openAskResponse is the open-asks projection. It deliberately has no field
+// for options, answers, or the full ask, so a task token cannot read them here.
+type openAskResponse struct {
+	ID               string `json:"id"`
+	IssueID          string `json:"issue_id"`
+	IssueIdentifier  string `json:"issue_identifier"`
+	Ask              string `json:"ask"`
+	Class            string `json:"escalation_class"`
+	CreatedAt        string `json:"created_at"`
+	CardLink         string `json:"card_link"`
+	AskingAgentID    string `json:"asking_agent_id"`
+	DefaultIfNoReply string `json:"default_if_no_reply"`
+}
+
+// ListOpenDecisionAsks returns one member's open requests, oldest first. A
+// member (JWT or PAT, including a cloud PAT) reads only their own; only a task
+// token reads any member's, because the evening brief runs as an agent.
+func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request *http.Request) {
+	member, ok := handler.requireWorkspaceMember(writer, request, handler.resolveWorkspaceID(request), "workspace not found")
+	if !ok {
+		return
+	}
+	humanID, ok := parseUUIDOrBadRequest(writer, request.URL.Query().Get("for"), "for")
+	if !ok {
+		return
+	}
+	if humanID != member.UserID && request.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(writer, http.StatusForbidden, "members read only their own open asks")
+		return
+	}
+	rows, err := handler.Queries.ListOpenDecisionAsksForHuman(request.Context(), db.ListOpenDecisionAsksForHumanParams{
+		WorkspaceID: member.WorkspaceID, HumanUserID: humanID,
+	})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list open asks")
+		return
+	}
+	asks := make([]openAskResponse, 0, len(rows))
+	for _, row := range rows {
+		link := weblink.Chat(row.WorkspaceSlug, uuidToString(row.ChatSessionID))
+		if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
+			link = absolute
+		}
+		asks = append(asks, openAskResponse{
+			ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), IssueIdentifier: row.IssueIdentifier,
+			Ask: row.AskHeadline, Class: row.EscalationClass, CreatedAt: timestampToString(row.CreatedAt),
+			CardLink: link, AskingAgentID: uuidToString(row.AskingAgentID), DefaultIfNoReply: row.DefaultIfNoReply,
+		})
+	}
+	writeJSON(writer, http.StatusOK, asks)
 }

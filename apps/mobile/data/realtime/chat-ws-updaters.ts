@@ -36,6 +36,7 @@ import type {
   TaskDispatchPayload,
 } from "@multica/core/types";
 import { chatKeys } from "@/data/queries/chat";
+import { sortAllChatSessions } from "@/lib/chat-dm-stats-archive";
 
 // Sessions list (ChatSession[] keyed by wsId)
 
@@ -45,19 +46,36 @@ export function patchSessionListAfterRename(
   payload: {
     chat_session_id: string;
     title?: string;
+    pinned?: boolean;
+    status?: "active" | "archived";
+    continued_into_session_id?: string;
     updated_at?: string;
   },
 ) {
   qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
-    old?.map((s) =>
-      s.id === payload.chat_session_id
-        ? {
-            ...s,
-            title: payload.title ?? s.title,
-            updated_at: payload.updated_at ?? s.updated_at,
-          }
-        : s,
-    ),
+    old
+      ? sortAllChatSessions(
+          old.map((s) =>
+            s.id === payload.chat_session_id
+              ? {
+                  ...s,
+                  title: payload.title ?? s.title,
+                  // Archived DMs are unpinned (A2), even if the event omits `pinned`.
+                  pinned: payload.status === "archived" ? false : (payload.pinned ?? s.pinned),
+                  status: payload.status ?? s.status,
+                  continued_into_session_id:
+                    payload.continued_into_session_id ??
+                    s.continued_into_session_id,
+                  has_unread:
+                    payload.status === "archived" ? false : s.has_unread,
+                  unread_count:
+                    payload.status === "archived" ? 0 : s.unread_count,
+                  updated_at: payload.updated_at ?? s.updated_at,
+                }
+              : s,
+          ),
+        )
+      : old,
   );
 }
 
@@ -72,6 +90,9 @@ export function dropSessionFromList(
   qc.removeQueries({ queryKey: chatKeys.messages(payload.chat_session_id) });
   qc.removeQueries({
     queryKey: chatKeys.pendingTask(payload.chat_session_id),
+  });
+  qc.removeQueries({
+    queryKey: chatKeys.usage(wsId, payload.chat_session_id),
   });
 }
 
@@ -318,4 +339,12 @@ export function appendTaskMessage(
       return [...old, payload].sort((a, b) => a.seq - b.seq);
     },
   );
+}
+
+export async function refreshTaskMessages(qc: QueryClient, taskId: string) {
+  const queryKey = chatKeys.taskMessages(taskId);
+  // Invalidation alone reuses an unfinished first load. Cancel it first,
+  // retaining any WS rows received since it began instead of reverting them.
+  await qc.cancelQueries({ queryKey }, { revert: false, silent: true });
+  await qc.invalidateQueries({ queryKey });
 }

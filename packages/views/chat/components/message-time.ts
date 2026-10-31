@@ -76,3 +76,10 @@ export function formatTimeWithZone(iso: string, locale?: string, timeZone?: stri
   }
   return `${time} ${zone === "GMT+7" ? "ICT" : zone}`.trim();
 }
+
+/** `formatTimeWithZone` with the reader-local date in front, e.g. "Oct 20, 2026, 17:00 ICT". */
+export function formatDateTimeWithZone(iso: string, locale?: string, timeZone?: string): string {
+  if (Number.isNaN(new Date(iso).getTime())) return iso;
+  const date = format(iso, { dateStyle: "medium" }, locale, timeZone);
+  return `${date}, ${formatTimeWithZone(iso, locale, timeZone)}`;
+}

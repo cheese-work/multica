@@ -17,6 +17,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -115,6 +116,8 @@ type Config struct {
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
+	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
 	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
@@ -549,6 +552,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if v := os.Getenv("MULTICA_GC_ENABLED"); v == "false" || v == "0" {
 		gcEnabled = false
 	}
+	sandboxMode, err := sandbox.ParseMode(os.Getenv("MULTICA_SANDBOX_MODE"))
+	if err != nil {
+		return Config{}, fmt.Errorf("MULTICA_SANDBOX_MODE: %w", err)
+	}
 	gcInterval, err := durationFromEnv("MULTICA_GC_INTERVAL", DefaultGCInterval)
 	if err != nil {
 		return Config{}, err
@@ -634,6 +641,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Profile:                         profile,
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
+		SandboxMode:                     sandboxMode,
+		SandboxHomeTemplate:             strings.TrimSpace(os.Getenv("MULTICA_SANDBOX_HOME_TEMPLATE")),
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,

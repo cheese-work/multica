@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,7 +18,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -250,7 +248,7 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Instructions != nil {
-		if tokens := jev.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
+		if tokens := util.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
 			return
 		}
@@ -393,8 +391,8 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Instructions != nil {
-		newTokens := jev.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := jev.EstimateInstructionTokens(squad.Instructions)
+		newTokens := util.EstimateInstructionTokens(*req.Instructions)
+		existingTokens := util.EstimateInstructionTokens(squad.Instructions)
 		if newTokens > 3000 {
 			if *req.Instructions != squad.Instructions && (existingTokens <= 3000 || newTokens > existingTokens) {
 				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", newTokens))
@@ -1310,9 +1308,6 @@ const (
 	squadEnqueueNone squadEnqueueOutcome = iota
 	// squadEnqueueLeader: the squad leader's run was queued.
 	squadEnqueueLeader
-	// squadEnqueueSpecialist: Jev routed the work to a specialist; the leader
-	// runs nothing for this write.
-	squadEnqueueSpecialist
 )
 
 // enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
@@ -1353,17 +1348,6 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 	})
 	if err != nil || hasPending {
 		return squadEnqueueNone
-	}
-
-	// Try Jev Squad Routing (CHE-1708)
-	if routed, advisory := h.tryJevSquadRouting(ctx, issue, squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-		return squadEnqueueSpecialist
-	} else if advisory != "" {
-		if strings.TrimSpace(handoffNote) != "" {
-			handoffNote = handoffNote + "\n\n" + advisory
-		} else {
-			handoffNote = advisory
-		}
 	}
 
 	// triggerCommentID is always empty on the assign/promote path; legacy

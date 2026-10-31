@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 
-import { DAEMON_STOP_EXEC_TIMEOUT_MS } from "./daemon-profile";
+import { DAEMON_FORCE_STOP_EXEC_TIMEOUT_MS, DAEMON_STOP_EXEC_TIMEOUT_MS } from "./daemon-profile";
 
 export type DaemonOpResult = { success: boolean; error?: string };
 
@@ -17,8 +17,9 @@ export function execDaemonStop(
   args: string[],
   exec: ExecFile = execFile as ExecFile,
 ): Promise<DaemonOpResult> {
+  const timeout = args.includes("--force") ? DAEMON_FORCE_STOP_EXEC_TIMEOUT_MS : DAEMON_STOP_EXEC_TIMEOUT_MS;
   return new Promise((resolve) => {
-    exec(bin, args, { timeout: DAEMON_STOP_EXEC_TIMEOUT_MS }, (err) => {
+    exec(bin, args, { timeout }, (err) => {
       resolve(err ? { success: false, error: err.message } : { success: true });
     });
   });

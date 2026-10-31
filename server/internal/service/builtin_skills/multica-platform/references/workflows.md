@@ -50,6 +50,9 @@ multica workflow update <workflow-id> --max-runs-per-issue 30 --include-child-pr
 
 Always read the printed readback. A rejected steps array changes nothing.
 
+An agent task token may write steps only through a decision-bound write
+(`--decision-id`, dry run `--print-hash`); see `decisions.md`.
+
 An instruction edit changes what every future run on every issue in the
 workflow is told, so it is a standing-instruction change: follow the
 workspace's own change process before running it.
@@ -59,6 +62,7 @@ workspace's own change process before running it.
 ```bash
 multica issue budget get <issue-id> --output json
 multica issue budget raise <issue-id> --runs <total> --output json
+multica issue budget top-up <issue-id> --output json
 ```
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
@@ -66,5 +70,24 @@ multica issue budget raise <issue-id> --runs <total> --output json
 - `raise` sets this issue's own cap to `--runs` total runs. `--runs` must be
   above the cap now in force (the workflow's, or an earlier raise). Other
   issues on the workflow keep the workflow's cap.
-- `raise` is members only; the server rejects an agent. An agent that hit the
+- `top-up` opens a new run window on the issue, as a person's status move
+  does, without moving its status. The window credit is the workflow's cap;
+  usage history is kept.
+- `raise` and `top-up` are members only; the server rejects an agent. An agent that hit the
   cap reports the blocker and asks a person; it never raises its own budget.
+
+## Inbound webhook endpoints
+
+A step guard `webhook(name)` waits for a signed event posted to a named
+endpoint of the workflow. Writes are owner/admin only; the secret is printed
+once by `create` and `rotate` and cannot be read back.
+
+```bash
+multica workflow webhook create <workflow-id> --name <name> [--rate-per-min 60]
+multica workflow webhook rotate <workflow-id> --name <name>    # old secret valid 24 h
+multica workflow webhook disable <workflow-id> --name <name>   # cannot be undone
+multica workflow webhook list <workflow-id>                    # never shows secrets
+```
+
+`--name` is the name written in `webhook(name)`: 1-32 characters of
+`a-z`, `0-9`, `_` or `-`. `--rate-per-min` is 1-6000.
