@@ -114,6 +114,7 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
+	var decisions []decisionRequestResult
 	err = h.withTx(ctx, func(qtx *db.Queries) error {
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
@@ -155,7 +156,11 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 				items = append(items, item)
 			}
 		}
-		return nil
+		if e.Kind != service.RunBudgetKindExhausted {
+			return nil
+		}
+		decisions, err = h.openRunBudgetDecisions(ctx, qtx, issue, e, comment, recipients)
+		return err
 	})
 	if err != nil {
 		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
@@ -176,6 +181,7 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 	for _, item := range items {
 		h.publish(protocol.EventInboxNew, workspaceID, "system", "", map[string]any{"item": inboxToResponse(item)})
 	}
+	h.publishRunBudgetDecisions(issue, decisions)
 }
 
 // runBudgetRecipients is the requester, else the member creator, else the
