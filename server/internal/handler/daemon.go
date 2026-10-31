@@ -2871,8 +2871,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	resp.LeaderRoleResolved = true
 	// CHE-2216 plan 3.1: always answer, so an absent profile on the wire means a
 	// server that predates the resolver.
-	rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID)
-	resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+	// A resumed session can add taint below, so the answer is re-applied then.
+	applyRunProfile := func() {
+		rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID, task.TaintIds)
+		resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+	}
+	applyRunProfile()
 	resp.IntakeRun, resp.PinnedBranch, resp.PinnedRepo = h.intakePinForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.ID)
 	// Agent-trigger plugin hooks, as tools. A failure here degrades to no
 	// tools rather than failing the claim: a plugin that cannot be listed must
@@ -3482,7 +3486,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.PriorSessionResumeUnavailable = true
 				}
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
-					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired {
+					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired &&
+					h.inheritSessionTaint(r.Context(), task, src.SessionID.String) {
+					applyRunProfile()
 					resp.PriorSessionID = src.SessionID.String
 					resumedRunStartedAt = src.StartedAt
 					// The deltas date from the run we actually resume, which on
@@ -3533,7 +3539,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						"issue_id", uuidToString(task.IssueID),
 					)
 				}
-				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) {
+				if prior.RuntimeID == task.RuntimeID && !stale && !leaderSessionTooLarge(resp.IsLeaderTask, prior.ContextTokens) && h.inheritSessionTaint(r.Context(), task, prior.SessionID.String) {
+					applyRunProfile()
 					resp.PriorSessionID = prior.SessionID.String
 					resumedRunStartedAt = prior.StartedAt
 					// Same rule as the rerun path: date the deltas from the run
@@ -4311,6 +4318,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.InitiatorID = originator.ID
 		resp.InitiatorName = originator.Name
 		resp.InitiatorEmail = originator.Email
+	}
+
+	// The issue was read above, after the task left the queue. A tainted
+	// assignment written before that read has put its taint on this task by now,
+	// so read the taint last and answer with it.
+	if task.IssueID.Valid {
+		latest, err := h.Queries.GetTaskTaintIDs(r.Context(), task.ID)
+		if err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, err, "taint", uuidToString(task.ID))
+		}
+		if len(latest) != len(task.TaintIds) {
+			task.TaintIds = latest
+			applyRunProfile()
+		}
 	}
 
 	return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, nil
@@ -7230,4 +7252,23 @@ func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
 		"status":       task.Status,
 		"completed_at": task.CompletedAt.Time,
 	})
+}
+
+// inheritSessionTaint carries the taint of the session being resumed onto the
+// claimed task (CHE-2216 plan 3.7): the resumed transcript holds whatever
+// tainted input the earlier runs read. It reports false when the taint cannot
+// be recorded, and the caller then starts a fresh session instead, since a
+// resume that is not marked would run with a grant the transcript has not earned.
+func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
+	taint, err := h.Queries.InheritSessionTaint(ctx, db.InheritSessionTaintParams{
+		ID:        task.ID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		slog.Warn("daemon claim: could not record session taint; starting fresh",
+			"task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	task.TaintIds = taint
+	return true
 }
