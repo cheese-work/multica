@@ -96,6 +96,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | dm-wakeup-event-row | doop `-Yr2vfvBHn` @ 2026-10-29T11:07:11.362Z | C | 581 | n/a (`design/dm-wakeup-event-row/approved/`) |
 | machine-pause | doop `AvexgrxkBp` @ 2026-10-29T15:15:52.443Z | A | 631 | n/a (`design/machine-pause/approved/`) |
 | you-are-approving-card | doop `t8_q2WrMLL` @ 2026-10-30T12:12:16.518Z | B | 664 | n/a (`design/you-are-approving-card/approved/`) |
+| machine-pause-banner | doop `PX_YkzqAb-` @ 2026-10-30T16:58:01.161Z | B | 684 | n/a (`design/machine-pause-banner/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
@@ -118,3 +119,5 @@ The `dm-search-web-desktop` row records a selection only. Cheese chose direction
 The `dm-wakeup-event-row` row records a selection only. Cheese chose direction C (thread rail) on CHE-2459, decision record `01a18753-e957-7ba2-a312-4400a43808a1`. The row names the doop frame `-Yr2vfvBHn` at `updatedAt` `2026-10-29T11:07:11.362Z`, locked in `design/dm-wakeup-event-row/approved/`. Its UX verdict (x99-agy-gemini-ux, 55/60) is CHE-2459 comment `01a1875a-c9e1-7656-a1a7-965a9b0d1628`. No approval exists until PR 581 merges.
 
 The `you-are-approving-card` row records a selection only. Cheese chose direction B (tabbed viewer) on CHE-2611, decision record `01a18d7e-2504-73ce-9bba-a1cf0ef5c649`. The row names the doop frame `t8_q2WrMLL` at `updatedAt` `2026-10-30T12:12:16.518Z`, locked in `design/you-are-approving-card/approved/`. Its UX verdict (x99-codex-luna-design) is CHE-2611 comment `01a18cc3-3989-77c8-b495-e8bd0114dfc0`. Implementation must add tab and panel linkage (`aria-controls`) and arrow-key movement; the mockup does not show them. No approval exists until PR 664 merges.
+
+The `machine-pause-banner` row records a selection only. Cheese chose direction B (one summary banner, count on the header icon) on CHE-2684, decision request `e8e5a058-1bb5-4afe-b731-aa89fcacc53b`, recorded as comment `01a18fda-6a9c-72c5-a3a4-f1bcd67ccea6`. The row names the doop frame `PX_YkzqAb-` at `updatedAt` `2026-10-30T16:58:01.161Z`, locked in `design/machine-pause-banner/approved/`. Its UX verdict (x99-codex-luna-design) is CHE-2684 comment `01a18dc6-f22a-7ba3-91d6-4f7be87f8388`. No approval exists until PR 684 merges.
