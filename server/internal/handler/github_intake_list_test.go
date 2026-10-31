@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func TestListGitHubIntakeHidesOtherWorkspacesAndResolvesRedeliveries(t *testing.
 	dbfx.Exec(t, `INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id, revision_id, state, reason)
 		SELECT workspace_id, object_kind, object_id, body_hash, $2::uuid, $2::uuid, $2::uuid, id, 'dispatched', 'admitted' FROM github_webhook_revision WHERE workspace_id=$1`, testWorkspaceID, fixture.issueID)
 	t.Cleanup(func() {
-		_, _ = testPool.Exec(t.Context(), `DELETE FROM github_webhook_dispatch WHERE workspace_id=$1`, testWorkspaceID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM github_webhook_dispatch WHERE workspace_id=$1`, testWorkspaceID)
 	})
 
 	seen := map[string]intakeListRow{}
@@ -74,9 +75,9 @@ func TestListGitHubIntakeHidesOtherWorkspacesAndResolvesRedeliveries(t *testing.
 
 	// The same revision under another workspace is invisible here.
 	t.Cleanup(func() {
-		_, _ = testPool.Exec(t.Context(), `DELETE FROM github_webhook_revision WHERE workspace_id='00000000-0000-4000-8000-000000002669'`)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM github_webhook_revision WHERE workspace_id='00000000-0000-4000-8000-000000002669'`)
 	})
-	_, _ = testPool.Exec(t.Context(), `DELETE FROM github_webhook_revision WHERE workspace_id='00000000-0000-4000-8000-000000002669'`)
+	_, _ = testPool.Exec(context.Background(), `DELETE FROM github_webhook_revision WHERE workspace_id='00000000-0000-4000-8000-000000002669'`)
 	dbfx.Exec(t, `UPDATE github_webhook_revision SET workspace_id='00000000-0000-4000-8000-000000002669' WHERE workspace_id=$1`, testWorkspaceID)
 	for _, d := range listGitHubIntakeForTest(t, since) {
 		if d.DeliveryGUID == fixture.issueID+"-L-first" || d.DeliveryGUID == fixture.issueID+"-L-redelivery" {
