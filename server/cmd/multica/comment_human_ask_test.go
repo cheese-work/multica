@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,5 +64,35 @@ func TestCommentHumanAskBlockedBeforeRequest(test *testing.T) {
 				test.Fatalf("err=%v requests=%d, want human-ask refusal and zero requests", err, requests)
 			}
 		})
+	}
+}
+
+func TestWarnCommentHumanAsk(test *testing.T) {
+	const ask = "What this is: a.\nWhy you, why now: b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge it.\n"
+	for _, testCase := range []struct {
+		name    string
+		content string
+		agentID string
+		want    string
+	}{
+		{name: "format rules warn", content: ask, agentID: humanAskAgentID, want: "warning: line 1: missing Steps section"},
+		{name: "human author is not warned", content: ask},
+		{name: "escape line", content: "Human action: none\n" + ask, agentID: humanAskAgentID},
+		{name: "plain status", content: "Tests green.", agentID: humanAskAgentID},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			var out bytes.Buffer
+			warnCommentHumanAsk(testCase.content, testCase.agentID, &out)
+			if testCase.want == "" && out.Len() != 0 || !strings.Contains(out.String(), testCase.want) {
+				test.Fatalf("stderr=%q, want %q", out.String(), testCase.want)
+			}
+		})
+	}
+}
+
+func TestGuardCommentHumanAskListsWarningsToo(test *testing.T) {
+	err := guardCommentHumanAsk("**Cheese:** merge PR #601.", humanAskAgentID)
+	if err == nil || !strings.Contains(err.Error(), "warning: line 1: missing Steps section") {
+		test.Fatalf("err=%v, want the format warnings next to the refusal", err)
 	}
 }

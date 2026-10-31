@@ -83,30 +83,39 @@ func closesFence(line, fence string) bool {
 	return len(run) >= len(fence) && strings.Trim(run, fence[:1]) == ""
 }
 
-// fencedLines returns the 1-based numbers of lines inside fenced blocks, fences
-// included, quoted fences too. An unclosed fence runs to the end.
-func fencedLines(lines []string) map[int]bool {
-	out := map[int]bool{}
-	for i := 0; i < len(lines); {
-		m := fenceOpen.FindStringSubmatch(quote.ReplaceAllString(lines[i], ""))
+// doc is a comment split two ways, as human_ask.py does: prose lines come from
+// str.splitlines, fenced blocks from text.split("\n") (ste_pipeline.fenced_blocks).
+// Both share one 1-based numbering.
+type doc struct {
+	lines  []string
+	fenced map[int]bool // lines inside fenced blocks, fences included
+	delims map[int]bool // the opening and closing fence lines only
+}
+
+func parse(text string) doc {
+	d := doc{lines: splitLines(text), fenced: map[int]bool{}, delims: map[int]bool{}}
+	raw := strings.Split(text, "\n")
+	for i := 0; i < len(raw); {
+		m := fenceOpen.FindStringSubmatch(quote.ReplaceAllString(raw[i], ""))
 		if m == nil {
 			i++
 			continue
 		}
 		fence := m[1]
 		j := i + 1
-		for j < len(lines) && !closesFence(quote.ReplaceAllString(lines[j], ""), fence) {
+		for j < len(raw) && !closesFence(quote.ReplaceAllString(raw[j], ""), fence) {
 			j++
 		}
-		if j > len(lines)-1 {
-			j = len(lines) - 1
+		if j > len(raw)-1 {
+			j = len(raw) - 1
 		}
 		for k := i; k <= j; k++ {
-			out[k+1] = true
+			d.fenced[k+1] = true
 		}
+		d.delims[i+1], d.delims[j+1] = true, true
 		i = j + 1
 	}
-	return out
+	return d
 }
 
 type numbered struct {
@@ -114,12 +123,11 @@ type numbered struct {
 	line string
 }
 
-// visibleLines is unfenced, unquoted prose with original line numbers.
-func visibleLines(lines []string) []numbered {
-	fenced := fencedLines(lines)
+// visible is unfenced, unquoted prose with original line numbers.
+func (d doc) visible() []numbered {
 	var out []numbered
-	for i, line := range lines {
-		if !fenced[i+1] && !strings.HasPrefix(strings.TrimLeftFunc(line, isPySpace), ">") {
+	for i, line := range d.lines {
+		if !d.fenced[i+1] && !strings.HasPrefix(strings.TrimLeftFunc(line, isPySpace), ">") {
 			out = append(out, numbered{i + 1, line})
 		}
 	}
@@ -177,9 +185,9 @@ func stripValidMemberLink(match string) string {
 	return ""
 }
 
-func missingMentions(lines []string) []Problem {
+func missingMentions(d doc) []Problem {
 	var out []Problem
-	for _, v := range visibleLines(lines) {
+	for _, v := range d.visible() {
 		prose := memberLink.ReplaceAllStringFunc(stripCodeSpans(v.line), stripValidMemberLink)
 		prose = strings.ReplaceAll(prose, "**", "")
 		if address.MatchString(prose) || strings.Contains(prose, "mention://member/") {
@@ -189,14 +197,14 @@ func missingMentions(lines []string) []Problem {
 	return out
 }
 
-func humanAction(text string, lines []string, missing []Problem) bool {
+func humanAction(text string, d doc, missing []Problem) bool {
 	if humanNone.MatchString(text) {
 		return false
 	}
 	if len(missing) > 0 {
 		return true
 	}
-	for _, v := range visibleLines(lines) {
+	for _, v := range d.visible() {
 		if memberLink.MatchString(stripCodeSpans(v.line)) {
 			return true
 		}
@@ -207,13 +215,13 @@ func humanAction(text string, lines []string, missing []Problem) bool {
 // Check returns the refuse-level problems for a comment that asks a human to
 // act, or nil when the comment asks no one or passes.
 func Check(text string) []Problem {
-	lines := splitLines(text)
-	problems := missingMentions(lines)
-	if !humanAction(text, lines, problems) {
+	d := parse(text)
+	problems := missingMentions(d)
+	if !humanAction(text, d, problems) {
 		return nil
 	}
 	var opening []numbered
-	for _, v := range visibleLines(lines) {
+	for _, v := range d.visible() {
 		if strings.TrimFunc(v.line, isPySpace) != "" {
 			opening = append(opening, v)
 		}
