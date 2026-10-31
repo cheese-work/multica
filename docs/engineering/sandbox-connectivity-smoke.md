@@ -32,9 +32,11 @@ The dev team leader authorizes the run under the repo's `agentintegration` rule.
 3. Run (with the variable set, a missing CLI, credential or sandbox fails the run; nothing is skipped):
 
 ```
+set -o pipefail
 (cd server && MULTICA_RUN_REAL_AGENT_SMOKE=1 go test -tags=agentintegration \
   ./internal/daemon/sandbox -run TestSmokeRealCLIThroughIsolatedPath -count=1 -v) | tee /tmp/sandbox-smoke.log
+echo "go test exit: ${PIPESTATUS[0]}"
 ```
 
-4. Pass means the log ends with `SMOKE RESULT claude=PASS codex=PASS`; a log with one provider only is not accepted evidence. Per provider: the credential copy refuses chmod and append from inside the sandbox; the CLI exits 0 inside the sandbox (a run over 3 minutes is killed and counts as a failure); the log prints `proxy log:` lines for its traffic; a direct connection to `1.1.1.1:443` from the same sandbox is refused. The test does not check what the model answers.
+4. Pass needs all of: `go test` exit 0 (the `go test exit:` line, which `tee` would otherwise mask), `--- PASS: TestSmokeRealCLIThroughIsolatedPath/claude` and `.../codex` in the log, and `SMOKE RESULT claude=PASS codex=PASS`. The marker alone is not evidence; a log with one provider only is not accepted. Per provider: the credential copy refuses chmod and append from inside the sandbox; the CLI exits 0 inside the sandbox (a run over 3 minutes is killed and counts as a failure); the log prints `proxy log:` lines for its traffic; a direct connection to `1.1.1.1:443` from the same sandbox is refused. The test does not check what the model answers.
 5. Attach `/tmp/sandbox-smoke.log` to the A6 evidence. Credential values never appear in it; the test logs destination hosts and ports only.

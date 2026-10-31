@@ -175,7 +175,10 @@ func probeSSE(target string) error {
 		}
 	}
 	if events != 3 {
-		return fmt.Errorf("got %d stream events, want 3 (err %v)", events, sc.Err())
+		if err := sc.Err(); err != nil {
+			return fmt.Errorf("got %d stream events, want 3: %w", events, err)
+		}
+		return fmt.Errorf("got %d stream events, want 3", events)
 	}
 	fmt.Println("ok sse", events)
 	return nil
@@ -187,7 +190,10 @@ func probeWS(target string) error {
 		return err
 	}
 	d := websocket.Dialer{Proxy: tr.Proxy, HandshakeTimeout: 10 * time.Second}
-	conn, _, err := d.Dial(target, http.Header{"Authorization": {"Bearer run-token"}})
+	conn, resp, err := d.Dial(target, http.Header{"Authorization": {"Bearer run-token"}})
+	if resp != nil {
+		resp.Body.Close() // the upgrade response body is empty; the socket lives on conn
+	}
 	if err != nil {
 		return err
 	}

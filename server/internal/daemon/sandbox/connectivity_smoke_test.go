@@ -5,6 +5,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,25 +46,62 @@ func TestSmokeRealCLIThroughIsolatedPath(t *testing.T) {
 	if err := l.SelfCheck(ctx); err != nil {
 		t.Fatalf("smoke was authorized but the host cannot run the sandbox: %v", err)
 	}
-	result := map[string]string{}
-	for _, p := range []struct {
-		cli        string
-		args       []string
-		credential string // under the user's home, copied read-only into the run HOME
-		hosts      []string
-	}{
-		{"claude", []string{"-p", "Reply with the single word OK."}, ".claude/.credentials.json", []string{"api.anthropic.com"}},
-		{"codex", []string{"exec", "--skip-git-repo-check", "Reply with the single word OK."}, ".codex/auth.json", []string{"chatgpt.com", "api.openai.com"}},
-	} {
-		t.Run(p.cli, func(t *testing.T) {
-			smokeCLI(t, l, home, p.cli, p.args, p.credential, p.hosts)
-			result[p.cli] = "PASS"
-		})
-	}
-	if result["claude"] != "PASS" || result["codex"] != "PASS" {
-		t.Fatalf("smoke needs both providers: %v", result)
+	result, err := runSmokeProviders(t.Run, smokeProviders, func(t *testing.T, p smokeProvider) {
+		smokeCLI(t, l, home, p.cli, p.args, p.credential, p.hosts)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("SMOKE RESULT claude=%s codex=%s", result["claude"], result["codex"])
+}
+
+type smokeProvider struct {
+	cli        string
+	args       []string
+	credential string // under the user's home, copied read-only into the run HOME
+	hosts      []string
+}
+
+var smokeProviders = []smokeProvider{
+	{"claude", []string{"-p", "Reply with the single word OK."}, ".claude/.credentials.json", []string{"api.anthropic.com"}},
+	{"codex", []string{"exec", "--skip-git-repo-check", "Reply with the single word OK."}, ".codex/auth.json", []string{"chatgpt.com", "api.openai.com"}},
+}
+
+// runSmokeProviders runs one subtest per provider. A provider is PASS only if
+// its subtest did not fail (a non-fatal t.Errorf counts); the run is accepted
+// only when every provider is PASS. run is t.Run in the real test.
+func runSmokeProviders(run func(string, func(*testing.T)) bool, providers []smokeProvider, one func(*testing.T, smokeProvider)) (map[string]string, error) {
+	result := map[string]string{}
+	for _, p := range providers {
+		if run(p.cli, func(t *testing.T) { one(t, p) }) {
+			result[p.cli] = "PASS"
+		} else {
+			result[p.cli] = "FAIL"
+		}
+	}
+	for _, p := range providers {
+		if result[p.cli] != "PASS" {
+			return result, fmt.Errorf("smoke needs every provider to pass: %v", result)
+		}
+	}
+	return result, nil
+}
+
+// A provider whose subtest failed after smokeCLI recorded its problem with a
+// non-fatal error must never be labelled PASS. Deterministic: no CLI runs.
+func TestSmokeFailedProviderIsNeverPass(t *testing.T) {
+	failing := func(name string, f func(*testing.T)) bool { return name != "codex" }
+	result, err := runSmokeProviders(failing, smokeProviders, func(*testing.T, smokeProvider) {})
+	if result["codex"] != "FAIL" || result["claude"] != "PASS" {
+		t.Fatalf("result = %v, want claude=PASS codex=FAIL", result)
+	}
+	if err == nil {
+		t.Fatal("a run with a failed provider was accepted")
+	}
+	allOK := func(name string, f func(*testing.T)) bool { return true }
+	if _, err := runSmokeProviders(allOK, smokeProviders, func(*testing.T, smokeProvider) {}); err != nil {
+		t.Fatalf("all providers passed but run rejected: %v", err)
+	}
 }
 
 func smokeCLI(t *testing.T, l *Launcher, home, cli string, args []string, credential string, hosts []string) {
