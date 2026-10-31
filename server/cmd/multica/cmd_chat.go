@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-<<<<<<< HEAD
-=======
 	"io"
->>>>>>> 75e9055a6b098e2f8076f7025da0195e33c51c5c
 	"net/http"
 	"net/url"
 	"os"
