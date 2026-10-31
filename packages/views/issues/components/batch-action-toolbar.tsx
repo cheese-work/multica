@@ -44,6 +44,7 @@ import {
 } from "@multica/ui/lib/motion";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
+import { useRegisterCommandBarContext } from "../../search/register-context";
 
 export function BatchActionToolbar({
   issues,
@@ -89,6 +90,13 @@ export function BatchActionToolbar({
     [issues, selectedIds],
   );
   const count = selectedIssues.length;
+
+  useRegisterCommandBarContext(
+    useMemo(
+      () => (count > 0 ? { kind: "issues", issues: selectedIssues, clearSelection: clear } : null),
+      [count, selectedIssues, clear],
+    ),
+  );
 
   // Reflect the real shared value of the selected issues in each picker; fall
   // back to an empty (no-checkmark) state when the selection is mixed, instead
