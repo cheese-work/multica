@@ -170,6 +170,73 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 	return items, nil
 }
 
+const listOpenDecisionAsksForHuman = `-- name: ListOpenDecisionAsksForHuman :many
+SELECT request.id,
+    (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
+    request.issue_id, workspace.slug AS workspace_slug,
+    COALESCE(NULLIF(split_part(btrim(request.ask_json->>'decision', E' \t\r\n'), E'\n', 1), ''), NULLIF(split_part(split_part(request.ask, E'**Decision**\n', 2), E'\n', 1), ''), split_part(request.ask, E'\n', 1))::text AS ask_headline,
+    request.escalation_class, request.created_at, request.chat_session_id,
+    request.asking_agent_id, COALESCE(request.ask_json->>'default_if_no_reply', '')::text AS default_if_no_reply
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1
+    AND request.human_user_id = $2
+    AND request.status = 'open'
+ORDER BY request.created_at, request.id
+`
+
+type ListOpenDecisionAsksForHumanParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+}
+
+type ListOpenDecisionAsksForHumanRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	IssueIdentifier  string             `json:"issue_identifier"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	WorkspaceSlug    string             `json:"workspace_slug"`
+	AskHeadline      string             `json:"ask_headline"`
+	EscalationClass  string             `json:"escalation_class"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID    pgtype.UUID        `json:"chat_session_id"`
+	AskingAgentID    pgtype.UUID        `json:"asking_agent_id"`
+	DefaultIfNoReply string             `json:"default_if_no_reply"`
+}
+
+// Read-only projection for the open-asks read: first line of the ask and the
+// default text only, never options, answers, or the full ask.
+func (q *Queries) ListOpenDecisionAsksForHuman(ctx context.Context, arg ListOpenDecisionAsksForHumanParams) ([]ListOpenDecisionAsksForHumanRow, error) {
+	rows, err := q.db.Query(ctx, listOpenDecisionAsksForHuman, arg.WorkspaceID, arg.HumanUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenDecisionAsksForHumanRow{}
+	for rows.Next() {
+		var i ListOpenDecisionAsksForHumanRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueIdentifier,
+			&i.IssueID,
+			&i.WorkspaceSlug,
+			&i.AskHeadline,
+			&i.EscalationClass,
+			&i.CreatedAt,
+			&i.ChatSessionID,
+			&i.AskingAgentID,
+			&i.DefaultIfNoReply,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenDecisionRequestsForHuman = `-- name: ListOpenDecisionRequestsForHuman :many
 SELECT request.id, request.issue_id,
     (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
