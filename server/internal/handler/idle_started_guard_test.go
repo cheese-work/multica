@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -31,11 +30,11 @@ func newIdleGuardFixture(test *testing.T, hours float64) idleGuardFixture {
 	idleGuardSetting(test, `{"mode":"shadow"}`)
 	agent := createHandlerTestAgent(test, "idle guard "+test.Name(), []byte("[]"))
 	issue := dbfx.Issue(test, "idle issue", testutil.Cols{"status": "in_progress", "assignee_type": "agent", "assignee_id": agent})
-	dbfx.Exec(test, `UPDATE issue SET created_at = now() - make_interval(hours => $1) WHERE id = $2`, hours+1, issue)
+	dbfx.Exec(test, `UPDATE issue SET created_at = now() - make_interval(secs => $1) WHERE id = $2`, (hours+1)*3600, issue)
 	task := dbfx.Task(test, agent, testutil.Cols{"issue_id": issue, "status": "completed", "runtime_id": handlerTestRuntimeID(test)})
-	dbfx.Exec(test, `UPDATE agent_task_queue SET created_at = now() - make_interval(hours => $1), completed_at = now() - make_interval(hours => $1) WHERE id = $2`, hours, task)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET created_at = now() - make_interval(secs => $1), completed_at = now() - make_interval(secs => $1) WHERE id = $2`, hours*3600, task)
 	comment := dbfx.Comment(test, issue, "waiting for [@Cheese](mention://member/"+testUserID+")", testutil.Cols{"author_type": "agent", "author_id": agent})
-	dbfx.Exec(test, `UPDATE comment SET created_at = now() - make_interval(hours => $1) WHERE id = $2`, hours, comment)
+	dbfx.Exec(test, `UPDATE comment SET created_at = now() - make_interval(secs => $1) WHERE id = $2`, hours*3600, comment)
 	return idleGuardFixture{issue: issue, agent: agent}
 }
 
@@ -229,7 +228,7 @@ func TestIdleStartedGuardStatusOutOfScope(test *testing.T) {
 	test.Run("statuses setting widens the set", func(test *testing.T) {
 		fixture := newIdleGuardFixture(test, 5)
 		dbfx.Exec(test, `UPDATE issue SET status = 'merged' WHERE id = $1`, fixture.issue)
-		idleGuardSetting(test, fmt.Sprintf(`{"mode":"shadow","statuses":["merged"]}`))
+		idleGuardSetting(test, `{"mode":"shadow","statuses":["merged"]}`)
 		if !fixture.found(test) {
 			test.Fatal("listed status was not covered")
 		}
@@ -241,5 +240,16 @@ func TestIdleStartedGuardSkipsIssueWithGuardReceipt(test *testing.T) {
 	dbfx.Exec(test, `UPDATE issue SET metadata = metadata || '{"idle_guard":{"state":"done"}}'::jsonb WHERE id = $1`, fixture.issue)
 	if fixture.found(test) {
 		test.Fatal("issue with an idle_guard episode was reported again")
+	}
+}
+
+// The boundary cases only mean something if the fixture stores the age it was
+// asked for, so read the stored age back (fractional hours must not truncate).
+func TestIdleStartedGuardFixtureStoresFractionalAge(test *testing.T) {
+	fixture := newIdleGuardFixture(test, 3.98)
+	var hours float64
+	dbfx.QueryRow(test, `SELECT extract(epoch FROM now() - created_at) / 3600 FROM comment WHERE issue_id = $1`, fixture.issue).Scan(&hours)
+	if hours < 3.97 || hours > 3.99 {
+		test.Fatalf("stored comment age = %.4f h, want about 3.98 h", hours)
 	}
 }
