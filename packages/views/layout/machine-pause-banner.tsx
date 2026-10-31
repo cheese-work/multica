@@ -223,7 +223,7 @@ function MachineLine({
     <span className={className}>
       <strong className="font-semibold">{head}</strong>{" "}
       {isNew && (
-        <span className="mr-1 rounded bg-warning/30 px-1 text-[0.6875rem] font-semibold">
+        <span className="mr-1 rounded-xs bg-warning/30 px-1 text-[0.6875rem] font-semibold">
           {t(($) => $.machine_pause.banner.new_event)}
         </span>
       )}
