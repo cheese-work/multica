@@ -92,7 +92,8 @@ func PR(ctx context.Context, socket string, req PRRequest) (PRResult, error) {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return res, fmt.Errorf("pr %s refused (%d): %s", req.Op, resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
-	return res, json.NewDecoder(resp.Body).Decode(&res)
+	err = json.NewDecoder(resp.Body).Decode(&res)
+	return res, err
 }
 
 func getJSON(ctx context.Context, hc *http.Client, u string, v any) error {

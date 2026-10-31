@@ -63,6 +63,9 @@ type Broker struct {
 	bg     context.Context
 	stop   context.CancelFunc // ends background token-revoke retries
 	wg     sync.WaitGroup     // those retries
+	opsMu  sync.Mutex         // guards closed and ops.Add against Close
+	closed bool
+	ops    sync.WaitGroup // requests in flight, including their token revoke
 }
 
 // New starts a broker listening on socket (mode 0600).
@@ -86,8 +89,8 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	b.bg, b.stop = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", b.handlePin)
-	mux.HandleFunc("POST /push", b.handlePush)
-	mux.HandleFunc("POST /pr", b.handlePR)
+	mux.HandleFunc("POST /push", b.track(b.handlePush))
+	mux.HandleFunc("POST /pr", b.track(b.handlePR))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -97,11 +100,32 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	return b, nil
 }
 
-// Close stops the broker and removes the socket.
-// A token still waiting to be revoked gets one last try, then an alert.
+// track counts a request so Close can wait for it and its token revoke.
+func (b *Broker) track(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b.opsMu.Lock()
+		if b.closed {
+			b.opsMu.Unlock()
+			http.Error(w, "broker is closing", http.StatusServiceUnavailable)
+			return
+		}
+		b.ops.Add(1)
+		b.opsMu.Unlock()
+		defer b.ops.Done()
+		h(w, r)
+	}
+}
+
+// Close stops the broker and removes the socket. It returns after every
+// request in flight has revoked its token. A token still waiting to be
+// revoked gets one last try, then an alert.
 func (b *Broker) Close() error {
+	b.opsMu.Lock()
+	b.closed = true
+	b.opsMu.Unlock()
 	err := b.srv.Close()
 	_ = os.Remove(b.socket)
+	b.ops.Wait()
 	b.stop()
 	b.wg.Wait()
 	return err

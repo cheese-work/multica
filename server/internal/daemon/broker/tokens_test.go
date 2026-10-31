@@ -196,6 +196,41 @@ func TestRevokeRetriesThenAlerts(t *testing.T) {
 	})
 }
 
+func TestCloseJoinsInFlightOperation(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	f := newFakeGitHub(t, r.remote)
+	r.pin.RemoteURL, r.pin.Slug, r.pin.Bases = f.srv.URL+"/git/remote.git", "o/r", []string{"main"}
+	r.pin.Tokens = f.tokens()
+	b, err := New(r.pin, r.socket, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.revokeSeen, f.revokeGate = make(chan struct{}, 1), make(chan struct{})
+	var release sync.Once
+	open := func() { release.Do(func() { close(f.revokeGate) }) }
+	t.Cleanup(open) // a failing run must not leave the fake GitHub blocked
+	r.commits(t, 1)
+	go Push(context.Background(), r.socket, r.work, io.Discard)
+	<-f.revokeSeen // the push is done and its first DELETE is in flight
+	closed := make(chan struct{})
+	go func() { b.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a revoke was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	open()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not return after the revoke finished")
+	}
+	if n := f.liveCount(); n != 0 {
+		t.Fatalf("%d live tokens after Close", n)
+	}
+}
+
 func waitFor(t testing.TB, cond func() bool) {
 	t.Helper()
 	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {

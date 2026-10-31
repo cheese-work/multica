@@ -53,6 +53,10 @@ type fakeGitHub struct {
 	prs     map[int]*fakePR
 	failMint,
 	failRevoke int // next N mint / DELETE calls answer 500; -1 means always
+	// revokeSeen, when set, is signalled as a DELETE arrives; the DELETE then
+	// waits for revokeGate to close.
+	revokeSeen chan struct{}
+	revokeGate chan struct{}
 }
 
 func newFakeGitHub(t testing.TB, remote string) *fakeGitHub {
@@ -165,6 +169,10 @@ func (f *fakeGitHub) handleMint(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	tok := bearer(r)
+	if f.revokeSeen != nil {
+		f.revokeSeen <- struct{}{}
+		<-f.revokeGate
+	}
 	if f.fail(&f.failRevoke) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 		return
