@@ -74,3 +74,21 @@ func TestTopUpIssueRunBudgetRefusesATaskToken(t *testing.T) {
 		t.Fatal("a refused top-up still wrote an activity row")
 	}
 }
+
+func TestTopUpIssueRunBudgetRefusesACloudNodeCredential(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newEdgeCase(t, 2316012, mergeEdgeSteps)
+	spendBudget(t, c, 2, "in_progress")
+
+	// A cloud-node credential carries its owner's user ID and no agent headers,
+	// so resolveActor alone would call it a member.
+	asCloudPAT := func(r *http.Request) { r.Header.Set("X-Actor-Source", "cloud_pat") }
+	if w := topUpBudget(t, c.issueID, asCloudPAT); w.Code != http.StatusForbidden {
+		t.Fatalf("cloud-PAT top-up = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_top_up'`, c.issueID); n != 0 {
+		t.Fatal("a refused top-up still wrote an activity row")
+	}
+}

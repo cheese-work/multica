@@ -80,8 +80,8 @@ WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') 
 ORDER BY created_at DESC LIMIT 1
 `
 
-// When a person last changed the issue's status: a person who moves a blocked
-// issue on starts its run budget over.
+// When a person last changed the issue's status or topped up its run budget: a
+// person who moves a blocked issue on, or tops it up, starts its run budget over.
 func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
 	row := q.db.QueryRow(ctx, latestMemberStatusChange, issueID)
 	var created_at pgtype.Timestamptz

@@ -144,7 +144,9 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	if actorType != "member" {
+	// resolveActor calls a machine credential without agent headers a member, so
+	// the credential check is separate (the route carries RequireHumanActor too).
+	if actorType != "member" || isMachineCredentialActor(r) {
 		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
 		return
 	}
