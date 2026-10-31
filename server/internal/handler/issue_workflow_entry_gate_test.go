@@ -217,7 +217,7 @@ func TestEntryGateOverrideCredentials(t *testing.T) {
 		override bool // member_override of the gate
 		want     int
 	}{
-		{"agent task token", func(t *testing.T, r *http.Request) *http.Request { return asAgentTask(t, r) }, reason, true, http.StatusConflict},
+		{"agent task token", asAgentTask, reason, true, http.StatusConflict},
 		{"cloud PAT", func(_ *testing.T, r *http.Request) *http.Request { return asSource("cloud_pat")(r) }, reason, true, http.StatusConflict},
 		{"interactive JWT", func(_ *testing.T, r *http.Request) *http.Request { return asSource("interactive_jwt")(r) }, reason, true, http.StatusOK},
 		{"CLI JWT", func(_ *testing.T, r *http.Request) *http.Request { return asSource("cli_jwt")(r) }, reason, true, http.StatusOK},
