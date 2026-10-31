@@ -23,5 +23,6 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS comment_inherit_external_read ON comment;
 CREATE TRIGGER comment_inherit_external_read BEFORE INSERT OR UPDATE OF external_read, source_task_id ON comment
     FOR EACH ROW EXECUTE FUNCTION comment_inherit_external_read();
