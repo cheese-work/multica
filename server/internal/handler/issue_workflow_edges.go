@@ -79,7 +79,7 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			return err
 		}
 	}
-	facts, err := h.loadEdgeFacts(ctx, issue, edges, def.IncludeChildPRs, sub)
+	facts, err := h.loadEdgeFacts(ctx, issue, edges, def, w.CreatedAt.Time, sub)
 	if err != nil {
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 		return err
@@ -156,9 +156,11 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 
 // loadEdgeFacts reads what the edges' guards need: the PRs of the issue and,
 // when includeChildren, of its direct children; whether every child is done
-// (on a sub-workflow step, every child of the step's stage); and the status of
-// each issue an issue_status guard names.
-func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, includeChildren bool, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
+// (on a sub-workflow step, every child of the step's stage); the status of
+// each issue an issue_status guard names, and which webhook guards have a
+// success event since the issue entered the step.
+func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
+	includeChildren := def.IncludeChildPRs
 	var facts issueworkflow.Facts
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
@@ -188,7 +190,10 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 	for _, p := range prs {
 		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
-	facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges)
+	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges); err != nil {
+		return facts, err
+	}
+	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
 	return facts, err
 }
 
@@ -248,7 +253,9 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
 		}
-		raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+		if !e.TokensSpent {
+			raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
 			break
@@ -259,6 +266,31 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}
 	h.writeRunBudgetNotice(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
 		exhaustedNoticeText(refused, raise, e, moved))
+	if moved {
+		h.enqueueBudgetRecovery(ctx, e)
+	}
+}
+
+// enqueueBudgetRecovery gives the blocked step's handler its one recovery run
+// for the window. Only an agent handler gets one; a second claim in the window
+// is refused.
+func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudgetExhausted) {
+	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
+	if err != nil || issue.Status != issuestatus.Blocked || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return
+	}
+	// The assignee of a blocked step with no agent handler is whoever held the
+	// issue before, not a handler the workflow chose for this state.
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return
+	}
+	if step, ok := def.Step(issuestatus.Blocked); !ok || step.Handler.Type != "agent" || step.Handler.ID != uuidToString(issue.AssigneeID) {
+		return
+	}
+	if _, err := h.TaskService.EnqueueBudgetRecoveryRun(ctx, issue, e.Since); err != nil && !errors.Is(err, service.ErrRecoveryClaimed) {
+		slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+	}
 }
 
 // runBudgetBlockTries bounds the block's re-reads after losing a revision race.
@@ -324,6 +356,11 @@ func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, bl
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
+	}
+	if e.TokensSpent {
+		return fmt.Sprintf(
+			"%s: %s was refused because the issue's token allowance is spent (balance %d). No command raises it. A person moves the issue's status to open a new window with a new allowance.",
+			lead, refused, e.Tokens)
 	}
 	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise)
 }

@@ -640,6 +640,14 @@ type AgentTaskResponse struct {
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+
+	// IntakeRun, PinnedBranch and PinnedRepo are claim-only (CHE-2216 plan 3.6):
+	// a run an intake item dispatched, the same-repository PR head ref it is
+	// pinned to and that PR's repository as host/owner/name.
+	// Mirror fields: internal/daemon/types.go.
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
+	PinnedRepo   string `json:"pinned_repo,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -3085,6 +3093,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 			taskIDs[i] = t.ID
 		}
 	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), tasks, resp); err != nil {
+		slog.Warn("list agent tasks: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, agent.WorkspaceID, tasks, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 	if includeUsage {
@@ -3374,11 +3387,18 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	}
 
 	resp := make([]AgentTaskResponse, 0, len(tasks))
+	kept := make([]db.AgentTaskQueue, 0, len(tasks))
 	for _, t := range tasks {
 		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
 			continue
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
+		kept = append(kept, t)
+	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), kept, resp); err != nil {
+		slog.Warn("agent task snapshot: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
+		return
 	}
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 

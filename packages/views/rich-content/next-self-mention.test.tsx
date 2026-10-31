@@ -57,12 +57,17 @@ function mountList(rows: Record<number, number>) {
 
 describe("NextSelfMention", () => {
   beforeEach(() => {
+    // Frames run inline; each one costs 8 ms on the clock the settle budget reads.
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
-      cb(0);
+      clock += 8;
+      cb(clock);
       return 0;
     });
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
   });
@@ -163,5 +168,54 @@ describe("NextSelfMention", () => {
     render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
     fireEvent.click(screen.getByRole("button"));
     expect(onJump).toHaveBeenCalledTimes(1);
+  });
+  describe("with frames the test paces", () => {
+    let queue: FrameRequestCallback[];
+    let now: number;
+    beforeEach(() => {
+      queue = [];
+      now = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+      vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => queue.push(cb));
+    });
+    // One display frame: run what was queued before it, then advance the clock.
+    const frame = (ms: number) => {
+      const due = queue.splice(0);
+      now += ms;
+      act(() => due.forEach((cb) => cb(now)));
+    };
+
+    it("keeps settling when the host re-renders with new flags mid-jump", () => {
+      const scroller = mountList({ 0: 0, 1: 50 });
+      const onJump = jumpMounting(scroller, [70, 55, 4]);
+      const { rerender } = render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+      frame(8);
+      fireEvent.click(screen.getByRole("button"));
+      rerender(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+      for (let i = 0; i < 10; i++) frame(8);
+      expect(onJump).toHaveBeenCalledTimes(3);
+    });
+
+    it("budgets the settle in time, not frames, so a 120 Hz display gets the same second", () => {
+      const scroller = mountList({ 0: 0, 1: 50 });
+      // Row 3 lands off the top for 100 frames (~0.8 s at 8 ms), then settles.
+      const tops = [...Array<number>(100).fill(70), 4];
+      const onJump = jumpMounting(scroller, tops);
+      render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+      frame(8);
+      fireEvent.click(screen.getByRole("button"));
+      for (let i = 0; i < 130; i++) frame(8);
+      expect(onJump).toHaveBeenCalledTimes(101);
+    });
+
+    it("gives up after about a second", () => {
+      const scroller = mountList({ 0: 0, 1: 50 });
+      const onJump = jumpMounting(scroller, [70]);
+      render(<NextSelfMention scrollEl={scroller} flags={[false, false, false, true]} onJump={onJump} />);
+      frame(8);
+      fireEvent.click(screen.getByRole("button"));
+      for (let i = 0; i < 400; i++) frame(8);
+      expect(onJump.mock.calls.length).toBeLessThan(140);
+    });
   });
 });

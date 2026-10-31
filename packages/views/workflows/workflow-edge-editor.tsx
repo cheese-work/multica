@@ -1,6 +1,6 @@
 "use client";
 
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "@multica/ui/icons";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
   EDITABLE_GUARDS,

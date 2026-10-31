@@ -436,7 +436,8 @@ func TestCompactWebDMContinuesAndNextClaimUsesSummary(t *testing.T) {
 	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'completed'`, taskID); count != 1 {
 		t.Fatal("the source task did not complete after continuation")
 	}
-	assertContinuedChatUnread(t, sessionID, continuation.Session.ID, 1)
+	// The agent-only summary and the run's final reply, now written into the successor.
+	assertContinuedChatUnread(t, sessionID, continuation.Session.ID, 2)
 	nextTaskID := sendDirectChat(t, ctx, agentID, continuation.Session.ID, "Take the next action")
 	next := claim()
 	if next.ID != nextTaskID || next.PriorSessionID != "" || next.PriorSessionResumeUnavailable || !strings.Contains(next.ChatMessage, "Goal: deploy safely.") || !strings.Contains(next.ChatMessage, "Take the next action") {

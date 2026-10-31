@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -54,16 +55,59 @@ func resolveRunProfile(grants []db.RunCapabilityGrant, taintIDs []string, issueT
 	return p
 }
 
-// runProfileForTask resolves the profile of a task on one issue. Taint marks
-// and the fence state have no storage yet (B5a, B4a), so they enter as empty;
-// a read error resolves restricted.
-func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID pgtype.UUID) runProfile {
+// runProfileForTask resolves the profile of a task on one issue and records the
+// task's first elevated claim (task_elevation), whose scopes and epoch then stay
+// frozen for the task. A task whose row left `elevated` is fenced for good. The
+// task's taint IDs come from its row; issue-level taint has no storage yet
+// (B5b). Any read or write error resolves restricted.
+func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, taskID pgtype.UUID, taintIDs []string) runProfile {
+	restricted := resolveRunProfile(nil, nil, false, false)
 	grants, err := h.Queries.ListActiveRunCapabilityGrants(ctx, db.ListActiveRunCapabilityGrantsParams{WorkspaceID: workspaceID, IssueID: issueID})
 	if err != nil {
 		slog.Warn("run profile grant read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
-		grants = nil
+		return restricted
 	}
-	return resolveRunProfile(grants, nil, false, false)
+	te, err := h.Queries.GetTaskElevation(ctx, taskID)
+	known := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("task elevation read failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
+		return restricted
+	}
+	if known && len(taintIDs) > 0 && te.State == elevationElevated {
+		// Taint grew after the elevation was recorded (a resumed session, a
+		// late assignment): the stored row must not stay usable. Authorization
+		// refuses tainted tasks on its own; a failed fence here is swept later.
+		if _, err := h.Queries.FenceTaintedTaskElevations(ctx, taskID); err != nil {
+			slog.Warn("tainted task elevation fence failed", "task_id", uuidToString(taskID), "error", err)
+		}
+	}
+	rp := resolveRunProfile(grants, taintIDs, false, known && te.State != elevationElevated)
+	if rp.Profile != runProfileElevated {
+		return rp
+	}
+	if known {
+		// The frozen grants must all still be live; the fence sweep may not have run yet.
+		live, err := h.Queries.CountLiveGrantsByID(ctx, te.GrantIds)
+		if err != nil || int(live) != len(te.GrantIds) {
+			return restricted
+		}
+	} else {
+		ids := make([]pgtype.UUID, len(grants))
+		for i, g := range grants {
+			ids[i] = g.ID
+		}
+		if err := h.Queries.InsertTaskElevation(ctx, db.InsertTaskElevationParams{
+			TaskID: taskID, WorkspaceID: workspaceID, IssueID: issueID, GrantIds: ids, Scopes: rp.Scopes,
+		}); err != nil {
+			slog.Warn("task elevation write failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
+			return restricted
+		}
+		if te, err = h.Queries.GetTaskElevation(ctx, taskID); err != nil {
+			return restricted
+		}
+	}
+	rp.Scopes, rp.Epoch = te.Scopes, te.Epoch
+	return rp
 }
 
 // initialProtectedPaths is the policy a workspace has until an admin writes one
@@ -135,4 +179,28 @@ func (h *Handler) SetProtectedPathPolicy(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"name": row.Name, "patterns": row.Patterns})
+}
+
+// intakePinForTask reports whether an intake item dispatched this task, the PR
+// head ref it is pinned to and the PR's repository as host/owner/name (plan
+// 3.6). Branch and repository are empty for a fork PR or a PR with no head ref
+// or repository, and when the read fails: an intake run with no pin may touch
+// no ref and no repository at all, so every failure path is the closed one.
+func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgtype.UUID) (intake bool, branch, repo string) {
+	pin, err := h.Queries.GetGitHubIntakePinForTask(ctx, db.GetGitHubIntakePinForTaskParams{WorkspaceID: workspaceID, TaskID: taskID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, "", ""
+	}
+	if err != nil {
+		slog.Warn("intake pin read failed; pinning nothing", "task_id", uuidToString(taskID), "error", err)
+		return true, "", ""
+	}
+	host := ""
+	if u, err := url.Parse(pin.HtmlUrl); err == nil {
+		host = u.Host
+	}
+	if !pin.HeadRepoSame || pin.Branch == "" || host == "" || pin.RepoOwner == "" || pin.RepoName == "" {
+		return true, "", ""
+	}
+	return true, pin.Branch, strings.ToLower(host + "/" + pin.RepoOwner + "/" + pin.RepoName)
 }

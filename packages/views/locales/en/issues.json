@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "Graph",
+    "list": "List",
+    "sub_issues": "Sub-issues",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sub-issues",
+    "done_count": "done",
+    "in_progress_count": "in progress",
+    "todo_count": "todo",
+    "closed_count": "closed",
+    "no_parent": "No parent",
+    "mentions_hint": "Loads when turned on",
+    "navigation_hint": "Click a card to open · hover for full title · ← → ↑ ↓ move focus · Esc to close",
     "title": "Relations graph",
     "direction": "Arrows point from parent to child, from a watched issue to the issue it wakes, and from a mention to its target. The current issue has a thick border.",
     "depth": "Depth",
@@ -497,6 +509,7 @@
     "agents_group": "Agents",
     "mark_done_tooltip": "Mark as done",
     "archive_tooltip": "Archive",
+    "restore_to_inbox_tooltip": "Restore to inbox",
     "pin_tooltip": "Pin to sidebar",
     "unpin_tooltip": "Unpin from sidebar",
     "quick_jump_label": "Quick navigation",
@@ -529,7 +542,8 @@
     "pull_requests_empty_title": "No linked pull requests."
   },
   "timeline": {
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "jump_to_latest": "Jump to latest"
   },
   "activity": {
     "created": "created this issue",
@@ -714,7 +728,11 @@
     "recipient_count_other": "{{count}} agents will receive this",
     "steer_attachment_notice": "Only text can join a running run, so a message with files is handled after it.",
     "restart_send": "Stop and send",
-    "restart_failed": "Couldn't stop the current run. Your message wasn't sent."
+    "restart_failed": "Couldn't stop the current run. Your message wasn't sent.",
+    "supersession": {
+      "superseded_by": "Superseded by rev-{{revision}}",
+      "supersedes": "Supersedes rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "Leave a reply...",
@@ -819,13 +837,13 @@
     "trigger_image": "[Image]",
     "summary_runs_one": "{{count}} run",
     "summary_runs_other": "{{count}} runs",
-    "latest": "Latest",
     "open_timeline": "Open timeline",
     "more_runs_one": "Show {{count}} more",
     "more_runs_other": "Show {{count}} more",
     "strip_aria": "Cost per run — open the run timeline",
     "strip_no_usage": "No usage recorded",
-    "sparkline_now": "Now"
+    "queued_count_one": "{{count}} queued",
+    "queued_count_other": "{{count}} queued"
   },
   "runs_timeline": {
     "title": "Runs",
@@ -1600,11 +1618,12 @@
       "handoffs_one": "{{count}} handoff step",
       "handoffs_other": "{{count}} handoff steps",
       "no_handoffs": "No handoffs",
-      "used_by_one": "Used by {{count}} project: {{names}}",
-      "used_by_other": "Used by {{count}} projects: {{names}}",
-      "used_by_default_one": "Used by {{count}} project: {{names}}, and issues without a project",
-      "used_by_default_other": "Used by {{count}} projects: {{names}}, and issues without a project",
-      "used_by_default_none": "Used by issues without a project",
+      "usage_default_one": "{{count}} project + no-project issues",
+      "usage_default_other": "{{count}} projects + no-project issues",
+      "usage_default_none": "Issues without a project",
+      "filter_projects": "Filter projects",
+      "no_matching_projects": "No matching projects",
+      "default_covers_no_project": "Also applies to issues without a project",
       "new_blank": "Blank workflow",
       "from_template": "From a template"
     },

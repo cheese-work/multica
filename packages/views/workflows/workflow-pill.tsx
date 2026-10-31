@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Workflow } from "lucide-react";
+import { Check, Workflow } from "@multica/ui/icons";
 import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";

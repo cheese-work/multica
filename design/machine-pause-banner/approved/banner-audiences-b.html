@@ -1,0 +1,119 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>B · Banner audiences v1</title><style>
+*{margin:0;box-sizing:border-box;font-family:"Helvetica Neue",Arial,"Liberation Sans","DejaVu Sans",sans-serif}code{font-family:"Liberation Mono","DejaVu Sans Mono",monospace}
+:root{--bg:oklch(.988 0 0);--sf:#fff;--bd:oklch(.92 .004 286.3);--fg:oklch(.141 .005 285.8);--mu:oklch(.505 .016 285.9);--fa:oklch(.606 .016 285.9);--m:oklch(.967 .001 286.4);--pri:oklch(.21 .006 285.9);--ok:oklch(.55 .16 145);--wn:oklch(.75 .16 85);--wd:oklch(.6 .14 80);--er:oklch(.577 .245 27.3);--ring:oklch(.705 .015 286);--in:oklch(.55 .18 250)}
+body{font-size:14px;line-height:20px;color:var(--fg);background:oklch(.964 .001 286.4);padding:24px}
+h1{font-size:18px;line-height:28px;font-weight:600}.lead{color:var(--mu);max-width:1100px;margin:2px 0 6px}
+.grid{display:grid;grid-template-columns:780px 390px;gap:28px;align-items:start}
+.lab{font-size:11px;line-height:15px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);margin:20px 0 6px}
+.an{font-size:12px;line-height:16px;color:var(--mu);margin:4px 0 0}.an code{color:var(--fg);font-size:11px}
+.pg{background:var(--bg);border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.bs{display:grid;gap:8px;padding:12px 12px 0}
+.bn{position:relative;border:1px solid color-mix(in oklch,var(--wn) 60%,transparent);background:color-mix(in oklch,var(--wn) 14%,var(--sf));border-radius:8px;font-size:13px;line-height:18px;overflow:hidden}
+.tp{display:flex;align-items:flex-start;gap:10px;padding:8px 8px 8px 12px}
+.tp>.i{color:var(--wd);width:16px;height:16px;margin-top:1px}.tp .sp{flex:1;padding-top:3px;min-width:0}.sp a{color:var(--fg);text-decoration:underline;text-underline-offset:2px}
+.sub{display:block;color:var(--mu);font-size:12px;line-height:16px;margin-top:2px}
+.bn.mo{border-color:var(--bd);background:var(--sf)}.bn.mo .tp>.i{color:var(--mu)}
+.bn.ok{border-color:color-mix(in oklch,var(--ok) 40%,transparent);background:color-mix(in oklch,var(--ok) 10%,var(--sf))}.bn.ok .tp>.i{color:var(--ok)}
+.ac{display:flex;gap:4px;align-items:center;flex:none}
+.b{height:28px;padding:0 10px;border:1px solid var(--bd);background:var(--sf);border-radius:8px;font-size:13px;font-weight:500;display:inline-flex;gap:6px;align-items:center;justify-content:center;color:var(--fg);white-space:nowrap}
+.b.x{height:24px;padding:0 8px;font-size:12px}.b.q{width:24px;padding:0;border-color:transparent;background:none;color:var(--mu)}.b.g{border-color:transparent;background:none;color:var(--fg);text-decoration:underline;text-underline-offset:2px}
+.ls{border-top:1px solid color-mix(in oklch,var(--wn) 45%,transparent);background:color-mix(in oklch,var(--sf) 55%,transparent)}.bn.mo .ls{border-color:var(--bd)}
+.r{display:flex;gap:10px;align-items:flex-start;padding:8px 8px 8px 12px}.r+.r{border-top:1px solid var(--bd)}.r>.i{width:16px;height:16px;margin-top:1px;color:var(--wd)}.r.o>.i{color:var(--mu)}.r.k>.i{color:var(--ok)}.r .sp{flex:1;padding-top:3px}
+.nw{display:inline-block;height:16px;padding:0 6px;border-radius:99px;background:var(--pri);color:#fff;font-size:11px;line-height:16px;font-weight:700;margin-left:4px;vertical-align:1px}
+.hd{height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--bd);background:var(--sf);margin-top:12px}
+.hd.n{margin-top:0}.ttl{font-weight:600;flex:1}.hm{display:none}
+.hb{position:relative;width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:none;color:var(--mu);display:inline-grid;place-items:center;flex:none}.hb .i{width:16px;height:16px}
+.hb.on{background:var(--m);border-color:var(--bd);color:var(--fg)}.hb .cn{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--wd);color:#fff;font-size:11px;line-height:16px;font-weight:700;text-align:center;border:2px solid var(--sf);box-sizing:content-box}.hb.on .cn{border-color:var(--m)}.hb.f{outline:2px solid var(--ring);outline-offset:1px}
+.tip{display:inline-block;background:var(--pri);color:#fff;font-size:12px;line-height:16px;padding:4px 8px;border-radius:6px;margin-top:4px}
+.bd{padding:14px 16px;color:var(--fa);font-size:12px}.sk{height:10px;border-radius:5px;background:var(--m);margin:8px 0}
+.row{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}.cell{display:grid;gap:4px;justify-items:start}.cell .lb{font-size:12px;color:var(--mu)}
+.ph{width:390px}.ph .hm{display:inline-grid}.ph .hd .hb{width:40px;height:40px}.ph .hd .hb .i{width:18px;height:18px}.ph .hd{padding:0 8px 0 4px}
+.ph .tp{padding:8px 44px 8px 12px;flex-wrap:wrap}.ph .tp .sp{flex-basis:calc(100% - 30px)}.ph .tp .ac{flex-basis:100%;padding-left:26px}.ph .b{height:40px}.ph .bn .b.q{position:absolute;top:0;right:0;width:40px;height:40px}.ph .b.q .i{width:18px;height:18px}
+.ph .r{flex-wrap:wrap;padding-right:12px}.ph .r .sp{flex-basis:calc(100% - 30px)}.ph .r .ac{flex-basis:100%;padding-left:26px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="of" viewBox="0 0 24 24"><path d="M2 8.8a15 15 0 0120 0M5 12.5a10 10 0 0114 0M8.5 16a5 5 0 017 0M12 19.5v.01M3 3l18 18"/></symbol><symbol id="xx" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol><symbol id="mo" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol><symbol id="hm" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="ch" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol><symbol id="cu" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol></defs></svg>
+<h1>B · One summary banner, header icon with a count · v1</h1>
+<p class="lead">The viewer gets at most one banner, above the page header. With one machine it reads like A (same words per audience). With several it states the count and the tasks that wait, and a Details control opens one row per machine inside the banner, each with its own Resume where the viewer may resume. One close control hides the banner for every event shown; a machine event that starts later shows it again, with a "New" tag on that row. The header icon carries a number: how many machines affect the viewer. Same icon place as A (right end of <code>PageHeader</code>). Left: desktop 780 px. Right: phone 390 px. Names, times and counts are sample data (ICT).</p>
+<div class="grid"><div>
+
+<p class="lab">1 · Single machine · daemon owner (Cheese) · paused (same words as A)</p>
+<div class="pg"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> 3 tasks left. Ends in 1 h 48 min.</span><span class="ac"><button class="b x">Resume</button><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div></div></div>
+<div class="hd"><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: x99 is paused"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button><button class="b">New issue</button></div></div>
+
+<p class="lab">1b · Single machine · daemon owner (Cheese) · drained · safe to shut down</p>
+<div class="pg"><div class="bs"><div class="bn ok" role="status"><div class="tp"><svg class="i"><use href="#ck"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> Safe to shut down. Ends in 1 h 10 min.</span><span class="ac"><button class="b x">Resume</button><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div></div></div>
+<div class="hd"><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: x99 is paused"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button><button class="b">New issue</button></div></div>
+<p class="an">Zero running tasks. Same words as the L1 banner; a green tint and a check replace the amber tint and the warning icon. It shows to the owner whether or not a queued task waits. With queued tasks waiting it reads <code>Safe to shut down. 2 tasks wait. Ends in 1 h 10 min.</code> A project lead or workspace owner who does not own the machine is not affected by a drained machine with no queued task: no banner, no icon.</p>
+
+<p class="lab">2 · Single machine · project lead (Dana) · paused · no pause rights</p>
+<div class="pg"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">x99</a> (Cheese's machine) is paused: incident.</b> 2 tasks in Mobile wait for agents on it. Ends in 22 min (14:50 ICT).<span class="sub">Only Cheese or the workspace owner can resume it.</span></span><span class="ac"><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div></div></div>
+<div class="hd"><span class="ttl">Mobile</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: x99 is paused"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button><button class="b">New issue</button></div></div>
+
+<p class="lab">3 · Several machines · workspace owner · collapsed</p>
+<div class="pg"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>3 machines need attention.</b> 6 tasks wait for agents on them. Next to end: c00 pause, 4 min.</span><span class="ac"><button class="b x g" aria-expanded="false">Details<svg class="i"><use href="#ch"/></svg></button><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div></div></div>
+<div class="hd"><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button><button class="b">New issue</button></div></div>
+
+<p class="lab">4 · Several machines · workspace owner · Details open (paused with Resume, offline, ending soon)</p>
+<div class="pg"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>3 machines need attention.</b> 6 tasks wait for agents on them.</span><span class="ac"><button class="b x g" aria-expanded="true">Details<svg class="i"><use href="#cu"/></svg></button><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div>
+<div class="ls">
+<div class="r"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">c00</a> (Cheese's machine) is paused: incident.</b> 1 task waits. Ends in 4 min; it starts then.</span><span class="ac"><button class="b x">Resume</button></span></div>
+<div class="r"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">x99</a> (Cheese's machine) is paused: maintenance.</b> 4 tasks wait. Ends in 1 h 48 min (16:20 ICT).</span><span class="ac"><button class="b x">Resume</button></span></div>
+<div class="r o"><svg class="i"><use href="#of"/></svg><span class="sp"><b><a href="#">mac-mini</a> (Dana's machine) is offline.</b> 1 task waits. Last seen 9 min ago.</span></div>
+</div></div></div>
+<div class="hd"><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button><button class="b">New issue</button></div></div>
+<p class="an">A row's Resume shows only where the viewer holds pause rights. Rows are sorted by time left, soonest first; offline rows last.</p>
+
+<p class="lab">5 · New event after a dismiss · banner returns, the new row is tagged</p>
+<div class="pg"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>2 machines need attention.</b> 5 tasks wait for agents on them.</span><span class="ac"><button class="b x g" aria-expanded="true">Details<svg class="i"><use href="#cu"/></svg></button><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></span></div>
+<div class="ls">
+<div class="r"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">x99</a> (Cheese's machine) is paused: maintenance.</b> 4 tasks wait. Ends in 1 h 20 min.</span></div>
+<div class="r o"><svg class="i"><use href="#of"/></svg><span class="sp"><b><a href="#">mac-mini</a> (Dana's machine) is offline.</b><span class="nw">New</span> 1 task waits. Last seen 1 min ago.</span></div>
+</div></div></div>
+<div class="hd"><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: 2 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">2</i></button><button class="b">New issue</button></div></div>
+<p class="an">The viewer had dismissed the x99 pause. mac-mini went offline: a new event, so the banner returns with every current row; only the new row is tagged.</p>
+
+<p class="lab">6 · Dismissed · banner gone, count stays</p>
+<div class="pg"><div class="hd n"><span class="ttl">Issues</span><button class="hb f" aria-pressed="false" aria-label="Show machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button><button class="b">New issue</button></div><div class="bd"><div class="sk" style="width:60%"></div><div class="sk" style="width:45%"></div></div></div>
+<p class="an">Focus shows the tooltip <code>3 machines need attention. Show banner</code>. Click reopens the banner (Details stays as it was) and moves focus to it.</p>
+
+<p class="lab">7 · Loading or error · nothing renders (no banner, no icon, no toast)</p>
+<div class="pg"><div class="hd n"><span class="ttl">Issues</span><button class="b">New issue</button></div><div class="bd"><div class="sk" style="width:60%"></div></div></div>
+
+<p class="lab">8 · Header icon · states</p>
+<div class="pg" style="padding:14px 16px"><div class="row">
+<div class="cell"><span class="lb">None (not rendered)</span><span style="height:28px;width:28px;border:1px dashed var(--bd);border-radius:8px"></span></div>
+<div class="cell"><span class="lb">Banner open, 1</span><button class="hb on" aria-pressed="true"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button></div>
+<div class="cell"><span class="lb">Dismissed, 3</span><button class="hb" aria-pressed="false"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button></div>
+<div class="cell"><span class="lb">Focus + tooltip</span><button class="hb f" aria-pressed="false"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button><span class="tip">3 machines need attention. Show banner</span></div>
+</div>
+<p class="an" style="margin-top:10px">Place: right end of <code>PageHeader</code>, before the page actions. The number is the text carrier of the state (not colour only); filled square and <code>aria-pressed</code> tell open from dismissed. Names: <code>Hide machine banner: x99 is paused</code> for one machine, <code>Show machine banner: 3 machines need attention</code> for several. Hit area 28 px desktop, 40 px phone. Counts above 9 read <code>9+</code>.</p></div>
+
+</div><div>
+
+<p class="lab">Phone · single machine · project lead</p>
+<div class="pg ph"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">x99</a> (Cheese's machine) is paused: incident.</b> 2 tasks in Mobile wait for agents on it. Ends in 22 min (14:50 ICT).<span class="sub">Only Cheese or the workspace owner can resume it.</span></span><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></div></div></div>
+<div class="hd"><button class="hb hm" aria-label="Open navigation"><svg class="i"><use href="#hm"/></svg></button><span class="ttl">Mobile</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: x99 is paused"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button></div></div>
+
+<p class="lab">Phone · single machine · owner · drained</p>
+<div class="pg ph"><div class="bs"><div class="bn ok" role="status"><div class="tp"><svg class="i"><use href="#ck"/></svg><span class="sp"><b>x99 is paused: maintenance.</b> Safe to shut down. Ends in 1 h 10 min.</span><span class="ac"><button class="b x">Resume</button></span><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></div></div></div>
+<div class="hd"><button class="hb hm" aria-label="Open navigation"><svg class="i"><use href="#hm"/></svg></button><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: x99 is paused"><svg class="i"><use href="#mo"/></svg><i class="cn">1</i></button></div></div>
+
+<p class="lab">Phone · several · collapsed</p>
+<div class="pg ph"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>3 machines need attention.</b> 6 tasks wait for agents on them. Next to end: c00 pause, 4 min.</span><span class="ac"><button class="b x g" aria-expanded="false">Details<svg class="i"><use href="#ch"/></svg></button></span><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></div></div></div>
+<div class="hd"><button class="hb hm" aria-label="Open navigation"><svg class="i"><use href="#hm"/></svg></button><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button></div></div>
+
+<p class="lab">Phone · several · Details open</p>
+<div class="pg ph"><div class="bs"><div class="bn" role="status"><div class="tp"><svg class="i"><use href="#al"/></svg><span class="sp"><b>3 machines need attention.</b> 6 tasks wait for agents on them.</span><span class="ac"><button class="b x g" aria-expanded="true">Details<svg class="i"><use href="#cu"/></svg></button></span><button class="b q" aria-label="Dismiss the machine banner"><svg class="i"><use href="#xx"/></svg></button></div>
+<div class="ls">
+<div class="r"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">c00</a> (Cheese's machine) is paused: incident.</b> 1 task waits. Ends in 4 min; it starts then.</span><span class="ac"><button class="b x">Resume</button></span></div>
+<div class="r"><svg class="i"><use href="#al"/></svg><span class="sp"><b><a href="#">x99</a> (Cheese's machine) is paused: maintenance.</b> 4 tasks wait. Ends in 1 h 48 min (16:20 ICT).</span><span class="ac"><button class="b x">Resume</button></span></div>
+<div class="r o"><svg class="i"><use href="#of"/></svg><span class="sp"><b><a href="#">mac-mini</a> (Dana's machine) is offline.</b> 1 task waits. Last seen 9 min ago.</span></div>
+</div></div></div>
+<div class="hd"><button class="hb hm" aria-label="Open navigation"><svg class="i"><use href="#hm"/></svg></button><span class="ttl">Issues</span><button class="hb on" aria-pressed="true" aria-label="Hide machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button></div></div>
+
+<p class="lab">Phone · dismissed</p>
+<div class="pg ph"><div class="hd n"><button class="hb hm" aria-label="Open navigation"><svg class="i"><use href="#hm"/></svg></button><span class="ttl">Issues</span><button class="hb" aria-pressed="false" aria-label="Show machine banner: 3 machines need attention"><svg class="i"><use href="#mo"/></svg><i class="cn">3</i></button></div><div class="bd"><div class="sk" style="width:60%"></div></div></div>
+
+</div></div></body></html>

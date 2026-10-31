@@ -43,9 +43,17 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useT } from "@/lib/i18n";
+import {
+  chatAnchorKey,
+  loadReadingAnchor,
+  restoreIndex,
+} from "@/lib/reading-anchor";
+import { useReadingAnchorRecorder } from "@/lib/use-reading-anchor";
 
 interface Props {
   messages: ChatMessage[];
+  /** Active session; null for a blank new chat. Keys the list and its reading anchor. */
+  sessionId: string | null;
   loading: boolean;
   /** Has the workspace ever started a chat? Drives empty-state copy. */
   hasSessions: boolean;
@@ -73,6 +81,7 @@ interface Props {
 
 export function ChatMessageList({
   messages,
+  sessionId,
   loading,
   hasSessions,
   agent,
@@ -105,6 +114,22 @@ export function ChatMessageList({
         attachments: message.attachments,
       })),
     [messages],
+  );
+
+  // Reading position (CHE-1857): record the top visible message per session,
+  // and reopen on it after a remount. Read once per session: a later scroll
+  // must not move the open position under the reader.
+  const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
+  const messageIds = useMemo(() => messages.map((m) => m.id), [messages]);
+  const anchorRecorder = useReadingAnchorRecorder(anchorKey, messageIds);
+  const [viewabilityCallbackPairs] = useState(() => [anchorRecorder.pair]);
+  const hasMessages = messageIds.length > 0;
+  const initialIndex = useMemo(
+    () => (anchorKey ? restoreIndex(loadReadingAnchor(anchorKey), messageIds) : undefined),
+    // Re-read once messages first load (they may arrive after the session id),
+    // not on every later change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [anchorKey, hasMessages],
   );
 
   if (loading && messages.length === 0) {
@@ -161,13 +186,16 @@ export function ChatMessageList({
       disabled={!selectingId}
       style={{ flex: 1 }}
     >
-    {/* `key` on first message id forces remount on session switch so
-        `startRenderingFromBottom` re-fires and we land at the new
-        session's bottom (instead of inheriting the previous session's
-        scroll position). Cheap because sessions are switched, not
-        re-rendered every keystroke. */}
+    {/* `key` on the session id forces remount on session switch so the
+        initial position re-fires (saved anchor, else
+        `startRenderingFromBottom`) instead of inheriting the previous
+        session's scroll position. Keyed on the session, not the first
+        message, so loading older messages does not remount the list. */}
     <FlashList
-      key={messages[0]?.id ?? "empty"}
+      key={sessionId ?? "new"}
+      initialScrollIndex={initialIndex}
+      viewabilityConfigCallbackPairs={viewabilityCallbackPairs}
+      onScroll={anchorRecorder.onScroll}
       data={messages}
       keyExtractor={(m) => m.id}
       renderItem={({ item }) => (
@@ -302,6 +330,12 @@ function MessageRow({
     );
   }
 
+  // The agent-only summary a continued DM starts with: collapsed, never the
+  // visible first reply (CHE-2119). Web: ContinuationSummary.
+  if (message.message_kind === "continuation_summary") {
+    return <ContinuationSummary message={message} isSelecting={isSelecting} />;
+  }
+
   // Assistant: timeline fold + markdown + elapsed caption. See
   // AssistantRow for why timeline is lifted into its own component.
   return (
@@ -312,6 +346,41 @@ function MessageRow({
       onQuickAction={onQuickAction}
       quickActionsDisabled={quickActionsDisabled}
     />
+  );
+}
+
+function ContinuationSummary({
+  message,
+  isSelecting,
+}: {
+  message: ChatMessage;
+  isSelecting: boolean;
+}) {
+  const { t } = useT("chat");
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <View
+          accessibilityRole="button"
+          accessibilityLabel={t("continuation_summary")}
+          className="flex-row items-center gap-1 active:opacity-70"
+        >
+          <Ionicons name="chevron-forward" size={12} color="#71717a" />
+          <Text className="text-xs text-muted-foreground">
+            {t("continuation_summary")}
+          </Text>
+        </View>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <View className="mt-1">
+          <Markdown
+            content={message.content}
+            attachments={message.attachments}
+            selectable={isSelecting}
+          />
+        </View>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

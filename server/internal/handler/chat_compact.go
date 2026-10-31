@@ -107,7 +107,7 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err = qtx.CreateChatMessage(r.Context(), db.CreateChatMessageParams{
 		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant",
-		Content:     strings.TrimSpace(redact.Text(request.Summary)),
+		Content:     strings.TrimSpace(redact.Prose(request.Summary)),
 		TaskID:      task.ID,
 		MessageKind: pgtype.Text{String: protocol.ChatMessageKindCompactionSummary, Valid: true},
 	})
@@ -123,7 +123,7 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := uuidToString(session.ID)
-	h.publishChat(protocol.EventChatMessage, workspaceID, "agent", uuidToString(task.AgentID), sessionID, protocol.ChatMessagePayload{
+	h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", uuidToString(task.AgentID), uuidToString(session.CreatorID), sessionID, protocol.ChatMessagePayload{
 		ChatSessionID: sessionID, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
 		TaskID: uuidToString(task.ID), CreatedAt: timestampToString(summary.CreatedAt),
 	})

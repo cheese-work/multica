@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -14,10 +14,15 @@ vi.mock("../../navigation", async (importActual) => ({
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
+vi.mock("../../issues/components/issue-chip", () => ({
+  IssueChip: ({ fallbackLabel, children }: { fallbackLabel?: string; children?: React.ReactNode }) => <span data-testid="issue-chip">{children ?? fallbackLabel}</span>,
+}));
+
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
+const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest },
+  api: { answerDecisionRequest, listDecisionArtifacts },
 }));
 
 const card = {
@@ -27,7 +32,27 @@ const card = {
 };
 
 describe("DecisionRequestCard accessibility", () => {
+  beforeEach(() => listDecisionArtifacts.mockResolvedValue([]));
   afterEach(() => vi.useRealTimers());
+
+  it("puts 'You are approving' before the ask, and renders as today without files", async () => {
+    const view = () => (
+      <QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    const { container, unmount } = renderWithI18n(view());
+    await waitFor(() => expect(listDecisionArtifacts).toHaveBeenCalledWith("request"));
+    expect(screen.queryByRole("region", { name: "You are approving" })).toBeNull();
+    expect(container.querySelector('[data-testid="decision-request-artifacts"]')).toBeNull();
+    unmount();
+    listDecisionArtifacts.mockResolvedValue([{
+      attachment_id: "att", label: "Design revision 5", sha256: "3f9a2c1".padEnd(64, "0"),
+      attachment: { id: "att", filename: "design-rev5.md", content_type: "text/markdown", size_bytes: 10, download_url: "https://files.test/att" },
+    }]);
+    renderWithI18n(view());
+    const section = await screen.findByRole("region", { name: "You are approving" });
+    const ask = screen.getByTestId("decision-request-ask");
+    expect(section.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 
   it("makes only an open ask annotatable, with the agent reply label and marker slot", () => {
     const view = (state: "open" | "answered" | "withdrawn") => (
@@ -60,6 +85,14 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveFocus();
     expect(screen.getByRole("region", { name: "Decision request: Open" })).toHaveTextContent("27 Oct 2026, 06:30 ICT");
     expect(document.querySelector("time")).toHaveAttribute("datetime", card.created_at);
+  });
+
+  it("names the asking agent in the header and omits it when the name is missing", () => {
+    const view = renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, asking_agent_name: "x99-claude-sonnet" }} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.getByTestId("decision-request-asker")).toHaveTextContent("from x99-claude-sonnet");
+    view.unmount();
+    renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.queryByTestId("decision-request-asker")).toBeNull();
   });
 
   it("links an answered card to the issue comment that recorded it", () => {
@@ -150,6 +183,34 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
   });
+
+  // Copied from the golden output of decisiontx Ask.Content() (ask_test.go).
+  const goldenAsk = "**Context**\nA change is ready. You decide when it ships.\n\n**Decision**\nShip now?\n\n**What is at stake**\nA bad change could reach users.\n\n**Options**\n- **NOW**: NOW happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n- **LATER**: LATER happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n\n**Recommendation**\nLATER\n\n**Default if no reply**\nLATER\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\nRan all requested checks.\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/11111111-1111-4111-8111-111111111111) · [Comment](/issue/11111111-1111-4111-8111-111111111111#comment-22222222-2222-4222-8222-222222222222)";
+
+  const renderCard = (ask: string) => renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, ask }} /></WorkspaceSlugProvider></QueryClientProvider>);
+
+  it("renders the ELI10 ask in order with Details collapsed", () => {
+    const { container } = renderCard(goldenAsk);
+    const text = container.textContent ?? "";
+    const marks = ["Context", "Options", "Recommendation", "Default if no reply", "Details", "Ran all requested checks.", "Investigate in issue"].map((mark) => text.indexOf(mark));
+    expect(marks.every((at, index) => at >= 0 && at > (marks[index - 1] ?? -1))).toBe(true);
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(details?.querySelector("summary")).toHaveTextContent("Details");
+    expect(details).toHaveTextContent("Ran all requested checks.");
+    expect(details).not.toHaveTextContent("Investigate in issue");
+    expect(text.match(/Investigate in issue/g)).toHaveLength(1);
+  });
+
+  it("renders a legacy ask unchanged", () => {
+    const legacy = "**Agent did**\nSwept PRs.\n\n**Decision**\nKeep gates?\n\n**Options**\n- KEEP\n- WAIVE";
+    const { container } = renderCard(legacy);
+    expect(container.querySelector("details")).toBeNull();
+    expect(container).toHaveTextContent("Swept PRs.");
+    expect(container).toHaveTextContent("Keep gates?");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+  });
 });
 
 describe("DecisionRequestCard answering", () => {
@@ -174,12 +235,29 @@ describe("DecisionRequestCard answering", () => {
   it("sends on Enter and keeps Shift+Enter as a newline", async () => {
     renderCard();
     const user = userEvent.setup();
-    const field = screen.getByRole("textbox", { name: "Or write an answer" });
+    const field = screen.getByRole("textbox", { name: "Add a note (optional)" });
     await user.type(field, "Ship C{Shift>}{Enter}{/Shift}later");
     expect(answerDecisionRequest).not.toHaveBeenCalled();
     expect(field).toHaveValue("Ship C\nlater");
     await user.keyboard("{Enter}");
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "Ship C\nlater" });
+  });
+
+  it("labels the text field a note beside options, and an answer when the card has none", () => {
+    const { unmount } = renderCard();
+    expect(screen.getByRole("textbox", { name: "Add a note (optional)" })).toBeInTheDocument();
+    expect(screen.queryByText("Or write an answer")).toBeNull();
+    unmount();
+    renderCard({ ...card });
+    expect(screen.getByRole("textbox", { name: "Write an answer" })).toBeInTheDocument();
+  });
+
+  it("sends the option and the note together", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day{Enter}");
+    expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
   it("has no answer form once the card is answered", () => {
@@ -191,7 +269,7 @@ describe("DecisionRequestCard answering", () => {
     answerDecisionRequest.mockRejectedValue(new Error("boom"));
     renderCard({ ...card });
     const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "hi{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Write an answer" }), "hi{Enter}");
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not send");
   });
 
@@ -200,7 +278,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     expect(screen.getByText("Enter sends · Shift+Enter for a new line")).toBeVisible();
     expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Or write an answer")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
+    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
   });
 
   it("keeps the answer and disables Send while offline", async () => {
@@ -208,7 +286,7 @@ describe("DecisionRequestCard answering", () => {
     try {
       renderCard();
       const user = userEvent.setup();
-      const field = screen.getByRole("textbox", { name: "Or write an answer" });
+      const field = screen.getByRole("textbox", { name: "Add a note (optional)" });
       await user.type(field, "Ship C{Enter}");
       expect(field).toHaveValue("Ship C");
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -227,7 +305,7 @@ describe("DecisionRequestCard answering", () => {
     const { rerender } = renderWithI18n(view(withOptions));
     const user = userEvent.setup();
     await user.click(screen.getByRole("radio", { name: /Option B/ }));
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "my note");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "my note");
     rerender(view({ ...withOptions, state: "answered", record_comment_id: "record" }));
     expect(screen.getByTestId("decision-request-record")).toBeInTheDocument();
     const kept = screen.getByTestId("decision-request-kept-draft");
@@ -245,7 +323,7 @@ describe("DecisionRequestCard answering", () => {
     );
     const { rerender } = renderWithI18n(view(withOptions));
     const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
     await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalled());
     rerender(view({ ...withOptions, state: "answered" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -265,7 +343,7 @@ describe("DecisionRequestCard answering", () => {
     it("event first, then 201: never shows the unposted-draft warning", async () => {
       const { rerender, view, resolve } = setup();
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       rerender(view({ ...withOptions, state: "answered", record_comment_id: "own" }));
       expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -277,7 +355,7 @@ describe("DecisionRequestCard answering", () => {
     it("201 first, then event: clears the draft and shows no warning", async () => {
       const { rerender, view, resolve } = setup();
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       await resolve();
       expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -294,7 +372,7 @@ describe("DecisionRequestCard answering", () => {
       );
       const { rerender } = renderWithI18n(view(withOptions));
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       rerender(view({ ...withOptions, state: "answered" }));
       await act(async () => { rejectAnswer(new ApiError("answered first", 409, "Conflict")); await Promise.resolve(); });
@@ -307,7 +385,7 @@ describe("DecisionRequestCard answering", () => {
     renderCard();
     const user = userEvent.setup();
     await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "with a note{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note{Enter}");
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");

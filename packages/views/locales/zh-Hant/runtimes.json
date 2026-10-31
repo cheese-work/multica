@@ -653,5 +653,66 @@
       "cancel": "取消",
       "done": "已斷開 Qoder"
     }
+  },
+  "machine_pause": {
+    "title": "機器",
+    "taking_work": "正在接收任務",
+    "tasks_running_other": "{{count}} 個任務執行中",
+    "offline": "離線",
+    "offline_last_seen": "最後上線：{{time}}。暫停仍會阻止接收新任務。",
+    "pause": "暫停",
+    "resume": "恢復",
+    "menu_hint": "停止接收新任務，執行中的任務會繼續完成。暫停會自動結束。",
+    "reasons": {
+      "maintenance": {
+        "name": "維護",
+        "label": "維護",
+        "hint": "計畫內工作。2 小時後結束"
+      },
+      "incident": {
+        "name": "故障",
+        "label": "故障",
+        "hint": "發生問題。30 分鐘後結束"
+      },
+      "suspended": {
+        "name": "停用",
+        "label": "停用",
+        "hint": "停止服務。30 分鐘後結束"
+      }
+    },
+    "paused": "已暫停：{{reason}}",
+    "paused_offline": "已暫停：{{reason}} · 離線",
+    "draining_other": "收尾中：還剩 {{count}} 個任務",
+    "draining_offline_other": "收尾中：還剩 {{count}} 個任務（最後回報 {{time}}）",
+    "safe_to_shut_down": "可以安全關機",
+    "paused_by": "{{name}}，{{time}}",
+    "ends_in": "{{duration}}後結束（{{time}}）",
+    "duration": {
+      "hours_minutes": "{{hours}} 小時 {{minutes}} 分鐘",
+      "hours": "{{hours}} 小時",
+      "minutes": "{{minutes}} 分鐘"
+    },
+    "ended": "{{reason}}暫停已於 {{time}} 結束。{{machine}} 已恢復接收任務。",
+    "ended_offline": "{{reason}}暫停已於 {{time}} 結束。{{machine}} 重新連線後會恢復接收任務。",
+    "no_rights": "只有機器擁有者和工作區擁有者可以暫停或恢復。",
+    "no_rights_ask": "只有機器擁有者和工作區擁有者可以暫停或恢復。請聯絡 {{names}}。",
+    "error": {
+      "title": "無法載入機器狀態",
+      "hint": "載入完成前，暫停和恢復無法使用。",
+      "alert": "無法載入機器狀態。請檢查網路連線後重試。",
+      "retry": "重試"
+    },
+    "toast": {
+      "pause_failed": "無法暫停機器",
+      "resume_failed": "無法恢復機器"
+    },
+    "banner": {
+      "paused": "{{machine}} 已暫停：{{reason}}。",
+      "tasks_left_other": "還剩 {{count}} 個任務。",
+      "tasks_left_stale_other": "還剩 {{count}} 個任務（離線，數量可能已過期）。",
+      "drained": "可以安全關機。",
+      "ends_in": "{{duration}}後結束。",
+      "ends_soon": "{{duration}}後結束，之後 {{machine}} 會恢復接收任務。"
+    }
   }
 }
