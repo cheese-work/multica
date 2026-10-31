@@ -93,7 +93,6 @@ export function CliInstallInstructions() {
             labels={{
               group: t(($) => $.cli_install.platform_group),
               macosLinux: t(($) => $.cli_install.platform_macos_linux),
-              windows: t(($) => $.cli_install.platform_windows),
             }}
           >
             {(cmd) => <CommandRow cmd={cmd} />}

@@ -1658,6 +1658,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	daemonUpdate := loadDaemonUpdateSource()
 	h.DaemonUpdate = daemonUpdate
 
+	// The install script is the only public /api/daemon route (CHE-2641): a
+	// fresh host runs `curl <server>/api/daemon/install.sh | bash` before it has
+	// any token. It is static and holds no secret; the manifest and binary it
+	// downloads stay behind DaemonAuth below.
+	r.Get("/api/daemon/install.sh", handler.DaemonInstallScript)
+
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache, cloudPATVerifier))

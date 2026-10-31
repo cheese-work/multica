@@ -94,6 +94,10 @@ let getMainWindow: () => BrowserWindow | null = () => null;
 let statusPollInProgress = false;
 let cachedCliBinary: string | null | undefined = undefined;
 let cliResolvePromise: Promise<string | null> | null = null;
+// True while resolveCliBinary has no usable local CLI and cannot download one
+// yet because the server URL or the profile token has not arrived. The result
+// is deliberately not cached; syncing either prerequisite re-runs bootstrap.
+let cliAwaitingDownloadPrereqs = false;
 let cachedCliBinaryVersion: string | null | undefined = undefined;
 // Set when a CLI version mismatch was detected but the running daemon is
 // busy executing tasks. The poll loop retries the check on each tick and
@@ -501,13 +505,39 @@ async function probeCliBinary(
 }
 
 /**
+ * The server URL and profile token the CLI download needs. `null` until the
+ * renderer has reported the URL and the token has been synced to the profile.
+ */
+async function cliDownloadPrereqs(): Promise<{
+  serverUrl: string;
+  token: string;
+} | null> {
+  const serverUrl = targetApiBaseUrl;
+  if (!serverUrl) return null;
+  const active = await ensureActiveProfile();
+  if (!active) return null;
+  const { token } = await readProfileConfig(active.name);
+  return typeof token === "string" && token ? { serverUrl, token } : null;
+}
+
+/** Re-runs the CLI bootstrap that was deferred for missing download prerequisites. */
+function retryDeferredCliBootstrap(): void {
+  if (!cliAwaitingDownloadPrereqs || cachedCliBinary !== undefined) return;
+  lifecycleOperations
+    .runForeground(() => bootstrapCli())
+    .catch((err) => console.warn("[daemon] deferred CLI bootstrap failed:", err));
+}
+
+/**
  * Returns a usable `multica` binary path. Priority:
  *   1. Cached result from a previous successful resolve.
  *   2. Bundled binary shipped with the Desktop app (`bundle-cli.mjs`).
  *   3. Managed binary already installed in userData (`managedCliPath`).
  *   4. Download + install latest release into userData.
  *   5. `multica` on PATH (dev convenience / user-installed via brew).
- * Returns `null` only when all of the above fail.
+ * Returns `null` only when all of the above fail. When the download cannot
+ * start yet (no server URL or token), returns `null` without caching it and
+ * without trying PATH, so the server build still wins once they arrive.
  *
  * Bundled is preferred so Desktop iterates in lockstep with Go changes in
  * the same repo — avoids the 404 / stale-API problem when the Desktop's
@@ -542,9 +572,18 @@ async function resolveCliBinary(): Promise<string | null> {
       }
     }
 
+    const prereqs = await cliDownloadPrereqs();
+    if (!prereqs) {
+      cliAwaitingDownloadPrereqs = true;
+      return null;
+    }
+    cliAwaitingDownloadPrereqs = false;
+
     try {
       const installed = await ensureManagedCli({
         forceInstall: existsSync(managed),
+        serverUrl: prereqs.serverUrl,
+        token: prereqs.token,
       });
       const version = await probeCliBinary(installed, "managed");
       if (version) {
@@ -1250,6 +1289,8 @@ function startPolling(): void {
 async function bootstrapCli(): Promise<void> {
   const bin = await resolveCliBinary();
   if (!bin) {
+    // Deferred, not failed: stay in "installing_cli" until the URL/token land.
+    if (cliAwaitingDownloadPrereqs) return;
     currentState = "cli_not_found";
     sendStatus({ state: "cli_not_found" });
     return;
@@ -1411,6 +1452,7 @@ export function setupDaemonManager(
       targetApiBaseUrl = normalized;
       invalidateActiveProfile();
       await pollOnce();
+      retryDeferredCliBootstrap();
     }
   });
   ipcMain.handle("daemon:start", () => {
@@ -1444,6 +1486,7 @@ export function setupDaemonManager(
     "daemon:sync-token",
     async (_event, token: string, userId: string) => {
       const result = await syncToken(token, userId);
+      retryDeferredCliBootstrap();
       if (result.userChanged) {
         await restartDaemonAfterUserSwitch(result.active);
       }
