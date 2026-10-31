@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -240,6 +241,9 @@ func (handler *Handler) retryIdleGuardMove(ctx context.Context, settings idleGua
 	}
 	if len(idle) == 0 {
 		return handler.endIdleGuardEpisode(ctx, workspaceID, issueID)
+	}
+	if at, err := time.Parse(time.RFC3339Nano, receipt.AlertAt); err == nil && time.Since(at) < idleGuardAlertCooldown {
+		return nil
 	}
 	return handler.actOnIdleFinding(ctx, settings, idleGuardFinding{WorkspaceID: workspaceID, IssueID: issueID, Status: idle[0].Status, IdleSince: idle[0].IdleSince.Time, settings: settings})
 }

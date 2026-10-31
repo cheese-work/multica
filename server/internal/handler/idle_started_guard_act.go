@@ -19,6 +19,8 @@ import (
 
 const (
 	idleGuardAttempts = 3
+	// idleGuardAlertCooldown spaces the attempts to queue the leader alert.
+	idleGuardAlertCooldown = 10 * time.Minute
 
 	idleGuardMoved    = "moved"
 	idleGuardRefused  = "refused"
@@ -48,6 +50,11 @@ type idleGuardReceipt struct {
 	AlertID   string `json:"alert_id,omitempty"`
 	CommentID string `json:"comment_id,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// AlertAttempts, AlertAt and AlertError track the give-up alert: the leader
+	// could not be routed, so the give-up waits out a cooldown and tries again.
+	AlertAttempts int    `json:"alert_attempts,omitempty"`
+	AlertAt       string `json:"alert_at,omitempty"`
+	AlertError    string `json:"alert_error,omitempty"`
 }
 
 // issueMoveGuard runs inside a status write's transaction, after the issue row
@@ -97,7 +104,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 	idleGuardBeforeMove()
 	receipt := idleGuardReceipt{State: idleGuardMoved, From: issue.Status, IdleSince: finding.IdleSince.UTC().Format(time.RFC3339Nano)}
 	if prior.State == idleGuardRefused {
-		receipt.Attempts = prior.Attempts
+		receipt.Attempts, receipt.AlertAttempts, receipt.AlertAt, receipt.AlertError = prior.Attempts, prior.AlertAttempts, prior.AlertAt, prior.AlertError
 	}
 	var unavailable error
 	if receipt.To, receipt.Kind, unavailable = handler.idleGuardTarget(ctx, issue); unavailable != nil {
@@ -108,7 +115,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 			}
 			return nil
 		case errors.Is(unavailable, errIdleGuardNoTarget):
-			return handler.refuseIdleMove(ctx, issue, receipt, unavailable)
+			return handler.refuseIdleMove(ctx, settings, issue, receipt, unavailable)
 		}
 		return unavailable
 	}
@@ -168,7 +175,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 	case err != nil && isStaleMove(err):
 		return nil
 	case err != nil:
-		return handler.refuseIdleMove(ctx, issue, receipt, err)
+		return handler.refuseIdleMove(ctx, settings, issue, receipt, err)
 	case !moved:
 		return nil
 	}
@@ -271,24 +278,28 @@ func (handler *Handler) idleGuardStatusAvailable(ctx context.Context, issue db.I
 
 // refuseIdleMove records a move that did not happen, counts the attempt and,
 // on the last one, gives up with a comment and a leader alert.
-func (handler *Handler) refuseIdleMove(ctx context.Context, issue db.Issue, receipt idleGuardReceipt, cause error) error {
+func (handler *Handler) refuseIdleMove(ctx context.Context, settings idleGuardSettings, issue db.Issue, receipt idleGuardReceipt, cause error) error {
 	if receipt.To == "" {
 		receipt.To = issuestatus.Blocked
 	}
-	receipt.State, receipt.MovedAt, receipt.Attempts, receipt.Error = idleGuardRefused, "", receipt.Attempts+1, truncateIdleGuardError(cause)
+	receipt.State, receipt.MovedAt, receipt.Error = idleGuardRefused, "", truncateIdleGuardError(cause)
+	receipt.Attempts = min(receipt.Attempts+1, idleGuardAttempts)
 	slog.Warn("idle_started_guard move refused", "issue_id", uuidToString(issue.ID), "attempt", receipt.Attempts, "err", cause)
 	if receipt.Attempts < idleGuardAttempts {
 		_, err := writeIdleGuardReceipt(ctx, handler.Queries, issue, receipt)
 		return err
 	}
-	return handler.giveUpIdleMove(ctx, issue, receipt)
+	return handler.giveUpIdleMove(ctx, settings, issue, receipt)
 }
 
-// giveUpIdleMove ends a refused episode. The give-up note, the leader alert and
-// the gave_up receipt commit together: a failure or a crash leaves the receipt
-// refused, and the next pass tries the whole give-up again. Only the alert may
-// fail alone (no squad to route to); the note is the promised visible result.
-func (handler *Handler) giveUpIdleMove(ctx context.Context, issue db.Issue, receipt idleGuardReceipt) error {
+// giveUpIdleMove ends a refused episode. Under the issue lock it first checks
+// that the issue is still idle and still waits on nobody; anything that shows
+// life ends the episode with no note and no alert. It then queues the leader
+// alert. gave_up commits only with a delivered alert and its note, so a gave_up
+// receipt means the leader was told. A failed alert leaves the receipt refused
+// with the admission error, spaced by a cooldown; when the attempts run out the
+// note still commits, says the alert failed, and the receipt records that.
+func (handler *Handler) giveUpIdleMove(ctx context.Context, settings idleGuardSettings, issue db.Issue, receipt idleGuardReceipt) error {
 	tx, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -305,20 +316,24 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, issue db.Issue, rece
 	if err != nil {
 		return err
 	}
-	if current.Status != receipt.From {
-		return nil
+	waiting, err := handler.idleGuardGiveUpOver(ctx, q, settings, current, receipt)
+	if err != nil {
+		return err
 	}
-	receipt.State = idleGuardGaveUp
+	if waiting {
+		if _, err := q.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "idle_guard"}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	note := fmt.Sprintf("Idle started-issue guard: gave up after %d attempts to move this issue from %s to %s (idle since %s). Last error: %s",
 		receipt.Attempts, receipt.From, receipt.To, idleGuardWhen(receipt.IdleSince), receipt.Error)
-	var alert db.AgentTaskQueue
 	savepoint, err := tx.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if alert, err = handler.admitIdleGuardLeaderTask(ctx, handler.Queries.WithTx(savepoint), current, note); err != nil {
-		slog.Warn("idle_started_guard could not alert the leader after giving up", "issue_id", uuidToString(issue.ID), "err", err)
-		alert = db.AgentTaskQueue{}
+	alert, admitErr := handler.admitIdleGuardLeaderTask(ctx, handler.Queries.WithTx(savepoint), current, note)
+	if admitErr != nil {
 		err = savepoint.Rollback(ctx)
 	} else {
 		err = savepoint.Commit(ctx)
@@ -326,6 +341,19 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, issue db.Issue, rece
 	if err != nil {
 		return err
 	}
+	if admitErr != nil {
+		slog.Warn("idle_started_guard could not alert the leader after giving up", "issue_id", uuidToString(issue.ID), "err", admitErr)
+		receipt.AlertAttempts++
+		receipt.AlertAt, receipt.AlertError = time.Now().UTC().Format(time.RFC3339Nano), truncateIdleGuardError(admitErr)
+		if receipt.AlertAttempts < idleGuardAttempts {
+			if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
+		note += " The leader alert could not be queued after " + fmt.Sprint(receipt.AlertAttempts) + " attempts: " + receipt.AlertError
+	}
+	receipt.State = idleGuardGaveUp
 	created, err := q.CreateComment(ctx, db.CreateCommentParams{
 		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: note, Type: "system",
 	})
@@ -347,6 +375,32 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, issue db.Issue, rece
 		handler.TaskService.PublishTaskEnqueued(ctx, alert)
 	}
 	return nil
+}
+
+// idleGuardGiveUpOver reports that the issue no longer needs a give-up: it left
+// the status, new activity, a run, a continuation or an open decision request
+// showed up since the retry scan. It runs under the give-up locks.
+func (handler *Handler) idleGuardGiveUpOver(ctx context.Context, q *db.Queries, settings idleGuardSettings, current db.Issue, receipt idleGuardReceipt) (bool, error) {
+	if current.Status != receipt.From {
+		return true, nil
+	}
+	idle, err := q.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
+		WorkspaceID: current.WorkspaceID, IssueID: current.ID, Statuses: []string{receipt.From}, AfterSeconds: settings.threshold().Seconds(),
+		Episode: pgtype.Bool{Bool: true, Valid: true},
+	})
+	if err != nil || len(idle) == 0 {
+		return true, err
+	}
+	requests, err := q.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: current.WorkspaceID, IssueID: current.ID})
+	if err != nil {
+		return false, err
+	}
+	for _, request := range requests {
+		if request.Status == "open" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // idleGuardWhen shows a receipt's exact idle time to the second.
