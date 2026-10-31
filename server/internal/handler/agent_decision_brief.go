@@ -46,7 +46,7 @@ func stopAgentDecisions(ctx context.Context, q dbExecutor, workspaceID pgtype.UU
 
 // A proposal or stored record outside the allowlist is an excluded category.
 type agentDecisionExcludedError struct {
-	refusal decisionIntentRefusal
+	refusal error
 	reason  string
 }
 
@@ -54,7 +54,7 @@ func (e agentDecisionExcludedError) Error() string { return e.refusal.Error() }
 func (e agentDecisionExcludedError) Unwrap() error { return e.refusal }
 
 func agentDecisionExcluded(message, reason string) error {
-	return agentDecisionExcludedError{refusal: agentDecisionRefusal(message).(decisionIntentRefusal), reason: reason}
+	return agentDecisionExcludedError{refusal: agentDecisionRefusal(message), reason: reason}
 }
 
 func (h *Handler) SetAgentDecisionSetting(w http.ResponseWriter, r *http.Request) {
