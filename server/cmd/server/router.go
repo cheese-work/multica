@@ -2153,6 +2153,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
+			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
+			// ordinary runs keep their ambient capabilities (risk decision 8).
+			r.Use(h.TaskTokenWriteScope(strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_TASK_WRITE_SCOPE")))))
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
