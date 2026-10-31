@@ -121,6 +121,7 @@ func printGitHubHalts(cmd *cobra.Command, resp githubHalts) error {
 }
 
 type githubIntakeDeliveries struct {
+	Truncated  bool `json:"truncated"`
 	Deliveries []struct {
 		Event          string `json:"event"`
 		DeliveryGUID   string `json:"delivery_guid"`
@@ -160,6 +161,9 @@ func runGitHubIntakeList(cmd *cobra.Command, _ []string) error {
 	rows := make([][]string, 0, len(resp.Deliveries))
 	for _, d := range resp.Deliveries {
 		rows = append(rows, []string{d.Event, d.DeliveryGUID, d.State, d.Reason, d.RevisionState, d.RevisionReason, strconv.Itoa(d.Tasks), d.ReceivedAt})
+	}
+	if resp.Truncated {
+		fmt.Fprintln(os.Stderr, "scan cap reached: rows after the last one shown were not read; narrow --since")
 	}
 	cli.PrintTable(os.Stdout, []string{"EVENT", "DELIVERY", "STATE", "REASON", "REV_STATE", "REV_REASON", "RUNS", "RECEIVED_AT"}, rows)
 	return nil

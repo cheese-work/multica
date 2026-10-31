@@ -131,6 +131,71 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 	return err
 }
 
+const findGitHubWebhookRevisionForIntake = `-- name: FindGitHubWebhookRevisionForIntake :one
+SELECT revision.state, revision.reason,
+       (SELECT count(*) FROM github_webhook_dispatch receipt
+        WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
+          AND receipt.task_id IS NOT NULL)::int AS tasks
+FROM github_webhook_revision revision
+WHERE revision.workspace_id = $1 AND revision.installation_id = $2 AND revision.repository_id = $3
+  AND revision.object_kind = $4 AND revision.object_id = $5 AND revision.body_hash = $6
+  AND revision.event = $7 AND revision.action = $8 AND revision.sender_id = $9 AND revision.author_id = $10
+  AND revision.review_state = $11
+  AND revision.object_created_at IS NOT DISTINCT FROM $12::timestamptz
+  AND revision.object_updated_at IS NOT DISTINCT FROM $13::timestamptz
+  AND revision.object_submitted_at IS NOT DISTINCT FROM $14::timestamptz
+ORDER BY revision.created_at DESC, revision.id DESC
+LIMIT 1
+`
+
+type FindGitHubWebhookRevisionForIntakeParams struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	InstallationID    int64              `json:"installation_id"`
+	RepositoryID      int64              `json:"repository_id"`
+	ObjectKind        string             `json:"object_kind"`
+	ObjectID          int64              `json:"object_id"`
+	BodyHash          string             `json:"body_hash"`
+	Event             string             `json:"event"`
+	Action            string             `json:"action"`
+	SenderID          int64              `json:"sender_id"`
+	AuthorID          int64              `json:"author_id"`
+	ReviewState       string             `json:"review_state"`
+	ObjectCreatedAt   pgtype.Timestamptz `json:"object_created_at"`
+	ObjectUpdatedAt   pgtype.Timestamptz `json:"object_updated_at"`
+	ObjectSubmittedAt pgtype.Timestamptz `json:"object_submitted_at"`
+}
+
+type FindGitHubWebhookRevisionForIntakeRow struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+	Tasks  int32  `json:"tasks"`
+}
+
+// Same identity match as ListGitHubWebhookRevisionsForWork, scoped to one
+// workspace and without FOR UPDATE, so a redelivery resolves to its canonical
+// revision. tasks counts the runs that revision started.
+func (q *Queries) FindGitHubWebhookRevisionForIntake(ctx context.Context, arg FindGitHubWebhookRevisionForIntakeParams) (FindGitHubWebhookRevisionForIntakeRow, error) {
+	row := q.db.QueryRow(ctx, findGitHubWebhookRevisionForIntake,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.Event,
+		arg.Action,
+		arg.SenderID,
+		arg.AuthorID,
+		arg.ReviewState,
+		arg.ObjectCreatedAt,
+		arg.ObjectUpdatedAt,
+		arg.ObjectSubmittedAt,
+	)
+	var i FindGitHubWebhookRevisionForIntakeRow
+	err := row.Scan(&i.State, &i.Reason, &i.Tasks)
+	return i, err
+}
+
 const getGitHubIntakePinForTask = `-- name: GetGitHubIntakePinForTask :one
 SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
        COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
@@ -538,58 +603,46 @@ func (q *Queries) ListGitHubReconcilePullRequests(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
-const listGitHubWebhookIntakeSince = `-- name: ListGitHubWebhookIntakeSince :many
-SELECT intake.event, intake.delivery_guid, intake.state, intake.reason, intake.received_at,
-       COALESCE(revision.state, '')::text AS revision_state, COALESCE(revision.reason, '')::text AS revision_reason,
-       (SELECT count(*) FROM github_webhook_dispatch receipt
-        WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
-          AND receipt.task_id IS NOT NULL)::int AS tasks
-FROM github_webhook_intake intake
-LEFT JOIN github_webhook_revision revision ON revision.source_delivery_guid = intake.delivery_guid AND revision.workspace_id = $1
-WHERE intake.received_at >= $2
-  AND (revision.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM github_webhook_revision other WHERE other.source_delivery_guid = intake.delivery_guid))
-ORDER BY intake.received_at
-LIMIT $3
+const listGitHubWebhookIntakeScan = `-- name: ListGitHubWebhookIntakeScan :many
+SELECT delivery_guid, event, state, reason, received_at, payload
+FROM github_webhook_intake
+WHERE received_at >= $1
+ORDER BY received_at, delivery_guid
+LIMIT $2
 `
 
-type ListGitHubWebhookIntakeSinceParams struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ReceivedAt  pgtype.Timestamptz `json:"received_at"`
-	Limit       int32              `json:"limit"`
+type ListGitHubWebhookIntakeScanParams struct {
+	ReceivedAt pgtype.Timestamptz `json:"received_at"`
+	Limit      int32              `json:"limit"`
 }
 
-type ListGitHubWebhookIntakeSinceRow struct {
-	Event          string             `json:"event"`
-	DeliveryGuid   string             `json:"delivery_guid"`
-	State          string             `json:"state"`
-	Reason         string             `json:"reason"`
-	ReceivedAt     pgtype.Timestamptz `json:"received_at"`
-	RevisionState  string             `json:"revision_state"`
-	RevisionReason string             `json:"revision_reason"`
-	Tasks          int32              `json:"tasks"`
+type ListGitHubWebhookIntakeScanRow struct {
+	DeliveryGuid string             `json:"delivery_guid"`
+	Event        string             `json:"event"`
+	State        string             `json:"state"`
+	Reason       string             `json:"reason"`
+	ReceivedAt   pgtype.Timestamptz `json:"received_at"`
+	Payload      []byte             `json:"payload"`
 }
 
-// Read-only delivery metadata (no payload, no signature) for the intake check
-// (CHE-2669). Rows whose revision belongs to another workspace are hidden; rows
-// with no revision yet (denied, unsigned, deferred) have no workspace and show.
-func (q *Queries) ListGitHubWebhookIntakeSince(ctx context.Context, arg ListGitHubWebhookIntakeSinceParams) ([]ListGitHubWebhookIntakeSinceRow, error) {
-	rows, err := q.db.Query(ctx, listGitHubWebhookIntakeSince, arg.WorkspaceID, arg.ReceivedAt, arg.Limit)
+// Intake rows for the read-only intake check (CHE-2669). Selects the payload so
+// the handler can resolve the workspace; the handler never returns it.
+func (q *Queries) ListGitHubWebhookIntakeScan(ctx context.Context, arg ListGitHubWebhookIntakeScanParams) ([]ListGitHubWebhookIntakeScanRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubWebhookIntakeScan, arg.ReceivedAt, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListGitHubWebhookIntakeSinceRow{}
+	items := []ListGitHubWebhookIntakeScanRow{}
 	for rows.Next() {
-		var i ListGitHubWebhookIntakeSinceRow
+		var i ListGitHubWebhookIntakeScanRow
 		if err := rows.Scan(
-			&i.Event,
 			&i.DeliveryGuid,
+			&i.Event,
 			&i.State,
 			&i.Reason,
 			&i.ReceivedAt,
-			&i.RevisionState,
-			&i.RevisionReason,
-			&i.Tasks,
+			&i.Payload,
 		); err != nil {
 			return nil, err
 		}

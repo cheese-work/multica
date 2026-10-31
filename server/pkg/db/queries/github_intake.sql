@@ -181,18 +181,30 @@ LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pul
 WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
 LIMIT 1;
 
--- name: ListGitHubWebhookIntakeSince :many
--- Read-only delivery metadata (no payload, no signature) for the intake check
--- (CHE-2669). Rows whose revision belongs to another workspace are hidden; rows
--- with no revision yet (denied, unsigned, deferred) have no workspace and show.
-SELECT intake.event, intake.delivery_guid, intake.state, intake.reason, intake.received_at,
-       COALESCE(revision.state, '')::text AS revision_state, COALESCE(revision.reason, '')::text AS revision_reason,
+-- name: ListGitHubWebhookIntakeScan :many
+-- Intake rows for the read-only intake check (CHE-2669). Selects the payload so
+-- the handler can resolve the workspace; the handler never returns it.
+SELECT delivery_guid, event, state, reason, received_at, payload
+FROM github_webhook_intake
+WHERE received_at >= $1
+ORDER BY received_at, delivery_guid
+LIMIT $2;
+
+-- name: FindGitHubWebhookRevisionForIntake :one
+-- Same identity match as ListGitHubWebhookRevisionsForWork, scoped to one
+-- workspace and without FOR UPDATE, so a redelivery resolves to its canonical
+-- revision. tasks counts the runs that revision started.
+SELECT revision.state, revision.reason,
        (SELECT count(*) FROM github_webhook_dispatch receipt
         WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
           AND receipt.task_id IS NOT NULL)::int AS tasks
-FROM github_webhook_intake intake
-LEFT JOIN github_webhook_revision revision ON revision.source_delivery_guid = intake.delivery_guid AND revision.workspace_id = $1
-WHERE intake.received_at >= $2
-  AND (revision.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM github_webhook_revision other WHERE other.source_delivery_guid = intake.delivery_guid))
-ORDER BY intake.received_at
-LIMIT $3;
+FROM github_webhook_revision revision
+WHERE revision.workspace_id = $1 AND revision.installation_id = $2 AND revision.repository_id = $3
+  AND revision.object_kind = $4 AND revision.object_id = $5 AND revision.body_hash = $6
+  AND revision.event = $7 AND revision.action = $8 AND revision.sender_id = $9 AND revision.author_id = $10
+  AND revision.review_state = $11
+  AND revision.object_created_at IS NOT DISTINCT FROM sqlc.narg(object_created_at)::timestamptz
+  AND revision.object_updated_at IS NOT DISTINCT FROM sqlc.narg(object_updated_at)::timestamptz
+  AND revision.object_submitted_at IS NOT DISTINCT FROM sqlc.narg(object_submitted_at)::timestamptz
+ORDER BY revision.created_at DESC, revision.id DESC
+LIMIT 1;

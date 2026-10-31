@@ -1,14 +1,24 @@
 package handler
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/jackc/pgx/v5"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// githubIntakeScanCap bounds the rows read per call. Rows of other workspaces
+// are skipped after the read, so the response says when the cap cut the scan.
+const githubIntakeScanCap = 2000
 
 type githubIntakeDelivery struct {
 	Event          string `json:"event"`
@@ -37,22 +47,59 @@ func (h *Handler) ListGitHubIntake(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rows, err := h.Queries.ListGitHubWebhookIntakeSince(r.Context(), db.ListGitHubWebhookIntakeSinceParams{
-		WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
-		ReceivedAt:  pgtype.Timestamptz{Time: since, Valid: true},
-		Limit:       int32(limit),
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	rows, err := h.Queries.ListGitHubWebhookIntakeScan(r.Context(), db.ListGitHubWebhookIntakeScanParams{
+		ReceivedAt: pgtype.Timestamptz{Time: since, Valid: true}, Limit: githubIntakeScanCap,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read intake")
 		return
 	}
-	out := make([]githubIntakeDelivery, 0, len(rows))
+	out := make([]githubIntakeDelivery, 0, limit)
 	for _, row := range rows {
+		if len(out) == limit {
+			break
+		}
+		revision, ok, err := h.githubIntakeRevision(r.Context(), workspaceID, row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read intake")
+			return
+		}
+		if !ok {
+			continue // no revision in this workspace: not ours to show
+		}
 		out = append(out, githubIntakeDelivery{
 			Event: row.Event, DeliveryGUID: row.DeliveryGuid, State: row.State, Reason: row.Reason,
-			ReceivedAt: timestampToString(row.ReceivedAt), RevisionState: row.RevisionState,
-			RevisionReason: row.RevisionReason, Tasks: row.Tasks,
+			ReceivedAt: timestampToString(row.ReceivedAt), RevisionState: revision.State,
+			RevisionReason: revision.Reason, Tasks: revision.Tasks,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deliveries": out})
+	writeJSON(w, http.StatusOK, map[string]any{"deliveries": out, "truncated": len(rows) == githubIntakeScanCap && len(out) < limit})
+}
+
+// githubIntakeRevision finds the workspace's revision for a delivery by the same
+// identity the worker uses, so a redelivery (new GUID, same content) resolves to
+// its canonical revision. A payload that does not parse, or has no revision in
+// this workspace, is not associated with it.
+func (h *Handler) githubIntakeRevision(ctx context.Context, workspaceID pgtype.UUID, row db.ListGitHubWebhookIntakeScanRow) (db.FindGitHubWebhookRevisionForIntakeRow, bool, error) {
+	var payload githubIntakePayload
+	if json.Unmarshal(row.Payload, &payload) != nil {
+		return db.FindGitHubWebhookRevisionForIntakeRow{}, false, nil
+	}
+	object, kind, _, invalid := payload.revision(row.Event)
+	if invalid != "" {
+		return db.FindGitHubWebhookRevisionForIntakeRow{}, false, nil
+	}
+	digest := sha256.Sum256([]byte(object.Body))
+	revision, err := h.Queries.FindGitHubWebhookRevisionForIntake(ctx, db.FindGitHubWebhookRevisionForIntakeParams{
+		WorkspaceID: workspaceID, InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID,
+		ObjectKind: kind, ObjectID: object.ID, BodyHash: hex.EncodeToString(digest[:]),
+		Event: row.Event, Action: payload.Action, SenderID: payload.Sender.ID, AuthorID: object.User.ID, ReviewState: object.State,
+		ObjectCreatedAt: githubIntakeTimestamp(object.CreatedAt), ObjectUpdatedAt: githubIntakeTimestamp(object.UpdatedAt),
+		ObjectSubmittedAt: githubIntakeTimestamp(object.SubmittedAt),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return revision, false, nil
+	}
+	return revision, err == nil, err
 }
