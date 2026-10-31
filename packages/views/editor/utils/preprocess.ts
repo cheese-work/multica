@@ -40,7 +40,12 @@ import { stripChannelMediaMarkers } from "@multica/core/types";
  */
 export function preprocessMarkdown(
   markdown: string,
-  opts: { cdnDomain: string; autolinkIssueIdentifiers?: boolean },
+  opts: {
+    cdnDomain: string;
+    autolinkIssueIdentifiers?: boolean;
+    /** Leave an issue key that ends the text plain (still-streaming content). */
+    deferTrailingIssueIdentifier?: boolean;
+  },
 ): string {
   if (!markdown) return "";
   const { cdnDomain } = opts;
@@ -51,7 +56,9 @@ export function preprocessMarkdown(
   const visibleMarkdown = stripChannelMediaMarkers(markdown);
   const step1 = preprocessMentionShortcodes(visibleMarkdown);
   const step2 = opts?.autolinkIssueIdentifiers
-    ? preprocessIssueIdentifiers(step1)
+    ? preprocessIssueIdentifiers(step1, {
+        deferTrailing: opts.deferTrailingIssueIdentifier,
+      })
     : step1;
   const step3 = preprocessLinks(step2);
   const step4 = preprocessFileCards(step3, cdnDomain);
