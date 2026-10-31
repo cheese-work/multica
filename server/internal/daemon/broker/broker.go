@@ -7,6 +7,7 @@ package broker
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +36,14 @@ type Pin struct {
 	Base      string `json:"base"` // commit the task branch started from (bundle prerequisite)
 	RemoteURL string `json:"-"`    // push target; the run never supplies a URL
 	Objects   string `json:"-"`    // cache object directory, borrowed so bundle prerequisites resolve
+	// Tokens, Slug and Bases switch on GitHub access: a token per push and the
+	// run's own-PR operations. Slug is owner/repo; Bases are the branches a PR
+	// may target (the default branch, or a stack base named on the issue).
+	Tokens *Tokens  `json:"-"`
+	Slug   string   `json:"-"`
+	Bases  []string `json:"-"`
+	// Deadline bounds one operation; zero means 10 minutes.
+	Deadline time.Duration `json:"-"`
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -48,7 +59,10 @@ type Broker struct {
 	ln     net.Listener
 	srv    *http.Server
 	socket string
-	mu     sync.Mutex // one push at a time per run
+	mu     sync.Mutex // one operation at a time per run
+	bg     context.Context
+	stop   context.CancelFunc // ends background token-revoke retries
+	wg     sync.WaitGroup     // those retries
 }
 
 // New starts a broker listening on socket (mode 0600).
@@ -69,9 +83,11 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 		return nil, fmt.Errorf("broker: %w", err)
 	}
 	b := &Broker{pin: p, log: log, ln: ln, socket: socket}
+	b.bg, b.stop = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.handlePush)
+	mux.HandleFunc("POST /pr", b.handlePR)
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -82,9 +98,12 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 }
 
 // Close stops the broker and removes the socket.
+// A token still waiting to be revoked gets one last try, then an alert.
 func (b *Broker) Close() error {
 	err := b.srv.Close()
 	_ = os.Remove(b.socket)
+	b.stop()
+	b.wg.Wait()
 	return err
 }
 
@@ -98,9 +117,28 @@ func (p Pin) validate() error {
 		return fmt.Errorf("broker: pin ref %q is not a branch", p.Ref)
 	case !filepath.IsAbs(p.Objects):
 		return errors.New("broker: pin objects directory is not absolute")
+	case p.Tokens != nil:
+		if _, err := p.repoID(); err != nil {
+			return err
+		}
+		if !slugRE.MatchString(p.Slug) || len(p.Bases) == 0 {
+			return errors.New("broker: pin needs an owner/repo slug and at least one base branch for GitHub access")
+		}
 	}
 	return nil
 }
+
+var slugRE = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+func (p Pin) repoID() (int64, error) {
+	id, err := strconv.ParseInt(p.Repo, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("broker: pin repository %q is not a numeric ID", p.Repo)
+	}
+	return id, nil
+}
+
+func (p Pin) deadline() time.Duration { return or(p.Deadline, operationDeadline) }
 
 func validRef(ref string) bool {
 	return exec.Command("git", "check-ref-format", ref).Run() == nil
@@ -135,6 +173,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	ctx := r.Context()
 	scratch, err := os.MkdirTemp("", "multica-broker-")
 	if err != nil {
 		return "", http.StatusInternalServerError, err
@@ -146,8 +185,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		return "", http.StatusBadRequest, err
 	}
 	work := filepath.Join(scratch, "work.git")
-	ctx := r.Context()
-	if out, err := b.git(ctx, "", "init", "--bare", "--template=", work); err != nil {
+	if out, err := b.git(ctx, "", nil, "init", "--bare", "--template=", work); err != nil {
 		return "", http.StatusInternalServerError, fmt.Errorf("init: %s", out)
 	}
 	if err := os.MkdirAll(filepath.Join(work, "objects", "info"), 0o755); err != nil {
@@ -164,22 +202,59 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		return "", http.StatusBadRequest, errors.New("bundle must hold exactly the task branch")
 	}
 	sha = heads[0].sha
-	if out, err := b.git(ctx, work, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
+	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
 		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", firstLine(out))
 	}
-	if out, err := b.git(ctx, work, "push", b.pin.RemoteURL, sha+":"+b.pin.Ref); err != nil {
+	var auth []string
+	if b.pin.Tokens != nil {
+		g, status, err := b.mint(ctx, false)
+		if err != nil {
+			return sha, status, err
+		}
+		defer b.revoke(g)
+		auth = basicAuthEnv(g.token)
+	}
+	ctx, cancel := context.WithTimeout(ctx, b.pin.deadline())
+	defer cancel()
+	if out, err := b.git(ctx, work, auth, "push", b.pin.RemoteURL, sha+":"+b.pin.Ref); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return sha, http.StatusGatewayTimeout, fmt.Errorf("push: operation deadline of %v passed", b.pin.deadline())
+		}
 		return sha, http.StatusConflict, fmt.Errorf("push: %s", strings.ReplaceAll(pushReason(out), b.pin.RemoteURL, "<remote>"))
 	}
 	return sha, http.StatusOK, nil
 }
 
-// git runs git with the hardened environment; dir may be empty.
-func (b *Broker) git(ctx context.Context, dir string, args ...string) (string, error) {
+// basicAuthEnv hands a token to git as an HTTP header through the environment,
+// so it never appears in a command line or in .git/config.
+func basicAuthEnv(token string) []string {
+	return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))}
+}
+
+// mint returns a one-repository token for the pinned repository and the HTTP
+// status to answer with if that fails. The operation deadline starts once the
+// token exists, because that is when the credential is live.
+func (b *Broker) mint(ctx context.Context, pr bool) (grant, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	id, _ := b.pin.repoID() // checked in New
+	g, err := b.pin.Tokens.mint(ctx, id, pr)
+	if err != nil {
+		return grant{}, http.StatusBadGateway, err
+	}
+	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "pr", pr)
+	return g, 0, nil
+}
+
+// git runs git with the hardened environment plus env; dir may be empty.
+func (b *Broker) git(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	if dir != "" {
 		args = append([]string{"--git-dir", dir}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), gitEnv...)
+	cmd.Env = append(append(os.Environ(), gitEnv...), env...)
+	cmd.WaitDelay = time.Second // a hook that outlives the killed git must not hold the deadline open
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

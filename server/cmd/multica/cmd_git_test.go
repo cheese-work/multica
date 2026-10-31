@@ -33,3 +33,10 @@ func TestGitPushRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestGitPRNoBroker(t *testing.T) {
+	t.Setenv("MULTICA_BROKER_SOCKET", "")
+	if err := runGitPR(gitPRCmd, []string{"create"}); err == nil || !strings.Contains(err.Error(), "no push broker") {
+		t.Fatalf("pr without a broker: %v", err)
+	}
+}

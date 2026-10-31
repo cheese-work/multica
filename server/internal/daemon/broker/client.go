@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,9 +22,7 @@ const SocketEnv = "MULTICA_BROKER_SOCKET"
 
 // Push bundles the checkout's current task branch and sends it to the broker.
 func Push(ctx context.Context, socket, repoDir string, out io.Writer) error {
-	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-	}}}
+	hc := unixClient(socket)
 	repoDir, err := repoRoot(repoDir)
 	if err != nil {
 		return err
@@ -64,6 +63,36 @@ func Push(ctx context.Context, socket, repoDir string, out io.Writer) error {
 	}
 	_, err = fmt.Fprintf(out, "pushed %s\n", ref)
 	return err
+}
+
+func unixClient(socket string) *http.Client {
+	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}}}
+}
+
+// PR asks the broker for one operation on the run's own pull request.
+func PR(ctx context.Context, socket string, req PRRequest) (PRResult, error) {
+	var res PRResult
+	body, err := json.Marshal(req)
+	if err != nil {
+		return res, err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker/pr", bytes.NewReader(body))
+	if err != nil {
+		return res, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	resp, err := unixClient(socket).Do(hreq)
+	if err != nil {
+		return res, fmt.Errorf("broker unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return res, fmt.Errorf("pr %s refused (%d): %s", req.Op, resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return res, json.NewDecoder(resp.Body).Decode(&res)
 }
 
 func getJSON(ctx context.Context, hc *http.Client, u string, v any) error {
