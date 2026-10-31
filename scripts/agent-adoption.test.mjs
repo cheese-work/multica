@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
   findExistingIssue,
   main,
   newCliFlags,
+  planMap,
   parseAgentFacing,
   runMapCommand,
   touchesAgentSurface,
@@ -151,7 +153,6 @@ test("finding 3: a PR adding only a local cmd.Flags() flag keeps the host readba
 
 test("finding 1: the map command runs with the range in its env, and a failure is not swallowed", () => {
   const ctx = { prev: range.prev, next: range.next, repo: "o/r" };
-  assert.equal(runMapCommand("", ctx), "");
   assert.equal(runMapCommand('echo "map $ADOPTION_PREV $ADOPTION_NEXT $ADOPTION_REPO"', ctx).trim(), `map ${range.prev} ${range.next} o/r`);
   assert.throws(() => runMapCommand("exit 3", ctx));
 });
@@ -174,4 +175,33 @@ test("finding 5: reuse mode exits 0 on a hit, 1 on no match and 2 on a failed lo
   assert.equal(run(file("hit.json", JSON.stringify({ issues: [{ identifier: "CHE-9", description: `adoption-key: sha:${range.next}` }] }))), 0);
   assert.equal(run(file("none.json", JSON.stringify({ issues: [] }))), 1);
   assert.equal(run(file("bad.json", "{")), 2);
+});
+
+// Review round 2 finding 1: the CHE-2793 generator is wired, not an optional hook.
+const generatorUrl = "repos/cheese-work/multica-dotfiles/contents/scripts/upstream_sync_plan.py";
+
+test("round 2 finding 1: with the generator path set, the map is its fork-range output for the deployed range", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adoption-gen-"));
+  const generator = join(dir, "upstream_sync_plan.py");
+  writeFileSync(generator, 'import sys\nprint("MAP " + " ".join(sys.argv[1:]))\n');
+  const ctx = { prev: range.prev, next: range.next, repo: "o/r" };
+  const map = planMap({ ADOPTION_GENERATOR: generator }, ctx).trim();
+  const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+  assert.equal(map, `MAP fork-range --git-dir ${gitDir} --prev ${range.prev} --next ${range.next} --repo o/r`);
+});
+
+test("round 2 finding 1: ADOPTION_MAP_CMD overrides the generator; neither set is an error", () => {
+  const ctx = { prev: range.prev, next: range.next, repo: "o/r" };
+  assert.equal(planMap({ ADOPTION_MAP_CMD: "echo override" }, ctx).trim(), "override");
+  assert.throws(() => planMap({}, ctx), /ADOPTION_GENERATOR/);
+});
+
+test("round 2 finding 1: an empty map is an error, never an issue without its adoption map", () => {
+  assert.throws(() => runMapCommand("true", { prev: range.prev, next: range.next, repo: "o/r" }), /empty/);
+});
+
+test("round 2 finding 1: the workflow fetches the generator and hands its path to the plan step", () => {
+  assert.ok(workflow.includes(generatorUrl), "fetches upstream_sync_plan.py from multica-dotfiles");
+  assert.match(workflow, /ADOPTION_GENERATOR: \$\{\{ steps\.generator\.outputs\.path \}\}/);
+  assert.match(workflow, /secrets\.ADOPTION_GENERATOR_TOKEN/);
 });

@@ -6,8 +6,9 @@
 //   Post-deploy:     node scripts/agent-adoption.mjs plan --prev <sha> --next <sha> --repo <owner/repo> --out <dir>
 //     Reads merged PRs in prev..next from git and `gh`, writes <dir>/title.txt and <dir>/body.md and
 //     prints `issue=true|false` plus the log line. Opening or reusing the issue stays with the workflow.
-//     ADOPTION_MAP_CMD, when set, is run with ADOPTION_PREV/NEXT/REPO in its env; its stdout is the
-//     adoption map (the CHE-2793 generator). A failing command fails the plan.
+//     When the range has an agent-facing PR the CHE-2793 generator runs (`python3 $ADOPTION_GENERATOR
+//     fork-range ...`, or ADOPTION_MAP_CMD instead) with ADOPTION_PREV/NEXT/REPO in its env; its stdout is
+//     the adoption map. A failing command, a missing generator or an empty map fails the plan.
 //   Dedup:           node scripts/agent-adoption.mjs reuse --next <sha> [--file <search.json>]
 //     Reads `multica issue search --output json`; exit 0 + identifier = same-SHA issue exists, 1 = none,
 //     2 = the lookup output is unusable (the workflow must not create after a 2).
@@ -123,13 +124,25 @@ export function buildAdoption({ prev, next, prs, map = "" }) {
   return { issue: true, log: `${agentPrs.length} agent-facing PR(s) in ${range}`, title: `Agent adoption: C00 deploy ${short(next)}`, body };
 }
 
-// The CHE-2793 map generator, run as a shell command so the repo variable can point at any checkout.
-export function runMapCommand(command, { prev, next, repo }) {
-  if (!command) return "";
-  return execFileSync("sh", ["-c", command], {
+// The CHE-2793 map generator, run as a shell command. An empty map is an error: the issue must never
+// ship without the instruction surfaces the generator found.
+export function runMapCommand(command, { prev, next, repo }, env = process.env) {
+  const map = execFileSync("sh", ["-c", command], {
     encoding: "utf8",
-    env: { ...process.env, ADOPTION_PREV: prev, ADOPTION_NEXT: next, ADOPTION_REPO: repo },
+    env: { ...env, ADOPTION_PREV: prev, ADOPTION_NEXT: next, ADOPTION_REPO: repo },
   });
+  if (!map.trim()) throw new Error("adoption map generator printed an empty map");
+  return map;
+}
+
+// ADOPTION_MAP_CMD overrides; otherwise the workflow-fetched generator (ADOPTION_GENERATOR) in fork-range mode.
+export function planMap(env, ctx) {
+  const command = env.ADOPTION_MAP_CMD
+    || (env.ADOPTION_GENERATOR
+      ? 'python3 "$ADOPTION_GENERATOR" fork-range --git-dir "$(git rev-parse --absolute-git-dir)" --prev "$ADOPTION_PREV" --next "$ADOPTION_NEXT" --repo "$ADOPTION_REPO"'
+      : "");
+  if (!command) throw new Error("neither ADOPTION_GENERATOR nor ADOPTION_MAP_CMD is set; no adoption map");
+  return runMapCommand(command, ctx, { ...process.env, ...env });
 }
 
 // Identifier of the issue whose body carries this deployed SHA's marker; the 12-character title is only a search key.
@@ -180,8 +193,11 @@ export function main(argv, env) {
     const prev = arg(argv, "prev");
     const next = arg(argv, "next");
     const repo = arg(argv, "repo");
-    const map = runMapCommand(env.ADOPTION_MAP_CMD ?? "", { prev, next, repo });
-    const out = buildAdoption({ prev, next, prs: collectPrs(prev, next, repo), map });
+    const ctx = { prev, next, repo };
+    const prs = collectPrs(prev, next, repo);
+    // The generator only runs when the range has an agent-facing PR; "no adoption issue" needs no map.
+    const map = buildAdoption({ prev, next, prs }).issue ? planMap(env, ctx) : "";
+    const out = buildAdoption({ prev, next, prs, map });
     console.log(out.log);
     console.log(`issue=${out.issue}`);
     if (out.issue) {
