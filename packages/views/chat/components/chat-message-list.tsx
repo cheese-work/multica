@@ -73,7 +73,7 @@ import { DecisionRequestCard } from "./decision-request-card";
 import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
 import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
 import { stripWakeupHeader } from "@multica/core/chat/wakeup";
-import { PredecessorDms } from "./predecessor-dms";
+import { ContinuationBlock } from "./continuation-block";
 import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
@@ -157,6 +157,8 @@ interface ChatListContext {
   continuedFromSessionId?: string | null;
   /** Earlier DMs of the continuation chain, oldest first; empty while the session list is unknown. */
   predecessors: ChatSession[];
+  /** The agent's summary of the earlier DM, shown inside the continuation block instead of as a row. */
+  continuationSummary?: ChatMessage;
   onQuoteMessage?: (content: string) => void;
   continuedIntoSessionId?: string | null;
   showForkHint: boolean;
@@ -185,6 +187,8 @@ type ChatRenderItem =
       taskId: string | null;
       /** First message of its (local) calendar day — gets a day separator. */
       dayStart: boolean;
+      /** A reply carried over from the earlier DM's last turn; its tool steps stay there. */
+      carriedReply: boolean;
     }
   | { key: string; kind: "live"; taskId: string };
 
@@ -203,11 +207,13 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
   const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pt-4")}>
-      {context?.continuedFromSessionId && (
-        <ContinuationAnnouncement sessionId={context.continuedFromSessionId} direction="from" />
-      )}
-      {context && context.predecessors.length > 0 && (
-        <PredecessorDms sessions={context.predecessors} onQuoteMessage={context.onQuoteMessage} />
+      {context && (context.continuedFromSessionId || context.continuationSummary || context.predecessors.length > 0) && (
+        <ContinuationBlock
+          continuedFromSessionId={context.continuedFromSessionId}
+          summary={context.continuationSummary}
+          predecessors={context.predecessors}
+          onQuoteMessage={context.onQuoteMessage}
+        />
       )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
@@ -230,7 +236,7 @@ function ChatListFooter({ context }: { context?: ChatListContext }) {
   return (
     <div className={cn(CHAT_COLUMN, "pb-4 space-y-4")}>
       {context?.continuedIntoSessionId && (
-        <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} direction="into" />
+        <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} />
       )}
       {context?.showForkHint && (
         <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
@@ -252,15 +258,14 @@ function WithWakeupRail({ agentId, avatar = true, children }: { agentId?: string
   return agentId ? <WakeupReplyRail agentId={agentId} avatar={avatar}>{children}</WakeupReplyRail> : <>{children}</>;
 }
 
-function ContinuationAnnouncement({ sessionId, direction }: { sessionId: string; direction: "from" | "into" }) {
+function ContinuationAnnouncement({ sessionId }: { sessionId: string }) {
   const { t } = useT("chat");
   const wsPaths = useWorkspacePaths();
   const href = `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
   return (
     <p className="text-caption text-muted-foreground py-2">
-      {direction === "from" ? <>{t(($) => $.message_list.continued_from)}{" "}</> : null}
       <AppLink href={href} className="underline underline-offset-2 hover:text-foreground">
-        {direction === "from" ? t(($) => $.message_list.previous_dm) : t(($) => $.message_list.continued_in)}
+        {t(($) => $.message_list.continued_in)}
       </AppLink>
     </p>
   );
@@ -458,11 +463,21 @@ export function ChatMessageList({
   // swap, not a remount. The onboarding kickoff is a server-authored carrier
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
+  //
+  // A rolled-over DM opens with the agent's summary and, when the old run was
+  // still going, that run's final reply (CHE-2119). The summary moves into the
+  // continuation block; the reply (carried_from_session_id) keeps only its
+  // text, because the tool steps belong to the earlier DM.
+  const continuationSummary = useMemo(
+    () => (hasOlderMessages ? undefined : messages.find((m) => m.message_kind === "continuation_summary")),
+    [messages, hasOlderMessages],
+  );
   const renderItems: ChatRenderItem[] = useMemo(() => {
     const items: ChatRenderItem[] = messages
       .filter(
         (message) =>
           message.message_kind !== "onboarding_kickoff" &&
+          message !== continuationSummary &&
           // The quote card replaces the plain "Decision recorded" line; one
           // without a card (legacy row) still renders as text.
           !(message.message_kind === "decision_reference" && message.decision_ref),
@@ -473,12 +488,13 @@ export function ChatMessageList({
         message,
         taskId: message.task_id ?? null,
         dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
+        carriedReply: !!message.carried_from_session_id,
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
     }
     return items;
-  }, [messages, hasLive, pendingTaskId]);
+  }, [messages, hasLive, pendingTaskId, continuationSummary]);
 
   // Jump to a message: scroll once it is loaded, ask for older pages until it
   // is, and settle "missing" when none are left. The target is settled once so
@@ -689,6 +705,7 @@ export function ChatMessageList({
     isFetchingOlderMessages,
     continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
     predecessors,
+    continuationSummary,
     onQuoteMessage,
     continuedIntoSessionId,
     showForkHint,
@@ -1006,6 +1023,7 @@ const MessageBubble = memo(function MessageBubble({
     <WithWakeupRail agentId={wakeupAgentId}>
       <AssistantMessage
         taskId={message.task_id ?? null}
+        hideSteps={item.carriedReply}
         message={message}
         isPending={isPending}
         transformContent={transformContent}
@@ -1057,6 +1075,7 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
  */
 function AssistantMessage({
   taskId,
+  hideSteps = false,
   message,
   isPending,
   transformContent,
@@ -1068,6 +1087,8 @@ function AssistantMessage({
   showStarterCards = false,
 }: {
   taskId: string | null;
+  /** Show only the reply text: the run's steps live in another DM. */
+  hideSteps?: boolean;
   message?: ChatMessage;
   isPending: boolean;
   transformContent?: (content: string) => string;
@@ -1079,7 +1100,7 @@ function AssistantMessage({
   /** This turn is Mika's onboarding opening — render starter cards, not chips. */
   showStarterCards?: boolean;
 }) {
-  const canFetchTaskMessages = isTaskMessageTaskId(taskId);
+  const canFetchTaskMessages = isTaskMessageTaskId(taskId) && !hideSteps;
 
   // Use the shared taskMessagesOptions so this cache entry is the same one
   // seeded by useRealtimeSync during task execution — zero refetch when the
@@ -1093,8 +1114,8 @@ function AssistantMessage({
   // array reference when a duplicate event arrives, so this recomputes only
   // when a genuinely new message lands.
   const timeline: ChatTimelineItem[] = useMemo(
-    () => transformTimeline(buildTimeline(taskMessages ?? []), transformContent),
-    [taskMessages, transformContent],
+    () => transformTimeline(buildTimeline(hideSteps ? [] : taskMessages ?? []), transformContent),
+    [taskMessages, transformContent, hideSteps],
   );
 
   // Content is settled once the persisted message exists; until then text is
