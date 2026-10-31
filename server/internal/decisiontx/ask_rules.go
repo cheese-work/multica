@@ -19,6 +19,7 @@ var (
 	anyLink     = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|https?://\S+`)
 	uuidPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	hexPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
+	codeSpan    = regexp.MustCompile("`[^`]*`")
 )
 
 const minAgentDidWords = 4
@@ -69,7 +70,12 @@ func (ask Ask) validateReadable() error {
 	}
 	for _, field := range fields {
 		// Only a Markdown link destination is exempt; link text and bare URLs are not.
-		if uuidPattern.MatchString(maskLinkDestinations(field.text)) {
+		// An action step is the exception: its code spans are exact commands.
+		text := maskLinkDestinations(field.text)
+		if strings.HasPrefix(field.path, "ask.steps[") {
+			text = codeSpan.ReplaceAllString(text, "``") // an exact command may carry a literal ID
+		}
+		if uuidPattern.MatchString(text) {
 			return &AskError{field.path, "has a bare ID; link it as [what it is](link)"}
 		}
 	}

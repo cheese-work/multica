@@ -181,6 +181,15 @@ func TestDecodeActionAsk(test *testing.T) {
 		{name: "recommendation rejected", mutate: func(ask map[string]any) { ask["recommendation"] = "Yes" }, want: "ask.recommendation is not a known field"},
 		{name: "stakes rejected", mutate: func(ask map[string]any) { ask["stakes_if_wrong"] = "Bad" }, want: "ask.stakes_if_wrong is not a known field"},
 		{name: "bare id in a step", mutate: func(ask map[string]any) { ask["steps"] = []any{"Open " + testCommentID} }, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
+		{name: "uuid in a command literal", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"Run `multica attachment download " + testCommentID + " -o ~/Downloads`."}
+		}},
+		{name: "uuid in prose beside a command", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"Run `multica attachment download " + testCommentID + "` then open " + testIssueID}
+		}, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
+		{name: "inline list around a command", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"1. Run `multica issue get " + testIssueID + "` 2. Reply."}
+		}, want: "ask.steps[0] has an inline numbered list; put each item on its own line as a Markdown list"},
 		{name: "steps not a list", mutate: func(ask map[string]any) { ask["steps"] = "x" }, want: "ask.steps must be a list of strings"},
 	}
 	for _, tc := range cases {
