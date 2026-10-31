@@ -102,6 +102,38 @@ type opsBody struct {
 	} `json:"failures"`
 }
 
+func opsFetch(t *testing.T, token string) opsBody {
+	t.Helper()
+	status, raw := opsGet(t, token, "?window=1h")
+	if status != 200 {
+		t.Fatalf("GET /api/ops = %d %s", status, raw)
+	}
+	var body opsBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, raw)
+	}
+	return body
+}
+
+type opsTotals struct{ unknownFail, allWait, unknownWait int }
+
+func (b opsBody) totals() (o opsTotals) {
+	for _, f := range b.Failures {
+		if f.Machine == "__unknown__" && f.FailureReason == "timeout" {
+			o.unknownFail += f.TaskCount
+		}
+	}
+	for _, w := range b.QueueWait {
+		switch w.Machine {
+		case "":
+			o.allWait += w.Samples
+		case "__unknown__":
+			o.unknownWait += w.Samples
+		}
+	}
+	return o
+}
+
 // A terminal task with no runtime is attributed to __unknown__ in charts 2
 // and 3, the all-machines wait row keeps machine "", and the snapshot rows
 // feed the "now" strip and chart 1.
@@ -117,6 +149,9 @@ func TestOpsPayloadAttributesUnknownMachine(t *testing.T) {
 		testPool.Exec(bg, `DELETE FROM ops_snapshot WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(bg, `DELETE FROM agent_task_event WHERE workspace_id = $1`, testWorkspaceID)
 	})
+	// The shared fixture workspace may already hold tasks from other tests: compare to a baseline.
+	adminToken := opsTokenFor(t, "admin")
+	base := opsFetch(t, adminToken).totals()
 	for _, q := range []string{
 		`INSERT INTO agent_task_queue (agent_id, status, created_at, started_at, completed_at, failure_reason)
 		 VALUES ($1, 'failed', now() - interval '10 min', now() - interval '9 min', now() - interval '8 min', 'timeout')`,
@@ -136,42 +171,22 @@ func TestOpsPayloadAttributesUnknownMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, raw := opsGet(t, opsTokenFor(t, "admin"), "?window=1h")
-	if status != 200 {
-		t.Fatalf("GET /api/ops = %d %s", status, raw)
-	}
-	var body opsBody
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("decode: %v\n%s", err, raw)
-	}
+	body := opsFetch(t, adminToken)
 	if body.Window != "1h" || body.BucketS != 60 || body.ThresholdP95S != 900 {
 		t.Errorf("window/bucket/threshold = %q/%d/%d, want 1h/60/900", body.Window, body.BucketS, body.ThresholdP95S)
 	}
 	if len(body.Now.Machines) != 1 || body.Now.Machines[0].Machine != "machine-a" || body.Now.Machines[0].Queued != 2 || body.Now.Machines[0].Running != 3 {
 		t.Errorf("now.machines = %+v, want machine-a queued 2 running 3", body.Now.Machines)
 	}
-	if body.Now.QueueWaitP95S < 59 || body.Now.QueueWaitP95S > 61 {
-		t.Errorf("now.queue_wait_p95_s = %v, want ~60", body.Now.QueueWaitP95S)
+	if body.Now.QueueWaitP95S <= 0 {
+		t.Errorf("now.queue_wait_p95_s = %v, want > 0", body.Now.QueueWaitP95S)
 	}
-	var unknownFail, allWait, unknownWait int
-	for _, f := range body.Failures {
-		if f.Machine == "__unknown__" && f.FailureReason == "timeout" {
-			unknownFail += f.TaskCount
-		}
+	got := body.totals()
+	if got.unknownFail-base.unknownFail != 1 {
+		t.Errorf("failures __unknown__/timeout grew by %d, want 1 (%+v)", got.unknownFail-base.unknownFail, body.Failures)
 	}
-	for _, w := range body.QueueWait {
-		switch w.Machine {
-		case "":
-			allWait += w.Samples
-		case "__unknown__":
-			unknownWait += w.Samples
-		}
-	}
-	if unknownFail != 1 {
-		t.Errorf("failures __unknown__/timeout = %d, want 1 (%+v)", unknownFail, body.Failures)
-	}
-	if allWait != 2 || unknownWait != 2 {
-		t.Errorf("queue wait samples all=%d unknown=%d, want 2 and 2", allWait, unknownWait)
+	if got.allWait-base.allWait != 2 || got.unknownWait-base.unknownWait != 2 {
+		t.Errorf("queue wait samples grew all=%d unknown=%d, want 2 and 2", got.allWait-base.allWait, got.unknownWait-base.unknownWait)
 	}
 	var snap bool
 	for _, r := range body.Runs {

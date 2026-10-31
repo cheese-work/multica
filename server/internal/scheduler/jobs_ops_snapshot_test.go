@@ -166,8 +166,10 @@ func TestOpsSamplerCountConservation(t *testing.T) {
 func TestOpsSamplerDropsDuplicateTick(t *testing.T) {
 	f := newOpsFixture(t)
 	tick := time.Now().UTC().Truncate(30 * time.Second)
-	if first := f.sample(t, tick); first != 4 {
-		t.Fatalf("first sample rows = %d, want 4", first)
+	// The sampler writes every workspace in the database, so count this fixture's rows.
+	f.sample(t, tick)
+	if _, keys := f.sums(t, "ops_snapshot", "", tick); keys != 4 {
+		t.Fatalf("rows after first sample = %d, want 4", keys)
 	}
 	if second := f.sample(t, tick); second != 0 {
 		t.Fatalf("second sample rows = %d, want 0", second)
