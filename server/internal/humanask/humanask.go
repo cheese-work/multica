@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Problem is one failed rule at a 1-based line of the comment text.
@@ -25,17 +26,34 @@ const cheeseTarget = "mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff"
 
 var members = map[string]string{"cheese": cheeseTarget}
 
+// pyWS is Python's str `\s`: Unicode spaces plus \x1c-\x1f and \x85. RE2 `\s`
+// is ASCII only, so patterns go through pyRE to keep Python parity.
+const pyWS = `\t\n\v\f\r \p{Z}\x{1c}-\x{1f}\x{85}`
+
+// notWord ends a word like Python's Unicode `\b` after a letter (RE2 `\b` is ASCII).
+const notWord = `(?:$|[^\p{L}\p{N}_])`
+
+func pyRE(pattern string) *regexp.Regexp {
+	pattern = strings.ReplaceAll(pattern, `\S`, `[^`+pyWS+`]`)
+	pattern = strings.ReplaceAll(pattern, `\s`, `[`+pyWS+`]`)
+	return regexp.MustCompile(strings.ReplaceAll(pattern, `\d`, `\p{Nd}`))
+}
+
 var (
 	// Go has no lookbehind: (?:^|[^\p{L}\p{N}_-]) stands for (?<![\w-]).
-	address = regexp.MustCompile(`(?i)^\s*(?:[-*]|\d+[.)]|#+)?\s*@?cheese\s*:` +
-		`|(?:^|[^\p{L}\p{N}_-])for\s+cheese\s+to\b` +
-		`|(?:^|[^\p{L}\p{N}_-])cheese\s+(?:may|can|should)\b`)
-	memberLink = regexp.MustCompile(`(?i)\[([^\]\n]+)\]\((mention://member/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)`)
-	humanNone  = regexp.MustCompile(`(?im)^\s*Human action:\s*none\b`)
-	fenceOpen  = regexp.MustCompile("^\\s*(`{3,}|~{3,})")
+	address = pyRE(`(?i)^\s*(?:[-*]|\d+[.)]|#+)?\s*@?cheese\s*:` +
+		`|(?:^|[^\p{L}\p{N}_-])for\s+cheese\s+to` + notWord +
+		`|(?:^|[^\p{L}\p{N}_-])cheese\s+(?:may|can|should)` + notWord)
+	memberLink = pyRE(`(?i)\[([^\]\n]+)\]\((mention://member/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)`)
+	humanNone  = pyRE(`(?im)^\s*Human action:\s*none` + notWord)
+	fenceOpen  = pyRE("^\\s*(`{3,}|~{3,})")
 	quote      = regexp.MustCompile(`^(?:[ \t]*>)+[ \t]?`)
 	labels     = [...]string{"What this is", "Why you, why now"}
 )
+
+func isPySpace(r rune) bool {
+	return unicode.IsSpace(r) || unicode.Is(unicode.Z, r) || (r >= 0x1c && r <= 0x1f)
+}
 
 // splitLines splits like Python str.splitlines (\n, \r\n, \r, \v, \f, \x1c-\x1e, \x85,  ,  ).
 func splitLines(text string) []string {
@@ -58,6 +76,13 @@ func splitLines(text string) []string {
 	return lines
 }
 
+// closesFence reports whether line is only a run of the fence character at
+// least as long as fence, with surrounding Python whitespace.
+func closesFence(line, fence string) bool {
+	run := strings.TrimFunc(line, isPySpace)
+	return len(run) >= len(fence) && strings.Trim(run, fence[:1]) == ""
+}
+
 // fencedLines returns the 1-based numbers of lines inside fenced blocks, fences
 // included, quoted fences too. An unclosed fence runs to the end.
 func fencedLines(lines []string) map[int]bool {
@@ -69,9 +94,8 @@ func fencedLines(lines []string) map[int]bool {
 			continue
 		}
 		fence := m[1]
-		closer := regexp.MustCompile(`^\s*(` + regexp.QuoteMeta(fence[:1]) + `{` + fmt.Sprint(len(fence)) + `,})\s*$`)
 		j := i + 1
-		for j < len(lines) && !closer.MatchString(quote.ReplaceAllString(lines[j], "")) {
+		for j < len(lines) && !closesFence(quote.ReplaceAllString(lines[j], ""), fence) {
 			j++
 		}
 		if j > len(lines)-1 {
@@ -95,7 +119,7 @@ func visibleLines(lines []string) []numbered {
 	fenced := fencedLines(lines)
 	var out []numbered
 	for i, line := range lines {
-		if !fenced[i+1] && !strings.HasPrefix(strings.TrimLeft(line, " \t\r\n\v\f"), ">") {
+		if !fenced[i+1] && !strings.HasPrefix(strings.TrimLeftFunc(line, isPySpace), ">") {
 			out = append(out, numbered{i + 1, line})
 		}
 	}
@@ -140,7 +164,7 @@ func stripCodeSpans(line string) string {
 // the wrong label) stays and counts as unmatched.
 func stripValidMemberLink(match string) string {
 	parts := memberLink.FindStringSubmatch(match)
-	name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(parts[1]), "@"))
+	name := strings.ToLower(strings.TrimPrefix(strings.TrimFunc(parts[1], isPySpace), "@"))
 	target := strings.ToLower(parts[2])
 	expected, known := members[name]
 	targetKnown := false
@@ -190,7 +214,7 @@ func Check(text string) []Problem {
 	}
 	var opening []numbered
 	for _, v := range visibleLines(lines) {
-		if strings.TrimSpace(v.line) != "" {
+		if strings.TrimFunc(v.line, isPySpace) != "" {
 			opening = append(opening, v)
 		}
 	}
@@ -199,7 +223,7 @@ func Check(text string) []Problem {
 		if len(opening) > i {
 			n, line = opening[i].n, opening[i].line
 		}
-		ok := regexp.MustCompile(`(?i)^\s*` + regexp.QuoteMeta(label) + `\s*:\s*\S`)
+		ok := pyRE(`(?i)^\s*` + regexp.QuoteMeta(label) + `\s*:\s*\S`)
 		if !ok.MatchString(strings.ReplaceAll(line, "**", "")) {
 			problems = append(problems, Problem{n, fmt.Sprintf("opening line %d needs %s: with context on the same line", i+1, label)})
 		}
