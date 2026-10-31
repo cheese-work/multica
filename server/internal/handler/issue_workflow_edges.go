@@ -79,7 +79,7 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 			return err
 		}
 	}
-	facts, err := h.loadEdgeFacts(ctx, issue, edges, def.IncludeChildPRs, sub)
+	facts, err := h.loadEdgeFacts(ctx, issue, edges, def, w.CreatedAt.Time, sub)
 	if err != nil {
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 		return err
@@ -156,9 +156,11 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 
 // loadEdgeFacts reads what the edges' guards need: the PRs of the issue and,
 // when includeChildren, of its direct children; whether every child is done
-// (on a sub-workflow step, every child of the step's stage); and the status of
-// each issue an issue_status guard names.
-func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, includeChildren bool, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
+// (on a sub-workflow step, every child of the step's stage); the status of
+// each issue an issue_status guard names, and which webhook guards have a
+// success event since the issue entered the step.
+func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
+	includeChildren := def.IncludeChildPRs
 	var facts issueworkflow.Facts
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
@@ -188,7 +190,10 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, issue db.Issue, edges []iss
 	for _, p := range prs {
 		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, Review: p.Review})
 	}
-	facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges)
+	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, issue.WorkspaceID, edges); err != nil {
+		return facts, err
+	}
+	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
 	return facts, err
 }
 
