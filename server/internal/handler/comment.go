@@ -53,6 +53,11 @@ type CommentResponse struct {
 	DecisionRequestID   *string `json:"decision_request_id,omitempty"`
 	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
 	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
+	// SupersededByID is set on a thread root a later comment superseded;
+	// Supersedes lists, on the superseding comment, the threads it superseded
+	// and what happened to each. Both are omitted when empty.
+	SupersededByID *string           `json:"superseded_by_id,omitempty"`
+	Supersedes     []SupersedeResult `json:"supersedes,omitempty"`
 	DecisionCommentFields
 	// DeletedAt marks a tombstone: a comment deleted while it still had
 	// replies (#8296). Its content is empty and it carries no attachments or
@@ -641,6 +646,8 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			resp[i].ContentTruncated = &truncated
 		}
 	}
+
+	h.attachSupersessions(r.Context(), issue, resp)
 
 	// Emit the next cursor as response headers when the page is likely not
 	// the last one. The cursor's meaning is context-dependent: under recent
@@ -1440,8 +1447,17 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 	return out
 }
 
+// SupersedeResult reports what posting a superseding comment did to one named
+// thread: resolved it, or left it open for SkippedReason.
+type SupersedeResult struct {
+	CommentID     string `json:"comment_id"`
+	Resolved      bool   `json:"resolved,omitempty"`
+	SkippedReason string `json:"skipped_reason,omitempty"`
+}
+
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
+	Supersedes       []string `json:"supersedes"`
 	DecisionIntent   bool     `json:"decision_intent"`
 	DecisionRecord   bool     `json:"decision_record"`
 	DecisionVeto     bool     `json:"decision_veto"`
@@ -1757,6 +1773,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		parentComment = &parent
 	}
 
+	requestStart := time.Now()
+	supersedeTargets, ok := h.loadSupersedeTargets(w, r.Context(), issue, req.Supersedes, parentID)
+	if !ok {
+		return
+	}
+
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
 		return
@@ -1993,6 +2015,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
+	var supersedeOutcomes []supersedeOutcome
+	if err == nil && len(supersedeTargets) > 0 {
+		supersedeOutcomes, err = applySupersedes(r.Context(), qtx, created.Comment(), supersedeTargets, requestStart, authorType, createParams.AuthorID)
+	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
@@ -2013,6 +2039,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	resp.Hints = commentDecisionHints(comment, req.DecisionIntent)
+	for _, o := range supersedeOutcomes {
+		resp.Supersedes = append(resp.Supersedes, o.result)
+	}
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
 	commentEvent := map[string]any{
 		"comment":             resp,
@@ -2037,6 +2066,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (TaskService.createAgentComment) — both reply paths use the same
 	// publisher.
 	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
+	h.publishSupersedeEvents(r, supersedeOutcomes, resp.ID, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	// Set after the websocket publish: web_url is for CLI callers, not the event.
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string {

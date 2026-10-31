@@ -371,6 +371,9 @@ deleted_github_dispatch_halts AS (
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
+deleted_comment_supersessions AS (
+    DELETE FROM comment_supersession WHERE workspace_id = $1
+),
 deleted_issue_reactions AS (
     DELETE FROM issue_reaction WHERE workspace_id = $1
 ),

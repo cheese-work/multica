@@ -704,6 +704,14 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentSupersession struct {
+	SupersededCommentID  pgtype.UUID        `json:"superseded_comment_id"`
+	SupersedingCommentID pgtype.UUID        `json:"superseding_comment_id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
 type CommentTriggerRateLimit struct {
 	IssueID     pgtype.UUID        `json:"issue_id"`
 	AgentID     pgtype.UUID        `json:"agent_id"`
