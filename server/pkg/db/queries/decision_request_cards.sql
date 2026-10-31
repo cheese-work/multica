@@ -36,7 +36,7 @@ LEFT JOIN LATERAL (
         task.created_at, task.id
     LIMIT 1
 ) pickup ON true
-WHERE request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id')
     AND message.id = ANY(sqlc.arg('message_ids')::uuid[])
 ORDER BY message.id, request.created_at, request.id;
 
@@ -50,7 +50,7 @@ FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
 LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = request.workspace_id
-WHERE request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id')
     AND request.human_user_id = sqlc.arg('human_user_id')
     AND request.status = 'open'
 ORDER BY request.created_at, request.id;

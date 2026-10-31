@@ -905,6 +905,7 @@ type DecisionRequest struct {
 	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
 	Options               []byte             `json:"options"`
 	AskJson               []byte             `json:"ask_json"`
+	Authority             string             `json:"authority"`
 }
 
 type DecisionWorkerLease struct {
