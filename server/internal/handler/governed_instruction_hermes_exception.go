@@ -217,6 +217,10 @@ type hermesExceptionRequest struct {
 type hermesExceptionSwapResult struct {
 	BeforeDigest string
 	AfterDigest  string
+	// BeforeText and AfterText feed the audit row, which stores digests of
+	// them, never the text. They are not logged or returned to clients.
+	BeforeText string
+	AfterText  string
 }
 
 // hermesExceptionRejectReason enumerates why hermesExceptionVerifyAndSwap

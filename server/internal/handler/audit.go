@@ -76,6 +76,12 @@ var auditKinds = map[string]auditKindSpec{
 		TargetType: "runtime",
 		Allow:      []string{"name", "provider", "runtime_mode", "visibility", "status"},
 	},
+	// Governed instruction writes (owner CAS, vote receipt, decision binding).
+	// The kind is the column kind; the field is long text, stored as a digest.
+	"workspace.context":     {TargetType: "workspace", Text: []string{"context"}},
+	"squad.instructions":    {TargetType: "squad", Text: []string{"instructions"}},
+	"agent.instructions":    {TargetType: "agent", Text: []string{"instructions"}},
+	"project.description":   {TargetType: "project", Text: []string{"description"}},
 	"audit.retention_purge": {TargetType: "workspace"},
 }
 
