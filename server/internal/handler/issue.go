@@ -3293,6 +3293,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	var parentIssueID pgtype.UUID
 	var projectID pgtype.UUID
 	if req.ParentIssueID != nil {
+		if dispatch.BudgetRecoveryCaller(r.Context()) {
+			writeError(w, http.StatusForbidden, errRecoveryCaused)
+			return
+		}
 		id, ok := parseUUIDOrBadRequest(w, *req.ParentIssueID, "parent_issue_id")
 		if !ok {
 			return

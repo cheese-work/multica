@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -156,6 +157,18 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// any owner-only handler can deny without re-querying the
 				// token table.
 				r.Header.Set("X-Actor-Source", "task_token")
+				// The mark comes from the stored task, never a header. If it
+				// cannot be read the request is refused: a recovery run must
+				// not pass as an ordinary one.
+				recovery, err := queries.IsBudgetRecoveryTask(r.Context(), tt.TaskID)
+				if err != nil {
+					slog.Warn("auth: read task kind", "path", r.URL.Path, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to authenticate")
+					return
+				}
+				if recovery {
+					r = r.WithContext(dispatch.WithBudgetRecoveryCaller(r.Context()))
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
