@@ -28,6 +28,10 @@ import (
 // database. Steps the handler runs after commit (daemon notices, update
 // requests) are listed in auditInput.External.
 
+// Limit: the append-only trigger guards against bugs and accidents only. Every
+// app session is a Postgres superuser and can set multica.audit_purge or drop
+// the trigger, so the trail is not tamper-proof. There is no hash chain.
+
 // External step kinds recorded in workspace_audit_event.external_requested.
 const (
 	auditExternalRuntimeGone  = "runtime_gone_notice"
