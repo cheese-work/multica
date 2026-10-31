@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight } from "@multica/ui/icons";
 import {
   Collapsible,
   CollapsibleContent,
