@@ -6,14 +6,17 @@
 //   Post-deploy:     node scripts/agent-adoption.mjs plan --prev <sha> --next <sha> --repo <owner/repo> --out <dir>
 //     Reads merged PRs in prev..next from git and `gh`, writes <dir>/title.txt and <dir>/body.md and
 //     prints `issue=true|false` plus the log line. Opening or reusing the issue stays with the workflow.
-//     When the range has an agent-facing PR the CHE-2793 generator runs (`python3 $ADOPTION_GENERATOR
-//     fork-range ...`, or ADOPTION_MAP_CMD instead) with ADOPTION_PREV/NEXT/REPO in its env; its stdout is
-//     the adoption map. A failing command, a missing generator or an empty map fails the plan.
+//     Classifies first. Only a range with an agent-facing PR fetches (ADOPTION_GENERATOR_TOKEN, at
+//     ADOPTION_GENERATOR_REF, default the pinned CHE-2793 SHA) and runs the CHE-2793 generator, or runs
+//     ADOPTION_MAP_CMD instead, with ADOPTION_PREV/NEXT/REPO in its env; its stdout is the adoption map.
+//     A failing command, a missing token or an empty map fails the plan.
 //   Dedup:           node scripts/agent-adoption.mjs reuse --next <sha> [--file <search.json>]
 //     Reads `multica issue search --output json`; exit 0 + identifier = same-SHA issue exists, 1 = none,
 //     2 = the lookup output is unusable (the workflow must not create after a 2).
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { liveLines } from "./fork-changelog.mjs";
 
@@ -135,14 +138,40 @@ export function runMapCommand(command, { prev, next, repo }, env = process.env) 
   return map;
 }
 
-// ADOPTION_MAP_CMD overrides; otherwise the workflow-fetched generator (ADOPTION_GENERATOR) in fork-range mode.
-export function planMap(env, ctx) {
-  const command = env.ADOPTION_MAP_CMD
-    || (env.ADOPTION_GENERATOR
-      ? 'python3 "$ADOPTION_GENERATOR" fork-range --git-dir "$(git rev-parse --absolute-git-dir)" --prev "$ADOPTION_PREV" --next "$ADOPTION_NEXT" --repo "$ADOPTION_REPO"'
-      : "");
-  if (!command) throw new Error("neither ADOPTION_GENERATOR nor ADOPTION_MAP_CMD is set; no adoption map");
-  return runMapCommand(command, ctx, { ...process.env, ...env });
+// The reviewed CHE-2793 generator (multica-dotfiles PR #430 head). Repin to a main SHA once that PR merges.
+export const DEFAULT_GENERATOR_REF = "3e781bd8fd2c53d610728b753c4f6f2e8fef613f";
+
+const FORK_RANGE_COMMAND =
+  'python3 "$ADOPTION_GENERATOR" fork-range --git-dir "$(git rev-parse --absolute-git-dir)" --prev "$ADOPTION_PREV" --next "$ADOPTION_NEXT" --repo "$ADOPTION_REPO"';
+
+// The generator lives in the private multica-dotfiles repo; the token needs read access to it.
+export function fetchGenerator(ref, token) {
+  const path = join(mkdtempSync(join(tmpdir(), "adoption-generator-")), "upstream_sync_plan.py");
+  const source = execFileSync("gh", ["api", `repos/cheese-work/multica-dotfiles/contents/scripts/upstream_sync_plan.py?ref=${ref}`, "-H", "Accept: application/vnd.github.raw+json"], {
+    encoding: "utf8",
+    env: { ...process.env, GH_TOKEN: token },
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (!source.trim()) throw new Error(`generator fetched empty from ref ${ref}`);
+  writeFileSync(path, source);
+  return path;
+}
+
+// ADOPTION_MAP_CMD overrides; otherwise fetch the generator and run it in fork-range mode.
+export function planMap(env, ctx, fetch = fetchGenerator) {
+  if (env.ADOPTION_MAP_CMD) return runMapCommand(env.ADOPTION_MAP_CMD, ctx, { ...process.env, ...env });
+  let generator = env.ADOPTION_GENERATOR;
+  if (!generator) {
+    if (!env.ADOPTION_GENERATOR_TOKEN) throw new Error("ADOPTION_GENERATOR_TOKEN is not configured; the adoption map generator cannot be fetched");
+    generator = fetch(env.ADOPTION_GENERATOR_REF || DEFAULT_GENERATOR_REF, env.ADOPTION_GENERATOR_TOKEN);
+  }
+  return runMapCommand(FORK_RANGE_COMMAND, ctx, { ...process.env, ...env, ADOPTION_GENERATOR: generator });
+}
+
+// Classify first; the generator is fetched and run only when the range has an agent-facing PR.
+export function planRange({ prev, next, prs, env, fetchGenerator: fetch }) {
+  if (!buildAdoption({ prev, next, prs }).issue) return buildAdoption({ prev, next, prs });
+  return buildAdoption({ prev, next, prs, map: planMap(env, { prev, next, repo: env.ADOPTION_REPO ?? "" }, fetch) });
 }
 
 // Identifier of the issue whose body carries this deployed SHA's marker; the 12-character title is only a search key.
@@ -193,11 +222,7 @@ export function main(argv, env) {
     const prev = arg(argv, "prev");
     const next = arg(argv, "next");
     const repo = arg(argv, "repo");
-    const ctx = { prev, next, repo };
-    const prs = collectPrs(prev, next, repo);
-    // The generator only runs when the range has an agent-facing PR; "no adoption issue" needs no map.
-    const map = buildAdoption({ prev, next, prs }).issue ? planMap(env, ctx) : "";
-    const out = buildAdoption({ prev, next, prs, map });
+    const out = planRange({ prev, next, prs: collectPrs(prev, next, repo), env: { ...env, ADOPTION_REPO: repo } });
     console.log(out.log);
     console.log(`issue=${out.issue}`);
     if (out.issue) {

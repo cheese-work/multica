@@ -12,10 +12,12 @@ name: Agent adoption issue
 # MULTICA_SERVER_URL, MULTICA_WORKSPACE_ID, ADOPTION_PROJECT_ID, ADOPTION_ASSIGNEE_ID. When one is
 # unset the job fails with an error naming it and opens nothing.
 # The CHE-2793 map generator (scripts/upstream_sync_plan.py in the private cheese-work/multica-dotfiles)
-# is fetched at ADOPTION_GENERATOR_REF (default main) with secret ADOPTION_GENERATOR_TOKEN (read access
-# to that repo) and run in fork-range mode. A missing token, a failed fetch, a failing generator or an
-# empty map fails the job before any issue is opened. Optional variable ADOPTION_MAP_CMD replaces the
-# generator command; it gets ADOPTION_PREV, ADOPTION_NEXT and ADOPTION_REPO and prints the map.
+# is fetched by `agent-adoption.mjs plan` only when the range has an agent-facing PR, at
+# ADOPTION_GENERATOR_REF (default: the pinned reviewed SHA in the script) with secret
+# ADOPTION_GENERATOR_TOKEN (read access to that repo). A deploy with no agent-facing PR needs no token.
+# A missing token, a failed fetch, a failing generator or an empty map fails the job before any issue
+# is opened. Optional variable ADOPTION_MAP_CMD replaces the generator and its fetch; it gets
+# ADOPTION_PREV, ADOPTION_NEXT and ADOPTION_REPO and prints the map.
 on:
   workflow_run:
     workflows: ["CD deploy to C00"]
@@ -77,33 +79,14 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
-      - name: Fetch the adoption map generator
-        id: generator
-        if: steps.deployed.outputs.ran == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.ADOPTION_GENERATOR_TOKEN }}
-          GENERATOR_REF: ${{ vars.ADOPTION_GENERATOR_REF || 'main' }}
-        run: |
-          set -euo pipefail
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::ADOPTION_GENERATOR_TOKEN is not configured; the adoption map generator cannot be fetched."
-            exit 1
-          fi
-          path="$RUNNER_TEMP/upstream_sync_plan.py"
-          gh api "repos/cheese-work/multica-dotfiles/contents/scripts/upstream_sync_plan.py?ref=$GENERATOR_REF" \
-            -H 'Accept: application/vnd.github.raw+json' > "$path"
-          [ -s "$path" ] || { echo "::error::generator fetched empty from ref $GENERATOR_REF"; exit 1; }
-          python3 "$path" fork-range --help > /dev/null
-          echo "path=$path" >> "$GITHUB_OUTPUT"
-
       - name: Build the adoption issue
         id: plan
         if: steps.deployed.outputs.ran == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ADOPTION_GENERATOR: ${{ steps.generator.outputs.path }}
+          ADOPTION_GENERATOR_TOKEN: ${{ secrets.ADOPTION_GENERATOR_TOKEN }}
+          ADOPTION_GENERATOR_REF: ${{ vars.ADOPTION_GENERATOR_REF }}
           ADOPTION_MAP_CMD: ${{ vars.ADOPTION_MAP_CMD }}
         run: |
           set -euo pipefail

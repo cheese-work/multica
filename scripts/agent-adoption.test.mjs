@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  DEFAULT_GENERATOR_REF,
   buildAdoption,
   checkAgentFacing,
   findExistingIssue,
@@ -13,6 +14,7 @@ import {
   newCliFlags,
   planMap,
   parseAgentFacing,
+  planRange,
   runMapCommand,
   touchesAgentSurface,
 } from "./agent-adoption.mjs";
@@ -178,7 +180,6 @@ test("finding 5: reuse mode exits 0 on a hit, 1 on no match and 2 on a failed lo
 });
 
 // Review round 2 finding 1: the CHE-2793 generator is wired, not an optional hook.
-const generatorUrl = "repos/cheese-work/multica-dotfiles/contents/scripts/upstream_sync_plan.py";
 
 test("round 2 finding 1: with the generator path set, the map is its fork-range output for the deployed range", () => {
   const dir = mkdtempSync(join(tmpdir(), "adoption-gen-"));
@@ -200,8 +201,56 @@ test("round 2 finding 1: an empty map is an error, never an issue without its ad
   assert.throws(() => runMapCommand("true", { prev: range.prev, next: range.next, repo: "o/r" }), /empty/);
 });
 
-test("round 2 finding 1: the workflow fetches the generator and hands its path to the plan step", () => {
-  assert.ok(workflow.includes(generatorUrl), "fetches upstream_sync_plan.py from multica-dotfiles");
-  assert.match(workflow, /ADOPTION_GENERATOR: \$\{\{ steps\.generator\.outputs\.path \}\}/);
-  assert.match(workflow, /secrets\.ADOPTION_GENERATOR_TOKEN/);
+test("round 2 finding 1: the workflow hands the generator token and ref to the plan step", () => {
+  assert.match(workflow, /ADOPTION_GENERATOR_TOKEN: \$\{\{ secrets\.ADOPTION_GENERATOR_TOKEN \}\}/);
+  assert.match(workflow, /ADOPTION_GENERATOR_REF: \$\{\{ vars\.ADOPTION_GENERATOR_REF \}\}/);
+});
+
+// Review round 3 (CHE-2794 PR 729): classify first, fetch the generator only when a map is needed.
+const noPrs = [{ number: 1, title: "docs", body: "Agent-facing: no", paths: ["README.md"], diff: "" }];
+const fetchSpy = () => {
+  const calls = [];
+  return Object.assign((ref, token) => (calls.push({ ref, token }), "/tmp/generator.py"), { calls });
+};
+
+test("round 3 finding 1: a range with no agent-facing PR logs none and never fetches, with no token set", () => {
+  const fetchGenerator = fetchSpy();
+  const out = planRange({ ...range, prs: noPrs, env: {}, fetchGenerator });
+  assert.equal(out.issue, false);
+  assert.match(out.log, /no agent-facing PR/);
+  assert.equal(fetchGenerator.calls.length, 0);
+});
+
+test("round 3 finding 1: ADOPTION_MAP_CMD set means no fetch even without a token", () => {
+  const fetchGenerator = fetchSpy();
+  const out = planRange({ ...range, prs: [agentPr], env: { ADOPTION_MAP_CMD: "echo MAP-FROM-CMD" }, fetchGenerator });
+  assert.equal(out.issue, true);
+  assert.match(out.body, /## Adoption map\nMAP-FROM-CMD/);
+  assert.equal(fetchGenerator.calls.length, 0);
+});
+
+test("round 3 finding 1: an agent-facing range without a token fails naming the token and fetches nothing", () => {
+  const fetchGenerator = fetchSpy();
+  assert.throws(() => planRange({ ...range, prs: [agentPr], env: {}, fetchGenerator }), /ADOPTION_GENERATOR_TOKEN/);
+  assert.equal(fetchGenerator.calls.length, 0);
+});
+
+test("round 3 finding 2: the generator is fetched at the pinned ref with the token, then run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adoption-fetch-"));
+  const generator = join(dir, "g.py");
+  writeFileSync(generator, 'print("REAL-MAP")\n');
+  const calls = [];
+  const fetchGenerator = (ref, token) => (calls.push({ ref, token }), generator);
+  const out = planRange({ ...range, prs: [agentPr], env: { ADOPTION_GENERATOR_TOKEN: "t0k" }, fetchGenerator });
+  assert.deepEqual(calls, [{ ref: DEFAULT_GENERATOR_REF, token: "t0k" }]);
+  assert.match(out.body, /## Adoption map\nREAL-MAP/);
+  const pinned = planRange({ ...range, prs: [agentPr], env: { ADOPTION_GENERATOR_TOKEN: "t", ADOPTION_GENERATOR_REF: "abc" }, fetchGenerator });
+  assert.equal(calls[1].ref, "abc");
+  assert.ok(pinned.issue);
+});
+
+test("round 3 finding 2: the default generator ref is the reviewed CHE-2793 SHA, not a branch", () => {
+  assert.equal(DEFAULT_GENERATOR_REF, "3e781bd8fd2c53d610728b753c4f6f2e8fef613f");
+  assert.doesNotMatch(workflow, /ADOPTION_GENERATOR_REF \|\| 'main'/);
+  assert.doesNotMatch(workflow, /Fetch the adoption map generator/);
 });
