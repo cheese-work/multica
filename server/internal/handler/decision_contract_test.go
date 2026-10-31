@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -236,5 +237,39 @@ func TestDecisionAnswerVersusWithdrawRace(test *testing.T) {
 	}
 	if answer.err == nil && stored.Status != "answered" || withdrawErr == nil && (stored.Status != "cancelled" || !withdrawn.Request.WithdrawnAt.Valid) {
 		test.Fatalf("terminal state disagrees with winning transaction: %+v", stored)
+	}
+}
+
+func TestDecisionAskBlockingRulesReturn400(test *testing.T) {
+	const commentUUID = "01a17cda-b791-7da5-94fc-06fdec20e4ed"
+	option := func(ask map[string]any, index int) map[string]any {
+		return ask["options"].([]any)[index].(map[string]any)
+	}
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"CHE-2204 multi-question", func(ask map[string]any) {
+			ask["decision"] = "Answer 1 to 5. 1. Run budgets: close CHE-2164. 2. CHE-1532: add the secrets. 3. CHE-2007: run the packet. 4. CHE-2166: lane or waive. 5. Overnight queue."
+		}, "ask.decision asks more than one question; split into one request per question"},
+		{"inline list in a label", func(ask map[string]any) { option(ask, 0)["label"] = "1. KEEP 2. WAIVE" },
+			"ask.options[0].label has an inline numbered list; put each item on its own line as a Markdown list"},
+		{"bare UUID in cost_or_time", func(ask map[string]any) { option(ask, 1)["cost_or_time"] = "Wait for " + commentUUID },
+			"ask.options[1].cost_or_time has a bare ID; link it as [what it is](link)"},
+		{"ID-only agent_did", func(ask map[string]any) { ask["agent_did"] = "75eed3bd-33c6-42f5-b612-cf0f03b8879a" },
+			"ask.agent_did must say in at least one plain sentence what the agent did; an ID alone is not enough"},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			ask := fixture.newShapeAsk()
+			tc.mutate(ask)
+			response := testutil.Call(test, testHandler.RequestDecision, fixture.askRequest(test, ask)).Want(http.StatusBadRequest)
+			if got := strings.TrimSpace(response.Body.String()); !strings.Contains(got, tc.want) {
+				test.Fatalf("body = %s, want it to contain %q", got, tc.want)
+			}
+			fixture.assertCounts(test, 0)
+		})
 	}
 }

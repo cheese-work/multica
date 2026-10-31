@@ -1040,6 +1040,7 @@ const DecisionRequestCardSchema = z.object({
   issue_identifier: z.string().default(""),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
+  asking_agent_name: z.string().optional().catch(undefined),
   options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
   state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
   created_at: z.string(),

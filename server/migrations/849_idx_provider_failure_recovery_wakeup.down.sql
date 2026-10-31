@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS provider_failure_recovery_wakeup_idx;

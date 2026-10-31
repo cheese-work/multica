@@ -2157,6 +2157,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/changes", h.ListSearchIndexChanges)
 			})
 
+			// Agent decisions: the brief feed and the owner pilot setting. A task
+			// token carries the owner's user id, so the setting needs a human.
+			r.Route("/api/agent-decisions", func(r chi.Router) {
+				r.Get("/brief", h.GetAgentDecisionBrief)
+				r.With(handler.RequireHumanActor).Put("/setting", h.SetAgentDecisionSetting)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)
@@ -2178,6 +2185,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
+					r.Get("/agent-decisions", h.LookupAgentDecision)
+					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
