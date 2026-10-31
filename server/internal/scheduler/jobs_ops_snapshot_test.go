@@ -253,6 +253,27 @@ func TestOpsRollupRecoversAfterLongDowntime(t *testing.T) {
 	}
 }
 
+// If sampling works but the first rollup cannot run for days, there is no
+// rolled interval to anchor on. Retained raw rows older than the normal 48 h
+// lookback must still reach the 30 d series.
+func TestOpsRollupRecoversRetainedSamplesWhenNoRollupExists(t *testing.T) {
+	f := newOpsFixture(t)
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	old := now.Add(-80 * time.Hour)
+	for i := 0; i < 3; i++ {
+		f.sample(t, old.Add(time.Duration(i)*30*time.Second))
+	}
+	// The newest-rolled lookup is global; start from an empty rollup table.
+	f.exec(t, `DELETE FROM ops_snapshot_5m`)
+
+	f.rollup(t, now)
+
+	got, keys := f.sums(t, "ops_snapshot_5m", "_last", old)
+	if keys == 0 || got != wantOpsSums {
+		t.Fatalf("interval %s with no prior rollup: keys %d sums %+v, want sums %+v", old, keys, got, wantOpsSums)
+	}
+}
+
 // Retention: raw 7 d, rollups and events 35 d, and the sampler's own lease rows 7 d.
 func TestOpsRetentionDeletesPastCutoffs(t *testing.T) {
 	f := newOpsFixture(t)

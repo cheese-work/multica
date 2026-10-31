@@ -100,16 +100,21 @@ func makeOpsRollupHandler(queries *db.Queries) Handler {
 }
 
 // opsRollupFrom is where a rollup run starts recomputing. Normally that is the
-// fixed lookback. After an outage longer than the lookback, catch-up runs only
-// the latest plan, so the start moves back to the newest rolled interval and
-// folds in every raw row still retained (raw retention is 7 d). Rows older than
-// raw retention are already deleted and cannot be recovered.
+// fixed lookback. Catch-up runs only the latest plan, so after an outage longer
+// than the lookback the start moves back to the newest rolled interval, or to
+// the oldest retained raw row when no rollup exists yet (sampling can work
+// while the first rollup keeps failing). Rows older than raw retention (7 d)
+// are already deleted and cannot be recovered.
 func opsRollupFrom(to time.Time, newestRolled pgtype.Timestamptz) time.Time {
+	oldest := to.Add(-opsRawRetention)
+	if !newestRolled.Valid {
+		return oldest
+	}
 	from := to.Add(-opsRollupLookback)
-	if newestRolled.Valid && newestRolled.Time.Before(from) {
+	if newestRolled.Time.Before(from) {
 		from = newestRolled.Time
 	}
-	if oldest := to.Add(-opsRawRetention); from.Before(oldest) {
+	if from.Before(oldest) {
 		from = oldest
 	}
 	return from

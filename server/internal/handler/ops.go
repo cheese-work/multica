@@ -57,7 +57,7 @@ type OpsNow struct {
 // running is exact, queued is approximate and dispatched/waiting_dir are 0.
 // SampleCount < ExpectedCount marks a partly covered bucket (n/expected).
 type OpsRunsPoint struct {
-	Ts             time.Time `json:"ts"`
+	TS             time.Time `json:"ts"`
 	Machine        string    `json:"machine"`
 	Source         string    `json:"source"`
 	QueuedMax      int32     `json:"queued_max"`
@@ -73,14 +73,14 @@ type OpsRunsPoint struct {
 }
 
 type OpsRequeuePoint struct {
-	Ts            time.Time `json:"ts"`
+	TS            time.Time `json:"ts"`
 	ClaimFailures int32     `json:"claim_failures"`
 	StaleReclaims int32     `json:"stale_reclaims"`
 }
 
 // OpsQueueWaitPoint: Machine "" is the all-machines row.
 type OpsQueueWaitPoint struct {
-	Ts      time.Time `json:"ts"`
+	TS      time.Time `json:"ts"`
 	Machine string    `json:"machine"`
 	Samples int32     `json:"samples"`
 	P50S    float64   `json:"p50_s"`
@@ -88,20 +88,20 @@ type OpsQueueWaitPoint struct {
 }
 
 type OpsOldestPoint struct {
-	Ts   time.Time `json:"ts"`
+	TS   time.Time `json:"ts"`
 	MaxS int32     `json:"max_s"`
 }
 
 // OpsFailurePoint: FailureReason "" is the succeeded bucket.
 type OpsFailurePoint struct {
-	Ts            time.Time `json:"ts"`
+	TS            time.Time `json:"ts"`
 	Machine       string    `json:"machine"`
 	FailureReason string    `json:"failure_reason"`
 	TaskCount     int32     `json:"task_count"`
 }
 
 type OpsAgentStatePoint struct {
-	Ts         time.Time `json:"ts"`
+	TS         time.Time `json:"ts"`
 	Machine    string    `json:"machine"`
 	Unbound    int32     `json:"unbound"`
 	Offline    int32     `json:"offline"`
@@ -235,7 +235,7 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, row := range hist {
 			resp.Runs = append(resp.Runs, OpsRunsPoint{
-				Ts: row.Ts.Time.UTC(), Machine: row.Machine, Source: "history",
+				TS: row.Ts.Time.UTC(), Machine: row.Machine, Source: "history",
 				QueuedMax: row.QueuedApprox, QueuedLast: row.QueuedApprox,
 				RunningMax: row.Running, RunningLast: row.Running,
 			})
@@ -244,7 +244,7 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 	for _, s := range snaps {
 		ts := s.Ts.Time.UTC()
 		resp.Runs = append(resp.Runs, OpsRunsPoint{
-			Ts: ts, Machine: s.DaemonID, Source: "snapshot",
+			TS: ts, Machine: s.DaemonID, Source: "snapshot",
 			QueuedMax: s.QueuedMax, QueuedLast: s.QueuedLast,
 			DispatchedMax: s.DispatchedMax, DispatchedLast: s.DispatchedLast,
 			WaitingDirMax: s.WaitingDirMax, WaitingDirLast: s.WaitingDirLast,
@@ -252,14 +252,14 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 			SampleCount: s.SampleCount, ExpectedCount: expected,
 		})
 		resp.AgentStates = append(resp.AgentStates, OpsAgentStatePoint{
-			Ts: ts, Machine: s.DaemonID, Unbound: s.AgentsUnboundLast, Offline: s.AgentsOfflineLast,
+			TS: ts, Machine: s.DaemonID, Unbound: s.AgentsUnboundLast, Offline: s.AgentsOfflineLast,
 			Busy: s.AgentsBusyLast, WaitingDir: s.AgentsWaitingDirLast, Available: s.AgentsAvailableLast,
 		})
 		// Rows arrive ordered by ts, so one line per bucket is the max across machines.
-		if n := len(resp.OldestUnstart); n > 0 && resp.OldestUnstart[n-1].Ts.Equal(ts) {
+		if n := len(resp.OldestUnstart); n > 0 && resp.OldestUnstart[n-1].TS.Equal(ts) {
 			resp.OldestUnstart[n-1].MaxS = max(resp.OldestUnstart[n-1].MaxS, s.OldestUnstartedSMax)
 		} else {
-			resp.OldestUnstart = append(resp.OldestUnstart, OpsOldestPoint{Ts: ts, MaxS: s.OldestUnstartedSMax})
+			resp.OldestUnstart = append(resp.OldestUnstart, OpsOldestPoint{TS: ts, MaxS: s.OldestUnstartedSMax})
 		}
 	}
 
@@ -271,7 +271,7 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, q := range requeues {
-		resp.Requeues = append(resp.Requeues, OpsRequeuePoint{Ts: q.Ts.Time.UTC(), ClaimFailures: q.ClaimFailures, StaleReclaims: q.StaleReclaims})
+		resp.Requeues = append(resp.Requeues, OpsRequeuePoint{TS: q.Ts.Time.UTC(), ClaimFailures: q.ClaimFailures, StaleReclaims: q.StaleReclaims})
 	}
 
 	waits, err := h.Queries.ListOpsQueueWait(ctx, db.ListOpsQueueWaitParams{
@@ -282,7 +282,7 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, q := range waits {
-		resp.QueueWait = append(resp.QueueWait, OpsQueueWaitPoint{Ts: q.Ts.Time.UTC(), Machine: q.Machine, Samples: q.Samples, P50S: q.P50S, P95S: q.P95S})
+		resp.QueueWait = append(resp.QueueWait, OpsQueueWaitPoint{TS: q.Ts.Time.UTC(), Machine: q.Machine, Samples: q.Samples, P50S: q.P50S, P95S: q.P95S})
 	}
 
 	failures, err := h.Queries.ListOpsFailures(ctx, db.ListOpsFailuresParams{
@@ -293,7 +293,7 @@ func (h *Handler) GetOps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, f := range failures {
-		resp.Failures = append(resp.Failures, OpsFailurePoint{Ts: f.Ts.Time.UTC(), Machine: f.Machine, FailureReason: f.FailureReason, TaskCount: f.TaskCount})
+		resp.Failures = append(resp.Failures, OpsFailurePoint{TS: f.Ts.Time.UTC(), Machine: f.Machine, FailureReason: f.FailureReason, TaskCount: f.TaskCount})
 	}
 
 	writeJSON(w, http.StatusOK, resp)
