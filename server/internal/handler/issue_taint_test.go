@@ -1,0 +1,193 @@
+package handler
+
+import (
+	"context"
+	"net/http"
+	"reflect"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
+)
+
+// Issue-level taint, the member clear action and the resolver override
+// (CHE-2216 plan 3.7, 3.1, slice B5b; T9). A tainted dispatch or comment taints
+// the issue; until a member clears it, no run on the issue resolves elevated,
+// even a clean task holding a live grant.
+
+func issueTaintOf(t *testing.T, issueID string) []string {
+	t.Helper()
+	ids := []string{}
+	dbfx.QueryRow(t, `SELECT COALESCE((SELECT taint_ids FROM issue_taint WHERE issue_id = $1), '{}')`, issueID).Scan(&ids)
+	return ids
+}
+
+func postClearIssueTaint(t *testing.T, issueID string, body map[string]any, tweak func(*http.Request)) *testutil.Response {
+	t.Helper()
+	req := withURLParam(newRequest("POST", "/api/issues/"+issueID+"/taint/clear", body), "id", issueID)
+	if tweak != nil {
+		tweak(req)
+	}
+	return testutil.Call(t, testHandler.ClearIssueTaint, req)
+}
+
+// claimCleanTask enqueues a plain task (no taint source) on the issue and
+// claims it, returning the claim's profile.
+func claimCleanTask(t *testing.T, issueID, agentID, runtimeID string) (profile string, taint []string) {
+	t.Helper()
+	// One pending task per issue and agent: finish the previous claim first.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND status IN ('dispatched', 'running')`, issueID)
+	createDispatchedClaimFixtureTask(t, context.Background(), agentID, runtimeID, issueID, "120 seconds", false)
+	req := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
+	var resp struct {
+		Task *struct {
+			Profile  string   `json:"profile"`
+			TaintIDs []string `json:"taint_ids"`
+		} `json:"task"`
+	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
+	if resp.Task == nil {
+		t.Fatal("claim returned no task")
+	}
+	return resp.Task.Profile, resp.Task.TaintIDs
+}
+
+func TestTaintedDispatchTaintsTheIssueAndOverridesAGrant(t *testing.T) {
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Issue taint runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Issue taint agent")
+	insertGrant(t, issueID, testWorkspaceID, []string{"repo_write:1234"}, "1 minute", "1 hour", false)
+
+	dbfx.Task(t, agentID, testutil.Cols{"status": "completed", "runtime_id": runtimeID, "issue_id": issueID, "taint_ids": []string{"t1"}})
+
+	if got := issueTaintOf(t, issueID); !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("issue taint = %v, want [t1]", got)
+	}
+	// A clean task of its own: no taint IDs, a live grant, still restricted.
+	profile, taint := claimCleanTask(t, issueID, agentID, runtimeID)
+	if profile != "restricted" || len(taint) != 0 {
+		t.Fatalf("claim profile = %q taint = %v, want restricted with no task taint", profile, taint)
+	}
+}
+
+func TestTaintedCommentTaintsTheIssue(t *testing.T) {
+	agentID := seededReadyAgentID(t)
+	issueID := dbfx.Issue(t, "issue taint by comment")
+	tainted := taintedTask(t, agentID, "t7")
+	dbfx.Comment(t, issueID, "hostile relay", testutil.Cols{"source_task_id": tainted})
+	if got := issueTaintOf(t, issueID); !reflect.DeepEqual(got, []string{"t7"}) {
+		t.Fatalf("issue taint = %v, want [t7]", got)
+	}
+	clean := dbfx.Issue(t, "issue taint clean")
+	dbfx.Comment(t, clean, "member note")
+	if got := issueTaintOf(t, clean); len(got) != 0 {
+		t.Fatalf("clean issue taint = %v, want none", got)
+	}
+}
+
+func TestMemberClearsIssueTaintAndRecordsIt(t *testing.T) {
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Issue clear runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Issue clear agent")
+	insertGrant(t, issueID, testWorkspaceID, []string{"repo_write:1234"}, "1 minute", "1 hour", false)
+	tainted := dbfx.Task(t, agentID, testutil.Cols{"status": "completed", "runtime_id": runtimeID, "issue_id": issueID, "taint_ids": []string{"t1", "t2"}})
+
+	var got struct {
+		Cleared   []string `json:"cleared"`
+		Remaining []string `json:"remaining"`
+	}
+	postClearIssueTaint(t, issueID, map[string]any{"taint_ids": []string{"t1"}}, nil).Want(http.StatusOK).JSON(&got)
+	if !reflect.DeepEqual(got.Cleared, []string{"t1"}) || !reflect.DeepEqual(got.Remaining, []string{"t2"}) {
+		t.Fatalf("response = %+v, want cleared [t1] remaining [t2]", got)
+	}
+	if profile, _ := claimCleanTask(t, issueID, agentID, runtimeID); profile != "restricted" {
+		t.Fatalf("profile = %q with t2 still on the issue, want restricted", profile)
+	}
+
+	// No IDs named: clears everything left.
+	postClearIssueTaint(t, issueID, map[string]any{}, nil).Want(http.StatusOK).JSON(&got)
+	if !reflect.DeepEqual(got.Cleared, []string{"t2"}) || len(got.Remaining) != 0 {
+		t.Fatalf("response = %+v, want cleared [t2] and nothing remaining", got)
+	}
+
+	var memberID string
+	dbfx.QueryRow(t, `SELECT id FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID).Scan(&memberID)
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_taint_clear WHERE issue_id = $1 AND workspace_id = $2 AND cleared_by_member_id = $3 AND taint_ids = ARRAY['t1'] AND cleared_at IS NOT NULL`, issueID, testWorkspaceID, memberID); n != 1 {
+		t.Fatalf("clear rows for [t1] = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_taint_clear WHERE issue_id = $1 AND taint_ids = ARRAY['t2']`, issueID); n != 1 {
+		t.Fatalf("clear rows for [t2] = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'issue_taint_cleared' AND actor_type = 'member' AND actor_id = $2`, issueID, testUserID); n != 2 {
+		t.Fatalf("issue_taint_cleared activity rows = %d, want 2", n)
+	}
+
+	// The issue is clean again: a new clean task elevates.
+	if profile, _ := claimCleanTask(t, issueID, agentID, runtimeID); profile != "elevated" {
+		t.Fatalf("profile = %q after the clear, want elevated", profile)
+	}
+	// A cleared ID that reaches a new task through inheritance taints that task,
+	// never the issue again.
+	child := dbfx.Task(t, agentID, testutil.Cols{"status": "completed", "runtime_id": runtimeID, "issue_id": issueID, "parent_task_id": tainted})
+	if got := taintOf(t, "agent_task_queue", child); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("child task taint = %v, want [t1 t2]", got)
+	}
+	if got := issueTaintOf(t, issueID); len(got) != 0 {
+		t.Fatalf("issue taint = %v after inheritance of cleared IDs, want none", got)
+	}
+}
+
+func TestClearIssueTaintRefusals(t *testing.T) {
+	agentID := seededReadyAgentID(t)
+	issueID := dbfx.Issue(t, "issue clear refusals")
+	dbfx.Comment(t, issueID, "relay", testutil.Cols{"source_task_id": taintedTask(t, agentID, "t1")})
+	taskID := createHandlerTestTaskForAgent(t, agentID)
+
+	agentCredentials := map[string]func(*http.Request){
+		"member-owned agent with task headers": func(r *http.Request) {
+			r.Header.Set("X-Agent-ID", agentID)
+			r.Header.Set("X-Task-ID", taskID)
+		},
+		"task token": func(r *http.Request) {
+			r.Header.Set("X-Actor-Source", "task_token")
+			r.Header.Set("X-Agent-ID", agentID)
+		},
+		"cloud pat": func(r *http.Request) { r.Header.Set("X-Actor-Source", "cloud_pat") },
+	}
+	for name, tweak := range agentCredentials {
+		postClearIssueTaint(t, issueID, map[string]any{}, tweak).Want(http.StatusForbidden)
+		if got := issueTaintOf(t, issueID); !reflect.DeepEqual(got, []string{"t1"}) {
+			t.Fatalf("%s: refused clear left taint %v, want [t1]", name, got)
+		}
+	}
+
+	plain := dbfx.User(t, "Plain Taint Member", "plain-taint-member@example.com")
+	dbfx.Member(t, testWorkspaceID, plain, "member")
+	postClearIssueTaint(t, issueID, map[string]any{}, func(r *http.Request) { r.Header.Set("X-User-ID", plain) }).Want(http.StatusForbidden)
+
+	postClearIssueTaint(t, issueID, map[string]any{"taint_ids": []string{"nope"}}, nil).Want(http.StatusBadRequest)
+	postClearIssueTaint(t, issueID, map[string]any{"unknown": 1}, nil).Want(http.StatusBadRequest)
+	if got := issueTaintOf(t, issueID); !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("bad requests left taint %v, want [t1]", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_taint_clear WHERE issue_id = $1`, issueID); n != 0 {
+		t.Fatalf("refused clears left %d audit rows", n)
+	}
+
+	postClearIssueTaint(t, dbfx.Issue(t, "issue never tainted"), map[string]any{}, nil).Want(http.StatusConflict)
+}
+
+func TestIssueTaintArrivingAfterElevatedClaimRefusesAndFences(t *testing.T) {
+	f := claimElevated(t, "repo_write:1234")
+	agentID := seededReadyAgentID(t)
+	dbfx.Comment(t, f.issueID, "relay", testutil.Cols{"source_task_id": taintedTask(t, agentID, "t9")})
+
+	// Refused at once, before any sweep; the task itself carries no taint.
+	f.authorize(t, 1, "repo_write:1234", hashA).Want(http.StatusForbidden)
+	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, f.taskID); n != 0 {
+		t.Fatalf("authorized operations = %d, want 0", n)
+	}
+	fenceNow(t)
+	if state, epoch := f.state(t); state == "elevated" || epoch != 2 {
+		t.Fatalf("after sweep state = %q epoch = %d, want fenced at epoch 2", state, epoch)
+	}
+}

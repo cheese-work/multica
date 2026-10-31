@@ -123,13 +123,15 @@ func (q *Queries) FenceLapsedTaskElevations(ctx context.Context) ([]pgtype.UUID,
 const fenceTaintedTaskElevations = `-- name: FenceTaintedTaskElevations :many
 UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
 FROM agent_task_queue t
-WHERE t.id = te.task_id AND te.state = 'elevated' AND cardinality(t.taint_ids) > 0
+WHERE t.id = te.task_id AND te.state = 'elevated'
+  AND (cardinality(t.taint_ids) > 0
+       OR EXISTS (SELECT 1 FROM issue_taint it WHERE it.issue_id = te.issue_id AND cardinality(it.taint_ids) > 0))
   AND ($1::uuid IS NULL OR te.task_id = $1::uuid)
 RETURNING te.task_id
 `
 
-// A task whose taint grew after its elevation was recorded stops being
-// elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
+// A task, or its issue, whose taint grew after its elevation was recorded stops
+// being elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
 func (q *Queries) FenceTaintedTaskElevations(ctx context.Context, taskID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, fenceTaintedTaskElevations, taskID)
 	if err != nil {
