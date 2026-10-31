@@ -19,7 +19,6 @@ var (
 	anyLink     = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|https?://\S+`)
 	uuidPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	hexPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
-	codeSpan    = regexp.MustCompile("`[^`]*`")
 )
 
 const minAgentDidWords = 4
@@ -73,7 +72,7 @@ func (ask Ask) validateReadable() error {
 		// An action step is the exception: its code spans are exact commands.
 		text := maskLinkDestinations(field.text)
 		if strings.HasPrefix(field.path, "ask.steps[") {
-			text = codeSpan.ReplaceAllString(text, "``") // an exact command may carry a literal ID
+			text = maskCodeSpans(text) // an exact command may carry a literal ID
 		}
 		if uuidPattern.MatchString(text) {
 			return &AskError{field.path, "has a bare ID; link it as [what it is](link)"}
@@ -121,6 +120,50 @@ func maskLinkDestinations(text string) string {
 		}
 	}
 	return out.String()
+}
+
+// maskCodeSpans drops the content of each Markdown code span. A span opens at
+// a backtick run and closes at the next run of the same length; an escaped
+// backtick or an unclosed run is literal text.
+func maskCodeSpans(text string) string {
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		switch text[i] {
+		case '\\':
+			end := min(i+2, len(text))
+			out.WriteString(text[i:end])
+			i = end
+		case '`':
+			run := len(text[i:]) - len(strings.TrimLeft(text[i:], "`"))
+			if end := closingRun(text, i+run, run); end > 0 {
+				i = end + run
+				continue
+			}
+			out.WriteString(text[i : i+run])
+			i += run
+		default:
+			out.WriteByte(text[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+// closingRun returns the index of the first backtick run of exactly n backticks
+// at or after from, or -1.
+func closingRun(text string, from, n int) int {
+	for i := from; i < len(text); {
+		if text[i] != '`' {
+			i++
+			continue
+		}
+		run := len(text[i:]) - len(strings.TrimLeft(text[i:], "`"))
+		if run == n {
+			return i
+		}
+		i += run
+	}
+	return -1
 }
 
 // closingIndex returns the index of the delimiter that closes the one at text[start],

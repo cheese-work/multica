@@ -184,6 +184,15 @@ func TestDecodeActionAsk(test *testing.T) {
 		{name: "uuid in a command literal", mutate: func(ask map[string]any) {
 			ask["steps"] = []any{"Run `multica attachment download " + testCommentID + " -o ~/Downloads`."}
 		}},
+		{name: "uuid in a double-backtick command", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"Run ``multica attachment download " + testCommentID + " -o ~/Downloads``."}
+		}},
+		{name: "uuid between escaped backticks", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"Open \\`" + testCommentID + "\\`."}
+		}, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
+		{name: "uuid after an unclosed backtick", mutate: func(ask map[string]any) {
+			ask["steps"] = []any{"Open ` " + testCommentID}
+		}, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
 		{name: "uuid in prose beside a command", mutate: func(ask map[string]any) {
 			ask["steps"] = []any{"Run `multica attachment download " + testCommentID + "` then open " + testIssueID}
 		}, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
