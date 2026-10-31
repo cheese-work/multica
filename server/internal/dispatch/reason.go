@@ -20,8 +20,6 @@ const (
 	ReasonQueued    ReasonCode = "queued"
 	ReasonCoalesced ReasonCode = "coalesced"
 	ReasonDeferred  ReasonCode = "deferred"
-	// ReasonJevRouted: the trigger was routed directly to a specialist squad worker via Jev.
-	ReasonJevRouted ReasonCode = "jev_routed"
 	// ReasonSteered: the comment went into the target's running turn.
 	ReasonSteered ReasonCode = "steered"
 
