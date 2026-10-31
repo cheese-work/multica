@@ -253,7 +253,9 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
 		}
-		raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+		if !e.TokensSpent {
+			raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
 			break
@@ -329,6 +331,11 @@ func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, bl
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
+	}
+	if e.TokensSpent {
+		return fmt.Sprintf(
+			"%s: %s was refused because the issue's token allowance is spent (balance %d). No command raises it. A person moves the issue's status to open a new window with a new allowance.",
+			lead, refused, e.Tokens)
 	}
 	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise)
 }
