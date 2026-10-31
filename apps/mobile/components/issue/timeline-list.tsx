@@ -28,6 +28,7 @@ import { IssueDescription } from "./issue-description";
 import { IssueReactionRow } from "./issue-reaction-row";
 import { ActivityRow } from "./activity-row";
 import { CommentCard } from "./comment-card";
+import { supersessionRevisions } from "@multica/core/issues/supersession";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
@@ -126,6 +127,7 @@ export function TimelineList({
   }, [issue.description, issueAttachments, data]);
 
   const listRef = useRef<FlashListRef<TimelineRow>>(null);
+  const revisions = useMemo(() => supersessionRevisions(entries ?? []), [entries]);
   // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
   // bumps the nonce → ref no longer matches → effect re-fires.
   const lastStampRef = useRef<string | null>(null);
@@ -224,6 +226,20 @@ export function TimelineList({
     };
     return [...data.slice(0, anchorIdx), divider, ...data.slice(anchorIdx)];
   }, [data, dividerAnchorId]);
+
+  // Scroll to the row that holds a comment: its own row for a root, the
+  // parent's row for a reply (replies render inline inside their root's card).
+  const jumpToComment = useCallback(
+    (commentId: string) => {
+      const index = dataWithDivider.findIndex(
+        (row) =>
+          row.entry.id === commentId ||
+          row.replies.some((reply) => reply.id === commentId),
+      );
+      if (index >= 0) listRef.current?.scrollToIndex({ index, animated: true });
+    },
+    [dataWithDivider],
+  );
 
   // Mark "scrolled past" once the divider row leaves the viewport — used
   // by the unmount effect below to decide whether to bump last-viewed.
@@ -383,6 +399,8 @@ export function TimelineList({
               issueId={issue.id}
               issueIdentifier={issue.identifier}
               highlightedCommentId={highlightedId}
+              revisions={revisions}
+              onJumpToComment={jumpToComment}
             />
           ) : (
             <ActivityRow entry={item.entry} />
