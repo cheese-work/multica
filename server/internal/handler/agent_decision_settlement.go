@@ -15,19 +15,19 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// C2 must not create an effective record in a live workspace. There is no
-// environment or request override. Lifecycle and pilot admission land later.
-const agentDecisionSettlementCreationEnabled = false
-
 func lockAgentDecision(ctx context.Context, tx pgx.Tx, instance string) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('agent-decision:' || $1,0))`, instance)
 	return err
 }
 
 // Called after the immutable vote annotation, within the comment transaction.
-// Tests exercise this dormant engine directly; the production call is disabled.
+// A workspace whose agent_decisions_enabled setting is off (the default) never
+// gets an effective record.
 func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID, instance string) error {
 	if err := lockAgentDecision(ctx, tx, instance); err != nil {
+		return err
+	}
+	if on, err := agentDecisionsEnabled(ctx, tx, workspaceID); err != nil || !on {
 		return err
 	}
 	var encoded []byte
@@ -40,7 +40,10 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 	if err != nil {
 		return err
 	}
-	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation || !agentDecisionGateAllowed(gate) {
+	if !agentDecisionGateAllowed(gate) {
+		return stopAgentDecisions(ctx, tx, workspaceID, "excluded category reached settlement: gate "+gate+", decision "+instance)
+	}
+	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation {
 		return nil
 	}
 	var scope agentDecisionScope
@@ -90,7 +93,12 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 			return nil
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id) VALUES($1,$2,$3) ON CONFLICT(instance_id) DO NOTHING`, instance, workspaceID, issueID)
+	inserted, err := tx.Exec(ctx, `INSERT INTO decision_agent_settlement(instance_id,workspace_id,issue_id) VALUES($1,$2,$3) ON CONFLICT(instance_id) DO NOTHING`, instance, workspaceID, issueID)
+	if err != nil || inserted.RowsAffected() == 0 {
+		return err
+	}
+	// The notice is delivered by the worker after this transaction commits.
+	_, err = tx.Exec(ctx, `INSERT INTO decision_agent_notice(instance_id,workspace_id,issue_id) VALUES($1,$2,$3) ON CONFLICT(instance_id) DO NOTHING`, instance, workspaceID, issueID)
 	return err
 }
 

@@ -1939,6 +1939,14 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			_ = tx.Rollback(r.Context())
+			var excluded agentDecisionExcludedError
+			if errors.As(err, &excluded) {
+				// Stop rule: the refusal rolled back with the comment, so the
+				// setting change commits on its own.
+				if stopErr := stopAgentDecisions(r.Context(), h.DB, createParams.WorkspaceID, excluded.reason); stopErr != nil {
+					slog.Warn("agent decision stop rule failed", "error", stopErr)
+				}
+			}
 			writeDecisionIntentError(w, err)
 			return
 		}

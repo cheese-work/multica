@@ -226,7 +226,7 @@ func decodeAgentDecisionJSON(raw string, out any) error {
 
 func validateAgentDecisionProposal(p agentDecisionProposal, author string) error {
 	if !agentDecisionGateAllowed(p.WaivedGate) {
-		return agentDecisionRefusal("gate is not on allowlist version 1")
+		return agentDecisionExcluded("gate is not on allowlist version 1", "excluded category proposed: gate "+p.WaivedGate)
 	}
 	if p.WorkAuthorID != author {
 		return agentDecisionRefusal("work author must be the proposer")
@@ -401,7 +401,7 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 		}
 		for _, excluded := range []string{"security", "test-first", "test_first", "merge approval", "deploy", "spend", "publication", "irreversible", "product direction", "missing evidence", "independently protected"} {
 			if strings.Contains(strings.ToLower(dispute.ReviewerVerdict), excluded) {
-				return agentDecisionRefusal("excluded or missing-evidence BLOCK cannot be adjudicated")
+				return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded category in adjudication: "+excluded)
 			}
 		}
 		scope.Disputants = []agentDecisionIdentity{rebuttal, reviewer}
@@ -679,7 +679,7 @@ func annotateAgentDecision(ctx context.Context, tx pgx.Tx, commentID pgtype.UUID
 	if annotation.event == "veto" {
 		return revokeAgentDecisionForVeto(ctx, tx, commentID, annotation)
 	}
-	if agentDecisionSettlementCreationEnabled && annotation.event == "vote" {
+	if annotation.event == "vote" {
 		var workspaceID pgtype.UUID
 		if err := tx.QueryRow(ctx, `SELECT workspace_id FROM comment WHERE id=$1`, commentID).Scan(&workspaceID); err != nil {
 			return err

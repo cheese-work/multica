@@ -115,12 +115,10 @@ same single settlement insert as a co-sign quorum.
 
 ## Settlement and reliance (C2)
 
-Settlement creation is hard-disabled in C2. There is no environment, API or CLI
-switch to enable it. The quorum engine is exercised directly by database tests;
-no live comment can create an effective record. Notifications and pilot
-activation belong to later slices.
+Settlement creation is gated by the workspace setting
+`agent_decisions_enabled` (see Pilot and brief (C4)). It defaults to off.
 
-The dormant co-sign engine runs after the vote snapshot in the comment-insert
+The co-sign engine runs after the vote snapshot in the comment-insert
 transaction, under the instance advisory lock. Two valid named PASS reveals with
 no void or retraction permit one insert. The instance primary key and
 `ON CONFLICT DO NOTHING` prevent duplicates. Any insert failure rolls back the
@@ -192,3 +190,69 @@ once the instance has a settlement row.
 Supersession: a proposal may set `supersedes: "<instance uuid>"` to revoke the
 author's own earlier instance for the same issue and gate. The reason recorded is
 `superseded by decision:<new instance>`. The superseding author owns the undo.
+
+## Pilot and brief (C4)
+
+Setting: `workspace.settings.agent_decisions_enabled`, default off, owner-only
+and human-only (`PUT /api/agent-decisions/setting`, `multica decision
+agent-setting`). A task token or cloud PAT gets 403, even for the workspace
+owner's user. Enabling it on C00 is a separate step. With it
+off, the vote path never inserts a settlement. Turning it on clears an earlier
+stop.
+
+Stop rule: one excluded-category decision turns the setting off and stores
+`settings.agent_decisions_stopped {reason, at}`. Triggers: a proposal whose gate
+is outside the allowlist, an adjudication BLOCK in an excluded category, and a
+stored record whose gate left the allowlist reaching settlement. Existing
+records stay vetoable because veto never reads the setting. Not covered: a
+reliance on a record whose gate later left the allowlist is refused and does not
+change the setting.
+
+Brief feed: `GET /api/agent-decisions/brief` (workspace member). Fields:
+`decisions` (live records plus revoked ones from the last 7 days, each with
+`link`, `veto_line`, `review_target_at` = effective + 24 hours), `notice_failures`,
+`pilot`, `enabled`, `stopped`. The review target is shown to Cheese as a target.
+It is not an expiry: a veto works at any time. Agent records never enter Needs
+you; they only appear in this feed.
+
+Brief output: `multica decision brief --format markdown` prints the section
+"Agents decided — veto?" as standalone markdown, outside Needs you, with review
+targets in ICT. Each record lists the issue, gate, state, the record link and the
+veto line. A revoked record shows its reason. Notice delivery failures and the
+stop reason follow. `link` opens the instance's frozen proposal comment, not only
+the issue. `veto_line` already ends in `member:<reader's user uuid>`, so the
+reader is the undo owner when they paste it.
+With the setting off and nothing to show (no record, no stop, no failed notice)
+the command prints nothing, so the brief omits the section. Records made
+earlier stay vetoable, so with any of them the section still prints.
+
+The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
+prompt change, "run `multica decision brief --format markdown` and paste its
+output after `## Cần anh`", is a standing-instruction change and goes through
+the instruction-change process: cheese-work/multica-dotfiles#406 holds the
+candidate, the digests and a digest-guarded apply script. Until Cheese
+authorizes that apply, the brief does not print the section by itself.
+
+Notice: a settlement writes one `decision_agent_notice` row in its own
+transaction. The decision worker delivers it after commit, in one transaction,
+to every workspace owner:
+
+- an `agent_decision_notice` inbox item with the record link and that owner's
+  veto line. It carries `decision_request_id`, so it ignores the
+  `unassigned_activity=muted` preference like any decision;
+- a copy in the owner's decision thread for the issue's topic (CHE-2407), created
+  when missing, as message kind `agent_decision`. A thread the owner cannot use is
+  skipped; the inbox item is the reliable channel.
+
+The notice counts as delivered only when every owner's inbox item was inserted.
+Otherwise the transaction rolls back, `attempts` and `last_error` are stored, the
+notice retries with backoff (30 s doubling to 1 hour) and shows in
+`notice_failures`.
+
+Pilot metrics:
+
+| Field | Meaning |
+| --- | --- |
+| `asks_avoided` | Live records, deduplicated by issue, gate and candidate hash |
+| `vetoed` / `denominator` | Revoked settlement rows over all settlement rows. A veto before effect leaves a revoked row and counts as a veto |
+| `runs` / `run_tokens` | Distinct runs that wrote a protocol event (proposal, commit, reveal, veto) and their input plus output tokens |

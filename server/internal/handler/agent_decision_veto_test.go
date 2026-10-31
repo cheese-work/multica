@@ -353,6 +353,7 @@ func TestAgentDecisionSupersession(t *testing.T) {
 func TestAgentDecisionAdjudicationSettlement(t *testing.T) {
 	for _, verdict := range []string{"PASS", "BLOCK"} {
 		t.Run(verdict, func(t *testing.T) {
+			enableAgentDecisions(t, true)
 			f := newAdjudicationFixture(t)
 			cleanDecisionC3Tables(t, f.issueID)
 			f.propose(t)
