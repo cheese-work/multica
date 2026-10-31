@@ -162,16 +162,21 @@ func runPeriodicSweep(ctx context.Context, interval time.Duration, sweep func())
 // stale window — that is the original behavior.
 func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handler.LivenessStore, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace time.Duration) {
 	runPeriodicSweep(ctx, sweepInterval, func() {
-		// These stages retain their existing cadence and ordering. Runtime GC and
-		// delegated-failure recovery run in independent lower-frequency loops.
-		sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
-		sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
-		sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
-		sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
-		sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
-		sweepDeferredChatFinalizations(ctx, queries, taskSvc)
-		taskSvc.CancelExpiredBudgetRecoveryRuns(ctx)
+		runtimeSweepRound(ctx, queries, liveness, taskSvc, bus, reconnectGrace)
 	})
+}
+
+// runtimeSweepRound is one round of runRuntimeSweeper. These stages retain
+// their existing cadence and ordering. Runtime GC and delegated-failure
+// recovery run in independent lower-frequency loops.
+func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handler.LivenessStore, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace time.Duration) {
+	sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
+	sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
+	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
+	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
+	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
+	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
+	taskSvc.CancelExpiredBudgetRecoveryRuns(ctx)
 }
 
 func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.TaskService) {
