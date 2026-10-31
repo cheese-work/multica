@@ -50,6 +50,13 @@ type AgentRuntimeResponse struct {
 	LastSeenAt *string `json:"last_seen_at"`
 	CreatedAt  string  `json:"created_at"`
 	UpdatedAt  string  `json:"updated_at"`
+	// Commit-based update verdict (CHE-2641), computed by runtimeResponse from
+	// the loaded daemon build manifest. UpdateReason is empty when the verdict
+	// is firm; see runtimeUpdateStatus.
+	UpdateAvailable bool   `json:"update_available"`
+	ServerCommit    string `json:"server_commit"`
+	ServerVersion   string `json:"server_version"`
+	UpdateReason    string `json:"update_reason,omitempty"`
 	// Pause and DaemonRunningTasks are filled by ListAgentRuntimes only
 	// (CHE-2430). Pause is null when the machine takes claims;
 	// DaemonRunningTasks counts dispatched and running tasks across every
@@ -630,7 +637,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, runtimeToResponse(rt))
+	writeJSON(w, http.StatusOK, h.runtimeResponse(rt))
 }
 
 func canEditRuntime(member db.Member, rt db.AgentRuntime) bool {
@@ -1157,7 +1164,7 @@ func (h *Handler) RevokeRuntimeWorkspaceAccess(w http.ResponseWriter, r *http.Re
 	)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"runtime":           runtimeToResponse(updated),
+		"runtime":           h.runtimeResponse(updated),
 		"agents_unbound":    len(result.UnboundAgents),
 		"tasks_cancelled":   len(result.CancelledTasks),
 		"autopilots_paused": len(result.PausedAutopilots),
@@ -1202,7 +1209,7 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]AgentRuntimeResponse, len(runtimes))
 	for i, rt := range runtimes {
-		resp[i] = runtimeToResponse(rt)
+		resp[i] = h.runtimeResponse(rt)
 	}
 	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), runtimes, resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load machine pause state")
