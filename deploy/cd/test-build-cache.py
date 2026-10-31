@@ -14,6 +14,50 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildCacheTests(unittest.TestCase):
+    def test_ssd2_cache_storage_does_not_fail_jobs(self):
+        count = 0
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            workflow = yaml.safe_load(path.read_text())
+            for job in workflow.get('jobs', {}).values():
+                for step in job.get('steps', []):
+                    if step.get('name') != 'Use disposable build caches':
+                        continue
+                    count += 1
+                    with self.subTest(workflow=path.name), tempfile.TemporaryDirectory() as directory:
+                        fake_df = Path(directory, 'df')
+                        fake_df.write_text('#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/nvme1n1 100 1 99 1%% /_work\n"\n')
+                        fake_df.chmod(0o755)
+                        output = Path(directory, 'environment')
+                        result = subprocess.run(['bash', '-euc', step['run']], cwd=directory, capture_output=True, text=True,
+                                                env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'PATH': directory + os.pathsep + os.environ['PATH'],
+                                                     'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output), 'GOFLAGS': '-count=1'})
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                        self.assertEqual(environment['GOCACHE'], directory + '/build-cache/go-build')
+                        self.assertEqual(environment['GOFLAGS'], '-count=1 -modcacherw')
+                        self.assertNotIn('exit 1', step['run'])
+        self.assertGreater(count, 0)
+
+    def test_checked_out_jobs_share_cache_initialization(self):
+        shared = 0
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            workflow = yaml.safe_load(path.read_text())
+            for job in workflow.get('jobs', {}).values():
+                checkout = False
+                for step in job.get('steps', []):
+                    if 'checkout@' in step.get('uses', ''):
+                        checkout = True
+                    if step.get('name') == 'Use disposable build caches' and checkout and path.name != 'pr-close-target-check.yml':
+                        shared += 1
+                        self.assertEqual(step['run'].strip(), 'bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"')
+        self.assertGreater(shared, 0)
+
+    def test_maintenance_has_no_build_cache_setup(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/cache-maintenance.yml').read_text())
+        job = workflow['jobs']['cleanup']
+        self.assertFalse(any(step.get('name') == 'Use disposable build caches' for step in job['steps']))
+        self.assertEqual(job['runs-on'], 'ubuntu-24.04')
+
     def setUp(self):
         self.workflow = yaml.safe_load((ROOT / '.github/workflows/cd-qualification.yml').read_text())
 
@@ -31,18 +75,49 @@ class BuildCacheTests(unittest.TestCase):
                 self.assertIn(flag, step['run'])
         self.assertEqual(self.workflow['jobs']['cd-qualification']['needs'], 'build-images')
 
-    def test_builder_survives_without_retaining_running_memory(self):
+    def test_builder_is_ephemeral_and_uses_github_cache(self):
         steps = self.workflow['jobs']['build-images']['steps']
         setup = next(step for step in steps if step.get('id') == 'buildx')['with']
-        self.assertEqual(setup['name'], 'multica-cd-${{ matrix.image }}-v1')
         self.assertEqual(setup['driver'], 'docker-container')
-        self.assertFalse(setup['cleanup'])
+        self.assertTrue(setup.get('cleanup', True))
         config = setup['buildkitd-config-inline']
         self.assertIn('max-parallelism = 2', config)
         self.assertIn('maxUsedSpace = "4GB"', config)
-        stop = next(step for step in steps if 'docker container stop' in step.get('run', ''))
-        self.assertIn('always()', stop['if'])
-        self.assertNotIn('docker buildx rm', stop['run'])
+        self.assertFalse(any('docker container stop' in step.get('run', '') for step in steps))
+        commands = [step['run'] for step in steps if 'docker buildx build' in step.get('run', '')]
+        for command in commands:
+            self.assertIn('--cache-from type=gha,scope=cd-${{ matrix.image }}', command)
+            self.assertIn('--cache-to type=gha,mode=max,scope=cd-${{ matrix.image }}', command)
+        runtime = next(step for step in steps if 'ACTIONS_RUNTIME_TOKEN' in str(step.get('with', {})))
+        self.assertIn('core.setSecret', runtime['with']['script'])
+
+    def test_self_hosted_tooling_uses_disposable_cache_paths(self):
+        for filename, job_name in [('release.yml', 'verify'), ('cd-deploy.yml', 'candidate-preflight')]:
+            workflow = yaml.safe_load((ROOT / '.github/workflows' / filename).read_text())
+            step = next(step for step in workflow['jobs'][job_name]['steps']
+                        if step.get('name') == 'Use disposable build caches')
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory, 'environment')
+                subprocess.run(['bash', '-euc', step['run']], cwd=directory, check=True,
+                               env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'RUNNER_TEMP': directory, 'GITHUB_ENV': str(output)})
+                environment = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            for variable in ['GOCACHE', 'GOMODCACHE', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR']:
+                with self.subTest(workflow=filename, variable=variable):
+                    self.assertTrue(environment.get(variable, '').startswith(directory + '/'))
+            self.assertIn('-modcacherw', environment.get('GOFLAGS', ''))
+
+    def test_turbo_caches_restore_branch_and_lockfile_generations(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())
+        caches = [step['with'] for job in workflow['jobs'].values() for step in job.get('steps', [])
+                  if str(step.get('with', {}).get('key', '')).startswith('turbo-')]
+        self.assertGreater(len(caches), 0)
+        for cache in caches:
+            with self.subTest(key=cache['key']):
+                self.assertIn('github.ref', cache['key'])
+                self.assertIn("hashFiles('pnpm-lock.yaml')", cache['key'])
+                self.assertIn('github.run_id', cache['key'])
+                self.assertNotIn('github.sha', cache['key'])
+                self.assertIn("hashFiles('pnpm-lock.yaml')", cache['restore-keys'])
 
     def test_compiler_caches_precede_version_invalidation(self):
         backend = (ROOT / 'Dockerfile').read_text()
@@ -88,7 +163,7 @@ class BuildCacheTests(unittest.TestCase):
                     (workspace / 'web-fork-changelog.json').write_bytes(entries)
                 source_sha = '1' * 40
                 result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step['run']], cwd=workspace,
-                                        env={**os.environ, 'GITHUB_SHA': source_sha, 'GITHUB_REPOSITORY': 'cheese-work/multica',
+                                        env={**os.environ, "GITHUB_WORKSPACE": str(ROOT), 'GITHUB_SHA': source_sha, 'GITHUB_REPOSITORY': 'cheese-work/multica',
                                              'BACKEND_IMAGE': 'ghcr.io/cheese-work/multica-backend',
                                              'WEB_IMAGE': 'ghcr.io/cheese-work/multica-web'},
                                         capture_output=True, text=True)

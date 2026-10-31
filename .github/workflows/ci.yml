@@ -260,8 +260,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Build, type check, and lint
@@ -314,8 +316,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test web, core, and desktop
@@ -370,8 +374,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
@@ -534,8 +540,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
 
       # Go refreshes a cache entry's mtime when it uses it, but only once that
       # mtime is an hour old. So after the run, an entry no newer than an hour
@@ -592,7 +601,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry
@@ -643,8 +652,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
 
       - name: Test agent package
         run: bash scripts/test-go.sh --race --only agent
@@ -755,8 +767,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
       - name: Mark Go build cache epoch
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
@@ -773,7 +788,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   push-turbo-cache-warm:
     needs: changes
@@ -798,8 +813,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
       - name: Warm build, type check, and lint cache
         run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
@@ -1015,6 +1032,7 @@ jobs:
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
 

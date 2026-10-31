@@ -106,6 +106,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
