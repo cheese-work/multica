@@ -42,7 +42,9 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 	fixture.Exec(t, `INSERT INTO issue_to_label (issue_id, label_id) VALUES ($1, $2)`, foreignIssue, label)
 	fixture.Cleanup(t, `DELETE FROM issue_to_label WHERE issue_id = $1`, foreignIssue)
 	squad := fixture.Squad(t, "Deny squad", foreignAgent)
-	chat := fixture.ChatSession(t, foreignAgent)
+	// explicitly_created_at makes the session visible to the chat handlers (else 404).
+	chat := fixture.ChatSession(t, foreignAgent, testutil.Cols{"explicitly_created_at": time.Now()})
+	fixture.Task(t, foreignAgent, testutil.Cols{"chat_session_id": chat, "runtime_id": foreignRuntime, "status": "running"})
 	chatTask := fixture.Task(t, foreignAgent, testutil.Cols{"chat_session_id": chat, "runtime_id": foreignRuntime, "status": "queued"})
 	pausedProject := fixture.Project(t, "Deny paused project")
 	pausedIssue := fixture.Issue(t, "Deny paused project issue", testutil.Cols{"assignee_type": "agent", "assignee_id": foreignAgent, "project_id": pausedProject})
@@ -90,6 +92,8 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 			`SELECT count(*) FROM project WHERE id = $1`, []any{deletedProject}, "", ""},
 		{"clear queued chat tasks", "DELETE", "/api/chat/sessions/" + chat + "/queued-tasks", ``,
 			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, []any{chatTask}, "", ""},
+		{"prioritize queued chat task", "POST", "/api/chat/sessions/" + chat + "/queued-tasks/" + chatTask + "/prioritize", ``,
+			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued' AND priority = 0`, []any{chatTask}, "", ""},
 		{"delete label", "DELETE", "/api/labels/" + label, ``,
 			`SELECT count(*) FROM issue_to_label WHERE issue_id = $1 AND label_id = $2`, []any{foreignIssue, label}, "", ""},
 		{"delete squad", "DELETE", "/api/squads/" + squad, ``,

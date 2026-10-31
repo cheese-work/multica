@@ -58,12 +58,13 @@ var scopedWriteRoutes = []string{
 // them (agent cancel/archive cascade to tasks, a project workflow remaps issue
 // statuses, pausing a project cancels its tasks, deleting a project, label,
 // squad, runtime, chat session, workspace or member detaches, reassigns or
-// cancels, clearing a chat's queue cancels its tasks). A run token answers 403 on each
+// cancels, clearing a chat's queue cancels its tasks and prioritizing one reorders them). A run token answers 403 on each
 // (DenyTaskTokenWrites); TestTaskTokenDeniedOnCrossIssueRoutes drives them.
 var deniedRunTokenRoutes = []string{
 	"DELETE /api/chat/sessions/{sessionId}/",
 	"DELETE /api/chat/sessions/{sessionId}/queued-tasks",
 	"DELETE /api/projects/{id}/",
+	"POST /api/chat/sessions/{sessionId}/queued-tasks/{taskId}/prioritize",
 	"DELETE /api/labels/{id}/",
 	"DELETE /api/runtimes/{runtimeId}/",
 	"DELETE /api/squads/{id}/",
@@ -96,7 +97,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/agents":                   {16, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {19, byOwnRow},
+	"api/chat":                     {18, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
