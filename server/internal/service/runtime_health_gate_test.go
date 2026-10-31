@@ -70,6 +70,13 @@ func TestStaleDispatchRecoveryHonorsBatchLimitWithStaleStatistics(t *testing.T) 
 				}
 				want := min(int(limit), 5-claimed)
 				if len(batch) != want {
+					var diag string
+					_ = tx.QueryRow(ctx, `SELECT format('schemas=%s temp=%s atq=%s pg_temp_atq=%s dispatched_old=%s runtimes_online=%s now=%s',
+						current_schemas(true), pg_my_temp_schema()::regnamespace,
+						(SELECT count(*) FROM agent_task_queue), (SELECT count(*) FROM pg_temp.agent_task_queue),
+						(SELECT count(*) FROM agent_task_queue WHERE status = 'dispatched' AND started_at IS NULL AND dispatched_at < now() - interval '30 seconds' AND (prepare_lease_expires_at IS NULL OR prepare_lease_expires_at < now())),
+						(SELECT count(*) FROM agent_runtime WHERE status = 'online' AND visibility = 'public'), now())`).Scan(&diag)
+					t.Logf("CHE-1740 diagnostic: %s", diag)
 					t.Fatalf("reclaimed %d tasks, want %d (limit %d, already claimed %d)", len(batch), want, limit, claimed)
 				}
 				for _, task := range batch {
