@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -123,4 +124,70 @@ func TestVoteGate_AuditInsertFailureKeepsValue(t *testing.T) {
 			t.Fatalf("value must stay, got %q", got)
 		}
 	})
+}
+
+// ── runtime access changes ───────────────────────────────────────────────
+
+func runtimeAccessRequest(confirmed bool, ownerID, runtimeID string) (func(w http.ResponseWriter, r *http.Request), *http.Request) {
+	if confirmed {
+		req := newRequestAs(ownerID, http.MethodPost, "/api/runtimes/"+runtimeID+"/revoke-workspace-access",
+			map[string]any{"expected_nonowner_agent_ids": []string{}, "expected_task_ids": []string{}})
+		return testHandler.RevokeRuntimeWorkspaceAccess, withURLParam(req, "runtimeId", runtimeID)
+	}
+	req := newRequestAs(ownerID, http.MethodPatch, "/api/runtimes/"+runtimeID, map[string]any{"visibility": "private"})
+	return testHandler.UpdateAgentRuntime, withURLParam(req, "runtimeId", runtimeID)
+}
+
+func TestRuntimeAccessChange_WritesAuditRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for _, confirmed := range []bool{false, true} {
+		kind := map[bool]string{false: "runtime.access.update", true: "runtime.access.revoke"}[confirmed]
+		t.Run(kind, func(t *testing.T) {
+			runtimeID, ownerID, _ := runtimeVisibilityFixture(t)
+			dbfx.Exec(t, `UPDATE agent_runtime SET visibility = 'public' WHERE id = $1`, runtimeID)
+			handle, req := runtimeAccessRequest(confirmed, ownerID, runtimeID)
+			w := httptest.NewRecorder()
+			handle(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			rows := auditRowsFor(t, kind, runtimeID)
+			if len(rows) != 1 {
+				t.Fatalf("audit rows = %d, want 1", len(rows))
+			}
+			row := rows[0]
+			if row.ActorType != "member" || row.TargetType != "runtime" {
+				t.Errorf("actor/target = %s/%s, want member/runtime", row.ActorType, row.TargetType)
+			}
+			if row.Before["visibility"] != "public" || row.After["visibility"] != "private" {
+				t.Errorf("visibility diff = %v -> %v, want public -> private", row.Before, row.After)
+			}
+		})
+	}
+}
+
+func TestRuntimeAccessChange_AuditInsertFailureRollsBack(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for _, confirmed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "patch", true: "confirmed"}[confirmed], func(t *testing.T) {
+			runtimeID, ownerID, _ := runtimeVisibilityFixture(t)
+			dbfx.Exec(t, `UPDATE agent_runtime SET visibility = 'public' WHERE id = $1`, runtimeID)
+			failAuditInsertFor(t, runtimeID)
+			handle, req := runtimeAccessRequest(confirmed, ownerID, runtimeID)
+			w := httptest.NewRecorder()
+			handle(w, req)
+			if w.Code != http.StatusInternalServerError || w.Header().Get("Retry-After") == "" {
+				t.Fatalf("expected retryable 500, got %d: %s", w.Code, w.Body.String())
+			}
+			var vis string
+			dbfx.QueryRow(t, `SELECT visibility FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&vis)
+			if vis != "public" {
+				t.Fatalf("visibility = %q after failed audit; the change must roll back", vis)
+			}
+		})
+	}
 }

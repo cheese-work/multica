@@ -554,9 +554,9 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	changed := false
 
 	if req.Visibility != nil || req.SharedWith != nil {
-		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), rt, member, req)
+		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, rt, member, req)
 		if err != nil {
-			if writeRuntimeRevocationBusy(w, err) {
+			if failedAudit(w, r, err, "runtime.access.update") || writeRuntimeRevocationBusy(w, err) {
 				return
 			}
 			if errors.Is(err, errRuntimeOwnerChanged) {
@@ -704,7 +704,7 @@ func (p runtimeWorkspaceAccessRevocationPlan) hasDependencies() bool {
 // A non-empty plan is deliberately returned without committing. The caller
 // turns it into the same confirmation response used by the disruptive path;
 // the confirmed endpoint will take a fresh locked snapshot before revoking.
-func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
+func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("begin transaction: %w", err)
@@ -764,6 +764,12 @@ func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db
 	})
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("update runtime visibility: %w", err)
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "runtime.access.update", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: runtimeAccessAuditFields(updated),
+	}); err != nil {
+		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, auditWriteError{err}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("commit transaction: %w", err)
@@ -1143,6 +1149,17 @@ func (h *Handler) RevokeRuntimeWorkspaceAccess(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		slog.Error("revoke runtime access failed", "error", err, "runtime_id", runtimeID)
 		writeError(w, http.StatusInternalServerError, "failed to revoke runtime access")
+		return
+	}
+	revokeAfter := runtimeAccessAuditFields(updated)
+	revokeAfter["agents_unbound"] = len(result.UnboundAgents)
+	revokeAfter["tasks_cancelled"] = len(result.CancelledTasks)
+	revokeAfter["autopilots_paused"] = len(result.PausedAutopilots)
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.access.revoke", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: revokeAfter,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.access.revoke")
 		return
 	}
 

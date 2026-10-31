@@ -82,6 +82,14 @@ var auditKinds = map[string]auditKindSpec{
 	"squad.instructions":    {TargetType: "squad", Text: []string{"instructions"}},
 	"agent.instructions":    {TargetType: "agent", Text: []string{"instructions"}},
 	"project.description":   {TargetType: "project", Text: []string{"description"}},
+	// Runtime access narrowing/widening. shared_with is a list of user ids, so
+	// it is recorded as the changed marker; the counts are the confirmed
+	// teardown the revoke applied.
+	"runtime.access.update": {TargetType: "runtime", Allow: []string{"visibility"}},
+	"runtime.access.revoke": {
+		TargetType: "runtime",
+		Allow:      []string{"visibility", "agents_unbound", "tasks_cancelled", "autopilots_paused"},
+	},
 	"audit.retention_purge": {TargetType: "workspace"},
 }
 
@@ -377,6 +385,16 @@ func runtimeAuditFields(rt db.AgentRuntime) map[string]any {
 		"name": rt.Name, "provider": rt.Provider, "runtime_mode": rt.RuntimeMode,
 		"visibility": rt.Visibility, "status": rt.Status,
 	}
+}
+
+// runtimeAccessAuditFields snapshots who may use a runtime.
+func runtimeAccessAuditFields(rt db.AgentRuntime) map[string]any {
+	shared := make([]string, len(rt.SharedWith))
+	for i, id := range rt.SharedWith {
+		shared[i] = uuidToString(id)
+	}
+	sort.Strings(shared)
+	return map[string]any{"visibility": rt.Visibility, "shared_with": strings.Join(shared, ",")}
 }
 
 // envAuditFields lifts an env map into a snapshot. Values are present only so
