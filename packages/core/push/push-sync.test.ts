@@ -23,7 +23,7 @@ function subscription(endpoint = "https://push.example/1") {
   };
 }
 
-function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof subscription> | null }) {
+function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof subscription> | null; locks?: unknown }) {
   const pushManager = {
     getSubscription: vi.fn(async () => opts.existing ?? null),
     subscribe: vi.fn(async () => subscription("https://push.example/new")),
@@ -38,6 +38,7 @@ function stubBrowser(opts: { permission?: string; existing?: ReturnType<typeof s
   vi.stubGlobal("navigator", {
     userAgent: "Chrome",
     maxTouchPoints: 0,
+    locks: opts.locks,
     serviceWorker: {
       register: vi.fn(async () => registration),
       ready: Promise.resolve(registration),
@@ -94,6 +95,33 @@ describe("reRegisterThisDevice", () => {
     const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
     await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
     expect(api.registerPushSubscription).not.toHaveBeenCalled();
+  });
+
+  describe("an opt-out that finishes while this page waits for the device lock", () => {
+    // The lock manager lets the opt-out run first, as when another tab holds the lock.
+    const optOutFirst = () => ({
+      request: async (_name: string, run: () => Promise<unknown>) => {
+        await setPushIntent("off");
+        return run();
+      },
+    });
+
+    it("registers nothing for a retained subscription", async () => {
+      await stubStorage("on");
+      stubBrowser({ existing: subscription(), locks: optOutFirst() });
+      const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+      await expect(reRegisterThisDevice(api)).resolves.toBe("skipped");
+      expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    });
+
+    it("subscribes and registers nothing when recovering a dropped subscription", async () => {
+      await stubStorage("on");
+      const pushManager = stubBrowser({ existing: null, locks: optOutFirst() });
+      const api = { registerPushSubscription: vi.fn(), getPushConfig: config() };
+      await expect(resubscribeThisDevice(api)).resolves.toBe("skipped");
+      expect(pushManager.subscribe).not.toHaveBeenCalled();
+      expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    });
   });
 
   it("recovers a subscription the browser dropped while push is wanted", async () => {

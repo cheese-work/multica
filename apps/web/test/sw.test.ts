@@ -13,15 +13,32 @@ type WorkerOptions = {
   fetchResponses?: { ok: boolean; status: number }[];
   // The device choice the page saved in IndexedDB; "unreadable" models a database that errors. Default "on".
   intent?: "on" | "unset" | "unreadable";
+  // navigator.locks; omit to model a browser without it.
+  locks?: { request: (name: string, run: () => Promise<unknown>) => Promise<unknown> };
 };
 
+// A lock manager that runs holders of one name one at a time, in request order.
+function fakeLocks() {
+  const tails = new Map<string, Promise<unknown>>();
+  const requested: string[] = [];
+  return {
+    requested,
+    request: (name: string, run: () => Promise<unknown>) => {
+      requested.push(name);
+      const run1 = (tails.get(name) ?? Promise.resolve()).then(run);
+      tails.set(name, run1.catch(() => undefined));
+      return run1;
+    },
+  };
+}
+
 // Same names as packages/core/push/push-intent.ts.
-function fakeIndexedDb(intent: NonNullable<WorkerOptions["intent"]>) {
+function fakeIndexedDb(state: { intent: NonNullable<WorkerOptions["intent"]> }) {
   return {
     open: () => {
       const request: Record<string, unknown> = {};
       queueMicrotask(() => {
-        if (intent === "unreadable") {
+        if (state.intent === "unreadable") {
           request.error = new Error("denied");
           (request.onerror as () => void)();
           return;
@@ -32,7 +49,7 @@ function fakeIndexedDb(intent: NonNullable<WorkerOptions["intent"]>) {
           transaction: () => ({
             objectStore: () => ({
               get: () => {
-                const read: Record<string, unknown> = { result: intent === "on" ? "on" : undefined };
+                const read: Record<string, unknown> = { result: state.intent === "on" ? "on" : undefined };
                 queueMicrotask(() => (read.onsuccess as () => void)());
                 return read;
               },
@@ -57,8 +74,10 @@ function loadWorker(options: WorkerOptions = {}) {
     postMessage: ReturnType<typeof vi.fn>;
   }[] = [];
   const openWindow = vi.fn();
+  const state = { intent: options.intent ?? "on" };
   const renewed = {
     endpoint: "https://push.example/new",
+    unsubscribe: vi.fn(async () => true),
     toJSON: () => ({ endpoint: "https://push.example/new", keys: { p256dh: "P", auth: "A" } }),
   };
   const subscribe = vi.fn(async () => renewed);
@@ -67,7 +86,8 @@ function loadWorker(options: WorkerOptions = {}) {
   const { cookies } = options;
   const scope = {
     fetch: fetchMock,
-    indexedDB: fakeIndexedDb(options.intent ?? "on"),
+    indexedDB: fakeIndexedDb(state),
+    ...(options.locks ? { navigator: { locks: options.locks } } : {}),
     ...(cookies
       ? {
           cookieStore: {
@@ -96,7 +116,7 @@ function loadWorker(options: WorkerOptions = {}) {
     listeners[type]?.({ ...event, waitUntil: (p: Promise<unknown>) => waits.push(p) });
     await Promise.all(waits);
   };
-  return { dispatch, shown, windows, openWindow, subscribe, listeners, fetch: fetchMock };
+  return { dispatch, shown, windows, openWindow, subscribe, listeners, fetch: fetchMock, state, renewed };
 }
 
 const pushEvent = (payload: unknown) => ({
@@ -269,6 +289,64 @@ describe("service worker pushsubscriptionchange", () => {
       worker.windows.push(tab);
       await worker.dispatch("pushsubscriptionchange", change);
       expect(tab.postMessage).not.toHaveBeenCalled();
+    });
+
+    describe("when the user opts out while a renewal is in flight", () => {
+      const cookies = { multica_csrf_session: "c" };
+      // Pause the browser's subscribe call, as a slow push service would.
+      function pausedSubscribe(worker: ReturnType<typeof loadWorker>) {
+        let release: () => void = () => undefined;
+        worker.subscribe.mockImplementation(
+          () => new Promise((resolve) => (release = () => resolve(worker.renewed))) as Promise<typeof worker.renewed>,
+        );
+        return () => release();
+      }
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+      it("drops the replacement and sends nothing when the choice turned off during subscribe", async () => {
+        const worker = loadWorker({ cookies });
+        const release = pausedSubscribe(worker);
+        const done = worker.dispatch("pushsubscriptionchange", change);
+        await tick();
+        worker.state.intent = "unset"; // the opt-out finished: record deleted
+        release();
+        await done;
+        expect(worker.fetch).not.toHaveBeenCalled();
+        expect(worker.renewed.unsubscribe).toHaveBeenCalled();
+      });
+
+      it("waits for an opt-out that holds the device lock, then registers nothing", async () => {
+        const locks = fakeLocks();
+        const worker = loadWorker({ cookies, locks });
+        let finishOptOut: () => void = () => undefined;
+        void locks.request("multica-push-device", () => new Promise<void>((resolve) => (finishOptOut = resolve)));
+        const done = worker.dispatch("pushsubscriptionchange", change);
+        await tick();
+        expect(worker.subscribe).not.toHaveBeenCalled();
+        worker.state.intent = "unset";
+        finishOptOut();
+        await done;
+        expect(worker.subscribe).not.toHaveBeenCalled();
+        expect(worker.fetch).not.toHaveBeenCalled();
+      });
+
+      it("holds the device lock until the endpoint is registered, so an opt-out starting then removes it", async () => {
+        const locks = fakeLocks();
+        const worker = loadWorker({ cookies, locks });
+        let finishPost: (value: { ok: boolean; status: number }) => void = () => undefined;
+        worker.fetch.mockImplementation(() => new Promise((resolve) => (finishPost = resolve)));
+        const done = worker.dispatch("pushsubscriptionchange", change);
+        await tick();
+        const order: string[] = [];
+        const optOut = locks.request("multica-push-device", async () => void order.push("opt-out"));
+        await tick();
+        expect(order).toEqual([]);
+        finishPost({ ok: true, status: 201 });
+        await done;
+        await optOut;
+        expect(order).toEqual(["opt-out"]);
+        expect(worker.fetch).toHaveBeenCalledTimes(1);
+      });
     });
 
     describe("when the device does not want push", () => {

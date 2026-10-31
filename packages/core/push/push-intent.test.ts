@@ -108,4 +108,16 @@ describe("push intent", () => {
     await expect(page.getPushIntent()).resolves.toBe("on");
     await expect((await freshPage()).getPushIntent()).resolves.not.toBe("on");
   });
+
+  // Documented residual (CHE-1798 round 5, finding 2): nothing on the client can record an
+  // opt-out when the database refuses deletes too and cookies are refused. This pins the
+  // behaviour so a change to it is deliberate; closing it needs the choice stored on the server.
+  it("known residual: a fresh page reads a stale on when the database refuses deletes and cookies are refused", async () => {
+    const page = await freshPage();
+    await page.setPushIntent("on");
+    Object.assign(storage, { idbMode: "read-only", cookieMode: "denied" });
+    await page.setPushIntent("off");
+    await expect(page.getPushIntent()).resolves.toBe("off");
+    await expect((await freshPage()).getPushIntent()).resolves.toBe("on");
+  });
 });

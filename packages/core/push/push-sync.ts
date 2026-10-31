@@ -6,7 +6,7 @@ import {
   registrationBody,
   subscribeThisDevice,
 } from "./push-client";
-import { isPushWanted } from "./push-intent";
+import { isPushWanted, withDeviceLock } from "./push-intent";
 
 export type PushSyncResult = "registered" | "skipped";
 
@@ -30,17 +30,22 @@ type Resubscriber = Registrar & { getPushConfig: () => Promise<PushConfig> };
  * load cannot break on it.
  */
 export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncResult> {
-  if (!isGranted() || !(await isPushWanted())) return "skipped";
-  try {
-    const subscription = await getThisDeviceSubscription();
-    if (!subscription) return await resubscribeThisDevice(api);
-    const body = registrationBody(subscription);
-    if (!body) return "skipped";
-    await api.registerPushSubscription(body);
-    return "registered";
-  } catch {
-    return "skipped";
-  }
+  if (!isGranted()) return "skipped";
+  // The choice is read inside the device lock, so an opt-out that was running
+  // (here or in another tab) has finished and is seen.
+  return withDeviceLock(async () => {
+    if (!(await isPushWanted())) return "skipped";
+    try {
+      const subscription = await getThisDeviceSubscription();
+      if (!subscription) return await subscribeAndRegister(api);
+      const body = registrationBody(subscription);
+      if (!body) return "skipped";
+      await api.registerPushSubscription(body);
+      return "registered";
+    } catch {
+      return "skipped";
+    }
+  });
 }
 
 /**
@@ -48,7 +53,12 @@ export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncR
  * subscribe again with the deployment key and register the new one.
  */
 export async function resubscribeThisDevice(api: Resubscriber): Promise<PushSyncResult> {
-  if (!isGranted() || !(await isPushWanted())) return "skipped";
+  if (!isGranted()) return "skipped";
+  return withDeviceLock(async () => ((await isPushWanted()) ? subscribeAndRegister(api) : "skipped"));
+}
+
+async function subscribeAndRegister(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted()) return "skipped";
   try {
     const config = await api.getPushConfig();
     if (!config.enabled || !config.public_key) return "skipped";

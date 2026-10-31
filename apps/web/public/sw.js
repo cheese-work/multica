@@ -142,10 +142,22 @@ async function registerWithServer(subscription) {
   return false;
 }
 
+// The page holds this lock for the whole opt-out and for its own registration
+// (packages/core/push/push-intent.ts, same name), so a renewal never interleaves
+// with either: it runs before the opt-out, which then removes the endpoint it
+// registered, or after it, and sees the choice off. Without navigator.locks the
+// choice is only re-read after subscribing, which narrows the gap but leaves it.
+const DEVICE_LOCK = "multica-push-device";
+
+function withDeviceLock(run) {
+  const locks = self.navigator && self.navigator.locks;
+  return locks ? locks.request(DEVICE_LOCK, run) : run();
+}
+
 self.addEventListener("pushsubscriptionchange", (event) => {
   const old = event.oldSubscription;
   event.waitUntil(
-    (async () => {
+    withDeviceLock(async () => {
       if (!(await pushWanted())) return;
       let renewed = event.newSubscription || null;
       try {
@@ -154,9 +166,14 @@ self.addEventListener("pushsubscriptionchange", (event) => {
       } catch {
         // Keep what the browser handed over, if anything.
       }
+      if (renewed && !(await pushWanted())) {
+        // The user opted out while subscribing: drop the replacement, send nothing.
+        await Promise.resolve(renewed.unsubscribe && renewed.unsubscribe()).catch(() => undefined);
+        return;
+      }
       if (renewed && (await registerWithServer(renewed).catch(() => false))) return;
       const tabs = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       tabs.forEach((tab) => tab.postMessage({ type: "push-subscription-changed" }));
-    })(),
+    }),
   );
 });

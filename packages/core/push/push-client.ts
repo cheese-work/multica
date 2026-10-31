@@ -1,7 +1,7 @@
 // Browser side of Web Push (CHE-1798). Headless: it only touches `window`,
 // `navigator` and the registration it is handed, so the views layer owns UI.
 
-import { setPushIntent } from "./push-intent";
+import { setPushIntent, withDeviceLock } from "./push-intent";
 
 export type PushSupport = "ok" | "unsupported" | "needs-home-screen";
 
@@ -94,9 +94,17 @@ export type UnsubscribeResult = "done" | "failed";
  * register this browser again whatever happens next. Then the server delete
  * (it needs the session) and the browser unsubscribe, both attempted. Never
  * throws; "failed" tells the switch to show an error, while logout ignores it
- * because the worker also skips a subscription whose session has ended.
+ * because the worker also skips a subscription whose session has ended. All
+ * of it runs under the device lock, so a renewal the worker has in flight
+ * finishes first (and is removed here) or starts after and sees the opt-out.
  */
-export async function unsubscribeThisDevice(api: {
+export function unsubscribeThisDevice(api: {
+  deletePushSubscription: (endpoint: string) => Promise<void>;
+}): Promise<UnsubscribeResult> {
+  return withDeviceLock(() => optOut(api));
+}
+
+async function optOut(api: {
   deletePushSubscription: (endpoint: string) => Promise<void>;
 }): Promise<UnsubscribeResult> {
   await setPushIntent("off");

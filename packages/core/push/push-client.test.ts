@@ -118,12 +118,12 @@ describe("subscribeThisDevice", () => {
 });
 
 describe("unsubscribeThisDevice", () => {
-  function setup(opts: { deleteFails?: boolean; unsubscribeFails?: boolean; sub?: boolean }) {
+  function setup(opts: { deleteFails?: boolean; unsubscribeFails?: boolean; sub?: boolean; locks?: unknown }) {
     stubBrowserStorage();
     const unsubscribe = vi.fn(opts.unsubscribeFails ? () => Promise.reject(new Error("x")) : () => Promise.resolve(true));
     const sub = opts.sub === false ? null : { endpoint: "https://push.example/x", unsubscribe };
     const getRegistration = vi.fn().mockResolvedValue({ pushManager: { getSubscription: vi.fn().mockResolvedValue(sub) } });
-    vi.stubGlobal("navigator", { serviceWorker: { getRegistration } });
+    vi.stubGlobal("navigator", { serviceWorker: { getRegistration }, locks: opts.locks });
     vi.stubGlobal("window", {});
     const deletePushSubscription = vi.fn(opts.deleteFails ? () => Promise.reject(new Error("net")) : () => Promise.resolve());
     return { unsubscribe, deletePushSubscription };
@@ -137,6 +137,24 @@ describe("unsubscribeThisDevice", () => {
     await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("done");
     expect(deletePushSubscription).toHaveBeenCalledWith("https://push.example/x");
     expect(order).toEqual(["delete", "unsubscribe"]);
+    await expect(getPushIntent()).resolves.toBe("off");
+  });
+
+  it("runs the whole opt-out under the device lock, so a worker renewal cannot interleave", async () => {
+    const order: string[] = [];
+    const locks = {
+      request: vi.fn(async (name: string, run: () => Promise<unknown>) => {
+        order.push(`lock:${name}`);
+        const result = await run();
+        order.push("released");
+        return result;
+      }),
+    };
+    const { unsubscribe, deletePushSubscription } = setup({ locks });
+    deletePushSubscription.mockImplementation(async () => void order.push("delete"));
+    unsubscribe.mockImplementation(async () => (order.push("unsubscribe"), true));
+    await expect(unsubscribeThisDevice({ deletePushSubscription })).resolves.toBe("done");
+    expect(order).toEqual(["lock:multica-push-device", "delete", "unsubscribe", "released"]);
     await expect(getPushIntent()).resolves.toBe("off");
   });
 

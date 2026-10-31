@@ -15,6 +15,10 @@ const STORE = "device";
 const KEY = "intent";
 const OFF_COOKIE = "multica_push_off";
 const ONE_YEAR = 60 * 60 * 24 * 365;
+// Held for a whole opt-out and for each registration, here and in the worker
+// (`public/sw.js`, same name), so they never interleave. Without Web Locks
+// (older browsers) there is no ordering, only the re-read of the choice.
+const DEVICE_LOCK = "multica-push-device";
 
 // A choice storage could not keep. It wins for this page until a write works.
 let unsaved: PushIntent | null = null;
@@ -76,6 +80,12 @@ export async function getPushIntent(): Promise<PushIntent | null> {
 /** Fail closed: true only for a positively stored "on". */
 export async function isPushWanted(): Promise<boolean> {
   return (await getPushIntent()) === "on";
+}
+
+export function withDeviceLock<T>(run: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  // request() resolves with what the callback's promise resolves to.
+  return locks ? (locks.request(DEVICE_LOCK, run) as Promise<T>) : run();
 }
 
 export async function setPushIntent(intent: PushIntent): Promise<void> {
