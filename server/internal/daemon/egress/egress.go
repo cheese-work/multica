@@ -24,8 +24,7 @@ import (
 const (
 	headerTimeout = 10 * time.Second
 	dialTimeout   = 10 * time.Second
-	// maxLoggedTarget caps the request-target text kept for a refused request.
-	maxLoggedTarget = 256
+	maxLoggedHost = 253 // longest DNS name
 )
 
 // Dest is one CONNECT target the run asked for.
@@ -88,22 +87,22 @@ func (p *Proxy) handle(c net.Conn) {
 	br := bufio.NewReader(c)
 	req, err := http.ReadRequest(br)
 	if err != nil {
-		p.badRequest(c, http.StatusBadRequest, "", "unparsable request")
+		p.badRequest(c, http.StatusBadRequest, "", "", "unparsable request")
 		return
 	}
 	// CONNECT only: absolute-form and origin-form requests get 405.
 	if req.Method != http.MethodConnect {
-		p.badRequest(c, http.StatusMethodNotAllowed, req.Method+" "+req.RequestURI, "not CONNECT")
+		p.badRequest(c, http.StatusMethodNotAllowed, req.URL.Hostname(), req.URL.Port(), "not CONNECT")
 		return
 	}
 	host, port, err := net.SplitHostPort(req.Host)
 	if err != nil || host == "" {
-		p.badRequest(c, http.StatusBadRequest, req.RequestURI, "CONNECT target is not host:port")
+		p.badRequest(c, http.StatusBadRequest, "", "", "CONNECT target is not host:port")
 		return
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 1 || n > 65535 || strings.Contains(host, "%") { // no zones, no encoded hosts
-		p.badRequest(c, http.StatusBadRequest, req.RequestURI, "bad port or encoded host")
+		p.badRequest(c, http.StatusBadRequest, host, port, "bad port or encoded host")
 		return
 	}
 	if p.Elevated != nil {
@@ -149,12 +148,28 @@ func (p *Proxy) control(_, address string, _ syscall.RawConn) error {
 }
 
 // badRequest refuses a request that never reached the policy. Under the
-// elevated policy it is logged too, with the target cut to maxLoggedTarget.
-func (p *Proxy) badRequest(c net.Conn, code int, target, reason string) {
+// elevated policy it is logged too, with only a parsed hostname and port: user-info,
+// paths and query strings can carry credentials and never enter the log.
+func (p *Proxy) badRequest(c net.Conn, code int, host, port, reason string) {
 	if p.Elevated != nil {
-		p.record(strings.ToValidUTF8(target[:min(len(target), maxLoggedTarget)], "?"), "", false, reason)
+		p.record(loggableHost(host), loggablePort(port), false, reason)
 	}
 	reply(c, code)
+}
+
+// loggableHost returns host when it is a plain DNS hostname, else "".
+func loggableHost(host string) string {
+	if host = strings.ToLower(host); len(host) <= maxLoggedHost && badHostname(host) == "" {
+		return host
+	}
+	return ""
+}
+
+func loggablePort(port string) string {
+	if n, err := strconv.Atoi(port); err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == port {
+		return port
+	}
+	return ""
 }
 
 // record logs one destination and returns its index for refuse.

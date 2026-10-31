@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -332,19 +333,41 @@ func TestElevatedEarlyRefusalsAreLogged(t *testing.T) {
 			if len(d) != 1 || d[0].Allowed || d[0].Reason == "" {
 				t.Fatalf("refusal not logged with a reason: %+v", d)
 			}
-			if len(d[0].Host) > maxLoggedTarget {
-				t.Fatalf("logged host is %d bytes, cap is %d", len(d[0].Host), maxLoggedTarget)
-			}
 		})
 	}
 }
 
-func TestElevatedEarlyRefusalLogIsCapped(t *testing.T) {
+// Refusal logs keep a parsed hostname and port, never raw request text:
+// user-info and query strings can carry credentials (CWE-532).
+func TestElevatedEarlyRefusalLogHoldsNoCredentials(t *testing.T) {
+	reqs := map[string]string{
+		"absolute-form user-info":    "GET http://user:SECRETUSER@" + providerHost + "/?token=SECRETQUERY HTTP/1.1\r\nHost: x\r\n\r\n",
+		"absolute-form query":        "GET http://" + providerHost + "/p?token=SECRETQUERY HTTP/1.1\r\nHost: x\r\n\r\n",
+		"origin-form query":          "GET /p?token=SECRETQUERY HTTP/1.1\r\nHost: " + providerHost + "\r\n\r\n",
+		"connect user-info bad port": rawConnect("user@SECRETUSER." + providerHost + ":x"),
+		"connect pass user-info":     rawConnect("user:SECRETPASS@" + providerHost + ":x"),
+		"connect encoded host":       rawConnect("SECRET%41." + providerHost + ":443"),
+		"connect no port":            "CONNECT SECRETUSER@" + providerHost + " HTTP/1.1\r\nHost: x\r\n\r\n",
+		"garbage":                    "SECRETGARBAGE \x00 not http\r\n\r\n",
+	}
+	for name, req := range reqs {
+		t.Run(name, func(t *testing.T) {
+			r := defaultRig(t)
+			status(t, r.dial(), req)
+			d := r.p.Dests()
+			if len(d) != 1 || d[0].Allowed || d[0].Reason == "" {
+				t.Fatalf("refusal not logged with a reason: %+v", d)
+			}
+			if got := fmt.Sprintf("%+v", d[0]); strings.Contains(got, "SECRET") {
+				t.Fatalf("log entry holds request text: %s", got)
+			}
+		})
+	}
+	// a well-formed absolute-form target still logs its hostname and port
 	r := defaultRig(t)
-	status(t, r.dial(), rawConnect(strings.Repeat("a", 3000)+":x"))
-	d := r.p.Dests()
-	if len(d) != 1 || len(d[0].Host) > maxLoggedTarget {
-		t.Fatalf("destination log = %d entries, host length %d", len(d), len(d[0].Host))
+	status(t, r.dial(), "GET http://user:SECRETUSER@"+providerHost+":8080/ HTTP/1.1\r\nHost: x\r\n\r\n")
+	if d := r.p.Dests(); len(d) != 1 || d[0].Host != providerHost || d[0].Port != "8080" {
+		t.Fatalf("parsed host and port not logged: %+v", d)
 	}
 }
 
