@@ -80,7 +80,9 @@ function renderChain() {
     qc.setQueryData(chatKeys.messagesPage(id), { pages: [{ messages, limit: 50, has_more: false }], pageParams: [null] });
   seed(first, [message(first, "a1", "user", "Oldest question"), message(first, "a2", "assistant", "Oldest answer")]);
   seed(second, [message(second, "b1", "user", "Middle question"), message(second, "b2", "assistant", "Middle answer")]);
-  return renderWithI18n(<Harness qc={qc} />);
+  const rendered = renderWithI18n(<Harness qc={qc} />);
+  fireEvent.click(screen.getByRole("button", { name: "Show earlier context" }));
+  return rendered;
 }
 
 function select(text: string) {
@@ -121,7 +123,6 @@ describe("Add comment in the earlier DM blocks", () => {
 
   it("anchors a comment on the Conversation summary to the summary message", async () => {
     renderChain();
-    fireEvent.click(screen.getByRole("button", { name: "Conversation summary" }));
     await addComment("Summary of the past", "Is this complete?");
     expect(useCommentDraftStore.getState().getAnnotations(key)).toMatchObject([
       { sourceCommentId: "sum", quote: "Summary of the past", note: "Is this complete?" },

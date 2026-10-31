@@ -1115,6 +1115,7 @@ export const ChatMessageSchema = z.object({
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
+  carried_from_session_id: z.string().nullable().optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
