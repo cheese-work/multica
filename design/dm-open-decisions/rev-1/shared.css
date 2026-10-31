@@ -1,0 +1,162 @@
+/* rev-1. Mock-only stylesheet. Token values copied from packages/ui/styles/tokens.css (light theme).
+   Chat geometry mirrors packages/views/chat/components/chat-column.ts (px-5 gutter, max-w-4xl column) and offline-banner.tsx. */
+:root {
+  --app-shell: oklch(0.964435 0.001327 286.375);
+  --page-canvas: oklch(0.988087 0 0);
+  --surface: oklch(1 0 0);
+  --surface-hover: oklch(0.967 0.001 286.375);
+  --surface-selected: oklch(0.95 0.002 286.375);
+  --surface-border: oklch(0.92 0.004 286.32);
+  --surface-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 1px rgb(15 23 42 / 0.03);
+  --floating-shadow: 0 16px 40px rgb(15 23 42 / 0.14), 0 3px 10px rgb(15 23 42 / 0.08);
+  --foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.21 0.006 285.885);
+  --primary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.505 0.016 285.938);
+  --faint-foreground: oklch(0.606 0.016 285.938);
+  --destructive: oklch(0.577 0.245 27.325);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+  --success: oklch(0.55 0.16 145);
+  --warning: oklch(0.75 0.16 85);
+  --warning-text: oklch(0.45 0.1 80);
+  --info: oklch(0.55 0.18 250);
+  --brand: oklch(0.56079497 0.19449888 256.41258418);
+  --sidebar-accent: oklch(0.935 0.003 286.375);
+  --radius: 0.5rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-sans); color: var(--foreground); background: var(--app-shell); font-size: 14px; line-height: 20px; }
+h1,h2,h3,h4,p,ul,ol,table { margin: 0; padding: 0; }
+ul,ol { list-style: none; }
+button, input { font: inherit; color: inherit; }
+.mono { font-family: var(--font-mono); font-size: 12px; }
+.tnum { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted-foreground); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.t-micro { font-size: 11px; line-height: 15px; } .t-caption { font-size: 12px; line-height: 16px; }
+.t-label { font-size: 13px; line-height: 18px; } .t-title-lg { font-size: 20px; line-height: 28px; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.sm { width: 14px; height: 14px; } svg.i.xs { width: 12px; height: 12px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid transparent; font-weight: 500; white-space: nowrap; background: transparent; cursor: pointer; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 6px; }
+.btn.default { background: var(--primary); color: var(--primary-foreground); }
+.btn.outline { background: #fff; border-color: var(--surface-border); }
+.btn.ghost:hover { background: var(--muted); }
+.btn.destructive { background: color-mix(in oklch, var(--destructive) 10%, white); color: var(--destructive); }
+.btn[disabled], .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.focus { outline: 2px solid var(--ring); outline-offset: 2px; }
+.badge { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--muted); color: var(--foreground); }
+.badge.ok { background: color-mix(in oklch, var(--success) 12%, white); color: oklch(0.4 0.12 145); }
+.badge.warn { background: color-mix(in oklch, var(--warning) 22%, white); color: var(--warning-text); }
+.badge.bad { background: color-mix(in oklch, var(--destructive) 10%, white); color: oklch(0.45 0.2 27); }
+.badge.info { background: color-mix(in oklch, var(--info) 10%, white); color: oklch(0.42 0.16 250); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.notice { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--surface-border); background: var(--surface); border-radius: 12px; padding: 12px 16px; }
+.notice svg { margin-top: 2px; color: var(--muted-foreground); }
+.notice .t { font-weight: 500; } .notice .d { margin-top: 2px; font-size: 12px; line-height: 20px; color: var(--muted-foreground); }
+.notice.warn { border-color: color-mix(in oklch, var(--warning) 55%, white); background: color-mix(in oklch, var(--warning) 9%, white); }
+.notice.warn svg { color: var(--warning-text); }
+.notice.err { border-color: color-mix(in oklch, var(--destructive) 35%, white); background: color-mix(in oklch, var(--destructive) 5%, white); }
+.notice.err svg { color: var(--destructive); }
+.notice .acts { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.skel { background: linear-gradient(90deg, var(--muted), var(--surface-selected), var(--muted)); border-radius: 6px; height: 14px; }
+
+/* ---- board chrome (not part of the product UI) ---- */
+.board { padding: 24px; max-width: 1440px; margin: 0 auto; }
+.board-head h1 { font-size: 20px; line-height: 28px; font-weight: 600; }
+.board-head p { color: var(--muted-foreground); max-width: 90ch; margin-top: 4px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 24px; align-items: start; }
+.frame { background: var(--page-canvas); border: 1px solid var(--surface-border); border-radius: 12px; overflow: hidden; min-width: 0; }
+.frame > .cap { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; padding: 8px 14px; background: #fff; border-bottom: 1px solid var(--surface-border); font-size: 12px; line-height: 16px; }
+.frame > .cap b { font-weight: 600; } .frame > .cap span { color: var(--muted-foreground); }
+@media (max-width: 800px) { .board { padding: 12px; } .grid { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
+
+/* ---- DM pane (container so the strip adapts to the pane width, not the viewport) ---- */
+.pane { container-type: inline-size; display: flex; flex-direction: column; background: var(--page-canvas); position: relative; }
+.p-head { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 16px; border-bottom: 1px solid var(--surface-border); background: var(--page-canvas); }
+.av { width: 28px; height: 28px; border-radius: 50%; background: var(--brand); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; }
+.p-head .nm { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-head .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: var(--muted-foreground); }
+.p-head .sp { flex: 1; }
+.gut { padding: 0 20px; } @container (min-width: 640px) { .gut { padding: 0 32px; } }
+.col { max-width: 56rem; margin: 0 auto; width: 100%; }
+.msgs { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; padding-bottom: 14px; }
+.msg { max-width: 85%; padding: 8px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--surface-border); }
+.msg.me { align-self: flex-end; background: var(--muted); border-color: transparent; }
+.composer { padding-bottom: 14px; padding-top: 4px; }
+.composer .box { border: 1px solid var(--surface-border); border-radius: 16px; background: var(--surface); min-height: 56px; padding: 10px 14px; color: var(--faint-foreground); box-shadow: var(--surface-shadow); }
+.icbtn { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; border: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+@media (pointer: coarse), (max-width: 480px) { .icbtn.touch { width: 44px; height: 44px; } }
+
+/* ---- decision state vocabulary (text + icon, never colour only) ---- */
+.st { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 16px; font-weight: 500; white-space: nowrap; }
+.st.waiting { color: var(--warning-text); } .st.answered { color: oklch(0.4 0.12 145); }
+.st.gone { color: var(--muted-foreground); }
+.cls { height: 20px; padding: 0 8px; border-radius: 999px; background: var(--muted); font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; white-space: nowrap; }
+.cls.hot { background: color-mix(in oklch, var(--destructive) 10%, white); color: oklch(0.45 0.2 27); }
+.key { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
+.ttl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.age { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
+.tgl { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 6px; border: 0; background: transparent; font-size: 13px; font-weight: 500; color: var(--muted-foreground); cursor: pointer; }
+@container (max-width: 520px) { .tgl { height: 44px; padding: 0 12px; } }
+
+/* ---- list rows: one grid, two layouts (wide: one line, narrow: two lines) ---- */
+.dr { list-style: none; }
+.dr > a { display: grid; align-items: center; gap: 2px 10px; padding: 8px 12px; min-height: 44px; color: inherit; text-decoration: none; border-radius: 8px;
+  grid-template-columns: 148px auto minmax(0, 1fr) auto auto; grid-template-areas: "st key ttl cls age"; }
+.dr > a:hover { background: var(--surface-hover); }
+.dr .st { grid-area: st; } .dr .key { grid-area: key; } .dr .ttl { grid-area: ttl; } .dr .cls { grid-area: cls; } .dr .age { grid-area: age; text-align: right; }
+@container (max-width: 560px) {
+  .dr > a { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "ttl ttl ttl ttl" "st key cls age"; padding: 10px 12px; min-height: 56px; }
+  .dr .cls { justify-self: start; }
+  .dr > a { column-gap: 10px; }
+  .dr .st { justify-self: start; }
+}
+.dr.gone > a { background: var(--muted); }
+.dr.gone .ttl { text-decoration: line-through; color: var(--muted-foreground); font-weight: 400; }
+.dr.wait-me > a { box-shadow: inset 3px 0 0 var(--warning); }
+.dr.hl > a { outline: 2px solid var(--ring); outline-offset: -2px; }
+.dr.skelrow > a { pointer-events: none; }
+.list > .dr + .dr { border-top: 1px solid var(--surface-border); }
+.more { display: flex; justify-content: center; border-top: 1px solid var(--surface-border); }
+
+/* ---- A: pinned strip ---- */
+.strip { margin-top: 12px; background: var(--surface); border: 1px solid var(--surface-border); border-radius: 12px; box-shadow: var(--surface-shadow); overflow: hidden; }
+.strip > .sh { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 6px 0 14px; }
+.strip > .sh h2 { font-size: 13px; line-height: 18px; font-weight: 600; }
+.strip > .sh .cnt { height: 20px; min-width: 20px; padding: 0 6px; border-radius: 999px; background: color-mix(in oklch, var(--warning) 22%, white); color: var(--warning-text); font-size: 12px; font-weight: 600; display: inline-grid; place-items: center; }
+.strip > .sh .sp { flex: 1; }
+.strip > .sh .live { font-size: 12px; color: var(--muted-foreground); display: inline-flex; gap: 5px; align-items: center; }
+.strip > .list { border-top: 1px solid var(--surface-border); padding: 4px; }
+.strip .ban { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: 12px; line-height: 16px; border-top: 1px solid var(--surface-border); background: color-mix(in oklch, var(--warning) 9%, white); color: var(--warning-text); }
+.strip .ban.err { background: color-mix(in oklch, var(--destructive) 5%, white); color: oklch(0.45 0.2 27); }
+.strip .ban .sp { flex: 1; }
+
+/* ---- B: header chip + popover ---- */
+.hchip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid color-mix(in oklch, var(--warning) 55%, white); background: color-mix(in oklch, var(--warning) 12%, white); color: var(--warning-text); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.hchip.quiet { border-color: var(--surface-border); background: var(--surface); color: var(--muted-foreground); }
+.hchip.err { border-color: color-mix(in oklch, var(--destructive) 35%, white); background: color-mix(in oklch, var(--destructive) 5%, white); color: oklch(0.45 0.2 27); }
+@container (max-width: 520px) { .hchip { height: 44px; padding: 0 12px; } .hchip .lbl-long { display: none; } }
+@container (min-width: 521px) { .hchip .lbl-short { display: none; } }
+.pop { position: absolute; z-index: 2; top: 56px; right: 12px; width: min(600px, calc(100% - 24px)); background: var(--surface); border: 1px solid var(--surface-border); border-radius: 12px; box-shadow: var(--floating-shadow); overflow: hidden; }
+.pop > .sh { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border-bottom: 1px solid var(--surface-border); font-size: 13px; font-weight: 600; }
+.pop .list { padding: 4px; max-height: 280px; overflow: auto; }
+.pop .ban { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: 12px; line-height: 16px; background: color-mix(in oklch, var(--warning) 9%, white); color: var(--warning-text); }
+.popfill { height: 292px; }
+
+/* ---- C: dock above the composer ---- */
+.dock { background: var(--surface); border: 1px solid color-mix(in oklch, var(--warning) 55%, white); border-radius: 12px; overflow: hidden; margin-bottom: 8px; }
+.dock.calm { border-color: var(--surface-border); }
+.dock > .one { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 6px 6px 14px; background: color-mix(in oklch, var(--warning) 9%, white); }
+.dock.calm > .one { background: var(--surface); }
+.dock .one .main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.dock .one .main a { display: flex; gap: 8px; align-items: center; min-width: 0; color: inherit; text-decoration: none; }
+.dock .list { border-top: 1px solid var(--surface-border); padding: 4px; }
+@container (max-width: 520px) { .dock .one .main .cls, .dock .one .main .age { display: none; } .dock > .one { min-height: 56px; }
+  .dock .one .main a { display: grid; flex: 1; gap: 2px 8px; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "ttl ttl" "st key"; }
+  .dock .one .main a .ttl { grid-area: ttl; } .dock .one .main a .st { grid-area: st; } .dock .one .main a .key { grid-area: key; } }
+.dock .ban { display: flex; gap: 8px; align-items: center; padding: 8px 14px; font-size: 12px; line-height: 16px; border-top: 1px solid var(--surface-border); background: var(--muted); color: var(--muted-foreground); }
