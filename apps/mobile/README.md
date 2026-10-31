@@ -67,7 +67,7 @@ See [Expo's migration guidance](https://github.com/expo/fyi/blob/main/ios-scene-
 
 SDK 57's scene backport does not include the later scene-aware presenter lookup
 used by native modules such as `expo-image-picker`. The workspace applies
-`apps/mobile/patches/expo-modules-core@57.0.21.patch`, a direct backport of Expo's
+`apps/mobile/patches/expo-modules-core@57.0.24.patch`, a direct backport of Expo's
 [#46956](https://github.com/expo/expo/pull/46956) and
 [#48319](https://github.com/expo/expo/pull/48319), so avatar, chat, and issue
 image pickers and document attachments resolve their presenting window from the
