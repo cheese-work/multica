@@ -70,13 +70,15 @@ func MaterializeSyntheticBase(ctx context.Context, cacheGitDir, sha, dest, branc
 		return res, fmt.Errorf("synthetic base: read tree: %w", err)
 	}
 
-	if err = os.MkdirAll(dest, 0o755); err != nil {
+	err = os.MkdirAll(dest, 0o755)
+	if err != nil {
 		return res, fmt.Errorf("synthetic base: %w", err)
 	}
 	if _, err = gitOut(ctx, nil, dest, "init", "-q", "--template=", "-b", branch); err != nil {
 		return res, err
 	}
-	if err = copyTree(ctx, cacheGitDir, dest, tree); err != nil {
+	err = copyTree(ctx, cacheGitDir, dest, tree)
+	if err != nil {
 		return res, err
 	}
 	author := []string{
@@ -102,8 +104,9 @@ func copyTree(ctx context.Context, cacheGitDir, dest, tree string) error {
 	list := hostGit(ctx, "", "--git-dir="+cacheGitDir, "rev-list", "--objects", tree)
 	pack := hostGit(ctx, "", "--git-dir="+cacheGitDir, "pack-objects", "--stdout", "-q")
 	index := hostGit(ctx, dest, "index-pack", "--stdin")
-	var errs bytes.Buffer
-	list.Stderr, pack.Stderr, index.Stderr = &errs, &errs, &errs
+	// One buffer per command: the three run concurrently.
+	var listErr, packErr, indexErr bytes.Buffer
+	list.Stderr, pack.Stderr, index.Stderr = &listErr, &packErr, &indexErr
 	index.Stdout = io.Discard
 
 	var err error
@@ -119,13 +122,17 @@ func copyTree(ctx context.Context, cacheGitDir, dest, tree string) error {
 		}
 	}
 	var first error
-	for _, c := range []*exec.Cmd{list, pack, index} {
-		if err := c.Wait(); err != nil && first == nil {
-			first = err
+	var detail string
+	for _, c := range []struct {
+		cmd  *exec.Cmd
+		errs *bytes.Buffer
+	}{{list, &listErr}, {pack, &packErr}, {index, &indexErr}} {
+		if err := c.cmd.Wait(); err != nil && first == nil {
+			first, detail = err, firstLine(c.errs.String())
 		}
 	}
 	if first != nil {
-		return fmt.Errorf("synthetic base: copy objects: %w: %s", first, firstLine(errs.String()))
+		return fmt.Errorf("synthetic base: copy objects: %w: %s", first, detail)
 	}
 	return nil
 }
