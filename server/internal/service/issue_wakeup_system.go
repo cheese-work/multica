@@ -1198,6 +1198,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
+	if err := q.DropRecoveryWakeupReceipts(ctx, db.DropRecoveryWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision}); err != nil {
+		return err
+	}
 	receipts, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
 	if err != nil {
 		return err

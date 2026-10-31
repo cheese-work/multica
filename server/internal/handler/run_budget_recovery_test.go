@@ -215,6 +215,28 @@ func TestRecoveryRunCommentMentionAndReplyStartNoRun(t *testing.T) {
 	if n := queuedTaskCount(t, c); n != 0 {
 		t.Fatalf("runs started by a recovery run's mention = %d, want 0", n)
 	}
+
+	// A reply in a thread that names the other agent starts it just as a top-level
+	// mention does.
+	reply := func(c edgeCase, recovery bool) {
+		t.Helper()
+		var parent string
+		if err := testPool.QueryRow(context.Background(), `INSERT INTO comment(issue_id,workspace_id,author_type,author_id,content,type) VALUES($1,$2,'agent',$3,'what I found','comment') RETURNING id`,
+			c.issueID, testWorkspaceID, other).Scan(&parent); err != nil {
+			t.Fatal(err)
+		}
+		comment(t, c, agentCaller(t, c, recovery), map[string]any{"content": "[@Other](mention://agent/" + other + ") one more question", "parent_id": parent})
+	}
+	replyControl := roomyBudget(t, 2297320)
+	reply(replyControl, false)
+	if n := queuedTaskCount(t, replyControl); n != 1 {
+		t.Fatalf("control: runs started by an ordinary agent's reply = %d, want 1", n)
+	}
+	r := roomyBudget(t, 2297321)
+	reply(r, true)
+	if n := queuedTaskCount(t, r); n != 0 {
+		t.Fatalf("runs started by a recovery run's reply = %d, want 0", n)
+	}
 }
 
 func TestRecoveryRunAssignmentAndRerunStartNoRun(t *testing.T) {

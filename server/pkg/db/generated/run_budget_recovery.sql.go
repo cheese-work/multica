@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const dropRecoveryWakeupReceipts = `-- name: DropRecoveryWakeupReceipts :exec
+UPDATE issue_wakeup_receipt r SET processed_at = now()
+WHERE r.wakeup_id = $1 AND r.revision = $2 AND r.processed_at IS NULL
+  AND r.event_type = 'comment.created'
+  AND EXISTS (
+    SELECT 1 FROM comment c JOIN agent_task_queue t ON t.id = c.source_task_id
+    WHERE c.id::text = r.payload->>'comment_id' AND t.task_kind = 'budget_recovery')
+`
+
+type DropRecoveryWakeupReceiptsParams struct {
+	WakeupID pgtype.UUID `json:"wakeup_id"`
+	Revision int64       `json:"revision"`
+}
+
+// A comment a recovery run wrote starts no run through an event wakeup (CHE-2297
+// L3). The scheduler has no request to carry the mark, so the comment's source
+// task does. A receipt whose newest comment is a member's stays.
+func (q *Queries) DropRecoveryWakeupReceipts(ctx context.Context, arg DropRecoveryWakeupReceiptsParams) error {
+	_, err := q.db.Exec(ctx, dropRecoveryWakeupReceipts, arg.WakeupID, arg.Revision)
+	return err
+}
+
 const isBudgetRecoveryTask = `-- name: IsBudgetRecoveryTask :one
 SELECT EXISTS (SELECT 1 FROM agent_task_queue WHERE id = $1 AND task_kind = 'budget_recovery')
 `
