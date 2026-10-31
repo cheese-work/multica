@@ -690,7 +690,7 @@ the previous workflow, and reruns of their jobs, still use that workflow and
 therefore still stop at it. Secrets are copied to `c00-runtime` and must be
 rotated in both environments until `c00-production` secrets are retired. A
 missing `c00-runtime` environment fails closed: GitHub creates it empty, the
-SSH step has no key and stops. They share the
+deploy step has no secrets and stops. They share the
 job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
 C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
 default queue (`single`) keeps one pending job and cancels it for any newcomer,
@@ -719,25 +719,15 @@ evidence does not replace final admission. Manual dispatch keeps its existing
 evidence and admission requirements and bypasses only the automatic
 eligibility filter.
 
-The `deploy` job does not check out the repository on C00 — it `scp`'s an
-explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
-there. Every file `deploy.sh` sources or shells out to by relative path must
-be in that list, or `deploy.sh`'s own file-existence checks refuse to start
-(see its `script_dir` checks immediately after `usage()`): `deploy-lib.sh`
-(the shared JSON/image/migration helper library it `source`s directly, CHE-397
-unit 2), `capture-tuple.sh` and `tuple-snapshot.mjs` (post-deploy tuple
-recording). Adding a new file `deploy.sh` depends on means adding it to
-`cd-deploy.yml`'s `scp` line too — a dependency that exists only in the repo
-checkout, not in what actually reaches C00, fails silently until the next
-real deploy run, not in CI.
+The `deploy` job runs directly on the C00 self-hosted runner (`[self-hosted, linux, x64, cheese-c00-deploy]`) and stages the content-addressed cutover bundle into a fresh `remote_dir` (`${C00_STATE_DIR%/}/cd-deploy-<ts>`), verifies `cutover-controller.tar.sha256` and `verify-cutover-bundle.sh`, and executes `cutover.sh` locally through `render-cutover-remote-script.sh | env -i HOME="$HOME" PATH="$PATH" bash -s` without opening an SSH or SCP session or leaking ambient step environment variables into the cutover shell.
 
 D1's automatic main-push build only ever emits a `build-evidence` manifest,
 which `admission.mjs` refuses. A deployable `release-candidate` additionally
 binds the baseline tuple of the host being deployed to — the fresh Hermes
 configuration digest and migration snapshot described above — which only a
-stage with C00 access can read. `prepare-release-candidate` runs on the
-C00-reachable runner under the same `c00-production` secrets environment as the
-deploy job, after the single `approve-c00` approval, reads that baseline over SSH with `capture-tuple.sh`, re-issues
+stage running on C00 can read. `prepare-release-candidate` runs on the
+C00 self-hosted runner under the `c00-runtime` environment as the
+deploy job, after the single `approve-c00` approval, reads that baseline locally with `capture-tuple.sh`, re-issues
 D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and
@@ -914,8 +904,8 @@ The login uses a private temporary Docker configuration and a credential
 helper that reads the job token from the environment. The helper never
 stores the token on disk. Exit cleanup removes only that configuration and
 helper and restores the caller's Docker configuration and executable path.
-`cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
-by exporting it inside a script piped over the session's stdin, never as a
+`cd-deploy.yml`'s `deploy` job forwards the secret to the local cutover shell
+by exporting it inside a script piped over the shell's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
 `ps` or left behind by the `remote_dir` cleanup. Covered by
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`

@@ -1,9 +1,10 @@
 name: CD deploy to C00
 run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
-# D2 (CHE-530): deploys an already-admitted release-candidate tuple to the
-# live C00 self-host stack. This workflow is the ONLY place in the repo that
-# holds C00 credentials (SSH key, host, deploy user) — D1's
+# D2 (CHE-530 / CHE-1923): deploys an already-admitted release-candidate tuple
+# to the live C00 self-host stack on the target-host local runner
+# ([self-hosted, linux, x64, cheese-c00-deploy]). This workflow is the ONLY
+# place in the repo that holds C00 host paths and pull credentials — D1's
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
@@ -15,9 +16,9 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.r
 # prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
 # admission.mjs REFUSES build-evidence for deployment — a deployable
 # `release-candidate` manifest additionally binds the baseline tuple of the
-# host being deployed to, which only a stage with C00 access can read. That
-# job reads the live baseline over the same SSH credentials the deploy job
-# uses, re-issues D1's evidence as a release-candidate bound to it, and hands
+# host being deployed to, which only a stage running on C00 can read. That
+# job reads the live baseline locally on the C00 self-hosted runner,
+# re-issues D1's evidence as a release-candidate bound to it, and hands
 # the result to the unchanged admission and deploy jobs. admission.mjs is not
 # weakened to make this fit: it still verifies the manifest, the event, the
 # provenance digests and the required checks, and still refuses
@@ -50,9 +51,8 @@ on:
         default: main
 
 # This workflow deliberately has no build step and never touches the
-# registry beyond a pull performed on C00 itself over the deploy SSH
-# session — it only reads already-published, already-admitted evidence and
-# mutates C00.
+# registry beyond a pull performed on C00 itself by the local C00 runner —
+# it only reads already-published, already-admitted evidence and mutates C00.
 permissions:
   contents: read
   actions: read
@@ -130,10 +130,12 @@ jobs:
   # Automatic path only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
   #
-  # This job needs C00 SSH access to read that baseline, so it runs on the
-  # same C00-reachable runner and the same secrets environment (c00-runtime)
-  # as the deploy job. Approval was already given at approve-c00. It reads and writes nothing on C00 beyond a temp file it
-  # removes: capture-tuple.sh inspects containers and runs one SELECT.
+  # This job runs directly on the C00 self-hosted runner
+  # ([self-hosted, linux, x64, cheese-c00-deploy]) under the
+  # c00-runtime environment to read that baseline locally. Approval
+  # was already given at approve-c00. It reads and writes nothing on C00
+  # beyond a temp file it removes: capture-tuple.sh inspects containers
+  # and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
     needs: [candidate-preflight, approve-c00]
@@ -193,9 +195,6 @@ jobs:
 
       - name: Read C00's current baseline tuple
         env:
-          C00_SSH_HOST: ${{ secrets.C00_SSH_HOST }}
-          C00_SSH_USER: ${{ secrets.C00_SSH_USER }}
-          C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
@@ -415,17 +414,14 @@ jobs:
           name: cd-deploy-admitted-input
           path: cutover-input
 
-      - name: Deploy to C00 over SSH
+      - name: Deploy to C00 on local runner
         id: deploy
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
-          # The only C00 credentials in this repository. Scoped to this
+          # The only C00 deployment inputs in this repository. Scoped to this
           # workflow/job only — cd-qualification.yml (D1) has none of these
           # and must stay that way (see its own header comment).
-          C00_SSH_HOST: ${{ secrets.C00_SSH_HOST }}
-          C00_SSH_USER: ${{ secrets.C00_SSH_USER }}
-          C00_SSH_KEY: ${{ secrets.C00_SSH_KEY }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
@@ -443,7 +439,7 @@ jobs:
           # not a guess. It MUST be the absolute path (no leading ~): the
           # value is passed through render-cutover-remote-script.sh's
           # `printf '%q'`, which escapes a leading ~ into a literal
-          # character instead of letting the remote shell expand it to
+          # character instead of letting the shell expand it to
           # C00's home directory (CHE-768 review) -- provision the secret
           # as the real absolute path, not the shorthand this comment used
           # before.
@@ -454,7 +450,7 @@ jobs:
           # unconditionally afterwards (see deploy.sh's own comment). It
           # expires with the job, so no personal access token is stored. The
           # package must grant this repository read access (Manage Actions
-          # access). Forwarded to the remote shell as an exported var, never
+          # access). Forwarded to the cutover shell as an exported var, never
           # interpolated into the command line, so it never appears in a
           # process listing or shell history on C00.
           GHCR_PULL_TOKEN: ${{ github.token }}
@@ -464,10 +460,10 @@ jobs:
           baseline_path="cutover-input/baseline-tuple.json"
           test -f "$manifest_path"
           test -f "$baseline_path"
-          # C00_ROUTER_STATE_DIR crosses an SSH boundary through
+          # C00_ROUTER_STATE_DIR is passed through
           # render-cutover-remote-script.sh's printf '%q', which escapes a
           # leading ~ into a literal character rather than letting the
-          # remote shell expand it -- so a secret provisioned as
+          # shell expand it -- so a secret provisioned as
           # "~/.multica/..." would silently point at a directory that can
           # never exist, exactly the CHE-768 symptom this fix addresses.
           # Require an absolute path and refuse anything else outright
@@ -477,7 +473,7 @@ jobs:
           case "$C00_ROUTER_STATE_DIR" in
             /*) : ;;
             *)
-              echo "C00_ROUTER_STATE_DIR must be an absolute path (got '${C00_ROUTER_STATE_DIR}'); a leading ~ is not expanded across the SSH boundary -- provision the secret with C00's real absolute path (e.g. /home/<user>/.multica/ab/deploy/cd/router/state)" >&2
+              echo "C00_ROUTER_STATE_DIR must be an absolute path (got '${C00_ROUTER_STATE_DIR}'); a leading ~ is not expanded by render-cutover-remote-script.sh -- provision the secret with C00's real absolute path (e.g. /home/<user>/.multica/ab/deploy/cd/router/state)" >&2
               exit 1
               ;;
           esac
@@ -489,7 +485,6 @@ jobs:
             exit 0
           fi
 
-          ssh_cmd=(ssh -i ~/.ssh/c00_deploy_key -o BatchMode=yes "${C00_SSH_USER}@${C00_SSH_HOST}")
           remote_dir="${C00_STATE_DIR%/}/cd-deploy-$(date +%s)"
           router_state_dir="${C00_ROUTER_STATE_DIR%/}"
 
@@ -497,13 +492,11 @@ jobs:
           # The capture is read-only and fails closed on any unknown ledger,
           # invalid-index or hook state.
           observe_dir="${remote_dir}-observe"
-          "${ssh_cmd[@]}" "mkdir -p '$observe_dir'"
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/capture-release-state.sh \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${observe_dir}/"
-          "${ssh_cmd[@]}" "bash '$observe_dir/capture-release-state.sh' --compose-dir '$C00_COMPOSE_DIR' --output '$observe_dir/observed-state.json'"
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${observe_dir}/observed-state.json" observed-state.json
-          "${ssh_cmd[@]}" "rm -rf '$observe_dir'" || true
+          mkdir -p "$observe_dir"
+          cp deploy/cd/capture-release-state.sh "$observe_dir/"
+          bash "$observe_dir/capture-release-state.sh" --compose-dir "$C00_COMPOSE_DIR" --output "$observe_dir/observed-state.json"
+          cp "$observe_dir/observed-state.json" observed-state.json
+          rm -rf "$observe_dir" || true
 
           bash deploy/cd/build-cutover-bundle.sh \
             --manifest "$manifest_path" \
@@ -515,32 +508,29 @@ jobs:
           local_checksum="cutover-controller.tar.sha256"
           sha256sum -c "$local_checksum"
 
-          "${ssh_cmd[@]}" "mkdir -p '$remote_dir'"
-          # Transfer the exact reviewed controller tree, its matching
+          mkdir -p "$remote_dir"
+          # Stage the exact reviewed controller tree, its matching
           # migrations, manifest and packet as one content-addressed bundle.
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes \
-            "$local_bundle" \
-            "$local_checksum" \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/"
+          cp "$local_bundle" "$local_checksum" "$remote_dir/"
 
-          # set -e would otherwise abort this script the instant the SSH
+          # set -e would otherwise abort this script the instant the cutover
           # deploy command returns nonzero — before deploy_status could be
-          # captured and before the remote cleanup below ever ran. Disable
+          # captured and before the staging cleanup below ever ran. Disable
           # it for exactly this one command, then restore it immediately.
           #
-          # GHCR_PULL_TOKEN is exported inside a script piped over the SSH
-          # session's stdin, not appended to the remote command line (a
-          # `VAR=value command` prefix on the ssh argument itself would put
-          # the secret directly on C00's process list, visible to `ps` from
-          # any other account on the host) and not written to a file on C00
-          # (nothing left behind for `remote_dir`'s cleanup below to miss).
-          # `set -a` exports every var assigned afterwards, including the one
-          # `cutover.sh` reads by name, without listing it a second time.
+          # GHCR_PULL_TOKEN is exported inside the script piped over stdin,
+          # not appended to the command line (a `VAR=value command` prefix
+          # would put the secret directly on C00's process list, visible to
+          # `ps` from any other account on the host) and not written to a file
+          # on C00 (nothing left behind for `remote_dir`'s cleanup below to
+          # miss). `set -a` exports every var assigned afterwards, including
+          # the one `cutover.sh` reads by name, without listing it a second
+          # time.
           set +e
           bash deploy/cd/render-cutover-remote-script.sh \
             --router-state-dir "$router_state_dir" \
             -- bash -c "cd '$remote_dir' && sha256sum -c cutover-controller.tar.sha256 && tar -xf cutover-controller.tar && bash cutover-controller/deploy/cd/verify-cutover-bundle.sh cutover-controller && cd '$C00_COMPOSE_DIR' && . ./.env && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:-multica}:\${POSTGRES_PASSWORD:-multica}@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$remote_dir/cutover-controller/deploy/cd/cutover.sh' cutover --manifest '$remote_dir/cutover-controller/evidence/manifest.json' --packet '$remote_dir/cutover-controller/evidence/release-packet.json' --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
-            | "${ssh_cmd[@]}" bash -s
+            | env -i HOME="$HOME" PATH="$PATH" bash -s
           deploy_status=$?
           set -e
 
@@ -549,17 +539,16 @@ jobs:
           # failure too, so an outage the controller could not repair is
           # annotated on the run instead of being discovered hours later.
           # Read-only; it never restarts or reroutes anything.
-          scp -i ~/.ssh/c00_deploy_key -o BatchMode=yes deploy/cd/ab-health-check.sh \
-            "${C00_SSH_USER}@${C00_SSH_HOST}:${remote_dir}/" || true
+          cp deploy/cd/ab-health-check.sh "$remote_dir/" || true
           window=120
           [ "$deploy_status" -eq 0 ] || window=0
-          if ! "${ssh_cmd[@]}" "bash '${remote_dir}/ab-health-check.sh' --router-state-dir '$router_state_dir' --cutover-state-dir '$C00_CUTOVER_STATE_DIR' --window $window"; then
+          if ! bash "${remote_dir}/ab-health-check.sh" --router-state-dir "$router_state_dir" --cutover-state-dir "$C00_CUTOVER_STATE_DIR" --window "$window"; then
             deploy_status=1
           fi
 
-          # Best-effort cleanup of the transferred copy; failure here must
+          # Best-effort cleanup of the staged copy; failure here must
           # never mask the deploy's own exit status.
-          "${ssh_cmd[@]}" "rm -rf '$remote_dir'" || true
+          rm -rf "$remote_dir" || true
 
           exit "$deploy_status"
 

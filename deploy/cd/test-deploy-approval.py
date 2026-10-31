@@ -16,6 +16,8 @@ STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
 PROTECTED = "c00-production"  # reviewer + wait timer; legacy runs and reruns keep hitting it
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
+C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
+C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
 
 
 def needs(job):
@@ -55,6 +57,20 @@ class DeployApprovalTests(unittest.TestCase):
         # which still use the old workflow, with no approval at all.
         self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME})
 
+    def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
+        # Both jobs that touch C00 run on the target-host runner. A fall-back
+        # to a hosted runner plus ssh/scp would fail one of these assertions.
+        for name in ["prepare-release-candidate", "deploy"]:
+            with self.subTest(job=name):
+                self.assertEqual(self.jobs[name]["runs-on"], C00_RUNNER)
+                text = yaml.safe_dump(self.jobs[name])
+                self.assertNotRegex(text, r"(?i)\b(ssh|scp|ssh-keyscan)\b")
+                self.assertNotIn("C00_SSH", text)
+        self.assertNotIn("C00_SSH", yaml.safe_dump(self.workflow))
+        step_names = [s.get("name") for s in self.jobs["deploy"]["steps"]]
+        self.assertIn(C00_LOCAL_DEPLOY_STEP, step_names)
+        self.assertNotIn("Deploy to C00 over SSH", step_names)
+
     def test_every_c00_job_runs_only_after_the_approval(self):
         for name in ["prepare-release-candidate", "admission", "deploy"]:
             with self.subTest(job=name):
@@ -72,7 +88,7 @@ class DeployApprovalTests(unittest.TestCase):
         # personal access token has to be stored, rotated or revoked.
         deploy = self.jobs["deploy"]
         self.assertNotIn("secrets.GHCR_PULL_TOKEN", yaml.safe_dump(self.workflow))
-        step = next(s for s in deploy["steps"] if s.get("name") == "Deploy to C00 over SSH")
+        step = next(s for s in deploy["steps"] if s.get("name") == C00_LOCAL_DEPLOY_STEP)
         self.assertEqual(step["env"]["GHCR_PULL_TOKEN"], "${{ github.token }}")
         # A job-level block replaces the workflow-level one: keep what the job
         # already had and add only packages: read.
@@ -185,38 +201,32 @@ import hashlib, json, os, pathlib, shutil, sys
 command = pathlib.Path(sys.argv[0]).name
 arguments = sys.argv[1:]
 def record(action):
-    with open(os.environ["DEPLOY_LOG"], "a") as log:
-        log.write(action + ":" + os.environ["CANDIDATE_SHA"] + "\\n")
+    # The cutover shell runs under `env -i`, so the harness context cannot
+    # travel in the environment; it sits next to this stub instead.
+    context = json.loads((pathlib.Path(sys.argv[0]).parent / "context.json").read_text())
+    with open(context["DEPLOY_LOG"], "a") as log:
+        log.write(action + ":" + context["CANDIDATE_SHA"] + "\\n")
 if command == "bash":
-    if arguments[0] == "deploy/cd/build-cutover-bundle.sh":
+    script = arguments[0] if arguments else ""
+    if script == "deploy/cd/build-cutover-bundle.sh":
         record("bundle")
         bundle = pathlib.Path(arguments[arguments.index("--output") + 1])
         bundle.write_bytes(b"synthetic controller")
         checksum = pathlib.Path(arguments[arguments.index("--checksum-output") + 1])
         checksum.write_text(hashlib.sha256(bundle.read_bytes()).hexdigest() + "  " + str(bundle) + "\\n")
+    elif script == "deploy/cd/capture-remote-baseline.sh":
+        if os.environ.get("CAPTURE_FAIL"):
+            sys.exit("simulated baseline capture failure")
+        shutil.copyfile(os.environ["LIVE_TUPLE"], arguments[1])
+    elif script == "deploy/cd/capture-release-state.sh" or script.endswith("/capture-release-state.sh"):
+        pathlib.Path(arguments[arguments.index("--output") + 1]).write_text("{}")
+    elif script.endswith("/ab-health-check.sh"):
+        pass
+    elif arguments == ["-s"]:
+        if "cutover.sh" in sys.stdin.read():
+            record("deploy")
     else:
         os.execv("/bin/bash", ["bash", *arguments])
-elif command == "ssh-keyscan":
-    print("synthetic known host")
-elif command == "ssh":
-    remote = arguments[-1]
-    if "capture-tuple.sh' --compose-dir" in remote and os.environ.get("CAPTURE_FAIL"):
-        sys.exit("simulated baseline capture failure")
-    elif remote == "-s":
-        script = sys.stdin.read()
-        if "cutover.sh" in script:
-            record("deploy")
-    elif "active_colour" in remote:
-        print("blue")
-    elif "image.revision" in remote:
-        print(json.loads(pathlib.Path(os.environ["LIVE_TUPLE"]).read_text())["application_sha"])
-elif command == "scp":
-    if any(argument.endswith("cutover-controller.tar") for argument in arguments[:-1]):
-        record("transfer")
-    elif ":" in arguments[-2] and arguments[-2].endswith("/baseline-tuple.json"):
-        shutil.copyfile(os.environ["LIVE_TUPLE"], arguments[-1])
-    elif ":" in arguments[-2] and arguments[-2].endswith("/observed-state.json"):
-        pathlib.Path(arguments[-1]).write_text("{}")
 else:
     sys.exit("unexpected command: " + command)
 '''
@@ -237,7 +247,7 @@ else:
             (self.repository / name).symlink_to(ROOT / name)
         self.bin = self.directory / "bin"
         self.bin.mkdir()
-        for command in ["bash", "ssh", "scp", "ssh-keyscan"]:
+        for command in ["bash"]:
             executable = self.bin / command
             executable.write_text(self.STUB)
             executable.chmod(0o755)
@@ -276,16 +286,16 @@ else:
             "CANDIDATE_SHA": candidate, "SOURCE_SHA": candidate,
             "GITHUB_REPOSITORY": "cheese-work/multica", "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary), "STUB_MAIN": main,
-            "C00_SSH_HOST": "synthetic.invalid", "C00_SSH_USER": "synthetic",
-            "C00_SSH_KEY": "synthetic key", "C00_COMPOSE_DIR": "/synthetic/compose",
-            "C00_STATE_DIR": "/synthetic/state", "C00_CUTOVER_STATE_DIR": "/synthetic/cutover",
+            "C00_COMPOSE_DIR": "/synthetic/compose", "RUNNER_TEMP": str(self.directory),
+            "C00_STATE_DIR": str(self.directory / "state"), "C00_CUTOVER_STATE_DIR": "/synthetic/cutover",
             "C00_ROUTER_STATE_DIR": "/synthetic/router", "GHCR_PULL_TOKEN": "synthetic token",
         }
         environment.update(overrides or {})
+        (self.bin / "context.json").write_text(json.dumps({"DEPLOY_LOG": str(self.log), "CANDIDATE_SHA": candidate}))
         for job in [GATE, STALE_GATE, "deploy"]:
             for step in self.workflow["jobs"].get(job, {}).get("steps", []):
                 script = step.get("run", "")
-                if "require-current.sh" not in script and step.get("name") != "Deploy to C00 over SSH":
+                if "require-current.sh" not in script and step.get("name") != "Deploy to C00 on local runner":
                     continue
                 script = script.replace("${{ github.event.workflow_run.head_sha }}", candidate)
                 script = script.replace("${{ needs.admission.outputs.source_sha }}", candidate)
