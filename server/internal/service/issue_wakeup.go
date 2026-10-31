@@ -106,6 +106,8 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
+	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
 	prEvents prEventCursor
 }
@@ -723,7 +725,23 @@ func (s *IssueWakeupService) tickWith(ctx context.Context, workspaceIDs []pgtype
 	pruneCtx, pruneCancel := context.WithTimeout(ctx, 2*time.Second)
 	pruneErr := pruneWakeupAggregateReservations(pruneCtx, s.Tasks.Queries, time.Now())
 	pruneCancel()
+	// Scoped events captured in the outbox become receipts before due rules are
+	// dispatched, so an instance created now can run in this same pass. Inputs past
+	// retention expire first; the drain never claims them. The drain has its own
+	// budget so it cannot use up the pass.
+	scopedPruneCtx, scopedPruneCancel := context.WithTimeout(ctx, 2*time.Second)
+	scopedPruneErr := s.pruneScopedEvents(scopedPruneCtx, time.Now())
+	scopedPruneCancel()
+	drainCtx, drainCancel := context.WithTimeout(ctx, 10*time.Second)
+	drainErr := s.drainScopedEvents(drainCtx, workspaceIDs)
+	drainCancel()
 	var errs []error
+	if drainErr != nil {
+		errs = append(errs, fmt.Errorf("drain scoped wakeup events: %w", drainErr))
+	}
+	if scopedPruneErr != nil {
+		errs = append(errs, fmt.Errorf("prune scoped wakeup events: %w", scopedPruneErr))
+	}
 	if err := s.queueNextTurnPREvents(ctx, workspaceIDs); err != nil {
 		errs = append(errs, fmt.Errorf("queue next-turn PR events: %w", err))
 	}

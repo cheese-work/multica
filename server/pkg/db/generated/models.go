@@ -214,6 +214,7 @@ type AgentTaskQueue struct {
 	PullRequestID             pgtype.UUID        `json:"pull_request_id"`
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
+	TaintIds                  []string           `json:"taint_ids"`
 }
 
 type AgentToLabel struct {
@@ -692,6 +693,7 @@ type Comment struct {
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
+	TaintIds            []string           `json:"taint_ids"`
 }
 
 type CommentReaction struct {
@@ -736,6 +738,16 @@ type DaemonConnection struct {
 	RuntimeInfo     []byte             `json:"runtime_info"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonPause struct {
+	MachineOwnerID    pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID          string             `json:"daemon_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Reason            string             `json:"reason"`
+	PausedBy          pgtype.UUID        `json:"paused_by"`
+	PausedAt          pgtype.Timestamptz `json:"paused_at"`
+	DrainedNotifiedAt pgtype.Timestamptz `json:"drained_notified_at"`
 }
 
 type DaemonToken struct {
@@ -894,6 +906,7 @@ type DecisionRequest struct {
 	Options               []byte             `json:"options"`
 	AskIdentity           string             `json:"ask_identity"`
 	AskJson               []byte             `json:"ask_json"`
+	Authority             string             `json:"authority"`
 }
 
 type DecisionWorkerLease struct {
@@ -1792,6 +1805,7 @@ type IssueWakeupDefinition struct {
 	UpdatedBy   pgtype.UUID        `json:"updated_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	EventTypes  []string           `json:"event_types"`
 }
 
 type IssueWakeupPrEvent struct {
@@ -1812,6 +1826,7 @@ type IssueWakeupReceipt struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	CoalesceKey pgtype.Text        `json:"coalesce_key"`
 	DeferredAt  pgtype.Timestamptz `json:"deferred_at"`
+	TaintIds    []string           `json:"taint_ids"`
 }
 
 type IssueWorkflow struct {
@@ -2695,6 +2710,26 @@ type WakeupAggregateReservation struct {
 	TaskID      pgtype.UUID        `json:"task_id"`
 	WakeupID    pgtype.UUID        `json:"wakeup_id"`
 	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
+}
+
+type WakeupScopedEvent struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	EventType    string             `json:"event_type"`
+	EventKey     string             `json:"event_key"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	SourceTaskID pgtype.UUID        `json:"source_task_id"`
+	ActorType    pgtype.Text        `json:"actor_type"`
+	ActorID      pgtype.Text        `json:"actor_id"`
+	Payload      []byte             `json:"payload"`
+	Delivered    []string           `json:"delivered"`
+	Chain        []string           `json:"chain"`
+	CapturedAt   pgtype.Timestamptz `json:"captured_at"`
+	RetryAt      pgtype.Timestamptz `json:"retry_at"`
+	HandledAt    pgtype.Timestamptz `json:"handled_at"`
+	Outcome      pgtype.Text        `json:"outcome"`
 }
 
 type WebhookDelivery struct {
