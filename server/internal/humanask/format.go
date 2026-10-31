@@ -109,7 +109,7 @@ func sections(lines []string) map[string][]numbered {
 	for i, line := range lines {
 		label, end := "", 0
 		for _, name := range labelOrder {
-			if m := labelRE[name].FindStringSubmatchIndex(line); m != nil && !wordAfter(line, m[3]) {
+			if m := labelRE[name].FindStringSubmatchIndex(line); len(m) > 3 && !wordAfter(line, m[3]) {
 				label, end = name, m[3]
 				break
 			}
