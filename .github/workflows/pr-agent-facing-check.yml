@@ -1,0 +1,38 @@
+name: PR Agent-facing Check
+
+# CHE-2794: a PR that touches CLI commands, the agent brief or the daemon must say whether
+# agents need an instruction update (`Agent-facing: yes | no`, plus `Adoption item:` on yes).
+# The post-deploy adoption issue (agent-adoption.yml) is built from these answers.
+# The PR body comes from the event payload; no token, no secrets. Making this check required
+# in branch protection is Cheese's call.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: pr-agent-facing-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  agent-facing:
+    name: Agent-facing field
+    if: github.event.pull_request.state != 'closed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check the Agent-facing field
+        run: node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH"

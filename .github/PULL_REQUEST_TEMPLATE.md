@@ -36,6 +36,16 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 
 Changelog: <one user-facing sentence, or none>
 
+## Agent adoption
+
+<!-- Required when this PR touches CLI commands (`server/cmd/multica/`), the agent brief or the
+     daemon (`server/internal/daemon/`). Replace `yes | no` with one answer. Answer yes when
+     agents must change an instruction, skill or habit after the next C00 deploy, and say what
+     in `Adoption item:`. After a deploy, one adoption issue lists the yes PRs in that deploy. -->
+
+Agent-facing: yes | no
+Adoption item: <what agents must change, or leave empty for no>
+
 ## Type of Change
 
 - [ ] Bug fix (non-breaking change that fixes an issue)

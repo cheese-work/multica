@@ -1,0 +1,115 @@
+name: Agent adoption issue
+
+# CHE-2794: after a C00 deploy that actually ran and passed its health/digest/SHA readback
+# (cd-deploy.yml's "Record outcome" step succeeded), open or reuse ONE adoption issue for the
+# deployed SHA listing the agent-facing PRs since the previous deployed SHA and the CLI readback
+# each agent host needs before any instruction is applied. No agent-facing PR: log it, open nothing.
+#
+# Separate workflow on purpose: it reads the deploy run and can never change deploy or rollback
+# behaviour. The job applies no instruction; that stays in multica-cheese-work-instruction-change.
+#
+# Needs on the runner: the `multica` CLI. Needs configured: secret MULTICA_TOKEN and variables
+# MULTICA_SERVER_URL, MULTICA_WORKSPACE_ID, ADOPTION_PROJECT_ID, ADOPTION_ASSIGNEE_ID. When one is
+# unset the job logs why and opens nothing (it does not fail).
+on:
+  workflow_run:
+    workflows: ["CD deploy to C00"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent-adoption
+  cancel-in-progress: false
+
+jobs:
+  adoption:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 15
+    steps:
+      - name: Confirm the deploy ran and passed its readback
+        id: deployed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          outcome="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name == "deploy") | .steps[] | select(.name == "Record outcome") | .conclusion')"
+          if [ "$outcome" = "success" ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No deploy readback in this run (Record outcome: '${outcome:-skipped}'); no adoption issue."
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.deployed.outputs.ran == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        if: steps.deployed.outputs.ran == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Download the admitted deploy input
+        if: steps.deployed.outputs.ran == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: cd-deploy-admitted-input
+          path: cutover-input
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Build the adoption issue
+        id: plan
+        if: steps.deployed.outputs.ran == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          next="$(node -p 'JSON.parse(require("fs").readFileSync("cutover-input/manifest.json","utf8")).source_sha')"
+          prev="$(node -p 'JSON.parse(require("fs").readFileSync("cutover-input/baseline-tuple.json","utf8")).application_sha')"
+          node scripts/agent-adoption.mjs plan --prev "$prev" --next "$next" --repo "$GITHUB_REPOSITORY" --out adoption | tee plan.log
+          tail -n 1 plan.log >> "$GITHUB_OUTPUT"
+          head -n 1 plan.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or reuse the adoption issue
+        if: steps.plan.outputs.issue == 'true'
+        shell: bash
+        env:
+          MULTICA_TOKEN: ${{ secrets.MULTICA_TOKEN }}
+          MULTICA_SERVER_URL: ${{ vars.MULTICA_SERVER_URL }}
+          MULTICA_WORKSPACE_ID: ${{ vars.MULTICA_WORKSPACE_ID }}
+          PROJECT_ID: ${{ vars.ADOPTION_PROJECT_ID }}
+          ASSIGNEE_ID: ${{ vars.ADOPTION_ASSIGNEE_ID }}
+        run: |
+          set -euo pipefail
+          for name in MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID PROJECT_ID ASSIGNEE_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::warning::$name is not configured; adoption issue not opened. Body is in adoption/body.md of this run."
+              cat adoption/body.md >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          title="$(cat adoption/title.txt)"
+          # One issue per deployed SHA: the title carries the 12-character SHA.
+          if multica issue search "$title" --include-closed --output json | grep -qF "$title"; then
+            echo "Adoption issue for this SHA already exists; reusing it."
+            exit 0
+          fi
+          # Project, assignee and Readiness at creation (CHE-466).
+          multica issue create --title "$title" --description-file adoption/body.md \
+            --project "$PROJECT_ID" --assignee-id "$ASSIGNEE_ID" --status todo \
+            --property 'Readiness=ready' --output json
