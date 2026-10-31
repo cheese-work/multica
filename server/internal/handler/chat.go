@@ -1340,6 +1340,7 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 			resp[i].DecisionRef = &card
 		}
 	}
+	markCarriedReplies(resp, h.chatTaskSessions(ctx, messages))
 	return resp
 }
 
@@ -2263,6 +2264,9 @@ type ChatMessageResponse struct {
 	// ScheduledWakeup is set on the user message a fired DM wakeup sent, so
 	// clients can render it as an event row. content stays the model-facing text.
 	ScheduledWakeup *ScheduledWakeupResponse `json:"scheduled_wakeup,omitempty"`
+	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
+	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
+	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {
