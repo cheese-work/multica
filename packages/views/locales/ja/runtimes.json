@@ -712,7 +712,21 @@
       "tasks_left_stale_other": "残り {{count}} 件（オフライン、件数が古い可能性があります）。",
       "drained": "安全にシャットダウンできます。",
       "ends_in": "{{duration}}後に終了します。",
-      "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。"
+      "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。",
+      "close": "マシンのバナーを非表示",
+      "summary_other": "{{count}} 台のマシンに対応が必要です。",
+      "tasks_wait_other": "{{count}} 件のタスクがこのマシン上のエージェントを待っています。",
+      "tasks_wait_total_other": "{{count}} 件のタスクがこれらのマシン上のエージェントを待っています。",
+      "next_to_end": "次に終了: {{machine}} の一時停止、{{duration}}。",
+      "details": "詳細",
+      "machine_of": "{{machine}}（{{owner}} のマシン）",
+      "offline": "{{machine}} はオフラインです。",
+      "last_seen": "最終確認 {{time}}。",
+      "new_event": "新規",
+      "icon_paused": "{{machine}} は一時停止中",
+      "icon_offline": "{{machine}} はオフライン",
+      "hide": "マシンのバナーを非表示: {{summary}}",
+      "show": "マシンのバナーを表示: {{summary}}"
     }
   }
 }

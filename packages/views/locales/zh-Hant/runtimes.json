@@ -712,7 +712,21 @@
       "tasks_left_stale_other": "還剩 {{count}} 個任務（離線，數量可能已過期）。",
       "drained": "可以安全關機。",
       "ends_in": "{{duration}}後結束。",
-      "ends_soon": "{{duration}}後結束，之後 {{machine}} 會恢復接收任務。"
+      "ends_soon": "{{duration}}後結束，之後 {{machine}} 會恢復接收任務。",
+      "close": "隱藏機器橫幅",
+      "summary_other": "{{count}} 台機器需要關注。",
+      "tasks_wait_other": "{{count}} 個任務在等待其上的智慧代理。",
+      "tasks_wait_total_other": "{{count}} 個任務在等待這些機器上的智慧代理。",
+      "next_to_end": "最先結束：{{machine}} 的暫停，{{duration}}。",
+      "details": "詳情",
+      "machine_of": "{{machine}}（{{owner}} 的機器）",
+      "offline": "{{machine}} 已離線。",
+      "last_seen": "最後上線 {{time}}。",
+      "new_event": "新",
+      "icon_paused": "{{machine}} 已暫停",
+      "icon_offline": "{{machine}} 已離線",
+      "hide": "隱藏機器橫幅：{{summary}}",
+      "show": "顯示機器橫幅：{{summary}}"
     }
   }
 }

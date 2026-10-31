@@ -17,4 +17,5 @@ export { WorkspaceLoader } from "./workspace-loader";
 export { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 export { GlobalShortcuts } from "./global-shortcuts";
 export { MachinePauseBanner } from "./machine-pause-banner";
+export { MachineBannerHeaderSlot } from "./machine-banner-toggle";
 export { NavigationProgress } from "./navigation-progress";

@@ -132,6 +132,93 @@ func (q *Queries) GetLiveDaemonPauseByRuntime(ctx context.Context, arg GetLiveDa
 	return i, err
 }
 
+const listAffectedMachines = `-- name: ListAffectedMachines :many
+WITH waiting AS (
+    SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id, COUNT(*)::int AS waiting_tasks
+    FROM agent_task_queue t
+    JOIN agent_runtime rt ON rt.id = t.runtime_id
+    LEFT JOIN issue i ON i.id = t.issue_id
+    LEFT JOIN project p ON p.id = i.project_id
+    WHERE t.status = 'queued'
+      AND rt.workspace_id = $3::uuid
+      AND rt.daemon_id IS NOT NULL
+      AND ($4::bool OR (p.lead_type = 'member' AND p.lead_id = $5::uuid))
+    GROUP BY 1, 2
+)
+SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
+       dp.reason AS pause_reason, dp.paused_at AS paused_at,
+       m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
+FROM waiting w
+JOIN LATERAL (
+    SELECT COALESCE(MIN(NULLIF(o.device_info, '')), MIN(o.name)) AS device_name,
+           MAX(o.last_seen_at) AS last_seen_at,
+           COALESCE(bool_or(o.status = 'online'), false) AS any_online
+    FROM agent_runtime o
+    WHERE COALESCE(o.owner_id, o.workspace_id) = w.machine_owner_id AND o.daemon_id = w.daemon_id
+) m ON true
+LEFT JOIN daemon_pause dp
+  ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
+ AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $1::int ELSE $2::int END) > now()
+WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
+ORDER BY w.machine_owner_id, w.daemon_id
+`
+
+type ListAffectedMachinesParams struct {
+	MaintenanceSecs int32       `json:"maintenance_secs"`
+	OtherSecs       int32       `json:"other_secs"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AllProjects     bool        `json:"all_projects"`
+	UserID          pgtype.UUID `json:"user_id"`
+}
+
+type ListAffectedMachinesRow struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	WaitingTasks   int32              `json:"waiting_tasks"`
+	PauseReason    pgtype.Text        `json:"pause_reason"`
+	PausedAt       pgtype.Timestamptz `json:"paused_at"`
+	DeviceName     string             `json:"device_name"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+}
+
+// Machines that hold queued tasks of this workspace and are off: paused, or with
+// no online runtime. all_projects is the workspace owner's view; otherwise only
+// tasks of projects led by user_id count. A machine with only running tasks, or
+// none, is not affected: nothing waits for it.
+func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMachinesParams) ([]ListAffectedMachinesRow, error) {
+	rows, err := q.db.Query(ctx, listAffectedMachines,
+		arg.MaintenanceSecs,
+		arg.OtherSecs,
+		arg.WorkspaceID,
+		arg.AllProjects,
+		arg.UserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAffectedMachinesRow{}
+	for rows.Next() {
+		var i ListAffectedMachinesRow
+		if err := rows.Scan(
+			&i.MachineOwnerID,
+			&i.DaemonID,
+			&i.WaitingTasks,
+			&i.PauseReason,
+			&i.PausedAt,
+			&i.DeviceName,
+			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveDaemonPauses = `-- name: ListLiveDaemonPauses :many
 SELECT machine_owner_id, daemon_id, workspace_id, reason, paused_by, paused_at, drained_notified_at FROM daemon_pause
 WHERE machine_owner_id = ANY($1::uuid[])

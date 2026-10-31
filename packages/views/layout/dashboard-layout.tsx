@@ -10,6 +10,7 @@ import { NavigationProgress } from "./navigation-progress";
 import { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 import { GlobalShortcuts } from "./global-shortcuts";
 import { MachinePauseBanner } from "./machine-pause-banner";
+import { MachineBannerHeaderSlot } from "./machine-banner-toggle";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -42,7 +43,7 @@ export function DashboardLayout({
         <SidebarInset className="relative overflow-hidden">
           <NavigationProgress />
           <MachinePauseBanner />
-          {children}
+          <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
           <ModalRegistry />
           <SourceBackfillModal />
           {extra}
