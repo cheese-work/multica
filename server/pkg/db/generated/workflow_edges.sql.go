@@ -76,7 +76,7 @@ func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueRevie
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1
 `
 
@@ -145,7 +145,7 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 
 const listMemberStatusChangesAfter = `-- name: ListMemberStatusChangesAfter :many
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
   AND created_at > $2::timestamptz
 ORDER BY created_at
 `
@@ -155,8 +155,8 @@ type ListMemberStatusChangesAfterParams struct {
 	After   pgtype.Timestamptz `json:"after"`
 }
 
-// Every time a person moved the issue's status after a point: each one opened a
-// run-budget window, whether or not anything was admitted in it.
+// Every time a person moved the issue's status or topped up its run budget after
+// a point: each one opened a run-budget window, whether or not anything was admitted in it.
 func (q *Queries) ListMemberStatusChangesAfter(ctx context.Context, arg ListMemberStatusChangesAfterParams) ([]pgtype.Timestamptz, error) {
 	rows, err := q.db.Query(ctx, listMemberStatusChangesAfter, arg.IssueID, arg.After)
 	if err != nil {
