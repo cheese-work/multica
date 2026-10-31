@@ -11,6 +11,7 @@
     "interactive_login_action": "ログイン",
     "title": "チャット",
     "select_prompt": "会話を選ぶか、＋ で新規作成してください",
+    "session_unavailable": "この会話は利用できなくなりました",
     "agent_link_no_access": "このエージェントとチャットする権限がありません。"
   },
   "fab": {

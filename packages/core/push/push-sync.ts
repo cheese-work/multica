@@ -6,6 +6,7 @@ import {
   registrationBody,
   subscribeThisDevice,
 } from "./push-client";
+import { getPushIntent } from "./push-intent";
 
 export type PushSyncResult = "registered" | "skipped";
 
@@ -15,17 +16,23 @@ function isGranted(): boolean {
   return getPushSupport() === "ok" && window.Notification.permission === "granted";
 }
 
+type Resubscriber = Registrar & { getPushConfig: () => Promise<PushConfig> };
+
 /**
- * App load: hand the server the subscription this browser already holds. The
- * service worker cannot do it (cookie auth needs CSRF), and registering again
- * is what rebinds the subscription to the current login session. Never
- * prompts. Never throws, so a page load cannot break on it.
+ * App load: hand the server the subscription this browser holds. The service
+ * worker cannot do it (cookie auth needs CSRF), and registering again is what
+ * rebinds the subscription to the current login session, and what teaches the
+ * server an endpoint the worker renewed while no tab was open. Where the
+ * browser dropped the subscription and the user still wants push, subscribe
+ * again. After an opt-out do nothing. Never prompts. Never throws, so a page
+ * load cannot break on it.
  */
-export async function reRegisterThisDevice(api: Registrar): Promise<PushSyncResult> {
-  if (!isGranted()) return "skipped";
+export async function reRegisterThisDevice(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted() || getPushIntent() === "off") return "skipped";
   try {
     const subscription = await getThisDeviceSubscription();
-    const body = subscription && registrationBody(subscription);
+    if (!subscription) return getPushIntent() === "on" ? await resubscribeThisDevice(api) : "skipped";
+    const body = registrationBody(subscription);
     if (!body) return "skipped";
     await api.registerPushSubscription(body);
     return "registered";
@@ -38,10 +45,8 @@ export async function reRegisterThisDevice(api: Registrar): Promise<PushSyncResu
  * The browser replaced or dropped the subscription (`pushsubscriptionchange`):
  * subscribe again with the deployment key and register the new one.
  */
-export async function resubscribeThisDevice(
-  api: Registrar & { getPushConfig: () => Promise<PushConfig> },
-): Promise<PushSyncResult> {
-  if (!isGranted()) return "skipped";
+export async function resubscribeThisDevice(api: Resubscriber): Promise<PushSyncResult> {
+  if (!isGranted() || getPushIntent() === "off") return "skipped";
   try {
     const config = await api.getPushConfig();
     if (!config.enabled || !config.public_key) return "skipped";

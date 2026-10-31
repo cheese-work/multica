@@ -8,6 +8,7 @@ import {
   ensurePushRegistration,
   getPushSupport,
   getThisDeviceSubscription,
+  setPushIntent,
   subscribeThisDevice,
   unsubscribeThisDevice,
   type PushSupport,
@@ -24,7 +25,8 @@ export type PushDeviceState =
   | "off"
   | "registering"
   | "on"
-  | "failed";
+  | "failed"
+  | "disable-failed";
 
 /**
  * This browser's push registration. Browser support and permission come from
@@ -35,7 +37,7 @@ export function usePushDevice() {
   const [support, setSupport] = useState<PushSupport | null>(null);
   const [subscribed, setSubscribed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<"enable" | "disable" | null>(null);
   // Bumped after a permission prompt so the blocked state is re-read.
   const [, setPermissionReads] = useState(0);
 
@@ -63,7 +65,7 @@ export function usePushDevice() {
   const enable = useCallback(async () => {
     if (!config.data?.enabled) return;
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     try {
       // First await in the tap handler, so the browser still sees a user gesture.
       const permission = await requestWebNotificationPermission();
@@ -73,9 +75,10 @@ export function usePushDevice() {
       const body = await subscribeThisDevice(registration, config.data.public_key);
       if (!body) throw new Error("subscription has no keys");
       await api.registerPushSubscription(body);
+      setPushIntent("on");
       setSubscribed(true);
     } catch {
-      setFailed(true);
+      setFailed("enable");
     } finally {
       setBusy(false);
     }
@@ -83,10 +86,14 @@ export function usePushDevice() {
 
   const disable = useCallback(async () => {
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     try {
-      await unsubscribeThisDevice(api);
-      setSubscribed(false);
+      const result = await unsubscribeThisDevice(api);
+      // Read back what the browser still holds: a failed opt-out can leave it
+      // subscribed, and the switch must not claim otherwise.
+      const left = await getThisDeviceSubscription().catch(() => null);
+      setSubscribed(left !== null);
+      if (result === "failed") setFailed("disable");
     } finally {
       setBusy(false);
     }
@@ -100,7 +107,8 @@ export function usePushDevice() {
   else if (!config.data.enabled) state = "not-configured";
   else if (getWebNotificationPermission() === "denied") state = "blocked";
   else if (busy) state = "registering";
-  else if (failed) state = "failed";
+  else if (failed === "disable") state = "disable-failed";
+  else if (failed === "enable") state = "failed";
   else state = subscribed ? "on" : "off";
 
   return { state, enable, disable };

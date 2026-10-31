@@ -15,6 +15,8 @@
 // needs the app router, is injected by the host app via
 // `registerSystemNotificationClickHandler` instead — core stays headless.
 
+import { paths } from "../paths";
+
 export interface SystemNotificationPayload {
   /**
    * Source workspace slug. Empty when it couldn't be resolved — the click is
@@ -89,16 +91,51 @@ export async function requestWebNotificationPermission(): Promise<WebNotificatio
   }
 }
 
+function notificationUrl(payload: SystemNotificationPayload): string {
+  const workspace = paths.workspace(payload.slug);
+  return payload.chatSessionId
+    ? workspace.chatSession(payload.chatSessionId)
+    : `${workspace.inbox()}?issue=${encodeURIComponent(payload.issueKey)}`;
+}
+
 /**
  * Show a native browser notification for a new inbox item. No-op unless the
  * Notification API is supported AND permission is "granted" — the caller
  * (`handleInboxNew`) owns the WHETHER (focus + mute gating); this owns only the
- * rendering. Clicking the banner focuses the tab and routes via the registered
- * click handler.
+ * rendering.
+ *
+ * With a registered service worker the banner is shown through its
+ * registration. The worker shows its push for the same record there too, with
+ * the same tag, so a tab that gets both the realtime event and the push ends
+ * with one banner: a page-made `new Notification` lives in another scope and
+ * would not replace it. A click on that banner is routed by the worker from
+ * `data.url`. Without a worker, the page banner below routes through the
+ * registered click handler.
  */
 export function showWebNotification(payload: SystemNotificationPayload): void {
   const ctor = getNotificationCtor();
   if (!ctor || ctor.permission !== "granted") return;
+  const serviceWorker = typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
+  if (!serviceWorker || !payload.slug) {
+    showPageNotification(ctor, payload);
+    return;
+  }
+  void (async () => {
+    try {
+      const registration = await serviceWorker.getRegistration("/");
+      if (!registration) throw new Error("no registration");
+      await registration.showNotification(payload.title, {
+        body: payload.body,
+        tag: payload.itemId,
+        data: { url: notificationUrl(payload) },
+      });
+    } catch {
+      showPageNotification(ctor, payload);
+    }
+  })();
+}
+
+function showPageNotification(ctor: typeof Notification, payload: SystemNotificationPayload): void {
   let notification: Notification;
   try {
     notification = new ctor(payload.title, {

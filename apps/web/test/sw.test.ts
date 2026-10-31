@@ -177,6 +177,26 @@ describe("service worker pushsubscriptionchange", () => {
     expect(tab.postMessage).toHaveBeenCalledWith({ type: "push-subscription-changed" });
   });
 
+  it("renews quietly with no tab open; the app registers the new endpoint on its next load", async () => {
+    const worker = loadWorker();
+    const key = new Uint8Array([1, 2, 3]).buffer;
+    await expect(
+      worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: key } } }),
+    ).resolves.toBeUndefined();
+    expect(worker.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: key });
+  });
+
+  it("still tells open tabs when renewal fails, so one of them can recover it", async () => {
+    const worker = loadWorker();
+    const tab = fakeWindow("https://app.example/acme");
+    worker.windows.push(tab);
+    worker.subscribe.mockRejectedValue(new Error("denied"));
+    await worker.dispatch("pushsubscriptionchange", {
+      oldSubscription: { options: { applicationServerKey: new Uint8Array([1]).buffer } },
+    });
+    expect(tab.postMessage).toHaveBeenCalledWith({ type: "push-subscription-changed" });
+  });
+
   it("does not throw when it cannot re-subscribe", async () => {
     const worker = loadWorker();
     worker.subscribe.mockRejectedValue(new Error("denied"));

@@ -58,6 +58,7 @@ const TYPE_KEY: Record<InboxItemType, string> = {
   autopilot_quota_exceeded: "type.autopilot_quota_exceeded",
   machine_drained: "type.machine_drained",
   children_done: "type.children_done",
+  dm_reply: "type.dm_reply",
 };
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).

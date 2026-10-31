@@ -1,8 +1,10 @@
 /* global self, URL */
 // Web Push worker (CHE-1798). Payloads are content-private: sender, a fixed
 // label and a url, never message text. Plain JS because Next serves public/
-// as is. Registration needs the CSRF-protected API, so a re-subscribe here
-// only tells open tabs; the app re-registers on its next load.
+// as is. Registration needs the CSRF-protected API, which the worker cannot
+// call, so a renewal here only tells open tabs. With none open (or a renewal
+// that failed) the app reconciles on its next load: it registers the
+// subscription it holds, or subscribes again if the user still wants push.
 
 const FALLBACK_URL = "/";
 
@@ -72,7 +74,7 @@ self.addEventListener("pushsubscriptionchange", (event) => {
         const key = old && old.options && old.options.applicationServerKey;
         if (key) await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
       } catch {
-        // A tab re-subscribes with the deployment key on its next load.
+        // The app subscribes again with the deployment key on its next load.
       }
       const tabs = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       tabs.forEach((tab) => tab.postMessage({ type: "push-subscription-changed" }));

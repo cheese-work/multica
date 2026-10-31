@@ -6,7 +6,7 @@ import { useT } from "../../i18n";
 import { SettingsCard, SettingsRow } from "./settings-layout";
 import { usePushDevice, type PushDeviceState } from "./use-push-device";
 
-const OFF_STATES: readonly PushDeviceState[] = ["off", "failed", "registering"];
+const OFF_STATES: readonly PushDeviceState[] = ["off", "failed", "registering", "disable-failed"];
 
 /**
  * "Push on this device": requests permission from the tap, subscribes with the
@@ -62,7 +62,9 @@ export function PushDeviceSetting() {
           ? t(($) => $.notifications.device.load_failed)
           : state === "failed"
             ? t(($) => $.notifications.device.failed)
-            : undefined;
+            : state === "disable-failed"
+              ? t(($) => $.notifications.device.disable_failed)
+              : undefined;
   const switchable = state === "on" || OFF_STATES.includes(state);
 
   return (
@@ -73,7 +75,7 @@ export function PushDeviceSetting() {
         description={hint}
       >
         <Switch
-          checked={state === "on"}
+          checked={state === "on" || state === "disable-failed"}
           disabled={!switchable || state === "registering"}
           aria-label={t(($) => $.notifications.device.push_label)}
           onCheckedChange={(checked) => void (checked ? enable() : disable())}

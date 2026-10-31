@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   subscription: null as { endpoint: string } | null,
   subscribeThisDevice: vi.fn(),
   unsubscribeThisDevice: vi.fn(),
+  setPushIntent: vi.fn(),
 }));
 
 vi.mock("../../platform", () => ({ isDesktopShell: () => mocks.desktop }));
@@ -40,6 +41,7 @@ vi.mock("@multica/core/push", () => ({
   getThisDeviceSubscription: async () => mocks.subscription,
   subscribeThisDevice: mocks.subscribeThisDevice,
   unsubscribeThisDevice: mocks.unsubscribeThisDevice,
+  setPushIntent: mocks.setPushIntent,
 }));
 vi.mock("./settings-layout", () => ({
   SettingsCard: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -80,7 +82,7 @@ beforeEach(() => {
   });
   mocks.subscribeThisDevice.mockResolvedValue(registration);
   mocks.registerPushSubscription.mockResolvedValue(undefined);
-  mocks.unsubscribeThisDevice.mockResolvedValue(undefined);
+  mocks.unsubscribeThisDevice.mockResolvedValue("done");
 });
 
 describe("PushDeviceSetting", () => {
@@ -101,6 +103,7 @@ describe("PushDeviceSetting", () => {
     expect(mocks.requestPermission).toHaveBeenCalled();
     expect(mocks.subscribeThisDevice).toHaveBeenCalledWith(expect.anything(), "BKey");
     expect(mocks.registerPushSubscription).toHaveBeenCalledWith(registration);
+    expect(mocks.setPushIntent).toHaveBeenCalledWith("on");
   });
 
   it("shows this device as on when the browser already holds a subscription", async () => {
@@ -116,9 +119,33 @@ describe("PushDeviceSetting", () => {
     renderSetting();
     const control = await screen.findByRole("switch", { name: "Push on this device" });
     await waitFor(() => expect(control).toBeChecked());
+    mocks.unsubscribeThisDevice.mockImplementationOnce(async () => {
+      mocks.subscription = null;
+      return "done";
+    });
     await userEvent.click(control);
     await waitFor(() => expect(mocks.unsubscribeThisDevice).toHaveBeenCalledWith(expect.objectContaining({ deletePushSubscription: expect.any(Function) })));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Push on this device" })).not.toBeChecked());
+  });
+
+  it("says so when turning push off fails, keeps the switch on, and recovers on retry", async () => {
+    mocks.permission = "granted";
+    mocks.subscription = { endpoint: "https://push.example/x" };
+    mocks.unsubscribeThisDevice.mockResolvedValueOnce("failed");
+    renderSetting();
+    const control = await screen.findByRole("switch", { name: "Push on this device" });
+    await waitFor(() => expect(control).toBeChecked());
+    await userEvent.click(control);
+    expect(await screen.findByText(enSettings.notifications.device.disable_failed)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Push on this device" })).toBeChecked();
+
+    mocks.unsubscribeThisDevice.mockImplementationOnce(async () => {
+      mocks.subscription = null;
+      return "done";
+    });
+    await userEvent.click(screen.getByRole("switch", { name: "Push on this device" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Push on this device" })).not.toBeChecked());
+    expect(screen.queryByText(enSettings.notifications.device.disable_failed)).not.toBeInTheDocument();
   });
 
   it("explains a blocked browser and keeps the switch off", async () => {

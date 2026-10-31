@@ -150,6 +150,10 @@ const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
 const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
+const sessionsRef = vi.hoisted(() => ({
+  current: [] as { id: string }[],
+  loaded: false,
+}));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 // Spy over the REAL store's setter (wired in beforeEach). The page's effects
@@ -188,7 +192,8 @@ vi.mock("./components/use-chat-controller", async () => {
       agents: availableAgentsRef.current,
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
-      sessions: [],
+      sessions: sessionsRef.current,
+      sessionsLoaded: sessionsRef.loaded,
       interactiveLoginRequired: interactiveLoginRequiredRef.current,
       activeSessionId: activeSession,
       selectedAgentId: null,
@@ -316,6 +321,8 @@ const activeSession = () => useChatStore.getState().activeSessionId;
 beforeEach(() => {
   interactiveLoginRequiredRef.current = false;
   messagesLoadedRef.current = true;
+  sessionsRef.current = [];
+  sessionsRef.loaded = false;
   vi.clearAllMocks();
   mockSetActiveSession.mockImplementation((id: string | null) =>
     useChatStore.getState().setActiveSession(id),
@@ -508,6 +515,46 @@ describe("ChatPage URL synchronization", () => {
 });
 
 // CHE-1807: while a DM compacts, the page's composer is disabled and says why.
+describe("ChatPage unavailable DM (CHE-1798)", () => {
+  const NOTICE = "This conversation is no longer available";
+
+  it("says so when ?session= names a conversation the list does not have", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-1" }];
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+  });
+
+  it("stays quiet for a conversation the list has", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-9" }];
+    renderPage("session=session-9");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("does not judge before the list has loaded", () => {
+    renderPage("session=session-gone");
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("clears once the user picks another conversation", () => {
+    sessionsRef.loaded = true;
+    sessionsRef.current = [{ id: "session-9" }];
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    fireEvent.click(screen.getByRole("button", { name: "select-thread" }));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("shows the notice in place of the list on a compact screen", () => {
+    layout.width = 600;
+    sessionsRef.loaded = true;
+    renderPage("session=session-gone");
+    expect(screen.getByRole("status").textContent).toContain(NOTICE);
+    expect(screen.getByRole("button", { name: "select-thread" })).toBeTruthy();
+  });
+});
+
 describe("ChatPage compacting composer", () => {
   it("disables the composer for a compacting DM and leaves other DMs alone", () => {
     seedSession("session-compacting");

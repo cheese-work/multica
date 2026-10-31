@@ -1,6 +1,8 @@
 // Browser side of Web Push (CHE-1798). Headless: it only touches `window`,
 // `navigator` and the registration it is handed, so the views layer owns UI.
 
+import { setPushIntent } from "./push-intent";
+
 export type PushSupport = "ok" | "unsupported" | "needs-home-screen";
 
 export interface PushRegistrationBody {
@@ -85,29 +87,36 @@ export async function getThisDeviceSubscription(): Promise<PushSubscription | nu
   return registration ? registration.pushManager.getSubscription() : null;
 }
 
+export type UnsubscribeResult = "done" | "failed";
+
 /**
- * Logout and the device switch. Server delete first (it needs the session),
- * then drop the browser subscription. A failure never blocks the caller: the
- * worker also skips a subscription whose registering session has ended.
+ * Logout and the device switch. Records the opt-out first, so no reload can
+ * register this browser again whatever happens next. Then the server delete
+ * (it needs the session) and the browser unsubscribe, both attempted. Never
+ * throws; "failed" tells the switch to show an error, while logout ignores it
+ * because the worker also skips a subscription whose session has ended.
  */
 export async function unsubscribeThisDevice(api: {
   deletePushSubscription: (endpoint: string) => Promise<void>;
-}): Promise<void> {
+}): Promise<UnsubscribeResult> {
+  setPushIntent("off");
   let subscription: PushSubscription | null = null;
   try {
     subscription = await getThisDeviceSubscription();
   } catch {
-    return;
+    return "failed";
   }
-  if (!subscription) return;
+  if (!subscription) return "done";
+  let result: UnsubscribeResult = "done";
   try {
     await api.deletePushSubscription(subscription.endpoint);
   } catch {
-    // Best effort, see above.
+    result = "failed";
   }
   try {
     await subscription.unsubscribe();
   } catch {
-    // The browser may already have dropped it.
+    result = "failed";
   }
+  return result;
 }

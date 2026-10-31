@@ -857,6 +857,7 @@
       "title": "Cet appareil",
       "push_label": "Push sur cet appareil",
       "failed": "Impossible d'activer le push sur cet appareil. Réessayez.",
+      "disable_failed": "Impossible de désactiver les notifications push sur cet appareil. Réessayez.",
       "blocked": "Les notifications sont bloquées dans ce navigateur. Autorisez-les dans les réglages du site, puis réessayez.",
       "unsupported": "Ce navigateur ne peut pas recevoir de notifications push.",
       "not_configured": "Le push n'est pas configuré sur ce serveur.",
