@@ -178,6 +178,7 @@ func TestIdleStartedGuardActRepairStartsNewEpisode(test *testing.T) {
 	dbfx.Exec(test, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, fixture.issue)
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed', created_at = now() - interval '6 hours', completed_at = now() - interval '6 hours' WHERE issue_id = $1 AND agent_id = $2`, fixture.issue, fixture.leader)
 	dbfx.Exec(test, `UPDATE comment SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE activity_log SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
 	dbfx.Exec(test, `UPDATE issue SET created_at = now() - interval '7 hours' WHERE id = $1`, fixture.issue)
 	fixture.sweep(test)
 	if got := fixture.status(test); got == "in_progress" {

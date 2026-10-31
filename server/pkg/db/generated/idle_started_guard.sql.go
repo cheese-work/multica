@@ -39,16 +39,16 @@ SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS re
 FROM issue i
 WHERE i.workspace_id = $1
   AND i.metadata ? 'idle_guard'
-  AND (
-    (i.metadata -> 'idle_guard' ->> 'state' = 'moved' AND i.status = i.metadata -> 'idle_guard' ->> 'to')
-    OR (i.status = ANY ($2::text[]) AND i.status <> COALESCE(i.metadata -> 'idle_guard' ->> 'to', '')))
+  AND NOT (
+    i.status = i.metadata -> 'idle_guard' ->> 'to'
+    AND i.metadata -> 'idle_guard' ->> 'state' IN ('notified', 'gave_up', 'resumed')
+    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') <> '')
+  AND NOT (
+    i.status = i.metadata -> 'idle_guard' ->> 'from'
+    AND i.metadata -> 'idle_guard' ->> 'state' = 'gave_up'
+    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = '')
 ORDER BY i.id
 `
-
-type ListIdleStartedGuardEpisodesParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Statuses    []string    `json:"statuses"`
-}
 
 type ListIdleStartedGuardEpisodesRow struct {
 	ID          pgtype.UUID `json:"id"`
@@ -57,10 +57,11 @@ type ListIdleStartedGuardEpisodesRow struct {
 	Receipt     []byte      `json:"receipt"`
 }
 
-// Issues the guard already moved that need another look: a receipt still owed
-// its notice, or a receipt on an issue that left the guard's target (a repair).
-func (q *Queries) ListIdleStartedGuardEpisodes(ctx context.Context, arg ListIdleStartedGuardEpisodesParams) ([]ListIdleStartedGuardEpisodesRow, error) {
-	rows, err := q.db.Query(ctx, listIdleStartedGuardEpisodes, arg.WorkspaceID, arg.Statuses)
+// Issues with an idle_guard receipt that need another look: a notice owed, a
+// refused move to retry, or an issue that left the episode (a repair). A settled
+// receipt on an issue still where it settled is left alone.
+func (q *Queries) ListIdleStartedGuardEpisodes(ctx context.Context, workspaceID pgtype.UUID) ([]ListIdleStartedGuardEpisodesRow, error) {
+	rows, err := q.db.Query(ctx, listIdleStartedGuardEpisodes, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +101,8 @@ CROSS JOIN LATERAL (
 WHERE i.workspace_id = $1
   AND ($2::uuid IS NULL OR i.id = $2::uuid)
   AND i.status = ANY ($3::text[])
-  AND NOT i.metadata ? 'idle_guard'
-  AND clock.idle_since <= now() - make_interval(secs => $4::float8)
+  AND ($4::bool IS TRUE OR NOT i.metadata ? 'idle_guard')
+  AND clock.idle_since <= now() - make_interval(secs => $5::float8)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
     WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
@@ -135,6 +136,7 @@ type ListIdleStartedGuardIssuesParams struct {
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 	IssueID      pgtype.UUID `json:"issue_id"`
 	Statuses     []string    `json:"statuses"`
+	Episode      pgtype.Bool `json:"episode"`
 	AfterSeconds float64     `json:"after_seconds"`
 }
 
@@ -149,12 +151,14 @@ type ListIdleStartedGuardIssuesRow struct {
 // comments, system activity and metadata writes never count, so the guard's own
 // writes cannot reset the clock. Issues that already carry an idle_guard episode
 // are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
-// the scan to one issue: act mode re-runs it under the issue lock.
+// the scan to one issue: act mode re-runs it under the issue lock. episode keeps
+// an issue that carries an idle_guard receipt, for re-checking its own episode.
 func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleStartedGuardIssuesParams) ([]ListIdleStartedGuardIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues,
 		arg.WorkspaceID,
 		arg.IssueID,
 		arg.Statuses,
+		arg.Episode,
 		arg.AfterSeconds,
 	)
 	if err != nil {

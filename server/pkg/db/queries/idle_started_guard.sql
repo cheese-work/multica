@@ -7,7 +7,8 @@ WHERE settings -> 'idle_started_guard' ->> 'mode' IN ('shadow', 'act');
 -- comments, system activity and metadata writes never count, so the guard's own
 -- writes cannot reset the clock. Issues that already carry an idle_guard episode
 -- are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
--- the scan to one issue: act mode re-runs it under the issue lock.
+-- the scan to one issue: act mode re-runs it under the issue lock. episode keeps
+-- an issue that carries an idle_guard receipt, for re-checking its own episode.
 SELECT i.id, i.workspace_id, i.status, clock.idle_since::timestamptz AS idle_since
 FROM issue i
 CROSS JOIN LATERAL (
@@ -23,7 +24,7 @@ CROSS JOIN LATERAL (
 WHERE i.workspace_id = sqlc.arg('workspace_id')
   AND (sqlc.narg('issue_id')::uuid IS NULL OR i.id = sqlc.narg('issue_id')::uuid)
   AND i.status = ANY (sqlc.arg('statuses')::text[])
-  AND NOT i.metadata ? 'idle_guard'
+  AND (sqlc.narg('episode')::bool IS TRUE OR NOT i.metadata ? 'idle_guard')
   AND clock.idle_since <= now() - make_interval(secs => sqlc.arg('after_seconds')::float8)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
@@ -69,13 +70,19 @@ SELECT (
 )::bool AS waiting;
 
 -- name: ListIdleStartedGuardEpisodes :many
--- Issues the guard already moved that need another look: a receipt still owed
--- its notice, or a receipt on an issue that left the guard's target (a repair).
+-- Issues with an idle_guard receipt that need another look: a notice owed, a
+-- refused move to retry, or an issue that left the episode (a repair). A settled
+-- receipt on an issue still where it settled is left alone.
 SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
 FROM issue i
 WHERE i.workspace_id = sqlc.arg('workspace_id')
   AND i.metadata ? 'idle_guard'
-  AND (
-    (i.metadata -> 'idle_guard' ->> 'state' = 'moved' AND i.status = i.metadata -> 'idle_guard' ->> 'to')
-    OR (i.status = ANY (sqlc.arg('statuses')::text[]) AND i.status <> COALESCE(i.metadata -> 'idle_guard' ->> 'to', '')))
+  AND NOT (
+    i.status = i.metadata -> 'idle_guard' ->> 'to'
+    AND i.metadata -> 'idle_guard' ->> 'state' IN ('notified', 'gave_up', 'resumed')
+    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') <> '')
+  AND NOT (
+    i.status = i.metadata -> 'idle_guard' ->> 'from'
+    AND i.metadata -> 'idle_guard' ->> 'state' = 'gave_up'
+    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = '')
 ORDER BY i.id;
