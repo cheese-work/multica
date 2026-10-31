@@ -191,42 +191,63 @@ func TestTaskTokenWriteScope(t *testing.T) {
 }
 
 // Decision 3a: a coordinator run also writes to its parent and sibling issues.
-// The middleware honors the multica_cross_issue scope of a live grant on the
-// run's own issue, read per request.
+// The middleware honors the multica_cross_issue scope that the run's claim
+// froze into task_elevation; a grant added after the claim does not elevate a
+// running task, and a revoked grant stops the next write.
 func TestTaskTokenWriteScopeHonorsCrossIssueGrant(t *testing.T) {
 	f := newWriteScopeFixture(t)
 	put := func() int {
 		st, _ := scoped(t, "on", f.taskID, f.agentID, "PUT", "/api/issues/"+f.foreign, nil, nil)
 		return st
 	}
+	claim := func() {
+		testHandler.runProfileForTask(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.own), parseUUID(f.taskID), nil)
+	}
 	if st := put(); st != 403 {
 		t.Fatalf("no grant: status %d, want 403", st)
 	}
+	// A run claimed restricted is never elevated by a grant that appears later.
+	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
+	if st := put(); st != 403 {
+		t.Fatalf("grant added to a run claimed restricted: status %d, want 403", st)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1`, f.taskID); n != 0 {
+		t.Fatalf("middleware recorded %d elevation rows, want 0", n)
+	}
+	dbfx.Exec(t, `DELETE FROM run_capability_grant WHERE issue_id = $1`, f.own)
 	insertGrant(t, f.own, testWorkspaceID, []string{"docker", "device:a"}, "1 minute", "1 hour", false)
 	insertGrant(t, f.foreign, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
 	insertGrant(t, f.child, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
+	claim()
 	if st := put(); st != 403 {
 		t.Fatalf("grant without the scope, or on another issue: status %d, want 403", st)
 	}
+	// Frozen at claim: a cross-issue grant added to a running task is not honored.
+	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
+	if st := put(); st != 403 {
+		t.Fatalf("grant added after the claim: status %d, want 403", st)
+	}
+	dbfx.Exec(t, `DELETE FROM task_elevation WHERE task_id = $1`, f.taskID)
 	dbfx.Exec(t, `DELETE FROM run_capability_grant WHERE issue_id = $1`, f.own)
 	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "2 hours", "-1 hour", false)
 	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", true)
+	claim()
 	if st := put(); st != 403 {
 		t.Fatalf("expired and revoked grants: status %d, want 403", st)
 	}
 	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
+	claim()
 	if st := put(); st != 200 {
 		t.Fatalf("live grant: status %d, want 200", st)
+	}
+	// The grant never reaches another workspace.
+	if st, _ := scoped(t, "on", f.taskID, f.agentID, "PUT", "/api/issues/"+f.otherWorkspace, nil, nil); st != 403 {
+		t.Fatalf("other-workspace issue under a live grant: status %d, want 403", st)
 	}
 	// Live state per request: revoking the grant takes effect on the next write.
 	dbfx.Exec(t, `UPDATE run_capability_grant SET revoked_at = now() WHERE issue_id = $1`, f.own)
 	if st := put(); st != 403 {
 		t.Fatalf("after revocation: status %d, want 403", st)
-	}
-	// The grant never reaches another workspace.
-	insertGrant(t, f.own, testWorkspaceID, []string{"multica_cross_issue"}, "1 minute", "1 hour", false)
-	if st, _ := scoped(t, "on", f.taskID, f.agentID, "PUT", "/api/issues/"+f.otherWorkspace, nil, nil); st != 403 {
-		t.Fatalf("other-workspace issue under a live grant: status %d, want 403", st)
 	}
 }
 

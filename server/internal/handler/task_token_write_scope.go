@@ -232,7 +232,16 @@ func (h *Handler) allTargetsInWriteScope(r *http.Request, refs []string) bool {
 		return false
 	}
 	crossIssue := func() bool {
-		return task.IssueID.Valid && slices.Contains(h.runProfileForTask(r.Context(), workspaceID, task.IssueID).Scopes, crossIssueScope)
+		// Only a task whose claim recorded an elevation holds the scope: a grant
+		// that appears later must not elevate a running task, and
+		// runProfileForTask would record that first claim.
+		if !task.IssueID.Valid {
+			return false
+		}
+		if _, err := h.Queries.GetTaskElevation(r.Context(), taskID); err != nil {
+			return false
+		}
+		return slices.Contains(h.runProfileForTask(r.Context(), workspaceID, task.IssueID, task.ID, task.TaintIds).Scopes, crossIssueScope)
 	}
 	for _, ref := range refs {
 		issueID, ok := h.resolveWriteScopeIssue(r, workspaceID, ref)
