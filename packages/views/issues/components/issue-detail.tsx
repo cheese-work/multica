@@ -37,6 +37,7 @@ import {
   Tag,
   Unlink,
   Users,
+  ArrowDown,
 } from "lucide-react";
 import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrumb-header";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -190,12 +191,14 @@ import {
   useViewStateWriter,
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
+import { useJumpToLatest } from "../hooks/use-jump-to-latest";
 import { useIssueDetailScrollAnchor } from "../hooks/use-issue-detail-scroll-anchor";
 import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
@@ -595,6 +598,21 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function JumpToLatestButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={onClick}
+      className="absolute bottom-full left-1/2 mb-6 -translate-x-1/2 rounded-full bg-background shadow-md dark:bg-background dark:hover:bg-muted"
+    >
+      <ArrowDown />
+      {label}
+    </Button>
+  );
 }
 
 // Flat per-item shape consumed by <Virtuoso>. Virtuoso needs a flat array
@@ -1472,6 +1490,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // User preference: pin the bottom comment bar to the scroll viewport. Off
   // below `md` regardless of the preference — see the hook.
   const stickyComposer = useStickyComposer();
+  const jumpToLatest = useJumpToLatest(scrollContainerEl);
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -3611,7 +3630,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 label={
                   <>
                     <PropertyIcon property={p} className="size-3.5 text-caption" />
-                    <span className="truncate">{p.name}</span>
+                    <TruncatedTooltip content={p.name}>
+                      <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]">{p.name}</span>
+                    </TruncatedTooltip>
                   </>
                 }
               >
@@ -4785,6 +4806,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               page background and is invisible), and pb-4 so the card floats
               off the viewport edge — with -mb-4 giving the padding back to
               the column's py-8 so the at-rest layout doesn't shift. */}
+          {/* "Jump to latest" (MUL-8324) floats centered just above the
+              composer's top edge. With the sticky composer it rides the
+              composer itself; without it, a zero-height sticky anchor pins
+              it to the viewport bottom until the composer scrolls in. */}
+          {!stickyComposer && jumpToLatest.visible && (
+            <div className="sticky bottom-0 z-10 h-0">
+              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+            </div>
+          )}
           <div
             ref={composerRef}
             className={cn(
@@ -4798,6 +4828,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 keeps the previous issue's in-memory content and the
                 next keystroke would flush it into the new issue's
                 draft key. */}
+            {stickyComposer && jumpToLatest.visible && (
+              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+            )}
             <CommentInput
               key={id}
               issueId={id}

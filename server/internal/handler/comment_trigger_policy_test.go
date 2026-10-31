@@ -152,7 +152,7 @@ func TestEditedAgentCommentKeepsAgentRoutingPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent comment: %v", err)
 	}
-	outcomes := testHandler.triggerTasksForComment(context.Background(), fx.Issue, comment, nil, "member", testUserID, testUserID, nil, nil)
+	outcomes := testHandler.triggerTasksForComment(context.Background(), fx.Issue, comment, nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
 	if len(outcomes) != 1 || outcomes[0].Status != DispatchBlocked || outcomes[0].ReasonCode != ReasonAgentCommentImplicitRouteSuppressed {
 		t.Fatalf("edited agent comment outcomes = %+v, want an implicit-route suppression", outcomes)
 	}

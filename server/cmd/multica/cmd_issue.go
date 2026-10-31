@@ -358,8 +358,19 @@ var issueCommentListCmd = &cobra.Command{
 var issueCommentAddCmd = &cobra.Command{
 	Use:   "add <issue-id>",
 	Short: "Add a comment to an issue",
-	Args:  exactArgs(1),
-	RunE:  runIssueCommentAdd,
+	Long: "Add a comment to an issue.\n\n" +
+		"A plain comment reaches a busy agent only after its current run ends. To add the message to a run " +
+		"that is in progress instead, pass --steer <run-id> (repeatable; from `multica issue runs <issue-id> --active`) " +
+		"or --steer-active for every running agent on the issue you may steer. You may steer an agent's run " +
+		"exactly when your comment could start that agent; an agent never steers its own run, and one agent can " +
+		"add at most 3 messages to a run (10 from all agents). The steered agents are mentioned in the comment. " +
+		"Only a run that accepts additional messages can be steered (`can_supplement: true` in " +
+		"`multica issue runs <issue-id> --active --output json`). A run that cannot take the message gets the " +
+		"normal trigger; the command reports per run whether it was steered or queued, coalesced, deferred or " +
+		"blocked. If a steered run ends before reading an agent's message, the message is handled in a follow-up " +
+		"run. Steering cannot carry attachments.",
+	Args: exactArgs(1),
+	RunE: runIssueCommentAdd,
 }
 
 var issueCommentUpdateCmd = &cobra.Command{
@@ -784,6 +795,8 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("supersedes", nil, "Comment ID this comment supersedes (repeatable; a reply ID names its whole thread, same issue only). The server resolves each superseded thread unless a human posted its newest reply or it changed after this request began, and links old and new")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
+	issueCommentAddCmd.Flags().StringSlice("steer", nil, "Run ID (full UUID or short prefix) whose in-progress turn should receive this comment instead of a follow-up run (repeatable)")
+	issueCommentAddCmd.Flags().Bool("steer-active", false, "Add this comment to the running turn of every agent on this issue you may steer, and of any other recipient that is running")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue comment update
@@ -3001,6 +3014,14 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionRecord && len(attachments) > 0 {
 		return fmt.Errorf("--decision-record cannot combine with --attachment")
 	}
+	steerInputs, _ := cmd.Flags().GetStringSlice("steer")
+	steerActive, _ := cmd.Flags().GetBool("steer-active")
+	if (len(steerInputs) > 0 || steerActive) && (decisionRecord || decisionVeto) {
+		return fmt.Errorf("--steer / --steer-active cannot combine with --decision-record or --decision-veto: decision comments never bind to a running turn")
+	}
+	if (len(steerInputs) > 0 || steerActive) && len(attachments) > 0 {
+		return fmt.Errorf("--steer / --steer-active cannot be combined with --attachment: a running turn takes text only; post the files in a separate comment")
+	}
 	if len(attachments) > 0 {
 		timeout = cli.AtLeastAPITimeout(60 * time.Second)
 	}
@@ -3012,6 +3033,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 	issueID := issueRef.ID
+
+	steerTargets, err := resolveSteerTargets(ctx, client, issueID, steerInputs, steerActive)
+	if err != nil {
+		return err
+	}
 
 	// Validate and read ALL attachments before uploading any. URLs are skipped
 	// with a warning — `--attachment` only accepts local file paths. Reading
@@ -3053,6 +3079,19 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 			body["escalation_class"] = escalationClass
 		}
 	}
+	if len(steerTargets) > 0 {
+		steerTaskIDs := make([]string, len(steerTargets))
+		for i, target := range steerTargets {
+			steerTaskIDs[i] = target.TaskID
+		}
+		body["content"] = withSteerMentions(content, steerTargets)
+		body["steer_task_ids"] = steerTaskIDs
+	}
+	if steerActive {
+		// The server also steers a recipient whose run started after the
+		// listing above.
+		body["steer"] = true
+	}
 	if parentID, _ := cmd.Flags().GetString("parent"); parentID != "" {
 		body["parent_id"] = parentID
 	}
@@ -3072,6 +3111,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	reportSteerOutcomes(os.Stderr, steerTargets, result)
 	printSupersedeOutcomes(os.Stderr, result)
 	if hints, ok := result["hints"].([]any); ok {
 		for _, value := range hints {

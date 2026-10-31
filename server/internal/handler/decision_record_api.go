@@ -88,7 +88,7 @@ func (handler *Handler) routeDecisionRecordMentions(request *http.Request, issue
 	comment := result.Comment
 	comment.Content = content
 	if !result.Answer.EffectiveAt.Time.After(time.Now()) {
-		return handler.triggerTasksForComment(ctx, issue, comment, nil, "agent", agentID, originatorUserID, nil, nil)
+		return handler.triggerTasksForComment(ctx, issue, comment, nil, "agent", agentID, originatorUserID, nil, commentSteerRequest{})
 	}
 	triggers, targets := handler.computeCommentAgentTriggers(ctx, issue, content, nil, "agent", agentID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
