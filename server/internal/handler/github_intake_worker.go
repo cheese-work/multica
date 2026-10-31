@@ -153,17 +153,7 @@ func (worker githubIntakeWorker) runOnce(ctx context.Context) (bool, error) {
 	}
 	slog.Info("github: intake processed", "delivery_guid", intake.DeliveryGuid, "state", state, "reason", reason,
 		"attempts", intake.Attempts, "age_seconds", int64(time.Since(intake.ReceivedAt.Time).Seconds()))
-	for _, publication := range publications {
-		issue := publication.issue
-		worker.handler.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
-			"comment": commentToResponse(publication.comment.Comment(), nil, nil), "issue_title": issue.Title,
-			"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
-			"issue_status": issue.Status, "issue_revision": publication.comment.IssueRevision,
-		})
-		if publication.task.ID.Valid {
-			worker.handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
-		}
-	}
+	worker.handler.publishGitHubIntake(ctx, publications)
 	return true, nil
 }
 
@@ -351,4 +341,18 @@ func recordGitHubRouteResult(ctx context.Context, queries *db.Queries, revision 
 		return errors.New("github: route receipt requires its committed effects")
 	}
 	return nil
+}
+
+func (handler *Handler) publishGitHubIntake(ctx context.Context, publications []githubIntakePublication) {
+	for _, publication := range publications {
+		issue := publication.issue
+		handler.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
+			"comment": commentToResponse(publication.comment.Comment(), nil, nil), "issue_title": issue.Title,
+			"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
+			"issue_status": issue.Status, "issue_revision": publication.comment.IssueRevision,
+		})
+		if publication.task.ID.Valid {
+			handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
+		}
+	}
 }
