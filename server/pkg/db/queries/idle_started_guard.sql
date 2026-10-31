@@ -6,7 +6,8 @@ WHERE settings -> 'idle_started_guard' ->> 'mode' IN ('shadow', 'act');
 -- Main scan. idle_since is the newest human or agent signal on the issue; system
 -- comments, system activity and metadata writes never count, so the guard's own
 -- writes cannot reset the clock. Issues that already carry an idle_guard episode
--- are skipped. Any agent-owned continuation excludes the issue.
+-- are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
+-- the scan to one issue: act mode re-runs it under the issue lock.
 SELECT i.id, i.workspace_id, i.status, clock.idle_since::timestamptz AS idle_since
 FROM issue i
 CROSS JOIN LATERAL (
@@ -20,6 +21,7 @@ CROSS JOIN LATERAL (
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = sqlc.arg('workspace_id')
+  AND (sqlc.narg('issue_id')::uuid IS NULL OR i.id = sqlc.narg('issue_id')::uuid)
   AND i.status = ANY (sqlc.arg('statuses')::text[])
   AND NOT i.metadata ? 'idle_guard'
   AND clock.idle_since <= now() - make_interval(secs => sqlc.arg('after_seconds')::float8)
@@ -50,3 +52,30 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')
     SELECT 1 FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id
     WHERE ip.issue_id = i.id AND p.state IN ('open', 'draft') AND p.checks_rollup_state = 'PENDING')
 ORDER BY clock.idle_since, i.id;
+
+-- name: IdleStartedGuardHumanWait :one
+-- Human-wait evidence: an enabled member-filtered event wakeup, or a newest
+-- non-system comment that an agent wrote to a member by mention.
+SELECT (
+  EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = sqlc.arg('issue_id') AND w.enabled AND w.paused_reason IS NULL
+      AND w.system_rule IS NULL AND w.kind = 'event' AND w.filter_actor_type = 'member')
+  OR COALESCE((
+    SELECT c.author_type = 'agent' AND c.content LIKE '%mention://member/%'
+    FROM comment c
+    WHERE c.issue_id = sqlc.arg('issue_id') AND c.deleted_at IS NULL AND c.author_type <> 'system'
+    ORDER BY c.created_at DESC, c.id DESC LIMIT 1), false)
+)::bool AS waiting;
+
+-- name: ListIdleStartedGuardEpisodes :many
+-- Issues the guard already moved that need another look: a receipt still owed
+-- its notice, or a receipt on an issue that left the guard's target (a repair).
+SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
+FROM issue i
+WHERE i.workspace_id = sqlc.arg('workspace_id')
+  AND i.metadata ? 'idle_guard'
+  AND (
+    (i.metadata -> 'idle_guard' ->> 'state' = 'moved' AND i.status = i.metadata -> 'idle_guard' ->> 'to')
+    OR (i.status = ANY (sqlc.arg('statuses')::text[]) AND i.status <> COALESCE(i.metadata -> 'idle_guard' ->> 'to', '')))
+ORDER BY i.id;

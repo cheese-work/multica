@@ -11,6 +11,79 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const idleStartedGuardHumanWait = `-- name: IdleStartedGuardHumanWait :one
+SELECT (
+  EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = $1 AND w.enabled AND w.paused_reason IS NULL
+      AND w.system_rule IS NULL AND w.kind = 'event' AND w.filter_actor_type = 'member')
+  OR COALESCE((
+    SELECT c.author_type = 'agent' AND c.content LIKE '%mention://member/%'
+    FROM comment c
+    WHERE c.issue_id = $1 AND c.deleted_at IS NULL AND c.author_type <> 'system'
+    ORDER BY c.created_at DESC, c.id DESC LIMIT 1), false)
+)::bool AS waiting
+`
+
+// Human-wait evidence: an enabled member-filtered event wakeup, or a newest
+// non-system comment that an agent wrote to a member by mention.
+func (q *Queries) IdleStartedGuardHumanWait(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, idleStartedGuardHumanWait, issueID)
+	var waiting bool
+	err := row.Scan(&waiting)
+	return waiting, err
+}
+
+const listIdleStartedGuardEpisodes = `-- name: ListIdleStartedGuardEpisodes :many
+SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
+FROM issue i
+WHERE i.workspace_id = $1
+  AND i.metadata ? 'idle_guard'
+  AND (
+    (i.metadata -> 'idle_guard' ->> 'state' = 'moved' AND i.status = i.metadata -> 'idle_guard' ->> 'to')
+    OR (i.status = ANY ($2::text[]) AND i.status <> COALESCE(i.metadata -> 'idle_guard' ->> 'to', '')))
+ORDER BY i.id
+`
+
+type ListIdleStartedGuardEpisodesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Statuses    []string    `json:"statuses"`
+}
+
+type ListIdleStartedGuardEpisodesRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      string      `json:"status"`
+	Receipt     []byte      `json:"receipt"`
+}
+
+// Issues the guard already moved that need another look: a receipt still owed
+// its notice, or a receipt on an issue that left the guard's target (a repair).
+func (q *Queries) ListIdleStartedGuardEpisodes(ctx context.Context, arg ListIdleStartedGuardEpisodesParams) ([]ListIdleStartedGuardEpisodesRow, error) {
+	rows, err := q.db.Query(ctx, listIdleStartedGuardEpisodes, arg.WorkspaceID, arg.Statuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIdleStartedGuardEpisodesRow{}
+	for rows.Next() {
+		var i ListIdleStartedGuardEpisodesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Status,
+			&i.Receipt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIdleStartedGuardIssues = `-- name: ListIdleStartedGuardIssues :many
 SELECT i.id, i.workspace_id, i.status, clock.idle_since::timestamptz AS idle_since
 FROM issue i
@@ -25,9 +98,10 @@ CROSS JOIN LATERAL (
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = $1
-  AND i.status = ANY ($2::text[])
+  AND ($2::uuid IS NULL OR i.id = $2::uuid)
+  AND i.status = ANY ($3::text[])
   AND NOT i.metadata ? 'idle_guard'
-  AND clock.idle_since <= now() - make_interval(secs => $3::float8)
+  AND clock.idle_since <= now() - make_interval(secs => $4::float8)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
     WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
@@ -59,6 +133,7 @@ ORDER BY clock.idle_since, i.id
 
 type ListIdleStartedGuardIssuesParams struct {
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
 	Statuses     []string    `json:"statuses"`
 	AfterSeconds float64     `json:"after_seconds"`
 }
@@ -73,9 +148,15 @@ type ListIdleStartedGuardIssuesRow struct {
 // Main scan. idle_since is the newest human or agent signal on the issue; system
 // comments, system activity and metadata writes never count, so the guard's own
 // writes cannot reset the clock. Issues that already carry an idle_guard episode
-// are skipped. Any agent-owned continuation excludes the issue.
+// are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
+// the scan to one issue: act mode re-runs it under the issue lock.
 func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleStartedGuardIssuesParams) ([]ListIdleStartedGuardIssuesRow, error) {
-	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues, arg.WorkspaceID, arg.Statuses, arg.AfterSeconds)
+	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.Statuses,
+		arg.AfterSeconds,
+	)
 	if err != nil {
 		return nil, err
 	}

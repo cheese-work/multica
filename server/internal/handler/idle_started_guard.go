@@ -42,19 +42,32 @@ func (settings idleGuardSettings) statuses() []string {
 	return settings.Guard.Statuses
 }
 
-// idleGuardFinding is one issue the guard would move. Layer 1 only reports it;
-// mode "act" behaves like "shadow" until the move lands.
+// idleGuardFinding is one issue the guard found idle. Shadow mode only reports
+// it; act mode moves it.
 type idleGuardFinding struct {
 	WorkspaceID pgtype.UUID
 	IssueID     pgtype.UUID
 	Status      string
 	IdleSince   time.Time
+	settings    idleGuardSettings
 }
 
-// SweepIdleStartedIssues is the scheduler entry point.
+// SweepIdleStartedIssues is the scheduler entry point. Shadow workspaces log
+// what would move; act workspaces settle earlier episodes, then move.
 func (handler *Handler) SweepIdleStartedIssues(ctx context.Context) error {
-	_, err := handler.checkIdleStartedIssues(ctx)
-	return err
+	failures := handler.settleIdleGuardEpisodes(ctx)
+	findings, err := handler.checkIdleStartedIssues(ctx)
+	failures = errors.Join(failures, err)
+	for _, finding := range findings {
+		if finding.settings.Guard.Mode != "act" {
+			continue
+		}
+		if ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
+		}
+		failures = errors.Join(failures, handler.actOnIdleFinding(ctx, finding.settings, finding))
+	}
+	return failures
 }
 
 func (handler *Handler) checkIdleStartedIssues(ctx context.Context) ([]idleGuardFinding, error) {
@@ -79,7 +92,7 @@ func (handler *Handler) checkIdleStartedIssues(ctx context.Context) ([]idleGuard
 			continue
 		}
 		for _, issue := range issues {
-			finding := idleGuardFinding{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Status: issue.Status, IdleSince: issue.IdleSince.Time}
+			finding := idleGuardFinding{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Status: issue.Status, IdleSince: issue.IdleSince.Time, settings: settings}
 			findings = append(findings, finding)
 			slog.Info("idle_started_guard would_move", "mode", settings.Guard.Mode, "workspace_id", uuidToString(finding.WorkspaceID),
 				"issue_id", uuidToString(finding.IssueID), "status", finding.Status, "idle_since", finding.IdleSince.UTC().Format(time.RFC3339), "threshold", threshold)
