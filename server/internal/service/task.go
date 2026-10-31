@@ -1718,14 +1718,21 @@ func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 // PublishTaskEnqueued only after commit. An automated alert is not a review run
 // and cannot use the review-head exception to a spent run budget.
 func (s *TaskService) EnqueueDecisionWaitLeaderTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
-	if err := guardIssueRunAllowed(ctx, queries, issue.ID, OriginDerived, RunTarget{AgentID: leaderID, Trigger: "decision wait guard"}); err != nil {
+	return s.EnqueueGuardLeaderTaskInTx(ctx, queries, issue, leaderID, squadID, handoff, "decision wait guard", "Decision wait has no request")
+}
+
+// EnqueueGuardLeaderTaskInTx is the shared admission for a guard alert to an
+// issue's leader: trigger names the run-budget trigger, summary the task's
+// trigger summary.
+func (s *TaskService) EnqueueGuardLeaderTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, leaderID, squadID pgtype.UUID, handoff, trigger, summary string) (db.AgentTaskQueue, error) {
+	if err := guardIssueRunAllowed(ctx, queries, issue.ID, OriginDerived, RunTarget{AgentID: leaderID, Trigger: trigger}); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	params, _, err := s.prepareMentionTaskWithQueries(ctx, queries, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	params.TriggerSummary = pgtype.Text{String: "Decision wait has no request", Valid: true}
+	params.TriggerSummary = pgtype.Text{String: summary, Valid: true}
 	return createAgentTask(ctx, queries, params)
 }
 
