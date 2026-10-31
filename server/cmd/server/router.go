@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -29,9 +28,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
-	"github.com/multica-ai/multica/server/internal/governance"
-	"github.com/multica-ai/multica/server/internal/governance/credential"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -64,10 +60,6 @@ var defaultOrigins = []string{
 }
 
 const pluginBridgePrefix = "/api/plugin-bridge/v1"
-
-type serverBudgetClock struct{}
-
-func (serverBudgetClock) Now() time.Time { return time.Now().UTC() }
 
 // corsAllowedHeaders must list every header the browser clients send. A header
 // missing here fails the preflight, so the request never reaches the handler at
@@ -492,29 +484,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
-	// GovernanceReceipts (CHE-685): receipt-capture-only, gated behind the
-	// separate JevReceipts flag (off by default). Provider stays nil in
-	// every wiring path this delivery adds — a nil Provider makes every
-	// observation record status="error"/shed_reason="error" rather than
-	// attempting a call, which is the intended no-key, no-network behavior
-	// for D03. Wiring a live jev.Client here is explicitly out of scope
-	// until a later delivery lifts the CHE-697 viability block.
-	budgetPolicy, budgetPolicyErr := governance.ParseDeploymentBudgetPolicy(os.Getenv("MULTICA_GOVERNANCE_BUDGET_POLICY"))
-	if budgetPolicyErr != nil {
-		slog.Error("governance deployment budget policy is invalid; evaluation admission fails closed", "error", budgetPolicyErr)
-	} else if budgetPolicy == nil {
-		slog.Warn("governance deployment budget policy is unset; evaluation admission fails closed", "configuration", "MULTICA_GOVERNANCE_BUDGET_POLICY")
-	}
-	var budgetAdmission receipt.BudgetAdmission
-	if pool != nil {
-		budgetService, budgetServiceErr := governance.NewBudgetService(pool, serverBudgetClock{})
-		if budgetServiceErr != nil {
-			slog.Error("governance budget service unavailable; evaluation admission fails closed", "error", budgetServiceErr)
-		} else {
-			budgetAdmission = budgetService
-		}
-	}
-	h.GovernanceReceipts = &receipt.Observer{Store: queries, BudgetAdmission: budgetAdmission, BudgetPolicy: budgetPolicy}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{
@@ -1362,43 +1331,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("composio integration disabled (COMPOSIO_API_KEY not set)")
 	}
 
-	// Jev integration (CHE-683): TypeSafe System One evaluation. Gated by
-	// JEV_API_KEY; the jev_enabled feature flag and per-workspace targeting
-	// are enforced per call by featureflags.JevProductionGate, not here — an
-	// unset key disables the client outright with no error, since this is a
-	// paid optional dependency and startup must succeed without it.
-	if jevAPIKey := strings.TrimSpace(os.Getenv("JEV_API_KEY")); jevAPIKey != "" {
-		jevClient, jerr := newJevClient(jevAPIKey, h.FeatureFlags)
-		if jerr != nil {
-			slog.Error("jev: client init failed; jev integration disabled", "error", jerr)
-		} else {
-			h.Jev = jevClient
-			slog.Info("jev integration enabled")
-		}
-	} else {
-		slog.Info("jev integration disabled (JEV_API_KEY not set)")
-	}
-	// Per-workspace Jev credentials are separate from the legacy process-wide
-	// JEV_API_KEY. Without a dedicated at-rest key, the management endpoints
-	// fail closed and cannot write plaintext. The feature remains default-off.
-	if key, err := credential.DecodeKey("current", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY"))); err == nil {
-		key.ID = credential.KeyID(key.Material)
-		keys := []credential.Key{key}
-		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
-			previous.ID = credential.KeyID(previous.Material)
-			if !bytes.Equal(previous.Material, key.Material) {
-				keys = append(keys, previous)
-			}
-		}
-		if ring, err := credential.NewKeyring(keys...); err != nil {
-			slog.Error("jev: credential keyring disabled", "error", err)
-		} else {
-			h.JevCredentials = ring
-		}
-	} else {
-		slog.Info("jev credential storage disabled (MULTICA_JEV_SECRET_KEY not set)")
-	}
-
 	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
 	// webhook secrets for token-based providers (Forgejo / Gitea / GitLab).
 	// Without it, connect/webhook handlers return 503 (so a misconfigured
@@ -1860,8 +1792,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
-					r.Get("/governance/config", h.GetGovernanceConfig)
-					r.Get("/jev/credential", h.GetJevCredential)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1876,9 +1806,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
-					r.Patch("/governance/config", h.PatchGovernanceConfig)
-					r.Put("/jev/credential", h.PutJevCredential)
-					r.Delete("/jev/credential", h.DeleteJevCredential)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2274,14 +2201,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// CHE-755 read-only provenance export. Human owners/admins only; the
 			// handler re-checks the role and actor source as a backstop.
 			r.With(handler.RequireHumanActor).Post("/api/provenance/export", h.ExportProvenance)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases", h.ListGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases/{caseId}", h.GetGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Post("/api/governance/cases/{caseId}/export", h.ExportGovernanceCaseAudit)
-			r.Route("/api/governance/proposals/{caseId}/attempts/{attemptId}", func(r chi.Router) {
-				r.Get("/evidence", h.GetGovernanceProposalEvidence)
-				r.Post("/heartbeat", h.HeartbeatGovernanceProposalAttempt)
-				r.Post("/result", h.SubmitGovernanceProposalResult)
-			})
 
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)

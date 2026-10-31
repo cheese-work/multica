@@ -47,7 +47,7 @@ type IssueService struct {
 	// the self-hosted unlimited path.
 	Entitlements entitlement.Provider
 	// SquadDispatcher overrides default squad leader enqueue on issue create,
-	// allowing handler-level Jev fast-path routing and access gating.
+	// allowing handler-level access gating.
 	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
 }
 

@@ -25,8 +25,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/governance/credential"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -47,7 +45,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/llm"
 )
 
@@ -263,14 +260,6 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
-	// GovernanceReceipts runs the CHE-685 observe-only Jev governance
-	// receipt capture hook after a comment create/edit commits. Nil is the
-	// safe default (every call site checks for it before use) — every
-	// production Handler must still set the field to get a real *receipt.Observer
-	// wired with Store: queries, but its Provider stays nil until a later,
-	// still-blocked delivery wires a live Jev client (see CHE-685 scope:
-	// this delivery never sets Provider to anything but a fake in tests).
-	GovernanceReceipts *receipt.Observer
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -337,17 +326,6 @@ type Handler struct {
 	// the composio HTTP handlers return 403 in that case. Wired in
 	// cmd/server/router.go after handler.New.
 	Composio *composio.Service
-	// Jev is the TypeSafe System One evaluation client (CHE-683). Nil when
-	// JEV_API_KEY is unset; every call also goes through the jev_enabled
-	// flag and per-workspace targeting via its attached
-	// featureflags.JevProductionGate, so a non-nil Jev does not by itself
-	// mean calls are permitted. Wired in cmd/server/router.go after
-	// handler.New.
-	Jev *jev.Client
-	// JevCredentials holds per-workspace provider credentials encrypted with a
-	// dedicated keyring. Nil is intentional default-off: write requests fail
-	// closed and no credential can be persisted in plaintext.
-	JevCredentials *credential.Keyring
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic

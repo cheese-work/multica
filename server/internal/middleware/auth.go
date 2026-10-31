@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +27,7 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 		"user_id", userID,
 		"auth_path", authPath,
 	)
-	if isGovernanceProposalRoute(r) {
-		writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_access_denied")
-	} else {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-	}
+	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
 	return true
 }
 
@@ -103,11 +98,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// Cookie-based auth requires CSRF validation for state-changing methods.
 			if fromCookie && !auth.ValidateCSRF(r) {
 				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
-				if isGovernanceProposalRoute(r) {
-					writeGovernanceProposalProblem(w, r, http.StatusForbidden, "csrf_validation_failed")
-				} else {
-					http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
-				}
+				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
 				return
 			}
 
@@ -139,20 +130,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						writeInvalidTaskToken(w, r)
 						return
 					}
-				case GovernanceProposalTaskPurpose:
-					if !tt.GovernanceCaseID.Valid || !tt.GovernanceAttemptID.Valid ||
-						!tt.GovernanceAttemptFence.Valid || !tt.GovernanceEvidenceEpoch.Valid ||
-						tt.GovernanceEvidenceEpoch.Int32 < 0 {
-						writeInvalidTaskToken(w, r)
-						return
-					}
-					if governanceProposalCapability(
-						r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery,
-						uuidToString(tt.GovernanceCaseID), uuidToString(tt.GovernanceAttemptID),
-					) == "" {
-						writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_token_scope_denied")
-						return
-					}
 				default:
 					writeInvalidTaskToken(w, r)
 					return
@@ -175,12 +152,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
 				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
-				if tt.Purpose == GovernanceProposalTaskPurpose {
-					r.Header.Set("X-Governance-Case-ID", uuidToString(tt.GovernanceCaseID))
-					r.Header.Set("X-Governance-Attempt-ID", uuidToString(tt.GovernanceAttemptID))
-					r.Header.Set("X-Governance-Attempt-Fence", uuidToString(tt.GovernanceAttemptFence))
-					r.Header.Set("X-Governance-Evidence-Epoch", strconv.FormatInt(int64(tt.GovernanceEvidenceEpoch.Int32), 10))
-				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table.
@@ -226,11 +197,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					// 503 so callers (CLI / daemon) can retry — a 401
 					// here would tell them to throw out a valid token.
 					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
-					if isGovernanceProposalRoute(r) {
-						writeGovernanceProposalProblem(w, r, http.StatusServiceUnavailable, "authentication_unavailable")
-					} else {
-						http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
-					}
+					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
 					return
 				}
 				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
