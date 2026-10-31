@@ -154,3 +154,80 @@ func TestWithoutSourceTailIgnoresTheSourceComment(test *testing.T) {
 		test.Fatal("a different decision must keep a different identity")
 	}
 }
+
+func validActionAskMap() map[string]any {
+	return map[string]any{
+		"context_eli10": "A property is missing. Only the workspace owner can create it.", "agent_did": "Checked that the property is missing.",
+		"why_human": "Owner-only: property create needs the workspace owner.", "steps": []any{"Run `multica property create --name Readiness`."},
+		"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
+		"source_issue_id": testIssueID, "source_comment_id": testCommentID,
+	}
+}
+
+func TestDecodeActionAsk(test *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{name: "valid"},
+		{name: "no steps", mutate: func(ask map[string]any) { delete(ask, "steps") }, want: "ask.steps requires at least one nonblank item"},
+		{name: "blank step", mutate: func(ask map[string]any) { ask["steps"] = []any{" "} }, want: "ask.steps requires at least one nonblank item"},
+		{name: "no why_human", mutate: func(ask map[string]any) { delete(ask, "why_human") }, want: "ask.why_human is required"},
+		{name: "no done_when", mutate: func(ask map[string]any) { delete(ask, "done_when") }, want: "ask.done_when is required"},
+		{name: "no default", mutate: func(ask map[string]any) { delete(ask, "default_if_no_reply") }, want: "ask.default_if_no_reply is required"},
+		{name: "options rejected", mutate: func(ask map[string]any) { ask["options"] = []any{} }, want: "ask.options is not a known field"},
+		{name: "decision rejected", mutate: func(ask map[string]any) { ask["decision"] = "Do it?" }, want: "ask.decision is not a known field"},
+		{name: "recommendation rejected", mutate: func(ask map[string]any) { ask["recommendation"] = "Yes" }, want: "ask.recommendation is not a known field"},
+		{name: "stakes rejected", mutate: func(ask map[string]any) { ask["stakes_if_wrong"] = "Bad" }, want: "ask.stakes_if_wrong is not a known field"},
+		{name: "bare id in a step", mutate: func(ask map[string]any) { ask["steps"] = []any{"Open " + testCommentID} }, want: "ask.steps[0] has a bare ID; link it as [what it is](link)"},
+		{name: "steps not a list", mutate: func(ask map[string]any) { ask["steps"] = "x" }, want: "ask.steps must be a list of strings"},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			ask := validActionAskMap()
+			if tc.mutate != nil {
+				tc.mutate(ask)
+			}
+			raw, _ := json.Marshal(ask)
+			if _, err := DecodeAskKind(raw, KindAction); errString(err) != tc.want {
+				test.Fatalf("error = %q, want %q", errString(err), tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeDecisionAskKindRejectsActionFields(test *testing.T) {
+	ask := validAskMap()
+	ask["steps"] = []any{"Run it."}
+	raw, _ := json.Marshal(ask)
+	if _, err := DecodeAskKind(raw, KindDecision); errString(err) != "ask.steps is not a known field" {
+		test.Fatalf("error = %q", errString(err))
+	}
+	raw, _ = json.Marshal(validAskMap())
+	if _, err := DecodeAskKind(raw, KindDecision); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := DecodeAskKind(raw, "bogus"); errString(err) != "kind must be decision or action" {
+		test.Fatalf("unknown kind error = %q", errString(err))
+	}
+}
+
+func TestActionAskContentRendersStepsAndDoneWhen(test *testing.T) {
+	raw, _ := json.Marshal(validActionAskMap())
+	ask, err := DecodeAskKind(raw, KindAction)
+	if err != nil {
+		test.Fatal(err)
+	}
+	content := ask.Content("cheese-work")
+	for _, want := range []string{"**Why you**", "Owner-only: property create needs the workspace owner.", "**Steps**", "1. Run `multica property create --name Readiness`.", "**Done when**", "The Readiness property is listed.", "**Default if no reply**", "Continue without the property.", "mention://issue/" + testIssueID} {
+		if !strings.Contains(content, want) {
+			test.Fatalf("missing %q in:\n%s", want, content)
+		}
+	}
+	for _, unwanted := range []string{"**Options**", "**Recommendation**", "**What is at stake**"} {
+		if strings.Contains(content, unwanted) {
+			test.Fatalf("action ask rendered %q", unwanted)
+		}
+	}
+}

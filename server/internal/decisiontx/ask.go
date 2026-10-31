@@ -35,6 +35,12 @@ type Ask struct {
 	AfterDone        string      `json:"after_done"`
 	Subject          string      `json:"subject,omitempty"`
 	Artifacts        []Artifact  `json:"artifacts,omitempty"`
+	// WhyHuman, Steps and DoneWhen are the action-kind fields (CHE-2394).
+	WhyHuman string   `json:"why_human,omitempty"`
+	Steps    []string `json:"steps,omitempty"`
+	DoneWhen string   `json:"done_when,omitempty"`
+	// Kind is set by DecodeAskKind; the stored kind is its own column, so it is not fingerprinted.
+	Kind string `json:"-"`
 	// AskedBy is the asking agent's name, set by the server for a new request;
 	// it is not caller input, so it is never decoded or fingerprinted.
 	AskedBy string `json:"-"`
@@ -70,10 +76,80 @@ const askOptionShape = "must be an object with label, what_happens, pros, cons, 
 var (
 	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
+	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
+	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
 
 func errAskObject() error { return &AskError{"ask", "must be one JSON object"} }
+
+// Request kinds. A decision asks the person to choose; an action asks them to do
+// something an agent cannot (CHE-2394).
+const (
+	KindDecision = "decision"
+	KindAction   = "action"
+)
+
+// DecodeAskKind decodes an ask with the strict decoder of its kind.
+func DecodeAskKind(raw []byte, kind string) (Ask, error) {
+	switch kind {
+	case KindDecision:
+		return DecodeAsk(raw)
+	case KindAction:
+		return decodeActionAsk(raw)
+	}
+	return Ask{}, &AskError{"kind", "must be decision or action"}
+}
+
+func decodeActionAsk(raw []byte) (Ask, error) {
+	ask := Ask{Kind: KindAction}
+	fields, err := decodeObject(raw)
+	if err != nil {
+		return ask, errAskObject()
+	}
+	if err := rejectUnknown("ask", fields, actionFields); err != nil {
+		return ask, err
+	}
+	for _, field := range []struct {
+		name string
+		into *string
+	}{
+		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"why_human", &ask.WhyHuman}, {"done_when", &ask.DoneWhen},
+		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+	} {
+		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
+			return ask, err
+		}
+	}
+	if err := decodeStrings("ask.steps", fields["steps"], &ask.Steps); err != nil {
+		return ask, err
+	}
+	return ask, ask.validateAction()
+}
+
+func (ask Ask) validateAction() error {
+	for _, field := range []struct{ name, value string }{
+		{"context_eli10", ask.ContextELI10}, {"agent_did", ask.AgentDid}, {"why_human", ask.WhyHuman},
+		{"done_when", ask.DoneWhen}, {"default_if_no_reply", ask.DefaultIfNoReply},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return &AskError{"ask." + field.name, "is required"}
+		}
+	}
+	if !slices.ContainsFunc(ask.Steps, func(step string) bool { return strings.TrimSpace(step) != "" }) {
+		return &AskError{"ask.steps", "requires at least one nonblank item"}
+	}
+	for _, field := range []struct{ name, value string }{
+		{"source_issue_id", ask.SourceIssueID}, {"source_comment_id", ask.SourceCommentID},
+	} {
+		if _, err := util.ParseUUID(field.value); err != nil {
+			return &AskError{"ask." + field.name, "must be a UUID"}
+		}
+	}
+	return ask.validateReadable()
+}
+
+func (ask Ask) isAction() bool { return ask.Kind == KindAction || len(ask.Steps) > 0 }
 
 // DecodeAsk is the one decoder for the CLI and the server. It then validates.
 func DecodeAsk(raw []byte) (Ask, error) {
@@ -263,6 +339,9 @@ func (ask Ask) Validate() error {
 }
 
 func (ask Ask) Content(workspaceSlug string) string {
+	if ask.isAction() {
+		return ask.actionContent(workspaceSlug)
+	}
 	var options strings.Builder
 	for _, option := range ask.Options {
 		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
@@ -305,4 +384,13 @@ func (ask Ask) artifactsContent() string {
 		lines[index] = fmt.Sprintf("- %s · `%s` · sha256 `%s`", artifact.Label, artifact.AttachmentID, artifact.SHA256)
 	}
 	return "\n\n**Artifacts**\n" + strings.Join(lines, "\n")
+}
+
+func (ask Ask) actionContent(workspaceSlug string) string {
+	var steps strings.Builder
+	for index, step := range ask.Steps {
+		fmt.Fprintf(&steps, "%d. %s\n", index+1, step)
+	}
+	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.WhyHuman, steps.String(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }

@@ -31,6 +31,9 @@ type decisionRequestInput struct {
 	EscalationClass string
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
+	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
+	Kind             string  `json:"-"`
+	ExpiresInSeconds float64 `json:"-"`
 	// Parsed is the decoded caller ask. When set, the request is fingerprinted
 	// from it and enriched once, for a new request. Nil means finished text.
 	Parsed *decisiontx.Ask `json:"-"`
@@ -164,7 +167,8 @@ func (input decisionRequestInput) fingerprints() (current, legacy string, err er
 		Footer, EscalationClass                  string
 		NewDM                                    bool
 		SessionID, HumanUserID, ParentID, Source pgtype.UUID
-	}{*input.Parsed, input.Footer, input.EscalationClass, input.NewDM, input.SessionID, input.HumanUserID, input.ParentID, input.SourceCommentID})
+		ExpiresInSeconds                         float64 `json:",omitempty"`
+	}{*input.Parsed, input.Footer, input.EscalationClass, input.NewDM, input.SessionID, input.HumanUserID, input.ParentID, input.SourceCommentID, input.ExpiresInSeconds})
 	return "v2:" + current, legacy, err
 }
 
@@ -472,7 +476,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}})
 	if err != nil {
 		return empty, err
 	}

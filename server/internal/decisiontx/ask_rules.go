@@ -28,6 +28,16 @@ type proseField struct{ path, text string }
 // proseFields lists every visible prose field with its indexed AskError path.
 // agent_did is excluded: it sits in the collapsed Details block (rule 4).
 func (ask Ask) proseFields() []proseField {
+	if ask.isAction() {
+		fields := []proseField{
+			{"ask.context_eli10", ask.ContextELI10}, {"ask.why_human", ask.WhyHuman},
+			{"ask.done_when", ask.DoneWhen}, {"ask.default_if_no_reply", ask.DefaultIfNoReply},
+		}
+		for index, step := range ask.Steps {
+			fields = append(fields, proseField{fmt.Sprintf("ask.steps[%d]", index), step})
+		}
+		return fields
+	}
 	fields := []proseField{
 		{"ask.context_eli10", ask.ContextELI10}, {"ask.decision", ask.Decision}, {"ask.stakes_if_wrong", ask.StakesIfWrong},
 		{"ask.recommendation", ask.Recommendation}, {"ask.default_if_no_reply", ask.DefaultIfNoReply},
