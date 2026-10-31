@@ -2973,6 +2973,7 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
 		return err
 	}
+	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
@@ -3101,6 +3102,7 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
 		return err
 	}
+	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()

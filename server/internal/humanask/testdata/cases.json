@@ -1,53 +1,724 @@
 {
-  "source": "Cases for human_ask.py rules shared with cheese-work/multica-dotfiles (CHE-2597). 'refuse' lists the [line, message] pairs the slice 1 rules (addressee mention, opening lines) must produce; other human_ask.py rules are out of this file until slice 2.",
+  "source": "Cases for human_ask.py rules shared with cheese-work/multica-dotfiles (CHE-2597). 'refuse' lists the [line, message] pairs of the addressee-mention and opening-line rules; 'warn' lists those of the format rules (Steps, Checked, Done when, placeholder, bare UUID, implicit words, merge readiness). Expected values come from running human_ask.py check.",
   "cases": [
     {
       "name": "che2531 plain label without mention",
       "text": "**Cheese:** merge PR #601 (`[squash]`).\n",
-      "refuse": [[1, "human addressee needs a real member mention link"], [1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]
+      "refuse": [
+        [
+          1,
+          "human addressee needs a real member mention link"
+        ],
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
     {
       "name": "corrected ask with mention and opening lines passes",
       "text": "**What this is**: CHE-2531 adds workflow step entry gates.\n**Why you, why now**: Human merge is required; the candidate is ready.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n",
-      "refuse": []
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
     {
       "name": "mention link without opening lines",
       "text": "Please look. [@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n",
-      "refuse": [[1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]
+      "refuse": [
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
     {
       "name": "second opening line missing",
       "text": "What this is: CHE-1 adds a gate.\nMerge it. [@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff)\n",
-      "refuse": [[2, "opening line 2 needs Why you, why now: with context on the same line"]]
+      "refuse": [
+        [
+          2,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
     {
       "name": "label with wrong name on a Cheese link",
       "text": "What this is: a.\nWhy you, why now: b.\n[@Someone](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge it.\n",
-      "refuse": [[3, "human addressee needs a real member mention link"]]
+      "refuse": [
+        [
+          3,
+          "human addressee needs a real member mention link"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
     {
       "name": "other mention does not cover a plain human ask",
       "text": "What this is: a.\nWhy you, why now: b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n\n**Cheese:** waive the failed check.\n",
-      "refuse": [[5, "human addressee needs a real member mention link"]]
+      "refuse": [
+        [
+          5,
+          "human addressee needs a real member mention link"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
     },
-    {"name": "bullet form triggers", "text": "- Cheese: merge it.\n", "refuse": [[1, "human addressee needs a real member mention link"], [1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]},
-    {"name": "for Cheese to triggers", "text": "Waiting for Cheese to merge.\n", "refuse": [[1, "human addressee needs a real member mention link"], [1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]},
-    {"name": "Cheese should triggers", "text": "Cheese should merge.\n", "refuse": [[1, "human addressee needs a real member mention link"], [1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]},
-    {"name": "past tense decided does not trigger", "text": "Cheese decided on CHE-2295.\n", "refuse": []},
-    {"name": "past tense approved does not trigger", "text": "Evidence: Cheese approved the earlier head.\n", "refuse": []},
-    {"name": "cheesecake does not trigger", "text": "The cheesecake is ready.\n", "refuse": []},
-    {"name": "hyphenated agent name does not trigger", "text": "x99-cheese-agent can run the test.\n", "refuse": []},
-    {"name": "Human action none escape", "text": "Human action: none\n**Cheese:** merge it.\n", "refuse": []},
-    {"name": "fenced block is skipped", "text": "```\nCheese: merge it.\n```\n", "refuse": []},
-    {"name": "quoted line is skipped", "text": "> Cheese: merge it.\n", "refuse": []},
-    {"name": "code span is skipped", "text": "Use `Cheese: merge it` as the label.\n", "refuse": []},
-    {"name": "plain comment without a human passes", "text": "Reviewed the diff. Tests green.\n", "refuse": []},
-    {"name": "nbsp between name and modal triggers", "text": "Cheese\u00a0should merge it.\n", "refuse": [[1, "human addressee needs a real member mention link"], [1, "opening line 1 needs What this is: with context on the same line"], [1, "opening line 2 needs Why you, why now: with context on the same line"]]},
-    {"name": "nbsp before colon in opening label passes", "text": "What this is\u00a0: a.\nWhy you, why now: b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n", "refuse": []},
-    {"name": "ideographic space after colon passes", "text": "What this is:\u3000a.\nWhy you, why now:\u3000b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n", "refuse": []},
-    {"name": "1001 backtick fence is skipped", "text": "`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\nCheese: merge it.\n`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\n", "refuse": []},
-    {"name": "closing fence with trailing nbsp", "text": "```\nCheese: merge it.\n```\u00a0\n", "refuse": []},
-    {"name": "unclosed long fence runs to the end", "text": "`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\nCheese: merge it.\n", "refuse": []}
+    {
+      "name": "bullet form triggers",
+      "text": "- Cheese: merge it.\n",
+      "refuse": [
+        [
+          1,
+          "human addressee needs a real member mention link"
+        ],
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "for Cheese to triggers",
+      "text": "Waiting for Cheese to merge.\n",
+      "refuse": [
+        [
+          1,
+          "human addressee needs a real member mention link"
+        ],
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "Cheese should triggers",
+      "text": "Cheese should merge.\n",
+      "refuse": [
+        [
+          1,
+          "human addressee needs a real member mention link"
+        ],
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "past tense decided does not trigger",
+      "text": "Cheese decided on CHE-2295.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "past tense approved does not trigger",
+      "text": "Evidence: Cheese approved the earlier head.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "cheesecake does not trigger",
+      "text": "The cheesecake is ready.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "hyphenated agent name does not trigger",
+      "text": "x99-cheese-agent can run the test.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "Human action none escape",
+      "text": "Human action: none\n**Cheese:** merge it.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "fenced block is skipped",
+      "text": "```\nCheese: merge it.\n```\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "quoted line is skipped",
+      "text": "> Cheese: merge it.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "code span is skipped",
+      "text": "Use `Cheese: merge it` as the label.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "plain comment without a human passes",
+      "text": "Reviewed the diff. Tests green.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "nbsp between name and modal triggers",
+      "text": "Cheese should merge it.\n",
+      "refuse": [
+        [
+          1,
+          "human addressee needs a real member mention link"
+        ],
+        [
+          1,
+          "opening line 1 needs What this is: with context on the same line"
+        ],
+        [
+          1,
+          "opening line 2 needs Why you, why now: with context on the same line"
+        ]
+      ],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "nbsp before colon in opening label passes",
+      "text": "What this is : a.\nWhy you, why now: b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "ideographic space after colon passes",
+      "text": "What this is:　a.\nWhy you, why now:　b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "1001 backtick fence is skipped",
+      "text": "`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\nCheese: merge it.\n`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "closing fence with trailing nbsp",
+      "text": "```\nCheese: merge it.\n``` \n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "unclosed long fence runs to the end",
+      "text": "`````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````````\nCheese: merge it.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "full ask passes all format rules",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "vietnamese section labels",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) gộp PR #601.\n\nBước\n1. Mở PR.\n2. Bấm gộp.\n\nĐã kiểm tra\n- PR sẵn sàng, CI xanh.\n\nXong khi\nPR đã gộp.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "markdown heading and bold labels",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n\n## Steps\n1. Open it.\n\n**Checked**: not verified: no access to the host\n\n### Done when:\nIt is open.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "unlabelled numbered list still counts as steps but Steps missing",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n1. Do a thing, etc.\n2) Do another thing.\n\nChecked\n- one\n\nDone when\ndone\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ],
+        [
+          5,
+          "implicit value word 'etc.': write every value out"
+        ]
+      ]
+    },
+    {
+      "name": "checked section empty and done when empty",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n\nSteps\n1. Do it.\n\nChecked\nonly prose here\n\nDone when\n\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ]
+      ]
+    },
+    {
+      "name": "label followed by a word character is not a label",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n\nStepsé\n1. Do it.\n\nCheckedx\n- one\n\nDone whenever\nx\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ]
+      ]
+    },
+    {
+      "name": "placeholder without source",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\nUse <token> here.\nUse <id> (source: the card) here.\nHtml <br> <Details> <https://x.y> </kbd> <a href=x> <1> <é> ok.\nTwo <one> and <two> (source: none).\nEmpty <> and <a\\tb>.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          5,
+          "placeholder <token> has no (source: ...) with a value on its line"
+        ],
+        [
+          7,
+          "placeholder <a href=x> has no (source: ...) with a value on its line"
+        ],
+        [
+          9,
+          "placeholder <a\\tb> has no (source: ...) with a value on its line"
+        ]
+      ]
+    },
+    {
+      "name": "placeholder inside fence is checked but delimiter line is not",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n```<lang>\nrun <thing>\n```\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          6,
+          "placeholder <thing> has no (source: ...) with a value on its line"
+        ]
+      ]
+    },
+    {
+      "name": "bare uuid in prose",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\nRow 0a1b2c3d-4e5f-6789-abcd-ef0123456789 and ID 0A1B2C3D-4E5F-6789-ABCD-EF0123456789.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          5,
+          "bare UUID 0A1B2C3D-4E5F-6789-ABCD-EF0123456789: use a mention link or a code span and say what kind it is"
+        ],
+        [
+          5,
+          "bare UUID 0a1b2c3d-4e5f-6789-abcd-ef0123456789: use a mention link or a code span and say what kind it is"
+        ]
+      ]
+    },
+    {
+      "name": "uuid in code span mention link fence or with word neighbours",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n`0a1b2c3d-4e5f-6789-abcd-ef0123456789` [x](mention://agent/0a1b2c3d-4e5f-6789-abcd-ef0123456789)\n```\n0a1b2c3d-4e5f-6789-abcd-ef0123456789\n```\nx0a1b2c3d-4e5f-6789-abcd-ef0123456789 0a1b2c3d-4e5f-6789-abcd-ef0123456789x é0a1b2c3d-4e5f-6789-abcd-ef0123456789\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "implicit value words in steps",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Set A, B, etc.\n2. Do the same as above, similarly.\n3. Likewise, v.v.\n4. Làm tương tự.\n5. Etc and ETC. and etcetera and a-etc.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          7,
+          "implicit value word 'etc.': write every value out"
+        ],
+        [
+          8,
+          "implicit value word 'same as': write every value out"
+        ],
+        [
+          8,
+          "implicit value word 'similarly': write every value out"
+        ],
+        [
+          9,
+          "implicit value word 'Likewise': write every value out"
+        ],
+        [
+          9,
+          "implicit value word 'v.v.': write every value out"
+        ],
+        [
+          10,
+          "implicit value word 'tương tự': write every value out"
+        ],
+        [
+          11,
+          "implicit value word 'ETC.': write every value out"
+        ],
+        [
+          11,
+          "implicit value word 'Etc': write every value out"
+        ],
+        [
+          11,
+          "implicit value word 'etc.': write every value out"
+        ]
+      ]
+    },
+    {
+      "name": "implicit value words outside steps are ignored",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\nSimilarly etc. in prose.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step all gates observed",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is ready, CI green, independent review: PASS on the exact head.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step with draft",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is draft, CI green, independent review: PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with not draft and ready from draft",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR is not draft. CI green. independent review: PASS. Marked ready from draft.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step with pending CI",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI pending. independent review: PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with no pending checks phrase",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI green, no pending checks. cross-lab review PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step without review",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI green.\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with hyphenated failing job",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI green. backend-tests: failed. independent review: PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with hyphen split quirk",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI green. a-bred. independent review: PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with not verified CI",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- PR ready. CI green. independent review: PASS\n- not verified: the CI run on this head\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "merge step with word merge only as part of a word",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Emerge from it, mergeable.\n\nChecked\n- one\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step vietnamese",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) gộp.\n\nBước\n1. Gộp PR.\n\nĐã kiểm tra\n- PR sẵn sàng. CI xanh. independent review: PASS\n\nXong khi\nxong\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step green CI order and gap limit",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- ready. green CI. different-lab review PASSed\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "merge step ci green too far apart",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge PR #601.\n\nSteps\n1. Open the PR.\n2. Click merge.\n\nChecked\n- ready. CI is an acronym x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x green. independent review: PASS\n\nDone when\nThe PR is merged.\n",
+      "refuse": [],
+      "warn": [
+        [
+          8,
+          "merge step: Checked needs PR ready, CI green and independent review PASS on the exact head; pending, failed or unobserved gates cannot support a merge ask"
+        ]
+      ]
+    },
+    {
+      "name": "fullwidth digit numbered step and nbsp",
+      "text": "What this is: CHE-1 adds a gate.\nWhy you, why now: Human merge is required.\n\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) look.\n\nSteps\n１. Do it.\n\nChecked\n- one\n\nDone when\nx\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "human action none skips format rules",
+      "text": "Human action: none\n**Cheese:** FYI only.\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "no human ask skips format rules",
+      "text": "Plain status.\n1. a\n2. b, etc.\n<token>\n",
+      "refuse": [],
+      "warn": []
+    },
+    {
+      "name": "line separators other than newline keep fence numbering",
+      "text": "What this is: a.\nWhy you, why now: b.\n[@Cheese](mention://member/f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff) merge. ```\n<x> inside\u000b```\n<y> after\n",
+      "refuse": [],
+      "warn": [
+        [
+          1,
+          "missing Checked section: one evidence bullet, or `not verified: <reason>` (Checked / Đã kiểm tra)"
+        ],
+        [
+          1,
+          "missing Done when section (Done when / Xong khi)"
+        ],
+        [
+          1,
+          "missing Steps section with at least one numbered step (Steps / Bước)"
+        ],
+        [
+          5,
+          "placeholder <x> has no (source: ...) with a value on its line"
+        ],
+        [
+          7,
+          "placeholder <y> has no (source: ...) with a value on its line"
+        ]
+      ]
+    }
   ]
 }
