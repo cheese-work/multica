@@ -81,14 +81,18 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 		return RecoveryClaim{}, "", fmt.Errorf("read existing recovery claim: %w", err)
 	}
 
-	if outcome, err := s.refusal(ctx, tx, p); err != nil || outcome != "" {
+	root, err := lineageRoot(ctx, tx, p.FailedTaskID)
+	if err != nil {
+		return RecoveryClaim{}, "", err
+	}
+	if outcome, err := s.refusal(ctx, tx, p, root); err != nil || outcome != "" {
 		return RecoveryClaim{}, outcome, err
 	}
 	var claim RecoveryClaim
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO recovery_claim (workspace_id, issue_id, failed_task_id, mode, claimed_at)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		p.WorkspaceID, p.IssueID, p.FailedTaskID, string(p.Mode), p.Now).Scan(&claim.ID); err != nil {
+		INSERT INTO recovery_claim (workspace_id, issue_id, failed_task_id, lineage_root_task_id, mode, claimed_at)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		p.WorkspaceID, p.IssueID, p.FailedTaskID, root, string(p.Mode), p.Now).Scan(&claim.ID); err != nil {
 		return RecoveryClaim{}, "", fmt.Errorf("insert recovery claim: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -97,13 +101,36 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 	return claim, RecoveryAdmitted, nil
 }
 
-func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams) (RecoveryClaimOutcome, error) {
-	// Both native modes and fresh replay answer to the native ceiling: the
-	// original attempt is attempt one, so retries stop at ceiling-1, and an
-	// exhausted native lineage never earns a fresh replay.
+// lineageRoot returns the top of the failed run's parent_task_id chain, or the
+// run itself when it has no recorded task row. The depth bound stops a corrupt
+// cycle from recursing forever.
+func lineageRoot(ctx context.Context, tx pgx.Tx, failedTaskID pgtype.UUID) (pgtype.UUID, error) {
+	var root pgtype.UUID
+	err := tx.QueryRow(ctx, `
+		WITH RECURSIVE chain(id, parent_task_id, depth) AS (
+			SELECT id, parent_task_id, 0 FROM agent_task_queue WHERE id = $1
+			UNION ALL
+			SELECT q.id, q.parent_task_id, chain.depth + 1
+			FROM agent_task_queue q JOIN chain ON q.id = chain.parent_task_id
+			WHERE chain.depth < 1000
+		)
+		SELECT id FROM chain ORDER BY depth DESC LIMIT 1`, failedTaskID).Scan(&root)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return failedTaskID, nil
+	}
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("resolve recovery lineage: %w", err)
+	}
+	return root, nil
+}
+
+func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams, root pgtype.UUID) (RecoveryClaimOutcome, error) {
+	// Both native modes and fresh replay answer to the native ceiling of the
+	// failed run's lineage: the original attempt is attempt one, so retries stop
+	// at ceiling-1, and an exhausted native lineage never earns a fresh replay.
 	var retries int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND mode IN ('native_resume', 'native_release') AND state <> 'released'`,
-		p.WorkspaceID, p.IssueID).Scan(&retries); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND lineage_root_task_id = $3 AND mode IN ('native_resume', 'native_release') AND state <> 'released'`,
+		p.WorkspaceID, p.IssueID, root).Scan(&retries); err != nil {
 		return "", fmt.Errorf("count native recovery attempts: %w", err)
 	}
 	if retries >= p.NativeCeiling-1 {

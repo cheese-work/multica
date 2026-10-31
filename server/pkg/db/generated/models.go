@@ -2372,15 +2372,16 @@ type QuickAction struct {
 }
 
 type RecoveryClaim struct {
-	ID              pgtype.UUID        `json:"id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	FailedTaskID    pgtype.UUID        `json:"failed_task_id"`
-	Mode            string             `json:"mode"`
-	State           string             `json:"state"`
-	SuccessorTaskID pgtype.UUID        `json:"successor_task_id"`
-	ClaimedAt       pgtype.Timestamptz `json:"claimed_at"`
-	SettledAt       pgtype.Timestamptz `json:"settled_at"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	FailedTaskID      pgtype.UUID        `json:"failed_task_id"`
+	LineageRootTaskID pgtype.UUID        `json:"lineage_root_task_id"`
+	Mode              string             `json:"mode"`
+	State             string             `json:"state"`
+	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
+	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
+	SettledAt         pgtype.Timestamptz `json:"settled_at"`
 }
 
 type RunBudgetNotice struct {

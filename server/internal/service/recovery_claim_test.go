@@ -18,6 +18,8 @@ type recoveryClaimFixture struct {
 	pool        *pgxpool.Pool
 	fixture     *dbfx.Fixture
 	workspaceID pgtype.UUID
+	agentID     string
+	runtimeID   string
 	issueIDs    []pgtype.UUID
 }
 
@@ -31,6 +33,10 @@ func newRecoveryClaimFixture(t *testing.T, issues int) *recoveryClaimFixture {
 		pool:        pool,
 		fixture:     fixture,
 		workspaceID: util.MustParseUUID(workspaceID),
+		agentID:     agentID,
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&f.runtimeID); err != nil {
+		t.Fatal(err)
 	}
 	for i := 0; i < issues; i++ {
 		id := fixture.Issue(t, "recovery claim issue", dbfx.Cols{"assignee_type": "agent", "assignee_id": agentID})
@@ -41,6 +47,40 @@ func newRecoveryClaimFixture(t *testing.T, issues int) *recoveryClaimFixture {
 
 func (f *recoveryClaimFixture) newFailedTaskID() pgtype.UUID {
 	return pgtype.UUID{Bytes: uuid.New(), Valid: true}
+}
+
+// retryChain returns a generator of failed task ids that form one retry
+// lineage on an issue: the original attempt first, then each retry as a child
+// of the previous attempt via parent_task_id.
+func (f *recoveryClaimFixture) retryChain(t *testing.T, issue int) func() pgtype.UUID {
+	t.Helper()
+	var previous string
+	return func() pgtype.UUID {
+		cols := dbfx.Cols{"issue_id": util.UUIDToString(f.issueIDs[issue]), "status": "failed", "runtime_id": f.runtimeID}
+		if previous != "" {
+			cols["parent_task_id"] = previous
+		}
+		previous = f.fixture.Task(t, f.agentID, cols)
+		return util.MustParseUUID(previous)
+	}
+}
+
+func (f *recoveryClaimFixture) claimFailed(t *testing.T, issue int, mode RecoveryMode, failed pgtype.UUID, now time.Time) (RecoveryClaim, RecoveryClaimOutcome) {
+	t.Helper()
+	claim, outcome, err := f.store.Claim(context.Background(), RecoveryClaimParams{
+		WorkspaceID:   f.workspaceID,
+		IssueID:       f.issueIDs[issue],
+		FailedTaskID:  failed,
+		Mode:          mode,
+		NativeCeiling: 3,
+		PacedCap:      2,
+		Spacing:       120 * time.Second,
+		Now:           now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return claim, outcome
 }
 
 func (f *recoveryClaimFixture) failedTaskID(t *testing.T) pgtype.UUID {
@@ -170,9 +210,10 @@ func TestRecoveryClaimNativeCeilingCountsOriginalAttempt(t *testing.T) {
 	for _, mode := range []RecoveryMode{RecoveryModeNativeResume, RecoveryModeNativeRelease} {
 		t.Run(string(mode), func(t *testing.T) {
 			f := newRecoveryClaimFixture(t, 1)
+			next := f.retryChain(t, 0)
 			now := time.Now()
 			for i := 0; i < 2; i++ {
-				c, outcome := f.claim(t, 0, mode, now.Add(time.Duration(i)*3*time.Minute))
+				c, outcome := f.claimFailed(t, 0, mode, next(), now.Add(time.Duration(i)*3*time.Minute))
 				if outcome != RecoveryAdmitted {
 					t.Fatalf("retry %d: outcome=%q, want admitted", i+1, outcome)
 				}
@@ -180,7 +221,7 @@ func TestRecoveryClaimNativeCeilingCountsOriginalAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, outcome := f.claim(t, 0, mode, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+			if _, outcome := f.claimFailed(t, 0, mode, next(), now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
 				t.Fatalf("third retry at ceiling 3: outcome=%q, want native_ceiling", outcome)
 			}
 		})
@@ -189,13 +230,14 @@ func TestRecoveryClaimNativeCeilingCountsOriginalAttempt(t *testing.T) {
 
 func TestRecoveryClaimNativeModesShareOneCeiling(t *testing.T) {
 	f := newRecoveryClaimFixture(t, 1)
+	next := f.retryChain(t, 0)
 	now := time.Now()
 	for i, mode := range []RecoveryMode{RecoveryModeNativeResume, RecoveryModeNativeRelease} {
-		if _, outcome := f.claim(t, 0, mode, now.Add(time.Duration(i)*3*time.Minute)); outcome != RecoveryAdmitted {
+		if _, outcome := f.claimFailed(t, 0, mode, next(), now.Add(time.Duration(i)*3*time.Minute)); outcome != RecoveryAdmitted {
 			t.Fatalf("%s: outcome=%q, want admitted", mode, outcome)
 		}
 	}
-	if _, outcome := f.claim(t, 0, RecoveryModeNativeResume, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+	if _, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, next(), now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
 		t.Fatalf("resume after one resume and one release: outcome=%q, want native_ceiling", outcome)
 	}
 }
@@ -203,9 +245,10 @@ func TestRecoveryClaimNativeModesShareOneCeiling(t *testing.T) {
 // An exhausted native lineage is not a fresh-replay budget.
 func TestRecoveryClaimExhaustedNativeLineageGetsNoFreshReplay(t *testing.T) {
 	f := newRecoveryClaimFixture(t, 1)
+	next := f.retryChain(t, 0)
 	now := time.Now()
 	for i := 0; i < 2; i++ {
-		c, outcome := f.claim(t, 0, RecoveryModeNativeResume, now)
+		c, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, next(), now)
 		if outcome != RecoveryAdmitted {
 			t.Fatalf("setup retry %d: outcome=%q, want admitted", i+1, outcome)
 		}
@@ -213,8 +256,60 @@ func TestRecoveryClaimExhaustedNativeLineageGetsNoFreshReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, outcome := f.claim(t, 0, RecoveryModeFreshReplay, now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+	if _, outcome := f.claimFailed(t, 0, RecoveryModeFreshReplay, next(), now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
 		t.Fatalf("fresh replay after native exhaustion: outcome=%q, want native_ceiling", outcome)
+	}
+}
+
+// Native accounting is per retry lineage: an exhausted earlier chain on the
+// issue neither blocks nor shortens a later independent chain.
+func TestRecoveryClaimIndependentLineagesCountSeparately(t *testing.T) {
+	f := newRecoveryClaimFixture(t, 1)
+	chainA, chainB := f.retryChain(t, 0), f.retryChain(t, 0)
+	now := time.Now()
+	for i := 0; i < 2; i++ {
+		c, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, chainA(), now.Add(time.Duration(i)*3*time.Minute))
+		if outcome != RecoveryAdmitted {
+			t.Fatalf("chain A retry %d: outcome=%q, want admitted", i+1, outcome)
+		}
+		if err := f.store.Settle(context.Background(), c.ID, RecoveryStateFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		c, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, chainB(), now.Add(time.Duration(10+i)*time.Minute))
+		if outcome != RecoveryAdmitted {
+			t.Fatalf("chain B retry %d after chain A exhausted: outcome=%q, want admitted", i+1, outcome)
+		}
+		if err := f.store.Settle(context.Background(), c.ID, RecoveryStateFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, chainB(), now.Add(20*time.Minute)); outcome != RecoveryNativeCeiling {
+		t.Fatalf("chain B third retry: outcome=%q, want native_ceiling", outcome)
+	}
+}
+
+// The fresh allowance stays per issue, but an exhausted lineage cannot spend it
+// while another lineage on the issue still has native budget.
+func TestRecoveryClaimFreshReplayFollowsItsOwnLineage(t *testing.T) {
+	f := newRecoveryClaimFixture(t, 1)
+	chainA, chainB := f.retryChain(t, 0), f.retryChain(t, 0)
+	now := time.Now()
+	for i := 0; i < 2; i++ {
+		c, outcome := f.claimFailed(t, 0, RecoveryModeNativeResume, chainA(), now)
+		if outcome != RecoveryAdmitted {
+			t.Fatalf("chain A retry %d: outcome=%q, want admitted", i+1, outcome)
+		}
+		if err := f.store.Settle(context.Background(), c.ID, RecoveryStateFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, outcome := f.claimFailed(t, 0, RecoveryModeFreshReplay, chainA(), now.Add(10*time.Minute)); outcome != RecoveryNativeCeiling {
+		t.Fatalf("fresh replay of exhausted chain A: outcome=%q, want native_ceiling", outcome)
+	}
+	if _, outcome := f.claimFailed(t, 0, RecoveryModeFreshReplay, chainB(), now.Add(10*time.Minute)); outcome != RecoveryAdmitted {
+		t.Fatalf("fresh replay of unexhausted chain B: outcome=%q, want admitted", outcome)
 	}
 }
 
