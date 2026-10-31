@@ -266,6 +266,31 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	}
 	h.writeRunBudgetNotice(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
 		exhaustedNoticeText(refused, raise, e, moved))
+	if moved {
+		h.enqueueBudgetRecovery(ctx, e)
+	}
+}
+
+// enqueueBudgetRecovery gives the blocked step's handler its one recovery run
+// for the window. Only an agent handler gets one; a second claim in the window
+// is refused.
+func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudgetExhausted) {
+	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
+	if err != nil || issue.Status != issuestatus.Blocked || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return
+	}
+	// The assignee of a blocked step with no agent handler is whoever held the
+	// issue before, not a handler the workflow chose for this state.
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return
+	}
+	if step, ok := def.Step(issuestatus.Blocked); !ok || step.Handler.Type != "agent" || step.Handler.ID != uuidToString(issue.AssigneeID) {
+		return
+	}
+	if _, err := h.TaskService.EnqueueBudgetRecoveryRun(ctx, issue, e.Since); err != nil && !errors.Is(err, service.ErrRecoveryClaimed) {
+		slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+	}
 }
 
 // runBudgetBlockTries bounds the block's re-reads after losing a revision race.
