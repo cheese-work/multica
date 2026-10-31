@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -29,7 +31,23 @@ var githubKillSwitchStatusCmd = &cobra.Command{Use: "status", Short: "Show the a
 var githubKillSwitchOnCmd = &cobra.Command{Use: "on", Short: "Halt GitHub-triggered dispatch for a scope", Args: exactArgs(0), RunE: runGitHubKillSwitch(true)}
 var githubKillSwitchOffCmd = &cobra.Command{Use: "off", Short: "Resume GitHub-triggered dispatch for a scope", Args: exactArgs(0), RunE: runGitHubKillSwitch(false)}
 
+var githubIntakeCmd = &cobra.Command{Use: "intake", Short: "Inspect GitHub webhook intake (read-only)"}
+
+var githubIntakeListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List webhook deliveries received since a time, with their dispatch outcome (read-only)",
+	Long: "Shows event, delivery GUID, intake state and reason, revision state and reason, and how many runs the delivery started.\n" +
+		"No payload or signature is returned. A delivery that is notify-only shows 0 runs.",
+	Args: exactArgs(0),
+	RunE: runGitHubIntakeList,
+}
+
 func init() {
+	githubCmd.AddCommand(githubIntakeCmd)
+	githubIntakeCmd.AddCommand(githubIntakeListCmd)
+	githubIntakeListCmd.Flags().String("since", "", "RFC3339 time; only deliveries received at or after it (required)")
+	githubIntakeListCmd.Flags().Int("limit", 50, "Maximum rows (1-500)")
+	githubIntakeListCmd.Flags().String("output", "table", "Output format: table or json")
 	githubCmd.AddCommand(githubKillSwitchCmd)
 	githubKillSwitchCmd.AddCommand(githubKillSwitchStatusCmd, githubKillSwitchOnCmd, githubKillSwitchOffCmd)
 	githubKillSwitchStatusCmd.Flags().String("output", "table", "Output format: table or json")
@@ -99,5 +117,58 @@ func printGitHubHalts(cmd *cobra.Command, resp githubHalts) error {
 		rows = append(rows, []string{h.Scope, by, relativeTimestamp(h.HaltedAt)})
 	}
 	cli.PrintTable(os.Stdout, []string{"HALTED_SCOPE", "BY", "SINCE"}, rows)
+	return nil
+}
+
+type githubIntakeDeliveries struct {
+	Truncated  bool `json:"truncated"`
+	Deliveries []struct {
+		Event          string `json:"event"`
+		DeliveryGUID   string `json:"delivery_guid"`
+		State          string `json:"state"`
+		Reason         string `json:"reason"`
+		ReceivedAt     string `json:"received_at"`
+		RevisionState  string `json:"revision_state"`
+		RevisionReason string `json:"revision_reason"`
+		Tasks          int    `json:"tasks"`
+	} `json:"deliveries"`
+}
+
+func runGitHubIntakeList(cmd *cobra.Command, _ []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	since, _ := cmd.Flags().GetString("since")
+	limit, _ := cmd.Flags().GetInt("limit")
+	if since == "" {
+		return fmt.Errorf("--since is required (RFC3339, e.g. 2026-10-30T10:31:00Z)")
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var resp githubIntakeDeliveries
+	path := "/api/github/intake?" + url.Values{"since": {since}, "limit": {strconv.Itoa(limit)}}.Encode()
+	if err := client.GetJSON(ctx, path, &resp); err != nil {
+		return fmt.Errorf("read intake: %w", err)
+	}
+	if output, _ := cmd.Flags().GetString("output"); output == "json" {
+		return cli.PrintJSON(os.Stdout, resp)
+	}
+	if resp.Truncated {
+		fmt.Fprintln(os.Stderr, "scan incomplete: the server read its row cap before it finished; later deliveries may exist. Narrow --since.")
+	}
+	if len(resp.Deliveries) == 0 {
+		if resp.Truncated {
+			fmt.Println("scan incomplete: none found in the rows read since", since)
+		} else {
+			fmt.Println("no deliveries since", since)
+		}
+		return nil
+	}
+	rows := make([][]string, 0, len(resp.Deliveries))
+	for _, d := range resp.Deliveries {
+		rows = append(rows, []string{d.Event, d.DeliveryGUID, d.State, d.Reason, d.RevisionState, d.RevisionReason, strconv.Itoa(d.Tasks), d.ReceivedAt})
+	}
+	cli.PrintTable(os.Stdout, []string{"EVENT", "DELIVERY", "STATE", "REASON", "REV_STATE", "REV_REASON", "RUNS", "RECEIVED_AT"}, rows)
 	return nil
 }
