@@ -1,6 +1,6 @@
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Download, FileText, Loader2 } from "lucide-react";
+import { Check, Download, FileText, Loader2 } from "@multica/ui/icons";
 import { api, PreviewTooLargeError } from "@multica/core/api";
 import { countDiffLines, useDecisionArtifacts } from "@multica/core/issues/decision-artifacts";
 import type { DecisionArtifact, DecisionArtifactDiff } from "@multica/core/types";

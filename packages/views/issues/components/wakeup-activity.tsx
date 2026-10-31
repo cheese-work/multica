@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, BellOff, Clock3, Hourglass, ListChecks, RefreshCw, TriangleAlert } from "lucide-react";
+import { Bell, BellOff, Clock3, Hourglass, ListChecks, RefreshCw, TriangleAlert } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useWorkspacePaths } from "@multica/core/paths";

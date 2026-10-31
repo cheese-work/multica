@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Lock, RotateCcw } from "lucide-react";
+import { Lock, RotateCcw } from "@multica/ui/icons";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import type { GovernanceAuditEntry, WorkspaceJevGovernance } from "@multica/core/types";
