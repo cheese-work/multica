@@ -1,5 +1,6 @@
 // Test double for the two stores push-intent.ts uses (IndexedDB and cookies).
 // The state outlives a module reload, which is how a test models a fresh page.
+// eslint-disable-next-line import-x/no-extraneous-dependencies -- test-only helper, never bundled
 import { vi } from "vitest";
 
 export type IdbMode = "ok" | "unavailable" | "read-only" | "no-space";
