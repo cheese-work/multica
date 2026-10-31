@@ -1755,6 +1755,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(handler.RejectRecoveryWrites)
+		// A5b: a run token reaches this relay too, so it gets the write scope.
+		r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
 		r.Route(pluginBridgePrefix, func(r chi.Router) {
 			registerPluginActionRoutes(r, h)
 			// ui / manual only. `event` is dispatched by the host off the event
@@ -1796,7 +1798,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// string (Desktop, mobile). Browsers get theirs re-issued inline by
 		// middleware.Auth and never call this (MUL-7436).
 		r.Post("/api/auth/refresh", h.RefreshSession)
-		r.Post("/api/upload-file", h.UploadFile)
+		// Not in the workspace group, so the A5b write scope is attached here: an
+		// upload with issue_id or comment_id is a write to that issue.
+		r.With(h.TaskTokenWriteScope(taskWriteScopeMode())).Post("/api/upload-file", h.UploadFile)
 		r.Route("/api/push", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Get("/config", h.GetPushConfig)
@@ -2155,7 +2159,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
 			// ordinary runs keep their ambient capabilities (risk decision 8).
-			r.Use(h.TaskTokenWriteScope(strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_TASK_WRITE_SCOPE")))))
+			r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2781,6 +2785,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+// taskWriteScopeMode reads the task-token write-scope mode: off (default),
+// audit or on.
+func taskWriteScopeMode() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_TASK_WRITE_SCOPE")))
 }
 
 // buildLarkConnector wires the real WS long-conn connector that talks
