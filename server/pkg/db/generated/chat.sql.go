@@ -3238,6 +3238,38 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 	return items, nil
 }
 
+const listChatSessionCreators = `-- name: ListChatSessionCreators :many
+SELECT id, creator_id FROM chat_session
+WHERE id = ANY($1::uuid[])
+`
+
+type ListChatSessionCreatorsRow struct {
+	ID        pgtype.UUID `json:"id"`
+	CreatorID pgtype.UUID `json:"creator_id"`
+}
+
+// Owners of a page of chat tasks, so task lists can hide the content of chat
+// tasks the viewer did not start.
+func (q *Queries) ListChatSessionCreators(ctx context.Context, ids []pgtype.UUID) ([]ListChatSessionCreatorsRow, error) {
+	rows, err := q.db.Query(ctx, listChatSessionCreators, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSessionCreatorsRow{}
+	for rows.Next() {
+		var i ListChatSessionCreatorsRow
+		if err := rows.Scan(&i.ID, &i.CreatorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChatSessionsByCreator = `-- name: ListChatSessionsByCreator :many
 SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_id, cs.work_dir, cs.status, cs.created_at, cs.updated_at, cs.unread_since, cs.runtime_id, cs.last_read_at, cs.is_agent_intro, cs.pinned_at, cs.project_id, cs.explicitly_created_at, cs.continued_from_session_id, cs.continued_into_session_id, cs.channel_origin_at, cs.forked_from_session_id, cs.fork_idempotency_key, cs.fork_last_message_id, cs.fork_message_count, cs.fork_source_message_id, cs.title_manually_set, cs.compaction_epoch, cs.preset_name, cs.decision_topic_id,
        (SELECT count(*) FROM chat_message m

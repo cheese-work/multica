@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import { AlertCircle, Check, ChevronDown, Clock, Loader2, Lock, Pause, Play } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Clock, Loader2, Lock, Pause, Play } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { usePauseRuntimeMachine, useResumeRuntimeMachine } from "@multica/core/runtimes";
 import type { MemberWithUser, RuntimePause, RuntimePauseReason } from "@multica/core/types";

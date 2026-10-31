@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueRelationsOptions } from "@multica/core/issues/relations";
-import { GitFork } from "lucide-react";
+import { GitFork } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../../i18n";
 

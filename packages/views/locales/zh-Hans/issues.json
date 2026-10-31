@@ -501,6 +501,7 @@
     "agents_group": "智能体",
     "mark_done_tooltip": "标记为已完成",
     "archive_tooltip": "归档",
+    "restore_to_inbox_tooltip": "恢复到收件箱",
     "pin_tooltip": "固定到侧边栏",
     "unpin_tooltip": "从侧边栏取消固定",
     "quick_jump_label": "快捷跳转",
@@ -804,12 +805,11 @@
     "trigger_wakeup": "由唤醒触发 · {{condition}}",
     "trigger_image": "[图片]",
     "summary_runs_other": "{{count}} 次运行",
-    "latest": "最近",
     "open_timeline": "打开时间线",
     "more_runs_other": "显示其余 {{count}} 次运行",
     "strip_aria": "每次运行的费用——打开运行时间线",
     "strip_no_usage": "没有用量记录",
-    "sparkline_now": "现在"
+    "queued_count_other": "{{count}} 个排队中"
   },
   "runs_timeline": {
     "title": "运行记录",
@@ -1561,9 +1561,11 @@
       "statuses_other": "{{count}} 个状态",
       "handoffs_other": "{{count}} 步自动交接",
       "no_handoffs": "无自动交接",
-      "used_by_other": "用于 {{count}} 个项目：{{names}}",
-      "used_by_default_other": "用于 {{count}} 个项目：{{names}}，以及没有项目的任务",
-      "used_by_default_none": "用于没有项目的任务",
+      "usage_default_other": "{{count}} 个项目 + 没有项目的任务",
+      "usage_default_none": "没有项目的任务",
+      "filter_projects": "筛选项目",
+      "no_matching_projects": "没有匹配的项目",
+      "default_covers_no_project": "也适用于没有项目的任务",
       "new_blank": "空白工作流",
       "from_template": "从模板创建"
     },

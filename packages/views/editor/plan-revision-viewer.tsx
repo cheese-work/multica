@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDownToLine, ArrowDown, ArrowUp, Ellipsis, ExternalLink, X } from "lucide-react";
+import { ArrowDownToLine, ArrowDown, ArrowUp, Ellipsis, ExternalLink, X } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
 import { defaultPlanBase, diffRevisionLines, earlierPlanRevisions, planRevisionNumber, revisionSegments, type RevisionLine } from "@multica/core/attachments";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
