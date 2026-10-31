@@ -118,43 +118,109 @@ func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, p
 	return 0, nil
 }
 
+// defaultMaxCommits caps the commits one push may add; maxCommitHeader caps the
+// header block of one commit (everything before its message).
+const (
+	defaultMaxCommits = 1000
+	maxCommitHeader   = 64 << 10
+)
+
+var errTooManyCommits = errors.New("push adds too many commits")
+
 // commitReceipts lists the commits the bundle added on top of the pinned base
-// with the SHA-256 of each raw message, using one git process for all objects.
+// with the SHA-256 of each raw message. One git process serves all objects and
+// its output is hashed as a stream, so a huge message costs time, not memory.
 func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit, error) {
-	list, err := b.git(ctx, work, "rev-list", "--reverse", sha, "^"+b.pin.Base)
+	limit := b.pin.MaxCommits
+	if limit <= 0 {
+		limit = defaultMaxCommits
+	}
+	list, err := b.git(ctx, work, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.pin.Base)
 	if err != nil {
 		return nil, fmt.Errorf("receipt: %s", firstLine(list))
 	}
-	if list == "" {
+	shas := strings.Fields(list)
+	if len(shas) > limit {
+		return nil, errTooManyCommits
+	}
+	if len(shas) == 0 {
 		return nil, nil
 	}
 	cmd := exec.CommandContext(ctx, "git", "--git-dir", work, "cat-file", "--batch")
+	cmd.Env = append(os.Environ(), gitEnv...)
 	cmd.Stdin = strings.NewReader(list + "\n")
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("receipt: %w", err)
 	}
-	r := bufio.NewReader(bytes.NewReader(out))
-	var commits []Commit
-	for _, want := range strings.Fields(list) {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("receipt: %w", err)
+	}
+	commits, readErr := readReceipts(bufio.NewReader(stdout), shas)
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	if waitErr := cmd.Wait(); readErr == nil && waitErr != nil {
+		readErr = waitErr
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("receipt: %w", readErr)
+	}
+	return commits, nil
+}
+
+// readReceipts parses the `cat-file --batch` stream of the given commits.
+func readReceipts(r *bufio.Reader, shas []string) ([]Commit, error) {
+	commits := make([]Commit, 0, len(shas))
+	for _, want := range shas {
 		hdr, err := r.ReadString('\n')
 		f := strings.Fields(hdr)
 		if err != nil || len(f) != 3 || f[0] != want || f[1] != "commit" {
-			return nil, fmt.Errorf("receipt: unexpected object header %q", hdr)
+			return nil, fmt.Errorf("unexpected object header %q", hdr)
 		}
-		n, _ := strconv.Atoi(f[2])
-		obj := make([]byte, n+1) // object bytes and the trailing newline
-		if _, err := io.ReadFull(r, obj); err != nil {
-			return nil, fmt.Errorf("receipt: %w", err)
+		n, err := strconv.ParseInt(f[2], 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("unexpected object size %q", f[2])
 		}
-		var msg []byte
-		if _, m, ok := bytes.Cut(obj[:n], []byte("\n\n")); ok {
-			msg = m
+		sum, err := hashMessage(r, n)
+		if err != nil {
+			return nil, err
 		}
-		sum := sha256.Sum256(msg)
-		commits = append(commits, Commit{SHA: want, MessageSHA256: hex.EncodeToString(sum[:])})
+		if _, err := r.Discard(1); err != nil { // the newline after the object
+			return nil, err
+		}
+		commits = append(commits, Commit{SHA: want, MessageSHA256: sum})
 	}
 	return commits, nil
+}
+
+// hashMessage reads one n-byte commit object and returns the SHA-256 of its
+// message: the bytes after the first blank line (empty when there is none).
+func hashMessage(r *bufio.Reader, n int64) (string, error) {
+	var head []byte
+	for {
+		if i := bytes.Index(head, []byte("\n\n")); i >= 0 {
+			h := sha256.New()
+			h.Write(head[i+2:])
+			if _, err := io.CopyN(h, r, n-int64(len(head))); err != nil {
+				return "", err
+			}
+			return hex.EncodeToString(h.Sum(nil)), nil
+		}
+		if int64(len(head)) == n {
+			sum := sha256.Sum256(nil)
+			return hex.EncodeToString(sum[:]), nil
+		}
+		if len(head) >= maxCommitHeader {
+			return "", errors.New("commit header too large")
+		}
+		chunk := min(n-int64(len(head)), 4096)
+		buf := make([]byte, chunk)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return "", err
+		}
+		head = append(head, buf...)
+	}
 }
 
 // matchProtected reports whether path falls under a policy pattern: slash

@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -340,5 +342,52 @@ func TestPushWithLeaseEndToEnd(t *testing.T) {
 	}
 	if got, want := r.remoteRef(t, r.pin.Ref), git(t, r.work, "rev-parse", "HEAD"); got != want {
 		t.Fatalf("remote %s, want %s", got, want)
+	}
+}
+
+// A huge commit message is hashed as a stream: the receipt is exact and the
+// broker's own allocation stays far below the message size.
+func TestReceiptHashesHugeMessageInConstantMemory(t *testing.T) {
+	r := newRig(t)
+	const size = 48 << 20
+	msgFile := filepath.Join(t.TempDir(), "msg")
+	if err := os.WriteFile(msgFile, bytes.Repeat([]byte("a long commit message line\n"), size/27), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.write(t, "src/a.go", "package a // big\n")
+	git(t, r.work, "commit", "-q", "--amend", "--cleanup=verbatim", "-F", msgFile)
+	_, msg, _ := strings.Cut(git(t, r.work, "cat-file", "commit", "HEAD"), "\n\n")
+	want := sha256.Sum256([]byte(msg + "\n")) // git() trims the final newline
+	b := r.start(t)
+	body := bytes.NewReader(r.bundleOf(t))
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	code, out := r.post(t, r.pushQuery(), body)
+	runtime.ReadMemStats(&after)
+	if code != 200 {
+		t.Fatalf("status %d (%s)", code, out)
+	}
+	if got := b.Receipts(); len(got) != 1 || len(got[0].Commits) != 1 || got[0].Commits[0].MessageSHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("receipts = %+v, want message hash %x", got, want)
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 16<<20 {
+		t.Fatalf("allocated %d MiB while receipting a %d MiB message; want a stream", grown>>20, size>>20)
+	}
+}
+
+// More commits than the cap are refused before anything is pushed.
+func TestPushRefusesTooManyCommits(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.commits(t, 3)
+	r.pin.MaxCommits = 2
+	r.start(t)
+	code, out := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d (%s), want 413", code, out)
+	}
+	if got := r.remoteRef(t, r.pin.Ref); got != "" {
+		t.Fatalf("remote ref advanced to %s", got)
 	}
 }

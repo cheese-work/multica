@@ -40,6 +40,8 @@ type Pin struct {
 	Policy func(context.Context) ([]string, error) `json:"-"`
 	// ReceiptLog, when set, is a JSON-lines file each receipt is appended to.
 	ReceiptLog string `json:"-"`
+	// MaxCommits caps the commits one push may add; zero means the default.
+	MaxCommits int `json:"-"`
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -200,6 +202,9 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		return sha, status, err
 	}
 	commits, err := b.commitReceipts(ctx, work, sha)
+	if errors.Is(err, errTooManyCommits) {
+		return sha, http.StatusRequestEntityTooLarge, err
+	}
 	if err != nil {
 		return sha, http.StatusInternalServerError, err
 	}
