@@ -92,6 +92,14 @@ type wakeupExecutionResponse struct {
 	PausedReason *string `json:"paused_reason"`
 }
 
+// wakeupSatisfiedResponse is what enabling a condition rule would meet at once,
+// counted over the first examined issues of the scope.
+type wakeupSatisfiedResponse struct {
+	Satisfied int  `json:"satisfied"`
+	Examined  int  `json:"examined"`
+	Truncated bool `json:"truncated"`
+}
+
 type wakeupEffectiveResponse struct {
 	RuleKey string `json:"rule_key"`
 	Scope   string `json:"scope"`
@@ -110,8 +118,10 @@ type wakeupEffectiveResponse struct {
 	AggregateCaps []wakeupAggregateCapResponse `json:"aggregate_caps"`
 	Fingerprint   string                       `json:"fingerprint"`
 	Execution     *wakeupExecutionResponse     `json:"execution"`
-	Redacted      bool                         `json:"redacted,omitempty"`
-	Capabilities  wakeupCapabilities           `json:"capabilities"`
+	// AlreadySatisfied is set on the preview of a condition rule.
+	AlreadySatisfied *wakeupSatisfiedResponse `json:"already_satisfied,omitempty"`
+	Redacted         bool                     `json:"redacted,omitempty"`
+	Capabilities     wakeupCapabilities       `json:"capabilities"`
 }
 
 type wakeupDefinitionBody struct {
@@ -402,6 +412,9 @@ func (a wakeupDefinitionAPI) effective(w http.ResponseWriter, r *http.Request, c
 		Enabled: eff.Enabled(), Config: raw, Sources: map[string]string{}, Overrides: eff.Overrides,
 		AggregateCaps: []wakeupAggregateCapResponse{}, Fingerprint: eff.Fingerprint, Redacted: redacted,
 		Capabilities: a.h.wakeupCapabilities(r),
+	}
+	if eff.AlreadySatisfied != nil {
+		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated}
 	}
 	for field, scope := range eff.Sources {
 		out.Sources[field] = string(scope)

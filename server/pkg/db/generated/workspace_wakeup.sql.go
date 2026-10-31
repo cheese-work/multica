@@ -24,7 +24,7 @@ WITH base AS MATERIALIZED (
   w.interval_seconds,w.cron_expression,w.timezone,
   w.next_fire_at,w.enabled,w.revision,w.disabled_at,w.last_task_id,w.last_error,w.created_at,
   w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
-  w.condition,w.max_fires,w.fire_count,w.paused_reason,
+  w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,
   (w.source_task_id IS NOT NULL) AS created_by_agent,creator.name AS created_by_name,
   CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END AS source_agent_id,creator_agent.name AS source_agent_name,
   (i.status IN ('done','cancelled') OR EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))) AS issue_closed,
@@ -59,7 +59,7 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
   NULL::bigint,NULL::text,w.timezone,
   NULL::timestamptz,w.enabled,w.revision,w.disabled_at,w.last_task_id,w.last_error,w.created_at,
   NULL::timestamptz,NULL::bigint,NULL::text,NULL::timestamptz,
-  w.condition,w.max_fires,w.fire_count,w.paused_reason,
+  w.condition,w.max_fires,w.fire_count,w.paused_reason,NULL::text,
   false,NULL::text,
   NULL::uuid,NULL::text,
   false,true,COALESCE(sr.active_runs,0)::int,
@@ -90,20 +90,20 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
   AND p.status NOT IN ('done','cancelled')
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=p.workspace_id AND s.key=p.status AND s.category IN ('done','closed'))
 ), classified AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining,CASE WHEN (enabled AND NOT issue_closed) OR active_runs>0 THEN 'active'
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, default_rule_key, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining,CASE WHEN (enabled AND NOT issue_closed) OR active_runs>0 THEN 'active'
   WHEN NOT issue_closed AND paused_reason IS NOT NULL THEN 'paused'
   WHEN NOT issue_closed AND (disabled_at IS NOT NULL OR source='system') THEN 'disabled' ELSE 'ended' END AS scope
  FROM base
 ), filtered AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining, scope FROM classified WHERE ($5::text='all' OR scope= $5)
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, default_rule_key, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining, scope FROM classified WHERE ($5::text='all' OR scope= $5)
   AND ($6::text='all' OR ($6='event' AND kind='event') OR ($6='at' AND kind='at') OR ($6='recurring' AND kind IN ('every','cron')))
   AND ($7::text='' OR source= $7)
   AND ($8::text='' OR agent_id::text= $8)
   AND ($9::text='' OR strpos(lower(issue_title||' '||issue_identifier||' '||agent_name),lower($9))>0)
 ), page AS (
- SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining, scope FROM filtered ORDER BY created_at DESC,id DESC LIMIT $11::int OFFSET $10::int
+ SELECT id, issue_id, issue_title, issue_identifier, agent_id, agent_name, kind, mode, event_types, filter_actor_type, filter_actor_id, filter_actor_name, filter_agent_id, filter_agent_name, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, revision, disabled_at, last_task_id, last_error, created_at, expires_at, expiry_seconds, on_timeout, timed_out_at, condition, max_fires, fire_count, paused_reason, default_rule_key, created_by_agent, created_by_name, source_agent_id, source_agent_name, issue_closed, can_manage, active_runs, source, rule, system_stage, target_type, system_remaining, scope FROM filtered ORDER BY created_at DESC,id DESC LIMIT $11::int OFFSET $10::int
 ), details AS (
- SELECT p.id, p.issue_id, p.issue_title, p.issue_identifier, p.agent_id, p.agent_name, p.kind, p.mode, p.event_types, p.filter_actor_type, p.filter_actor_id, p.filter_actor_name, p.filter_agent_id, p.filter_agent_name, p.filter_task_id, p.interval_seconds, p.cron_expression, p.timezone, p.next_fire_at, p.enabled, p.revision, p.disabled_at, p.last_task_id, p.last_error, p.created_at, p.expires_at, p.expiry_seconds, p.on_timeout, p.timed_out_at, p.condition, p.max_fires, p.fire_count, p.paused_reason, p.created_by_agent, p.created_by_name, p.source_agent_id, p.source_agent_name, p.issue_closed, p.can_manage, p.active_runs, p.source, p.rule, p.system_stage, p.target_type, p.system_remaining, p.scope,r.status AS last_task_status,
+ SELECT p.id, p.issue_id, p.issue_title, p.issue_identifier, p.agent_id, p.agent_name, p.kind, p.mode, p.event_types, p.filter_actor_type, p.filter_actor_id, p.filter_actor_name, p.filter_agent_id, p.filter_agent_name, p.filter_task_id, p.interval_seconds, p.cron_expression, p.timezone, p.next_fire_at, p.enabled, p.revision, p.disabled_at, p.last_task_id, p.last_error, p.created_at, p.expires_at, p.expiry_seconds, p.on_timeout, p.timed_out_at, p.condition, p.max_fires, p.fire_count, p.paused_reason, p.default_rule_key, p.created_by_agent, p.created_by_name, p.source_agent_id, p.source_agent_name, p.issue_closed, p.can_manage, p.active_runs, p.source, p.rule, p.system_stage, p.target_type, p.system_remaining, p.scope,r.status AS last_task_status,
   (SELECT count(*) FROM agent_task_queue t7 WHERE t7.context->>'wakeup_id'=p.id::text AND t7.issue_id=p.issue_id
     AND t7.created_at>now()-interval '7 days')::int AS runs_7d,
   CASE WHEN r.id IS NOT NULL THEN jsonb_build_object(

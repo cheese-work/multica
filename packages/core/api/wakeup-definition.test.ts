@@ -132,7 +132,14 @@ const effective = {
 
 it("reads an effective rule and defaults what an older server omits", () => {
   const parsed = WakeupEffectiveRuleSchema.parse({ ...effective, sources: undefined, overrides: undefined, redacted: undefined });
-  expect(parsed).toMatchObject({ sources: {}, overrides: [], redacted: false, inapplicable_reason: "", execution: null });
+  expect(parsed).toMatchObject({ sources: {}, overrides: [], redacted: false, inapplicable_reason: "", execution: null, already_satisfied: null });
+});
+
+it("reads the already-satisfied count of a condition preview and tolerates a malformed one", () => {
+  const counted = WakeupEffectiveRuleSchema.parse({ ...effective, already_satisfied: { satisfied: 4, examined: 6 } });
+  expect(counted.already_satisfied).toEqual({ satisfied: 4, examined: 6, truncated: false });
+  const malformed = WakeupEffectiveRuleSchema.parse({ ...effective, already_satisfied: { satisfied: "many" } });
+  expect(malformed.already_satisfied).toBeNull();
 });
 
 it("does not present a malformed effective rule as resolved", async () => {

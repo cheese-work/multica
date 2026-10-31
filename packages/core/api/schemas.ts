@@ -4130,6 +4130,8 @@ export const IssueWakeupSchema = z.object({
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
   paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+  // Set for an instance a scoped default created; absent from older servers.
+  default_rule_key: z.string().nullish().catch(null),
 });
 
 export const SystemWakeupSchema = z.object({
@@ -4190,6 +4192,10 @@ export const WakeupEffectiveRuleSchema = z.object({
     instance_id: z.string(), enabled: z.boolean(),
     paused_reason: z.string().nullish().transform((v) => v ?? null),
   }).nullish().transform((v) => v ?? null),
+  // Only a condition rule's preview carries it; an older server never does.
+  already_satisfied: z.object({
+    satisfied: z.number().int().nonnegative(), examined: z.number().int().nonnegative(), truncated: z.boolean().default(false),
+  }).nullish().catch(null).transform((v) => v ?? null),
   redacted: z.boolean().default(false),
   capabilities: WakeupCapabilitiesSchema,
 });

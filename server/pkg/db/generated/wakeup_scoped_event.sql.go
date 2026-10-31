@@ -11,6 +11,39 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bringForwardCapacityDeferredScopedEvents = `-- name: BringForwardCapacityDeferredScopedEvents :execrows
+WITH picked AS MATERIALIZED (
+ SELECT e.id FROM wakeup_scoped_event e
+ WHERE e.handled_at IS NULL AND e.retry_at IS NOT NULL AND e.outcome='default_capacity' AND e.captured_at >= $1::timestamptz
+  AND ($2::uuid[] IS NULL OR e.workspace_id = ANY($2::uuid[]))
+  AND NOT EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.issue_id=e.issue_id AND w.capacity_reason IS NOT NULL AND NOT w.enabled)
+ ORDER BY e.captured_at, e.id LIMIT $3 FOR UPDATE OF e SKIP LOCKED)
+UPDATE wakeup_scoped_event w SET retry_at=NULL
+FROM picked WHERE w.id=picked.id AND w.handled_at IS NULL
+`
+
+type BringForwardCapacityDeferredScopedEventsParams struct {
+	Oldest       pgtype.Timestamptz `json:"oldest"`
+	WorkspaceIds []pgtype.UUID      `json:"workspace_ids"`
+	BatchSize    int32              `json:"batch_size"`
+}
+
+// A bounded, resumable batch of the capacity-delayed inputs (a database-error
+// backoff is left to its own clock) whose issue no longer has an
+// instance waiting for capacity: their delay has served its purpose, so they are
+// due now. Oldest first, inside retention (a later input can only expire), and
+// rows another transaction holds are skipped. Each pass takes at most @batch_size,
+// so a large backlog is brought forward over several passes, never in one
+// transaction. The picked ids are materialized so the batch is bounded whatever
+// the plan.
+func (q *Queries) BringForwardCapacityDeferredScopedEvents(ctx context.Context, arg BringForwardCapacityDeferredScopedEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bringForwardCapacityDeferredScopedEvents, arg.Oldest, arg.WorkspaceIds, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimWakeupScopedEvents = `-- name: ClaimWakeupScopedEvents :many
 SELECT id, workspace_id, issue_id, project_id, event_type, event_key, agent_id, source_task_id, actor_type, actor_id, payload, delivered, chain, captured_at, retry_at, handled_at, outcome FROM wakeup_scoped_event
 WHERE handled_at IS NULL AND captured_at >= $1::timestamptz AND (retry_at IS NULL OR retry_at <= $2::timestamptz)
@@ -163,7 +196,9 @@ type CountWakeupScopedEventsByOutcomeRow struct {
 	Total   int64  `json:"total"`
 }
 
-// Accounting of one workspace's retained inputs; an input not yet handled counts as pending.
+// Accounting of one workspace's retained inputs by outcome. An input not yet handled
+// counts as pending, except one a full default pool delayed: it stays unhandled
+// (handled_at NULL) and counts as default_capacity until it is delivered, closed or expired.
 func (q *Queries) CountWakeupScopedEventsByOutcome(ctx context.Context, workspaceID pgtype.UUID) ([]CountWakeupScopedEventsByOutcomeRow, error) {
 	rows, err := q.db.Query(ctx, countWakeupScopedEventsByOutcome, workspaceID)
 	if err != nil {
@@ -185,28 +220,37 @@ func (q *Queries) CountWakeupScopedEventsByOutcome(ctx context.Context, workspac
 }
 
 const createDefaultWakeupInstance = `-- name: CreateDefaultWakeupInstance :one
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint)
-VALUES($1,$2,$3,$4,$5,$6,'event',$7,$8,$9,false,$10,$11,$12,$13)
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,max_fires,enabled,default_rule_key,default_scope_kind,default_scope_id,config_fingerprint,
+ condition,condition_state,next_fire_at,expires_at,created_at)
+VALUES($1,$2,$3,$4,$5,$6,'event',$7,$8,$9,false,$10,$11,$12,$13,
+ $14::jsonb,$15::text,$16::timestamptz,$17::timestamptz,$18::timestamptz)
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step
 `
 
 type CreateDefaultWakeupInstanceParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-	Instruction string      `json:"instruction"`
-	Mode        string      `json:"mode"`
-	EventTypes  []string    `json:"event_types"`
-	MaxFires    pgtype.Int4 `json:"max_fires"`
-	RuleKey     pgtype.Text `json:"rule_key"`
-	ScopeKind   pgtype.Text `json:"scope_kind"`
-	ScopeID     pgtype.UUID `json:"scope_id"`
-	Fingerprint pgtype.Text `json:"fingerprint"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	Instruction    string             `json:"instruction"`
+	Mode           string             `json:"mode"`
+	EventTypes     []string           `json:"event_types"`
+	MaxFires       pgtype.Int4        `json:"max_fires"`
+	RuleKey        pgtype.Text        `json:"rule_key"`
+	ScopeKind      pgtype.Text        `json:"scope_kind"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	Fingerprint    pgtype.Text        `json:"fingerprint"`
+	Condition      []byte             `json:"condition"`
+	ConditionState string             `json:"condition_state"`
+	NextFireAt     pgtype.Timestamptz `json:"next_fire_at"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
-// Created disabled: the capacity guard decides on enabling it.
+// Created disabled: the capacity guard decides on enabling it. A condition rule's
+// instance carries its predicate and the facts it starts from (condition_state);
+// it is evaluated by the scheduler from next_fire_at.
 func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDefaultWakeupInstanceParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, createDefaultWakeupInstance,
 		arg.ID,
@@ -222,6 +266,11 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 		arg.ScopeKind,
 		arg.ScopeID,
 		arg.Fingerprint,
+		arg.Condition,
+		arg.ConditionState,
+		arg.NextFireAt,
+		arg.ExpiresAt,
+		arg.CreatedAt,
 	)
 	var i IssueWakeup
 	err := row.Scan(
@@ -270,13 +319,14 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.ContentRevision,
 		&i.WorkflowStep,
 	)
 	return i, err
 }
 
 const deferWakeupScopedEvent = `-- name: DeferWakeupScopedEvent :exec
-UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz WHERE id= $2 AND handled_at IS NULL
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,outcome=NULL WHERE id= $2 AND handled_at IS NULL
 `
 
 type DeferWakeupScopedEventParams struct {
@@ -284,8 +334,32 @@ type DeferWakeupScopedEventParams struct {
 	ID      pgtype.UUID        `json:"id"`
 }
 
+// A database-error backoff. It clears the capacity marker, so freed capacity
+// never brings this delay forward: only a capacity wait is shortened that way.
 func (q *Queries) DeferWakeupScopedEvent(ctx context.Context, arg DeferWakeupScopedEventParams) error {
 	_, err := q.db.Exec(ctx, deferWakeupScopedEvent, arg.RetryAt, arg.ID)
+	return err
+}
+
+const deferWakeupScopedEventForCapacity = `-- name: DeferWakeupScopedEventForCapacity :exec
+UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,outcome='default_capacity',
+ delivered=(SELECT COALESCE(array_agg(DISTINCT d),'{}') FROM unnest(delivered || $2::text[]) d)
+WHERE id= $3 AND handled_at IS NULL
+`
+
+type DeferWakeupScopedEventForCapacityParams struct {
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+	Served  []string           `json:"served"`
+	ID      pgtype.UUID        `json:"id"`
+}
+
+// An input a full default pool refused stays pending behind a retry time, marked
+// with the outcome default_capacity (visible in the accounting; handled_at stays
+// NULL until it is delivered, closed or expired). The instances that were served
+// meanwhile are recorded in delivered, so the retry does not count the event for
+// them twice.
+func (q *Queries) DeferWakeupScopedEventForCapacity(ctx context.Context, arg DeferWakeupScopedEventForCapacityParams) error {
+	_, err := q.db.Exec(ctx, deferWakeupScopedEventForCapacity, arg.RetryAt, arg.Served, arg.ID)
 	return err
 }
 
@@ -339,7 +413,7 @@ func (q *Queries) ExpireWakeupScopedEvents(ctx context.Context, arg ExpireWakeup
 }
 
 const getDefaultWakeupInstance = `-- name: GetDefaultWakeupInstance :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
 `
 
 type GetDefaultWakeupInstanceParams struct {
@@ -398,27 +472,10 @@ func (q *Queries) GetDefaultWakeupInstance(ctx context.Context, arg GetDefaultWa
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.ContentRevision,
 		&i.WorkflowStep,
 	)
 	return i, err
-}
-
-const holdWakeupScopedEventForCapacity = `-- name: HoldWakeupScopedEventForCapacity :exec
-UPDATE wakeup_scoped_event SET retry_at= $1::timestamptz,delivered=delivered || $2::text[] WHERE id= $3 AND handled_at IS NULL
-`
-
-type HoldWakeupScopedEventForCapacityParams struct {
-	RetryAt pgtype.Timestamptz `json:"retry_at"`
-	Served  []string           `json:"served"`
-	ID      pgtype.UUID        `json:"id"`
-}
-
-// A default pool with no free slot is not a verdict on the input: it stays
-// pending until @retry_at, and @served names the rules it already reached
-// ("rule:<key>"), so the retry delivers only to the rules still waiting.
-func (q *Queries) HoldWakeupScopedEventForCapacity(ctx context.Context, arg HoldWakeupScopedEventForCapacityParams) error {
-	_, err := q.db.Exec(ctx, holdWakeupScopedEventForCapacity, arg.RetryAt, arg.Served, arg.ID)
-	return err
 }
 
 const markWakeupScopedEventHandled = `-- name: MarkWakeupScopedEventHandled :exec
@@ -455,25 +512,35 @@ func (q *Queries) NewestPendingWakeupScopedEvent(ctx context.Context) (NewestPen
 
 const rebaseDefaultWakeupInstance = `-- name: RebaseDefaultWakeupInstance :one
 UPDATE issue_wakeup SET agent_id= $1,created_by= $2,instruction= $3,mode= $4,event_types= $5,max_fires=$6,
- config_fingerprint= $7,revision=revision+1,updated_at=clock_timestamp()
-WHERE id= $8 AND default_rule_key IS NOT NULL AND system_rule IS NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
+ condition=$7::jsonb,condition_state= $8::text,next_fire_at=$9::timestamptz,expires_at=$10::timestamptz,
+ config_fingerprint= $11,content_revision=CASE WHEN $12::bool THEN GREATEST(content_revision,1) ELSE revision+1 END,revision=revision+1,updated_at=clock_timestamp(),
+ aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
+WHERE id= $13 AND default_rule_key IS NOT NULL AND system_rule IS NULL
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step
 `
 
 type RebaseDefaultWakeupInstanceParams struct {
-	AgentID     pgtype.UUID `json:"agent_id"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-	Instruction string      `json:"instruction"`
-	Mode        string      `json:"mode"`
-	EventTypes  []string    `json:"event_types"`
-	MaxFires    pgtype.Int4 `json:"max_fires"`
-	Fingerprint pgtype.Text `json:"fingerprint"`
-	ID          pgtype.UUID `json:"id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	Instruction    string             `json:"instruction"`
+	Mode           string             `json:"mode"`
+	EventTypes     []string           `json:"event_types"`
+	MaxFires       pgtype.Int4        `json:"max_fires"`
+	Condition      []byte             `json:"condition"`
+	ConditionState string             `json:"condition_state"`
+	NextFireAt     pgtype.Timestamptz `json:"next_fire_at"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	Fingerprint    pgtype.Text        `json:"fingerprint"`
+	Preserved      bool               `json:"preserved"`
+	ID             pgtype.UUID        `json:"id"`
 }
 
 // The instance moves to the configuration it now resolves to. The revision
 // moves with it, so inputs captured under the old configuration stop matching;
-// identity, fire count, pauses and consumed state stay as they are.
+// identity, fire count, pauses and consumed state stay as they are. An
+// aggregate delay belonged to the old configuration's cap, so it ends too.
+// preserved says the rebase left what the instance runs unchanged; content_revision
+// then stays, else it becomes the new revision (see migration 646).
 func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDefaultWakeupInstanceParams) (IssueWakeup, error) {
 	row := q.db.QueryRow(ctx, rebaseDefaultWakeupInstance,
 		arg.AgentID,
@@ -482,7 +549,12 @@ func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDef
 		arg.Mode,
 		arg.EventTypes,
 		arg.MaxFires,
+		arg.Condition,
+		arg.ConditionState,
+		arg.NextFireAt,
+		arg.ExpiresAt,
 		arg.Fingerprint,
+		arg.Preserved,
 		arg.ID,
 	)
 	var i IssueWakeup
@@ -532,6 +604,7 @@ func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDef
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.ContentRevision,
 		&i.WorkflowStep,
 	)
 	return i, err

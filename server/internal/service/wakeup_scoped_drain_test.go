@@ -316,14 +316,19 @@ func TestScopedDrainDisposesEventsOfUnavailableIssues(t *testing.T) {
 	}
 }
 
-func TestScopedDrainDefaultCapacityStaysPendingNotAnError(t *testing.T) {
+func TestScopedDrainDefaultCapacityIsAnOutcomeNotAnError(t *testing.T) {
 	k := newDrainKit(t)
 	k.defineRoot(t, "workspace", k.f.WorkspaceID, scopedRuleA, "comment.created")
 	k.f.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,instruction,kind,mode,default_rule_key,default_scope_kind,default_scope_id)
  SELECT gen_random_uuid(),$1,$2,$3,'default','event','continuous',gen_random_uuid()::text,'workspace',$1 FROM generate_series(1,32)`, k.f.WorkspaceID, k.issue, k.agent)
 	k.comment(t, "the source write is unaffected")
 	k.drain(t)
-	k.wantOutcomes(t, "pending")
+	// Refusal is not an end: the input stays pending behind a retry time, marked
+	// default_capacity, and is delivered when capacity frees (wakeup_custom_capacity_test.go).
+	k.wantOutcomes(t, "default_capacity")
+	if k.pending(t) != 1 {
+		t.Fatal("a capacity-refused input must stay pending")
+	}
 	var enabled bool
 	var reason *string
 	if err := k.f.Pool.QueryRow(context.Background(), `SELECT enabled,capacity_reason FROM issue_wakeup WHERE issue_id=$1 AND default_rule_key=$2`, k.issue, scopedRuleA).Scan(&enabled, &reason); err != nil {
@@ -435,6 +440,11 @@ type sqlProbe struct {
 	failQuery string
 	failArg   string
 	err       error
+	// hook, when set, runs once when the named query is seen, before it executes,
+	// in the goroutine that issues it: a test can act between two statements of a
+	// drain transaction.
+	hookQuery string
+	hook      func()
 }
 
 func (p *sqlProbe) seen(sql string) {
@@ -446,6 +456,13 @@ func (p *sqlProbe) seen(sql string) {
 	if i := strings.Index(sql, "-- name: "); i >= 0 {
 		name := strings.Fields(sql[i+len("-- name: "):])[0]
 		p.counts[name]++
+		if p.hook != nil && name == p.hookQuery {
+			hook := p.hook
+			p.hook = nil
+			p.mu.Unlock()
+			hook()
+			p.mu.Lock()
+		}
 	}
 }
 
@@ -726,7 +743,7 @@ func TestWakeupEventSelector(t *testing.T) {
 }
 
 // A definition written through the API stores the selector its trigger
-// selects. No event trigger is accepted yet, so a built-in stores none.
+// selects; a built-in stores none.
 func TestWakeupDefinitionWriteStoresTheEventSelector(t *testing.T) {
 	k := newDrainKit(t)
 	ws := parseTestUUID(t, k.f.WorkspaceID)
@@ -743,13 +760,14 @@ func TestWakeupDefinitionWriteStoresTheEventSelector(t *testing.T) {
 	if len(selector) != 0 {
 		t.Fatalf("a built-in definition selects no ordinary event, stored %v", selector)
 	}
-	// Event triggers stay unavailable until a later layer implements them.
+	// An event trigger is accepted where it can run (L10); written at a project
+	// as an override of a rule that has no root there, it is still refused.
 	var event WakeupConfigPatch
 	event.Trigger = wakeupObject{Set: true, Value: []byte(`{"kind":"event","events":["comment.created"]}`)}
 	event.Instruction = wakeupField[string]{Set: true, Value: "text"}
 	_, err := k.s.SaveWakeupDefinition(context.Background(), ref, parseTestUUID(t, k.owner), WakeupDefinitionWrite{RuleKey: scopedRuleA, Patch: event})
 	if !errors.Is(err, ErrWakeupInput) {
-		t.Fatalf("an event trigger must still be refused, got %v", err)
+		t.Fatalf("an event override of a rule with no root must be refused, got %v", err)
 	}
 }
 
