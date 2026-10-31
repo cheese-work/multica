@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -164,6 +165,9 @@ func BuiltInDefaultKeys() []string {
 type Handler struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
+	// Preset names the agent preset a run on this step uses (CHE-2249); "base"
+	// forces the agent row. Only an agent or squad handler carries one.
+	Preset string `json:"preset,omitempty"`
 }
 
 // Step is one status of a workflow with its handoff.
@@ -464,6 +468,10 @@ func NormalizeHandoff(s Step) Step {
 		// by a type switch in the form would otherwise be stored.
 		s.Handler.ID = ""
 	}
+	s.Handler.Preset = strings.TrimSpace(s.Handler.Preset)
+	if s.Handler.Type != HandlerAgent && s.Handler.Type != HandlerSquad {
+		s.Handler.Preset = ""
+	}
 	s.Instructions = strings.TrimSpace(s.Instructions)
 	if s.Handler.Type == HandlerNone {
 		s.Instructions = ""
@@ -504,6 +512,11 @@ func ValidateHandoff(s Step, def Definition) error {
 	}
 	if s.HandsOff() && !AcceptsHandoff(s.StatusKey) {
 		return invalid("issues entering %q cannot be handed off", s.StatusKey)
+	}
+	if p := s.Handler.Preset; p != "" && p != agentpreset.BaseName {
+		if err := agentpreset.ValidateName(p); err != nil {
+			return invalid("%s", err.Error())
+		}
 	}
 	if utf8.RuneCountInString(s.Instructions) > MaxInstructionsRunes {
 		return invalid("instructions must be at most %d characters", MaxInstructionsRunes)

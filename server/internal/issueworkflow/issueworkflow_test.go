@@ -143,6 +143,28 @@ func TestNormalizeHandoffDropsStaleHandlerData(t *testing.T) {
 	}
 }
 
+func TestHandoffPreset(t *testing.T) {
+	def := devDefinition()
+	step := func(h Handler) Step { return NormalizeHandoff(Step{StatusKey: "implement", Handler: h}) }
+
+	if got := step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: " deep "}).Handler.Preset; got != "deep" {
+		t.Fatalf("agent preset = %q, want it trimmed", got)
+	}
+	if got := step(Handler{Type: HandlerProjectLead, Preset: "deep"}).Handler.Preset; got != "" {
+		t.Fatalf("project-lead preset = %q, want it dropped", got)
+	}
+	for _, name := range []string{"deep", "base", ""} {
+		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err != nil {
+			t.Fatalf("preset %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"reset", "Bad Name", "-x"} {
+		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err == nil {
+			t.Fatalf("preset %q should be refused", name)
+		}
+	}
+}
+
 func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	def := devDefinition()
 	raw, err := EncodeSteps(def.Steps)

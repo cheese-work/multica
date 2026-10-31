@@ -71,8 +71,9 @@ func canManageProjectWorkflow(member db.Member, project db.Project) bool {
 }
 
 type IssueWorkflowHandlerPayload struct {
-	Type string `json:"type"`
-	ID   string `json:"id,omitempty"`
+	Type   string `json:"type"`
+	ID     string `json:"id,omitempty"`
+	Preset string `json:"preset,omitempty"`
 }
 
 // IssueWorkflowStepPayload is one status of a workflow, in board order, with
@@ -140,7 +141,7 @@ type workflowMappingPlan struct {
 func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 	return IssueWorkflowStepPayload{
 		StatusKey:     s.StatusKey,
-		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID},
+		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Preset: s.Handler.Preset},
 		Instructions:  s.Instructions,
 		NextStatusKey: s.NextStatusKey,
 		BackStatusKey: s.BackStatusKey,
@@ -154,7 +155,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.Step {
 	return issueworkflow.Step{
 		StatusKey:     statusKey,
-		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID},
+		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID, Preset: in.Handler.Preset},
 		Instructions:  in.Instructions,
 		NextStatusKey: in.NextStatusKey,
 		BackStatusKey: in.BackStatusKey,
