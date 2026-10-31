@@ -145,6 +145,11 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
 	}
 	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
+	// The block an exhausted budget causes is a consequence of exhaustion, and
+	// it lands before the window's exhaustion claim: it must not grant.
+	if source != "run_budget" {
+		h.grantRunBudgetStep(ctx, updated, issue.Status)
+	}
 	if willRun {
 		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
 		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")

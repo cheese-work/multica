@@ -66,3 +66,47 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid;
 -- window's opening).
 SELECT COALESCE(SUM(tokens_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = 'allowance';
+
+-- name: InsertIssueRunBudgetGrant :exec
+-- A progress grant or refund (L2c): runs and tokens in one row, no cap change.
+-- A replayed event (same issue, kind, key) is a no-op.
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, tokens_delta, cap_delta)
+VALUES (sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('window_id'), sqlc.arg('kind'), sqlc.arg('event_key'), sqlc.arg('runs_delta'), sqlc.arg('tokens_delta'), 0)
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
+
+-- name: CountIssueRunBudgetGrants :one
+-- The automatic grants a window already holds: the 3-per-window cap counts them.
+SELECT COUNT(*)::bigint FROM issue_run_budget_entry
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text
+  AND kind IN ('step', 'head', 'stale_pr');
+
+-- name: HasIssueRunBudgetEntryInWindow :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_run_budget_entry
+  WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text
+    AND kind = sqlc.arg('kind')::text AND event_key = sqlc.arg('event_key')::text
+);
+
+-- name: HasRunBudgetNotice :one
+-- Whether the window's notice of this kind was claimed: for kind exhausted, the
+-- window is spent and stays closed to automatic grants until a person acts.
+SELECT EXISTS (
+  SELECT 1 FROM run_budget_notice
+  WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = sqlc.arg('kind')::text
+);
+
+-- name: FirstStatusInWindow :one
+-- The status the issue held when the window opened: where the earliest status
+-- move at or after the window start came from.
+SELECT COALESCE(details->>'from', '')::text FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND created_at >= sqlc.arg('since')::timestamptz
+ORDER BY created_at ASC LIMIT 1;
+
+-- name: HasMemberMoveToStatusSince :one
+-- Whether a person moved the issue into this status at or after the window
+-- start: the person's target counts as visited.
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
+    AND created_at >= sqlc.arg('since')::timestamptz AND details->>'to' = sqlc.arg('status')::text
+);

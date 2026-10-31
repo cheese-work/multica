@@ -150,3 +150,41 @@ func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue
 		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
 	}
 }
+
+// inRunBudgetTx runs a ledger write in its own transaction. A failure is
+// logged and the caller's work stands: only the credit is missed, and the next
+// event writes the same keys.
+func (h *Handler) inRunBudgetTx(ctx context.Context, issueID pgtype.UUID, what string, fn func(*db.Queries) error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err == nil {
+		defer tx.Rollback(ctx)
+		if err = fn(h.Queries.WithTx(tx)); err == nil {
+			err = tx.Commit(ctx)
+		}
+	}
+	if err != nil {
+		slog.Warn("run budget: "+what, "issue_id", uuidToString(issueID), "error", err)
+	}
+}
+
+// grantRunBudgetStep grants the first entry of a status in the budget window
+// when an agent or a workflow edge moved the issue. It runs after the event is
+// published, like openRunBudgetWindowForMove: the activity listener has written
+// the move, and the window's first status is read from it.
+func (h *Handler) grantRunBudgetStep(ctx context.Context, issue db.Issue, prevStatus string) {
+	h.inRunBudgetTx(ctx, issue.ID, "grant step", func(q *db.Queries) error {
+		return service.GrantRunBudgetStep(ctx, q, issue, prevStatus, false)
+	})
+}
+
+func (h *Handler) grantRunBudgetHead(ctx context.Context, issueID, prID pgtype.UUID, sha string) {
+	h.inRunBudgetTx(ctx, issueID, "grant head", func(q *db.Queries) error {
+		return service.GrantRunBudgetHead(ctx, q, issueID, prID, sha)
+	})
+}
+
+func (h *Handler) refundSupersededRun(ctx context.Context, task db.AgentTaskQueue) {
+	h.inRunBudgetTx(ctx, task.IssueID, "refund superseded run", func(q *db.Queries) error {
+		return service.RefundSupersededRun(ctx, q, task)
+	})
+}

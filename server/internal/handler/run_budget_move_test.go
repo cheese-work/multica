@@ -24,9 +24,11 @@ func recordMemberMovesOf(t *testing.T, issueID string) {
 		if changed, _ := payload["status_changed"].(bool); !changed || issue.ID != issueID {
 			return
 		}
+		prev, _ := payload["prev_status"].(string)
+		details, _ := json.Marshal(map[string]string{"from": prev, "to": issue.Status})
 		if _, err := testHandler.Queries.CreateActivity(context.Background(), db.CreateActivityParams{
 			WorkspaceID: parseUUID(issue.WorkspaceID), IssueID: parseUUID(issue.ID),
-			ActorType: strToText(e.ActorType), ActorID: parseUUID(e.ActorID), Action: "status_changed", Details: []byte("{}"),
+			ActorType: strToText(e.ActorType), ActorID: parseUUID(e.ActorID), Action: "status_changed", Details: details,
 		}); err != nil {
 			t.Error(err)
 		}
