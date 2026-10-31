@@ -7,12 +7,14 @@ import (
 
 // stableCwdFor returns the fixed cwd a Claude run should see, or "" when the
 // feature is off for this agent. The cwd sits in Claude's system prompt, so a
-// per-task path forces a prompt-cache miss on everything after it.
+// per-task path forces a prompt-cache miss on everything after it. The path sits
+// under WorkspacesRoot (dot dir: GC and disk usage skip it) so the daemon-task
+// marker stays an ancestor of the cwd and the CLI impersonation guard still fires.
 func (c Config) stableCwdFor(provider, agentName, agentID string) string {
-	if c.StableCwdRoot == "" || provider != "claude" || agentID == "" || !slices.Contains(c.StableCwdAgents, agentName) {
+	if c.WorkspacesRoot == "" || provider != "claude" || agentID == "" || !slices.Contains(c.StableCwdAgents, agentName) {
 		return ""
 	}
-	return filepath.Join(c.StableCwdRoot, agentID)
+	return filepath.Join(c.WorkspacesRoot, ".stable-cwd", agentID)
 }
 
 // hostPath maps a path under the task's stable cwd back to its real workdir:

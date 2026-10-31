@@ -165,9 +165,8 @@ type Config struct {
 	// initialize because its SQLite state runtime could not be opened
 	// (MULTICA_CODEX_SQLITE_INIT_RETRY, default off; CHE-737 canary gate).
 	CodexSQLiteInitRetry bool
-	// StableCwdRoot + StableCwdAgents (MULTICA_STABLE_CWD_ROOT, MULTICA_STABLE_CWD_AGENTS=name,name; default off)
-	// run listed Claude agents at <root>/<agent id> so the cwd in the system prompt, and the prompt cache behind it, is stable.
-	StableCwdRoot   string
+	// StableCwdAgents (MULTICA_STABLE_CWD_AGENTS=name,name; default off) runs listed Claude agents
+	// at <WorkspacesRoot>/.stable-cwd/<agent id> so the cwd in the system prompt, and the prompt cache behind it, is stable.
 	StableCwdAgents []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
@@ -675,7 +674,6 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexTurnInterruptTimeout:       codexTurnInterruptTimeout,
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
 		CodexSQLiteInitRetry:            codexSQLiteInitRetry,
-		StableCwdRoot:                   strings.TrimSpace(os.Getenv("MULTICA_STABLE_CWD_ROOT")),
 		StableCwdAgents:                 patternsFromEnv("MULTICA_STABLE_CWD_AGENTS", nil),
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
