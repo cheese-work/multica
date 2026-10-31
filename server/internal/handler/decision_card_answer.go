@@ -185,7 +185,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		}
 	}
 	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(session.ID), uuidToString(decision.PingMessageID))
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(content) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(cardAnswerQuoteText(input)) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -234,6 +234,21 @@ func cardAnswerContent(decision db.DecisionRequest, input decisionCardAnswerInpu
 		return text, nil
 	}
 	return "", decisionIntentRefusal{http.StatusBadRequest, "an answer needs an option or text"}
+}
+
+// cardAnswerQuoteText is the text the issue quote carries. It labels the choice
+// and the note, so a later reader cannot take the note for a second option. The
+// DM row and the answer snapshot stay the bare label, which approval matching
+// relies on (answerIsApproval).
+func cardAnswerQuoteText(input decisionCardAnswerInput) string {
+	text := strings.TrimSpace(input.Text)
+	switch {
+	case input.Option != "" && text != "":
+		return "Chose: " + input.Option + "\n\nNote: " + text
+	case input.Option != "":
+		return "Chose: " + input.Option
+	}
+	return text
 }
 
 // cardOptionIndex is the 0-based position of the chosen option on the card, or

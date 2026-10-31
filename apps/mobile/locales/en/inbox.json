@@ -66,6 +66,7 @@
     "autopilot_paused": "Autopilot paused",
     "children_done": "Sub-issues finished",
     "autopilot_quota_exceeded": "Autopilot run limit reached",
+    "machine_drained": "Safe to shut down",
     "set_status": "Set status to",
     "set_priority": "Set priority to",
     "assigned_to": "Assigned to {{name}}",

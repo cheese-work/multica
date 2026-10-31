@@ -1,5 +1,17 @@
 {
   "relations": {
+    "graph": "Graphe",
+    "list": "Liste",
+    "sub_issues": "Sous-tâches",
+    "parent_summary": "Parent",
+    "parent_filter": "Parent / sous-tâches",
+    "done_count": "terminées",
+    "in_progress_count": "en cours",
+    "todo_count": "à faire",
+    "closed_count": "fermées",
+    "no_parent": "Aucun parent",
+    "mentions_hint": "Chargé à l’activation",
+    "navigation_hint": "Cliquer pour ouvrir · survoler pour le titre complet · ← → ↑ ↓ déplacer le focus · Échap pour fermer",
     "title": "Graphe des relations",
     "direction": "Les flèches vont du parent à l’enfant, d’une tâche surveillée à celle qu’elle réveille, et d’une mention à sa cible. La tâche actuelle a une bordure épaisse.",
     "depth": "Profondeur",

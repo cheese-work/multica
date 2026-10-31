@@ -89,9 +89,14 @@ type HealthResponse struct {
 	// MaintenanceHeld is true while an owner maintenance window holds update
 	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
 	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
-	MaintenanceHeld      bool              `json:"maintenance_held,omitempty"`
-	MaintenanceExpiresAt string            `json:"maintenance_expires_at,omitempty"`
-	Workspaces           []healthWorkspace `json:"workspaces"`
+	MaintenanceHeld      bool   `json:"maintenance_held,omitempty"`
+	MaintenanceExpiresAt string `json:"maintenance_expires_at,omitempty"`
+	// Paused is true while the server holds a machine pause for this daemon
+	// (CHE-2673); the daemon claims nothing until it lifts or expires.
+	Paused         bool              `json:"paused,omitempty"`
+	PauseReason    string            `json:"pause_reason,omitempty"`
+	PauseExpiresAt string            `json:"pause_expires_at,omitempty"`
+	Workspaces     []healthWorkspace `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -137,6 +142,9 @@ type activeRepoCheckoutTask struct {
 	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
 	// tasks with no issue.
 	IssueIdentifier string
+	IntakeRun       bool
+	PinnedBranch    string
+	PinnedRepo      string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -377,6 +385,11 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			resp.MaintenanceHeld = true
 			resp.MaintenanceExpiresAt = expires.UTC().Format(time.RFC3339)
 		}
+		if p := d.heldPauseNow(); p != nil {
+			resp.Paused = true
+			resp.PauseReason = p.reason
+			resp.PauseExpiresAt = p.expiresAt.UTC().Format(time.RFC3339)
+		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {
 			activity := reporter.Activity()
 			resp.RepoMaintenanceActive = activity.MaintenanceActive
@@ -516,6 +529,24 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			return
 		}
 
+		// An intake run checks out its PR's repository at its PR's head ref and
+		// nothing else, whatever the request asks for, and this is decided before
+		// any cache operation. With no valid pin it checks out nothing.
+		pinnedBranch := ""
+		if activeTask.IntakeRun {
+			switch {
+			case !validPinnedBranch(activeTask.PinnedBranch) || activeTask.PinnedRepo == "":
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_unpinned", "task_id", activeTask.TaskID)
+				http.Error(w, "this run has no pull request head ref to check out", http.StatusForbidden)
+				return
+			case !pinAllowsRepo(activeTask.PinnedRepo, req.URL):
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_other_repo", "task_id", activeTask.TaskID)
+				http.Error(w, "this run is pinned to its pull request's repository", http.StatusForbidden)
+				return
+			}
+			pinnedBranch = activeTask.PinnedBranch
+		}
+
 		if err := d.ensureRepoReady(r.Context(), req.WorkspaceID, req.URL); err != nil {
 			if r.Context().Err() != nil {
 				d.logger.Debug("repo checkout readiness cancelled", "url", req.URL, "error", err)
@@ -534,12 +565,16 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		if checkoutRef == "" {
 			checkoutRef = d.taskRepoDefaultRef(req.WorkspaceID, req.TaskID, req.URL)
 		}
+		if pinnedBranch != "" {
+			checkoutRef = pinnedBranch
+		}
 
 		params := repocache.WorktreeParams{
 			WorkspaceID:         req.WorkspaceID,
 			RepoURL:             req.URL,
 			WorkDir:             req.WorkDir,
 			Ref:                 checkoutRef,
+			Branch:              pinnedBranch,
 			AgentName:           req.AgentName,
 			TaskID:              req.TaskID,
 			IssueIdentifier:     activeTask.IssueIdentifier,

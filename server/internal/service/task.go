@@ -1457,6 +1457,34 @@ func WithReviewPR(ctx context.Context, prID pgtype.UUID) context.Context {
 	return context.WithValue(ctx, reviewPRKey{}, prID)
 }
 
+type actingTaskKey struct{}
+
+// WithActingTask names the agent task whose request causes every enqueue under
+// ctx, so each task they create carries that task's taint (CHE-2216 plan 3.7):
+// an agent that read tainted input and then assigns work has passed the input on.
+func WithActingTask(ctx context.Context, taskID pgtype.UUID) context.Context {
+	return context.WithValue(ctx, actingTaskKey{}, taskID)
+}
+
+func actingTask(ctx context.Context) pgtype.UUID {
+	id, _ := ctx.Value(actingTaskKey{}).(pgtype.UUID)
+	return id
+}
+
+// ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
+// names none. Fail closed: a task that cannot be read cannot be shown clean.
+func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
+	acting := actingTask(ctx)
+	if !acting.Valid {
+		return nil, nil
+	}
+	actor, err := q.GetAgentTask(ctx, acting)
+	if err != nil {
+		return nil, fmt.Errorf("read acting task taint: %w", err)
+	}
+	return actor.TaintIds, nil
+}
+
 // issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
 // The enqueue's dedup key and the run budget's review gate both resolve the head
 // here, so a pinned replacement is admitted and stamped against one head.
@@ -5365,7 +5393,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					} else {
 						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
 						// must never reach the issue thread, even as a clipped excerpt.
-						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+						content := truncateFallbackCommentBody(redact.Prose(body), maxSynthesizedFallbackCommentRunes)
 						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
 					}
 				}
@@ -5518,7 +5546,7 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	}
 	switch {
 	case !isEmpty:
-		params.Content = redact.Text(body)
+		params.Content = redact.Prose(body)
 		// message_kind left NULL → COALESCE defaults to 'message'.
 		//
 		// The one exception is now a deploy-window case. The server writes the

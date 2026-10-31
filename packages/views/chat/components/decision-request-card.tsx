@@ -13,6 +13,7 @@ import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
+import { DecisionArtifacts } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 interface AnswerDraft {
@@ -95,7 +96,7 @@ function DecisionAnswerForm({
         </fieldset>
       )}
       <label htmlFor={textId} className="block text-label font-medium">
-        {t(($) => $.decision.answer_text)}
+        {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
       </label>
       <textarea
         id={textId}
@@ -262,6 +263,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
         )}
+        <DecisionArtifacts requestId={card.id} answered={card.state === "answered"} />
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
             <RichContent content={card.ask} density="compact" phase="settled" />

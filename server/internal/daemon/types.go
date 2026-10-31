@@ -95,6 +95,10 @@ type Task struct {
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+	// IntakeRun, PinnedBranch and PinnedRepo are the claim-time intake pin (CHE-2216 plan 3.6).
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
+	PinnedRepo   string `json:"pinned_repo,omitempty"`
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`

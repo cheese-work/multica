@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -15,9 +15,10 @@ vi.mock("../../navigation", async (importActual) => ({
 }));
 
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
+const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest },
+  api: { answerDecisionRequest, listDecisionArtifacts },
 }));
 
 const card = {
@@ -27,7 +28,27 @@ const card = {
 };
 
 describe("DecisionRequestCard accessibility", () => {
+  beforeEach(() => listDecisionArtifacts.mockResolvedValue([]));
   afterEach(() => vi.useRealTimers());
+
+  it("puts 'You are approving' before the ask, and renders as today without files", async () => {
+    const view = () => (
+      <QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    const { container, unmount } = renderWithI18n(view());
+    await waitFor(() => expect(listDecisionArtifacts).toHaveBeenCalledWith("request"));
+    expect(screen.queryByRole("region", { name: "You are approving" })).toBeNull();
+    expect(container.querySelector('[data-testid="decision-request-artifacts"]')).toBeNull();
+    unmount();
+    listDecisionArtifacts.mockResolvedValue([{
+      attachment_id: "att", label: "Design revision 5", sha256: "3f9a2c1".padEnd(64, "0"),
+      attachment: { id: "att", filename: "design-rev5.md", content_type: "text/markdown", size_bytes: 10, download_url: "https://files.test/att" },
+    }]);
+    renderWithI18n(view());
+    const section = await screen.findByRole("region", { name: "You are approving" });
+    const ask = screen.getByTestId("decision-request-ask");
+    expect(section.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 
   it("makes only an open ask annotatable, with the agent reply label and marker slot", () => {
     const view = (state: "open" | "answered" | "withdrawn") => (
@@ -174,12 +195,29 @@ describe("DecisionRequestCard answering", () => {
   it("sends on Enter and keeps Shift+Enter as a newline", async () => {
     renderCard();
     const user = userEvent.setup();
-    const field = screen.getByRole("textbox", { name: "Or write an answer" });
+    const field = screen.getByRole("textbox", { name: "Add a note (optional)" });
     await user.type(field, "Ship C{Shift>}{Enter}{/Shift}later");
     expect(answerDecisionRequest).not.toHaveBeenCalled();
     expect(field).toHaveValue("Ship C\nlater");
     await user.keyboard("{Enter}");
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "Ship C\nlater" });
+  });
+
+  it("labels the text field a note beside options, and an answer when the card has none", () => {
+    const { unmount } = renderCard();
+    expect(screen.getByRole("textbox", { name: "Add a note (optional)" })).toBeInTheDocument();
+    expect(screen.queryByText("Or write an answer")).toBeNull();
+    unmount();
+    renderCard({ ...card });
+    expect(screen.getByRole("textbox", { name: "Write an answer" })).toBeInTheDocument();
+  });
+
+  it("sends the option and the note together", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day{Enter}");
+    expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
   it("has no answer form once the card is answered", () => {
@@ -191,7 +229,7 @@ describe("DecisionRequestCard answering", () => {
     answerDecisionRequest.mockRejectedValue(new Error("boom"));
     renderCard({ ...card });
     const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "hi{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Write an answer" }), "hi{Enter}");
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not send");
   });
 
@@ -200,7 +238,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     expect(screen.getByText("Enter sends · Shift+Enter for a new line")).toBeVisible();
     expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Or write an answer")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
+    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
   });
 
   it("keeps the answer and disables Send while offline", async () => {
@@ -208,7 +246,7 @@ describe("DecisionRequestCard answering", () => {
     try {
       renderCard();
       const user = userEvent.setup();
-      const field = screen.getByRole("textbox", { name: "Or write an answer" });
+      const field = screen.getByRole("textbox", { name: "Add a note (optional)" });
       await user.type(field, "Ship C{Enter}");
       expect(field).toHaveValue("Ship C");
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -227,7 +265,7 @@ describe("DecisionRequestCard answering", () => {
     const { rerender } = renderWithI18n(view(withOptions));
     const user = userEvent.setup();
     await user.click(screen.getByRole("radio", { name: /Option B/ }));
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "my note");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "my note");
     rerender(view({ ...withOptions, state: "answered", record_comment_id: "record" }));
     expect(screen.getByTestId("decision-request-record")).toBeInTheDocument();
     const kept = screen.getByTestId("decision-request-kept-draft");
@@ -245,7 +283,7 @@ describe("DecisionRequestCard answering", () => {
     );
     const { rerender } = renderWithI18n(view(withOptions));
     const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
     await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalled());
     rerender(view({ ...withOptions, state: "answered" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -265,7 +303,7 @@ describe("DecisionRequestCard answering", () => {
     it("event first, then 201: never shows the unposted-draft warning", async () => {
       const { rerender, view, resolve } = setup();
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       rerender(view({ ...withOptions, state: "answered", record_comment_id: "own" }));
       expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -277,7 +315,7 @@ describe("DecisionRequestCard answering", () => {
     it("201 first, then event: clears the draft and shows no warning", async () => {
       const { rerender, view, resolve } = setup();
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       await resolve();
       expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
@@ -294,7 +332,7 @@ describe("DecisionRequestCard answering", () => {
       );
       const { rerender } = renderWithI18n(view(withOptions));
       const user = userEvent.setup();
-      await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "Ship C{Enter}");
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "Ship C{Enter}");
       await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
       rerender(view({ ...withOptions, state: "answered" }));
       await act(async () => { rejectAnswer(new ApiError("answered first", 409, "Conflict")); await Promise.resolve(); });
@@ -307,7 +345,7 @@ describe("DecisionRequestCard answering", () => {
     renderCard();
     const user = userEvent.setup();
     await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.type(screen.getByRole("textbox", { name: "Or write an answer" }), "with a note{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note{Enter}");
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");

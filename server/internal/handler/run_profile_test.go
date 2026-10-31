@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -56,12 +58,12 @@ func TestRunProfileForTaskReadsOnlyLiveGrantsOfThisIssue(t *testing.T) {
 
 	want := map[string]string{live: "elevated", expired: "restricted", revoked: "restricted"}
 	for issue, profile := range want {
-		if got := testHandler.runProfileForTask(ctx, parseUUID(testWorkspaceID), parseUUID(issue)); got.Profile != profile {
+		if got := testHandler.runProfileForTask(ctx, parseUUID(testWorkspaceID), parseUUID(issue), parseUUID(uuid.NewString()), nil); got.Profile != profile {
 			t.Errorf("issue %s: profile = %q, want %q", issue, got.Profile, profile)
 		}
 	}
 	// The grant of another workspace's issue never covers this workspace.
-	if got := testHandler.runProfileForTask(ctx, parseUUID(testWorkspaceID), parseUUID(foreign)); got.Profile != "restricted" {
+	if got := testHandler.runProfileForTask(ctx, parseUUID(testWorkspaceID), parseUUID(foreign), parseUUID(uuid.NewString()), nil); got.Profile != "restricted" {
 		t.Errorf("cross-workspace grant elevated: %+v", got)
 	}
 }

@@ -67,6 +67,7 @@ import { useT } from "../../i18n";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
+import { DecisionAnswerContent, noteAfterOption } from "./decision-answer-content";
 import { DecisionDmCard } from "./decision-dm-card";
 import { DecisionRequestCard } from "./decision-request-card";
 import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
@@ -967,6 +968,8 @@ const MessageBubble = memo(function MessageBubble({
     // Without structured wakeup data (malformed or older server) the model-facing
     // header is still dropped; the instruction shows as an ordinary bubble.
     const userContent = stripWakeupHeader(message.content);
+    const chosenOption = message.decision_quotes?.find((quote) => quote.option_label)?.option_label;
+    const asChoice = chosenOption !== undefined && noteAfterOption(userContent, chosenOption) !== undefined;
     return (
       <div className="flex flex-col items-end">
         <div data-testid="chat-user-message" className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
@@ -975,12 +978,16 @@ const MessageBubble = memo(function MessageBubble({
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
            * too. `compact` trims the leading/trailing block margins so a
            * single-line bubble stays as tight as the plain-text version. */}
-          <RichContent
-            content={userContent}
-            attachments={message.attachments}
-            density="compact"
-            phase="settled"
-          />
+          {asChoice ? (
+            <DecisionAnswerContent content={userContent} optionLabel={chosenOption} />
+          ) : (
+            <RichContent
+              content={userContent}
+              attachments={message.attachments}
+              density="compact"
+              phase="settled"
+            />
+          )}
           <AttachmentList
             attachments={message.attachments}
             content={userContent}
