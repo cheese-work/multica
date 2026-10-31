@@ -121,7 +121,12 @@ type IssueCreateParams struct {
 type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
 
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
-type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step) error
+// It may return a recorder for the new row (warn gates), which Create runs in
+// the same transaction right after the insert.
+type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step) (RecordCreateEntry, error)
+
+// RecordCreateEntry writes what an entry gate leaves on a created issue.
+type RecordCreateEntry func(ctx context.Context, q *db.Queries, issue db.Issue) error
 
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
@@ -405,9 +410,11 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			}
 		}
 	}
+	var recordEntry RecordCreateEntry
 	if p.EntryGate != nil && def != nil {
 		if step, ok := def.Step(p.Status); ok {
-			if err := p.EntryGate(ctx, qtx, step); err != nil {
+			var err error
+			if recordEntry, err = p.EntryGate(ctx, qtx, step); err != nil {
 				return IssueCreateResult{}, err
 			}
 		}
@@ -516,6 +523,15 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, ErrIssuePropertiesTooLarge
 		}
 		return IssueCreateResult{}, fmt.Errorf("create issue: %w", err)
+	}
+	if recordEntry != nil {
+		if err := recordEntry(ctx, qtx, issue); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record entry gate: %w", err)
+		}
+		// The recorded comment bumped the revision the result must carry.
+		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
+		}
 	}
 
 	if p.SourceContext != nil {

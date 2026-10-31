@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Step entry gates (CHE-2295): a status write into a step meets the step's
@@ -108,7 +110,7 @@ func (w *workflowWrite) applyEntry(ctx context.Context, q *db.Queries, locked db
 	if len(warning) == 0 {
 		return nil
 	}
-	head := openPRHead(facts)
+	head := openPRHeads(facts)
 	seen, err := q.CountEntryGateWarnings(ctx, db.CountEntryGateWarningsParams{IssueID: locked.ID, Step: stepKey, Head: head})
 	if err != nil {
 		return err
@@ -134,27 +136,34 @@ func allOverridable(failed []issueworkflow.EntryFailure) bool {
 	return true
 }
 
-// openPRHead is the head of the first open or draft PR that reports one: the
-// key that makes a warning once per head.
-func openPRHead(f issueworkflow.Facts) string {
+// openPRHeads is the key that makes a warning once per set of heads: the
+// newest head of each open or draft PR in scope, sorted. It reads each PR's
+// own head, not its checks-snapshot head, which lags a push.
+func openPRHeads(f issueworkflow.Facts) string {
+	var heads []string
 	for _, p := range f.PRs {
-		if p.HeadSHA != "" && (p.State == "open" || p.State == "draft") {
-			return p.HeadSHA
+		if p.PRHead != "" && (p.State == "open" || p.State == "draft") {
+			heads = append(heads, p.PRHead)
 		}
 	}
-	return ""
+	slices.Sort(heads)
+	return strings.Join(slices.Compact(heads), ",")
 }
 
 func (w *workflowWrite) recordEntry(ctx context.Context, q *db.Queries, issue db.Issue, action string, details map[string]any) error {
+	return recordEntryActivity(ctx, q, issue, w.entry.actorType, w.entry.actorID, action, details)
+}
+
+func recordEntryActivity(ctx context.Context, q *db.Queries, issue db.Issue, actorType, actorID, action string, details map[string]any) error {
 	body, err := json.Marshal(details)
 	if err != nil {
 		return err
 	}
 	params := db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Action: action, Details: body,
-		ActorType: pgtype.Text{String: w.entry.actorType, Valid: w.entry.actorType != ""},
+		ActorType: pgtype.Text{String: actorType, Valid: actorType != ""},
 	}
-	if id, err := util.ParseUUID(w.entry.actorID); err == nil {
+	if id, err := util.ParseUUID(actorID); err == nil {
 		params.ActorID = id
 	}
 	_, err = q.CreateActivity(ctx, params)
@@ -186,11 +195,13 @@ func (h *Handler) postEntryWarning(ctx context.Context, w *workflowWrite, issue 
 
 // createEntryGate checks a new issue against the entry gates of the step it
 // lands on. A new issue has no PR and no child, so only a gate on another
-// issue's status can hold; warn gates need an issue row and do not fire.
-func (h *Handler) createEntryGate(workspaceID pgtype.UUID) service.CreateEntryGate {
-	return func(ctx context.Context, q *db.Queries, step issueworkflow.Step) error {
+// issue's status can hold. A failed block gate refuses the create. A failed
+// warn gate is recorded once the issue row exists, in the create transaction:
+// the same activity row and first-warning comment as a move into the step.
+func (h *Handler) createEntryGate(workspaceID pgtype.UUID, actorType, actorID string) service.CreateEntryGate {
+	return func(ctx context.Context, q *db.Queries, step issueworkflow.Step) (service.RecordCreateEntry, error) {
 		if len(step.Entry) == 0 {
-			return nil
+			return nil, nil
 		}
 		edges := make([]issueworkflow.Edge, len(step.Entry))
 		for i, g := range step.Entry {
@@ -198,17 +209,33 @@ func (h *Handler) createEntryGate(workspaceID pgtype.UUID) service.CreateEntryGa
 		}
 		statuses, err := h.guardedIssueStatuses(ctx, q, workspaceID, edges)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		var blocking []issueworkflow.EntryFailure
+		var blocking, warning []issueworkflow.EntryFailure
 		for _, f := range issueworkflow.EvaluateEntry(step.Entry, issueworkflow.Facts{IssueStatuses: statuses}) {
 			if f.Mode == issueworkflow.EntryModeBlock {
 				blocking = append(blocking, f)
+			} else {
+				warning = append(warning, f)
 			}
 		}
 		if len(blocking) > 0 {
-			return &EntryGateError{Step: step.StatusKey, Failed: blocking}
+			return nil, &EntryGateError{Step: step.StatusKey, Failed: blocking}
 		}
-		return nil
+		if len(warning) == 0 {
+			return nil, nil
+		}
+		return func(ctx context.Context, q *db.Queries, issue db.Issue) error {
+			details := map[string]any{"step": step.StatusKey, "head": "", "guards": warning}
+			if err := recordEntryActivity(ctx, q, issue, actorType, actorID, "entry_gate_warning", details); err != nil {
+				return err
+			}
+			_, err := q.CreateComment(ctx, db.CreateCommentParams{
+				ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+				AuthorType: "system", AuthorID: pgtype.UUID{Valid: true},
+				Content: entryWarningText(step.StatusKey, warning), Type: "system",
+			})
+			return err
+		}, nil
 	}
 }

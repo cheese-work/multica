@@ -186,6 +186,9 @@ type PRFact struct {
 	HeadFresh    bool
 	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
 	HeadSHA string
+	// PRHead is the PR's own newest head, whether or not a checks snapshot
+	// has caught up with it.
+	PRHead string
 	// Review is the latest human review decision on the PR's current head:
 	// approved, changes_requested, or empty.
 	Review string

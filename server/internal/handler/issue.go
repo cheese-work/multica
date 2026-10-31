@@ -3570,7 +3570,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
-		EntryGate:       h.createEntryGate(wsUUID),
+		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,

@@ -28,7 +28,7 @@ func TestEntryGateBindsProjectMoveRemap(t *testing.T) {
 	}
 	for name, enter := range map[string]bool{"plain move": false, "enter_workflow_step": true} {
 		t.Run(name, func(t *testing.T) {
-			installationID := gateInstall + 700
+			installationID := gateInstall + 900
 			if enter {
 				installationID++
 			}
@@ -54,7 +54,7 @@ func TestEntryGateLeavesProjectMoveThatKeepsStatus(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	c, gated := gatedProjectMove(t, gateInstall+702, "in_review")
+	c, gated := gatedProjectMove(t, gateInstall+902, "in_review")
 	putIssue(t, c.issueID, map[string]any{"project_id": gated}).Want(http.StatusOK)
 	wantIssueStatus(t, c.issueID, "in_review")
 }
