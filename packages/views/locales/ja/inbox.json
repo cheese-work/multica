@@ -17,6 +17,7 @@
     "from": "送信者",
     "unread_only": "未読のみ",
     "no_agents_working": "作業中のエージェントなし",
+    "mentions_only": "自分へのメンション",
     "notification_count_other": "{{count}} 件の通知",
     "clear": "フィルターをクリア",
     "empty": "フィルターに一致する通知はありません"

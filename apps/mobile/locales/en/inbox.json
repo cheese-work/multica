@@ -16,7 +16,8 @@
   },
   "filters": {
     "all": "All",
-    "unread": "Unread"
+    "unread": "Unread",
+    "mentions_me": "Mentions me"
   },
   "archive": {
     "confirm_title": "Archive all?",
