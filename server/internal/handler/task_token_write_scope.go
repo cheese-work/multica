@@ -22,7 +22,9 @@ import (
 // The issue routes (/api/issues/...) carry the issue in the path or body. The
 // routes outside that prefix that still change an issue (comments, attachments,
 // tasks, decisions, upload-file) resolve to their issue in
-// task_token_write_scope_indirect.go (A5b); the audit table in its test names
+// task_token_write_scope_indirect.go (A5b). Routes that change other runs'
+// issues or tasks without naming them are refused outright
+// (task_token_write_scope_deny.go); the audit table in the router test names
 // every other write route and why it needs no issue check.
 const (
 	TaskWriteScopeOff   = "off"

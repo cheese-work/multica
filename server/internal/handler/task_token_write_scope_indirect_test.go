@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -22,7 +24,8 @@ type indirectFixture struct {
 	ownAttachment, foreignAttachment string
 	commentAttachment                string
 	pendingOwn, pendingOther         string
-	foreignTask, otherAgentID        string
+	foreignTask                      string
+	mixedAttachment                  string
 	ownDecision, foreignDecision     string
 }
 
@@ -49,6 +52,9 @@ func newIndirectFixture(t *testing.T) indirectFixture {
 	f.ownAttachment = attachment(testutil.Cols{"issue_id": f.own})
 	f.foreignAttachment = attachment(testutil.Cols{"issue_id": f.foreign})
 	f.commentAttachment = attachment(testutil.Cols{"comment_id": f.foreignComment})
+	// UploadFile accepts both owners: an attachment on an in-scope issue and on
+	// a comment of a foreign one.
+	f.mixedAttachment = attachment(testutil.Cols{"issue_id": f.own, "comment_id": f.foreignComment})
 	f.pendingOwn = attachment(testutil.Cols{"uploader_type": "agent", "uploader_id": f.agentID})
 	f.pendingOther = attachment(nil)
 	f.foreignTask = createHandlerTestTaskForAgentOnIssue(t, f.agentID, f.foreign)
@@ -79,8 +85,6 @@ func TestTaskTokenWriteScopeIndirectRoutes(t *testing.T) {
 		{"DELETE", "/api/attachments/" + f.ownAttachment},
 		{"DELETE", "/api/attachments/" + f.pendingOwn},
 		{"POST", "/api/decisions/" + f.ownDecision + "/withdraw"},
-		{"PATCH", "/api/plugin-bridge/v1/issues/" + f.own},
-		{"POST", "/api/plugin-bridge/v1/issues/" + f.own + "/comments"},
 	}
 	outOfScope := []route{
 		{"PUT", "/api/comments/" + f.foreignComment},
@@ -94,6 +98,7 @@ func TestTaskTokenWriteScopeIndirectRoutes(t *testing.T) {
 		{"POST", "/api/comments/not-a-uuid/resolve"},
 		{"DELETE", "/api/attachments/" + f.foreignAttachment},
 		{"DELETE", "/api/attachments/" + f.commentAttachment},
+		{"DELETE", "/api/attachments/" + f.mixedAttachment},
 		{"DELETE", "/api/attachments/" + f.pendingOther},
 		{"DELETE", "/api/attachments/00000000-0000-4000-8000-0000000000aa"},
 		{"POST", "/api/tasks/" + f.foreignTask + "/cancel"},
@@ -102,6 +107,8 @@ func TestTaskTokenWriteScopeIndirectRoutes(t *testing.T) {
 		{"POST", "/api/tasks/00000000-0000-4000-8000-0000000000aa/cancel"},
 		{"POST", "/api/decisions/" + f.foreignDecision + "/withdraw"},
 		{"POST", "/api/decisions/00000000-0000-4000-8000-0000000000aa/withdraw"},
+		{"PATCH", "/api/plugin-bridge/v1/issues/" + f.own},
+		{"POST", "/api/plugin-bridge/v1/issues/" + f.own + "/comments"},
 		{"PATCH", "/api/plugin-bridge/v1/issues/" + f.foreign},
 		{"POST", "/api/plugin-bridge/v1/issues/" + f.foreign + "/comments"},
 		{"POST", "/api/plugin-bridge/v1/hooks/any-hook"},
@@ -260,5 +267,50 @@ func TestTaskTokenWriteScopeUploadFile(t *testing.T) {
 	testHandler.TaskTokenWriteScope("on")(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("handler reached") })).ServeHTTP(w, req)
 	if w.Code != 403 {
 		t.Errorf("not multipart: status %d, want 403", w.Code)
+	}
+}
+
+// The bridge relay resolves its issue in the workspace of the plugin
+// installation header, not the token's. A run token is refused whatever the
+// identifier resolves to in the token's own workspace.
+func TestTaskTokenWriteScopeRefusesBridgeAcrossWorkspaces(t *testing.T) {
+	f := newIndirectFixture(t)
+	identifier := f.identifier(t, f.own)
+	prefix := testHandler.getIssuePrefix(t.Context(), parseUUID(testWorkspaceID))
+	var number int
+	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, f.own).Scan(&number)
+	// A second workspace whose issue has the very same identifier.
+	other := dbfx.Workspace(t, "Scope bridge other workspace", "scope-bridge-other", testutil.Cols{"issue_prefix": prefix})
+	dbfx.Issue(t, "Scope bridge foreign twin", testutil.Cols{"workspace_id": other, "number": number})
+
+	installation := func(r *http.Request) { r.Header.Set(pluginInstallationHeader, "00000000-0000-4000-8000-0000000000bb") }
+	for _, path := range []string{"/api/plugin-bridge/v1/issues/" + identifier, "/api/plugin-bridge/v1/issues/" + identifier + "/comments"} {
+		if st, reached := scoped(t, "on", f.taskID, f.agentID, "POST", path, map[string]any{}, installation); st != 403 || reached {
+			t.Errorf("POST %s: status %d reached %v, want 403", path, st, reached)
+		}
+	}
+}
+
+// An attachment on an in-scope issue and on a foreign comment is refused, and
+// the row stays.
+func TestTaskTokenWriteScopeKeepsMixedOwnerAttachment(t *testing.T) {
+	f := newIndirectFixture(t)
+	router := chi.NewRouter()
+	router.Use(testHandler.TaskTokenWriteScope("on"))
+	router.Delete("/api/attachments/{id}", testHandler.DeleteAttachment)
+
+	req := newRequest("DELETE", "/api/attachments/"+f.mixedAttachment, nil)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-Token-Purpose", "agent_task")
+	req.Header.Set("X-Agent-ID", f.agentID)
+	req.Header.Set("X-Task-ID", f.taskID)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != 403 {
+		t.Errorf("status %d, want 403", w.Code)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM attachment WHERE id = $1`, f.mixedAttachment); n != 1 {
+		t.Errorf("attachment rows = %d, want it preserved", n)
 	}
 }

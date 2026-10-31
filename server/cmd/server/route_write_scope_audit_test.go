@@ -54,11 +54,33 @@ var scopedWriteRoutes = []string{
 	"PUT /api/plugin-bridge/v1/storage/{scope}/{key}",
 }
 
+// deniedRunTokenRoutes change issues or tasks of other runs without naming
+// them (agent cancel/archive cascade to tasks, a project workflow remaps issue
+// statuses, deleting a label, squad, runtime, chat session, workspace or member
+// detaches, reassigns or cancels). A run token answers 403 on each
+// (DenyTaskTokenWrites); TestTaskTokenDeniedOnCrossIssueRoutes drives them.
+var deniedRunTokenRoutes = []string{
+	"DELETE /api/chat/sessions/{sessionId}/",
+	"DELETE /api/labels/{id}/",
+	"DELETE /api/runtimes/{runtimeId}/",
+	"DELETE /api/squads/{id}/",
+	"DELETE /api/workspaces/{id}/",
+	"DELETE /api/workspaces/{id}/members/{memberId}/",
+	"PATCH /api/chat/sessions/{sessionId}/archive",
+	"POST /api/agents/{id}/archive",
+	"POST /api/agents/{id}/cancel-tasks",
+	"POST /api/projects/{id}/workflow",
+	"POST /api/runtimes/{runtimeId}/archive-agents-and-delete",
+	"POST /api/runtimes/{runtimeId}/revoke-workspace-access",
+	"POST /api/runtimes/{runtimeId}/unbind-agents-and-delete",
+	"POST /api/workspaces/{id}/leave",
+}
+
 const (
 	byHuman     = "human-only route (RequireHumanActor) or an account/billing/auth surface a run token never holds"
 	byDaemon    = "daemon-token routes (DaemonAuth), never a run token"
 	byPublic    = "public route with its own credential (signature, token, login)"
-	byWorkspace = "workspace or agent configuration; names no issue"
+	byWorkspace = "workspace or agent configuration; the writes left here change no issue or task of another run"
 	byOwnRow    = "bound to its own row (chat session, inbox item, pin, view, wakeup), not to an issue"
 )
 
@@ -67,10 +89,10 @@ const (
 var otherWriteFamilies = map[string]writeFamily{
 	"api/agent-builder":            {3, byWorkspace},
 	"api/agent-decisions":          {1, byHuman},
-	"api/agents":                   {18, byWorkspace},
+	"api/agents":                   {16, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {22, byOwnRow},
+	"api/chat":                     {20, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
@@ -92,31 +114,31 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/issue-view-preferences":   {1, byOwnRow},
 	"api/issue-views":              {3, byOwnRow},
 	"api/issue-workflows":          {8, byWorkspace},
-	"api/labels":                   {3, byWorkspace},
+	"api/labels":                   {2, byWorkspace},
 	"api/lark":                     {1, byPublic},
 	"api/me":                       {6, byOwnRow},
 	"api/notification-channels":    {1, byOwnRow},
 	"api/notification-preferences": {2, byOwnRow},
 	"api/passkeys":                 {6, byHuman},
 	"api/pins":                     {3, byOwnRow},
-	"api/projects":                 {13, byWorkspace},
+	"api/projects":                 {12, byWorkspace},
 	"api/properties":               {2, byWorkspace},
 	"api/provenance":               {1, byHuman},
 	"api/push":                     {2, byHuman},
 	"api/quick-actions":            {3, byWorkspace},
-	"api/runtimes":                 {11, byWorkspace},
+	"api/runtimes":                 {7, byWorkspace},
 	"api/search-index":             {1, byHuman},
 	"api/share-links":              {1, byOwnRow},
 	"api/skills":                   {9, byWorkspace},
 	"api/slack":                    {1, byPublic},
-	"api/squads":                   {6, byWorkspace},
+	"api/squads":                   {5, byWorkspace},
 	"api/system-wakeups":           {1, byWorkspace},
 	"api/telegram":                 {1, byPublic},
 	"api/tokens":                   {3, byHuman},
 	"api/wakeup-definitions":       {4, byWorkspace},
 	"api/webhooks":                 {5, byPublic},
 	"api/wecom":                    {1, byPublic},
-	"api/workspaces":               {57, byWorkspace},
+	"api/workspaces":               {54, byWorkspace},
 	"auth/google":                  {1, byPublic},
 	"auth/logout":                  {1, byPublic},
 	"auth/send-code":               {1, byPublic},
@@ -128,7 +150,7 @@ var otherWriteFamilies = map[string]writeFamily{
 func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
 	router := NewRouter(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil)
 	families := map[string][]string{}
-	var scoped []string
+	var scoped, denied []string
 	_ = chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
 			return nil
@@ -137,6 +159,8 @@ func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
 		segs := strings.Split(strings.Trim(route, "/"), "/")
 		family := strings.Join(segs[:min(2, len(segs))], "/")
 		switch {
+		case slices.Contains(deniedRunTokenRoutes, entry):
+			denied = append(denied, entry)
 		case family == "api/issues": // path-resolved by TaskTokenWriteScope itself
 		case isScopedFamily(family):
 			scoped = append(scoped, entry)
@@ -146,6 +170,9 @@ func TestRouterWriteRoutesAuditedAgainstTaskWriteScope(t *testing.T) {
 		return nil
 	})
 
+	if want := sorted(deniedRunTokenRoutes); !slices.Equal(sorted(denied), want) {
+		t.Errorf("denied run-token routes changed; they must exist in the router and stay behind DenyTaskTokenWrites\n got: %q\nwant: %q", sorted(denied), want)
+	}
 	sort.Strings(scoped)
 	if want := sorted(scopedWriteRoutes); !slices.Equal(scoped, want) {
 		t.Errorf("issue-touching write routes changed; audit them in task_token_write_scope_indirect.go and update scopedWriteRoutes\n got: %q\nwant: %q", scoped, want)

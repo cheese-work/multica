@@ -41,19 +41,12 @@ func (h *Handler) indirectWriteTargets(w http.ResponseWriter, r *http.Request, s
 	case segs[1] == "upload-file" && n == 2:
 		return h.refsOfUploadForm(w, r)
 	case segs[1] == "plugin-bridge":
-		return bridgeWriteRefs(segs)
+		// A browser-session surface: the relay resolves the issue in the
+		// workspace of X-Multica-Plugin-Installation, which need not be the
+		// token's, and hooks and storage name no issue. A run token is refused.
+		return nil, true
 	}
 	return nil, false
-}
-
-// bridgeWriteRefs: /api/plugin-bridge/v1/issues/{ref}[/comments] writes to that
-// issue. Hooks and storage act as the signed-in user with no issue named, so a
-// run token fails closed there: the bridge is a browser-session surface.
-func bridgeWriteRefs(segs []string) (refs []string, bad bool) {
-	if len(segs) >= 5 && segs[3] == "issues" {
-		return []string{segs[4]}, false
-	}
-	return nil, true
 }
 
 func writeScopeWorkspace(r *http.Request) (pgtype.UUID, bool) {
@@ -86,11 +79,20 @@ func (h *Handler) refsOfAttachment(r *http.Request, attachmentRef string) (refs 
 	if err != nil {
 		return nil, true
 	}
+	// UploadFile accepts both owners, so an attachment may sit on an issue and
+	// on a comment of another one: every owner must be in scope.
 	if att.IssueID.Valid {
-		return []string{util.UUIDToString(att.IssueID)}, false
+		refs = append(refs, util.UUIDToString(att.IssueID))
 	}
 	if att.CommentID.Valid {
-		return h.refsOfComment(r, util.UUIDToString(att.CommentID))
+		commentRefs, bad := h.refsOfComment(r, util.UUIDToString(att.CommentID))
+		if bad {
+			return nil, true
+		}
+		refs = append(refs, commentRefs...)
+	}
+	if len(refs) > 0 {
+		return refs, false
 	}
 	own := att.UploaderType == "agent" && util.UUIDToString(att.UploaderID) == strings.ToLower(strings.TrimSpace(r.Header.Get("X-Agent-ID")))
 	return nil, !own
