@@ -358,7 +358,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, pull_request_id, id
+    workflow_step, pull_request_id, taint_ids, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -402,6 +402,9 @@ SELECT
         AND COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         AND pr.head_sha = sqlc.narg('head_sha')::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
+    -- The assigning task's taint (migration 831): the trigger unions in every
+    -- other source, but only the request knows which task is acting.
+    COALESCE(sqlc.narg('taint_ids')::text[], '{}'),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
   AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
@@ -1207,6 +1210,19 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
 ORDER BY terminal_at DESC
 LIMIT 1;
 
+-- name: InheritSessionTaint :one
+-- Resuming a session continues its transcript, so the claimed task takes the
+-- taint of every task that ran in it (CHE-2216 plan 3.7). The trigger on
+-- agent_task_queue keeps what the task already had.
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.issue_id = t.issue_id AND s.session_id = sqlc.arg(session_id)::text
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids;
+
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
 -- withheld its Codex session because the rollout was missing (MUL-5305). When
@@ -1920,6 +1936,33 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
 -- issue off, a run without a step is not enough: the brief and the permission
 -- to move the issue come from the step stamp.
 SELECT count(*) > 0 AS has_queued FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND CASE
+    WHEN sqlc.arg('step_hands_off')::bool THEN workflow_step = sqlc.arg('step')::text
+    ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
+  END;
+
+-- name: TaintPendingRunsOnIssue :exec
+-- Before a tainted writer assigns the issue: every run that has left the
+-- queue or is about to still reads the issue afterwards, so each takes the
+-- writer's taint (the task trigger unions it with what the run has).
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+
+-- name: GetTaskTaintIDs :one
+SELECT taint_ids FROM agent_task_queue WHERE id = $1;
+
+-- name: TaintQueuedRunCarryingIssueWrite :execrows
+-- HasQueuedRunCarryingIssueWrite for a write made by a tainted task: the
+-- queued run that stands in for it takes the writer's taint (the task trigger
+-- unions it with what the run has) and the row count says whether one exists.
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
 WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
   AND context->>'wakeup_id' IS NULL
   AND trigger_comment_id IS NULL

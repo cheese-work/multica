@@ -1,0 +1,30 @@
+# Decision request card: "You are approving" section (CHE-2606 layer 2), web and desktop.
+# Design gate: Cheese picked direction B in CHE-2404 (30 Oct 2026); lock PR #664 (CHE-2656) is merged.
+# Locales: machine-drafted fr, ja, ko, zh-Hans and zh-Hant ship now. Native review is NOT-RUN.
+issue: CHE-2611
+design: design/you-are-approving-card/approved/approving-card-b.html @ b0deabf4394c7a0096625dbe87b092670ce8000f
+pages:
+  - id: chat-decision-card
+    url: /<workspace-slug>/chat   # a decision request card in a DM or the chat window; 540 px card on desktop
+    keep:
+      - decision-request-card
+      - decision-request-ask
+      - decision-request-answer
+      - decision-request-source-issue
+      - decision-request-source-comment
+      - decision-request-record
+    change:
+      - decision-request-artifacts: "new section 'You are approving' before the ask (or 'You approved' once answered); renders nothing when the ask has no files"
+      - decision-artifact-file: "new file card per file: label, file name, size, short SHA, Hash verified; a deleted file says so"
+      - decision-artifact-signature: "new marker on the file card for the current revision: '<label> signed by <reviewer>' or '<label> is not signed yet'"
+      - decision-artifact-download: "new Download button; goes through the shared attachment downloader (desktop save dialog, bearer token)"
+      - decision-artifact-viewer: "new tabbed viewer, closed by default: 'Changes since <previous file>' (only changed hunks, +/- marks, hidden-lines gap, signature of the previous revision) and 'Preview' (rendered Markdown); arrow, Home and End keys move between tabs"
+    remove: []
+  - id: chat-decision-card-phone
+    url: /<workspace-slug>/chat   # 358 px card; file card wraps, Download stays 44 px high, viewer scrolls inside its own region
+    keep:
+      - decision-request-ask
+      - decision-request-answer
+    change:
+      - decision-artifact-file: "same card; text wraps under the icon, Download wraps below"
+    remove: []

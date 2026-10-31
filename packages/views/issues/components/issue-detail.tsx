@@ -200,6 +200,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useJumpToLatest } from "../hooks/use-jump-to-latest";
+import { useIssueDetailScrollAnchor } from "../hooks/use-issue-detail-scroll-anchor";
 import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
@@ -626,6 +627,10 @@ type TimelineItem =
   | { kind: "thread-row"; id: string; entry: TimelineEntry; row: CommentThreadRow }
   | { kind: "resolved-bar"; id: string; entry: TimelineEntry }
   | { kind: "activity-group"; id: string; entries: TimelineEntry[] };
+
+function timelineItemKey(item: TimelineItem): string {
+  return `${item.kind}:${item.kind === "run" ? item.run.task.id : item.kind === "thread-row" ? item.row.key ?? item.id : item.id}`;
+}
 
 type RawTimelineGroup = {
   type: "comment" | "activities";
@@ -3425,6 +3430,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
+  const scrollAnchor = useIssueDetailScrollAnchor({
+    issueId: id,
+    scrollContainerEl,
+    ready: !!issue && !loading && !timelineLoading,
+    disabled: isPeek,
+    keyAt: (index) => (items[index] ? timelineItemKey(items[index]) : undefined),
+  });
+  const scrollAnchorIndex = scrollAnchor ? items.findIndex((item) => timelineItemKey(item) === scrollAnchor.key) : -1;
+
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
     scrollContainerEl,
@@ -3435,7 +3449,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // ref-attach assignment clamps against a container whose async content
     // (markdown, images) hasn't reached its captured height yet.
     // A peek always opens at the top: it is a glance, not a place to return to.
-    disabled: isPeek || (!!highlightCommentId && consumedHighlightId !== highlightCommentId),
+    // The timeline anchor owns the restore when one resolves: a pixel offset
+    // lands on a different comment once virtualized row heights are measured.
+    disabled: isPeek || scrollAnchorIndex >= 0 || (!!highlightCommentId && consumedHighlightId !== highlightCommentId),
     // The tab memento's offset, when the platform serves one. It must win
     // over this hook's module-level map — see the parameter doc.
     overrideTop: restoredScrollTop,
@@ -4770,9 +4786,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       ref={virtuosoRef}
                       customScrollParent={scrollContainerEl}
                       data={items}
-                      initialScrollTop={restoredScrollTop}
+                      {...(scrollAnchor && scrollAnchorIndex >= 0
+                        ? { initialTopMostItemIndex: { index: scrollAnchorIndex, align: "start" as const, offset: scrollAnchor.offset } }
+                        : {})}
+                      initialScrollTop={scrollAnchorIndex >= 0 ? undefined : restoredScrollTop}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
-                      computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.kind === "thread-row" ? item.row.key ?? item.id : item.id}`}
+                      computeItemKey={(_i, item) => timelineItemKey(item)}
                       skipAnimationFrameInResizeObserver
                       // followOutput intentionally NOT set. Virtuoso treats
                       // it as a sticky "is at bottom" flag and resets

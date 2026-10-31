@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -15,9 +15,10 @@ vi.mock("../../navigation", async (importActual) => ({
 }));
 
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
+const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest },
+  api: { answerDecisionRequest, listDecisionArtifacts },
 }));
 
 const card = {
@@ -27,7 +28,27 @@ const card = {
 };
 
 describe("DecisionRequestCard accessibility", () => {
+  beforeEach(() => listDecisionArtifacts.mockResolvedValue([]));
   afterEach(() => vi.useRealTimers());
+
+  it("puts 'You are approving' before the ask, and renders as today without files", async () => {
+    const view = () => (
+      <QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    const { container, unmount } = renderWithI18n(view());
+    await waitFor(() => expect(listDecisionArtifacts).toHaveBeenCalledWith("request"));
+    expect(screen.queryByRole("region", { name: "You are approving" })).toBeNull();
+    expect(container.querySelector('[data-testid="decision-request-artifacts"]')).toBeNull();
+    unmount();
+    listDecisionArtifacts.mockResolvedValue([{
+      attachment_id: "att", label: "Design revision 5", sha256: "3f9a2c1".padEnd(64, "0"),
+      attachment: { id: "att", filename: "design-rev5.md", content_type: "text/markdown", size_bytes: 10, download_url: "https://files.test/att" },
+    }]);
+    renderWithI18n(view());
+    const section = await screen.findByRole("region", { name: "You are approving" });
+    const ask = screen.getByTestId("decision-request-ask");
+    expect(section.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 
   it("makes only an open ask annotatable, with the agent reply label and marker slot", () => {
     const view = (state: "open" | "answered" | "withdrawn") => (

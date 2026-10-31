@@ -28,12 +28,12 @@ FOR UPDATE NOWAIT;
 
 -- name: LockDecisionRequestNowait :one
 SELECT * FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 FOR UPDATE NOWAIT;
 
 -- name: LockDecisionLiveAnswerNowait :one
 SELECT answer.* FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND answer.disclaimed_at IS NULL
 FOR UPDATE OF answer NOWAIT;

@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -386,6 +388,106 @@ func RefreshMachineOfTask(ctx context.Context, q *db.Queries, bus *events.Bus, t
 		return
 	}
 	PublishMachineRefresh(ctx, q, bus, machineOwnerID(rt), rt.DaemonID.String, rt.WorkspaceID, eventWorkspaceID, "system", "", "drain")
+}
+
+// heartbeatPause is the pause half of a heartbeat (CHE-2673). It returns the
+// machine's live pause for the ack and, when the daemon says it is idle, tells
+// the machine owner once that the machine drained. A failure is logged, never
+// returned: a pause lookup must not fail a heartbeat.
+func (h *Handler) heartbeatPause(ctx context.Context, runtimeID string, inFlightTasks *int) *protocol.DaemonHeartbeatPaused {
+	runtimeUUID, err := util.ParseUUID(runtimeID)
+	if err != nil {
+		return nil
+	}
+	pause, err := h.Queries.GetLiveDaemonPauseByRuntime(ctx, db.GetLiveDaemonPauseByRuntimeParams{
+		ID:              runtimeUUID,
+		MaintenanceSecs: int32(maintenancePauseTTL.Seconds()),
+		OtherSecs:       int32(otherPauseTTL.Seconds()),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("heartbeat pause lookup failed", "error", err, "runtime_id", runtimeID)
+		return nil
+	}
+	if inFlightTasks != nil && *inFlightTasks == 0 && !pause.DrainedNotifiedAt.Valid {
+		h.noticeMachineDrained(ctx, pause)
+	}
+	pr := pauseToResponse(pause)
+	return &protocol.DaemonHeartbeatPaused{Reason: pr.Reason, PausedAt: pr.PausedAt, ExpiresAt: pr.ExpiresAt}
+}
+
+var drainNoticeTimeout = 10 * time.Second
+
+// noticeMachineDrained writes one inbox item for the machine owner. The daemon
+// reports idle, so the server count must agree before anyone is told it is safe.
+// The claim on the pause row makes the notice once per pause; a write failure
+// releases it so the next heartbeat retries.
+func (h *Handler) noticeMachineDrained(ctx context.Context, pause db.DaemonPause) {
+	counts, err := h.Queries.CountRunningTasksByMachine(ctx, db.CountRunningTasksByMachineParams{
+		MachineOwnerIds: []pgtype.UUID{pause.MachineOwnerID},
+		DaemonIds:       []string{pause.DaemonID},
+	})
+	if err != nil {
+		slog.Warn("machine drain count failed", "error", err, "daemon_id", pause.DaemonID)
+		return
+	}
+	for _, c := range counts {
+		if c.MachineOwnerID == pause.MachineOwnerID && c.DaemonID == pause.DaemonID && c.RunningTasks > 0 {
+			return
+		}
+	}
+	claimed, err := h.Queries.ClaimDaemonPauseDrainNotice(ctx, db.ClaimDaemonPauseDrainNoticeParams{
+		MachineOwnerID: pause.MachineOwnerID, DaemonID: pause.DaemonID, PausedAt: pause.PausedAt,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
+	if err != nil {
+		slog.Warn("machine drain claim failed", "error", err, "daemon_id", pause.DaemonID)
+		return
+	}
+	h.deliverDrainNotice(ctx, claimed)
+}
+
+// deliverDrainNotice writes the inbox item for a notice this caller already
+// claimed, and releases the claim if the write fails so a later heartbeat retries.
+// It runs detached from the request: once the claim is set, a cancelled
+// heartbeat must not strand it, because a fresh heartbeat only retries after a
+// release.
+func (h *Handler) deliverDrainNotice(reqCtx context.Context, claimed db.DaemonPause) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), drainNoticeTimeout)
+	defer cancel()
+	details, _ := json.Marshal(map[string]string{
+		"daemon_id": claimed.DaemonID,
+		"reason":    claimed.Reason,
+		"paused_at": timestampToString(claimed.PausedAt),
+	})
+	item, inserted, err := inbox.CreateIfEligible(ctx, h.Queries, db.CreateInboxItemParams{
+		ID: dbid.NewV7(), WorkspaceID: claimed.WorkspaceID,
+		RecipientType: "member", RecipientID: claimed.MachineOwnerID,
+		Type: "machine_drained", Severity: "attention", IssueID: pgtype.UUID{},
+		Title:     fmt.Sprintf("%s is safe to shut down", claimed.DaemonID),
+		Body:      pgtype.Text{String: fmt.Sprintf("Paused (%s) and no tasks are running. The daemon stays up and idle until you resume it.", claimed.Reason), Valid: true},
+		ActorType: pgtype.Text{String: "system", Valid: true},
+		Details:   details,
+	})
+	if err != nil {
+		slog.Warn("machine drain notice failed", "error", err, "daemon_id", claimed.DaemonID)
+		// The write may have failed because ctx hit its deadline; release needs its own.
+		relCtx, relCancel := context.WithTimeout(context.WithoutCancel(reqCtx), drainNoticeTimeout)
+		defer relCancel()
+		if relErr := h.Queries.ReleaseDaemonPauseDrainNotice(relCtx, db.ReleaseDaemonPauseDrainNoticeParams{
+			MachineOwnerID: claimed.MachineOwnerID, DaemonID: claimed.DaemonID, PausedAt: claimed.PausedAt,
+		}); relErr != nil {
+			slog.Warn("machine drain claim release failed", "error", relErr, "daemon_id", claimed.DaemonID)
+		}
+		return
+	}
+	if inserted {
+		h.publish(protocol.EventInboxNew, uuidToString(item.WorkspaceID), "system", "", map[string]any{"item": inboxToResponse(item)})
+	}
 }
 
 // RuntimePauseResponse is the pause state of a machine (daemon).

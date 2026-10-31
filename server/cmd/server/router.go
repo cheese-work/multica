@@ -1786,6 +1786,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// middleware.Auth and never call this (MUL-7436).
 		r.Post("/api/auth/refresh", h.RefreshSession)
 		r.Post("/api/upload-file", h.UploadFile)
+		r.Route("/api/push", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Get("/config", h.GetPushConfig)
+			r.Post("/subscriptions", h.UpsertPushSubscription)
+			r.Delete("/subscriptions", h.DeletePushSubscription)
+		})
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
 
@@ -2712,6 +2718,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.RequestDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
 				r.Get("/{id}/artifacts", h.ListDecisionArtifacts)
 				r.Post("/{id}/withdraw", h.WithdrawDecision)
