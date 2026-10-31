@@ -14,7 +14,7 @@ import (
 )
 
 // Issue-level taint (CHE-2216 plan 3.7). Taint reaches issue_taint through
-// database triggers (migration 853); only a member clears it, here.
+// database triggers (migration 866); only a member clears it, here.
 
 // lockedIssueTaint reads the issue's active taint IDs under a share lock on the
 // issue row, in a second statement so it sees what a writer committed while
