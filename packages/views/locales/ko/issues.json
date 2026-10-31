@@ -705,7 +705,11 @@
     "recipient_count_other": "에이전트 {{count}}개가 받습니다",
     "steer_attachment_notice": "실행 중에는 텍스트만 추가할 수 있어, 파일이 있는 메시지는 이번 실행 후에 처리됩니다.",
     "restart_send": "중지하고 보내기",
-    "restart_failed": "현재 실행을 중지하지 못했습니다. 메시지는 보내지 않았습니다."
+    "restart_failed": "현재 실행을 중지하지 못했습니다. 메시지는 보내지 않았습니다.",
+    "supersession": {
+      "superseded_by": "rev-{{revision}}(으)로 대체됨",
+      "supersedes": "rev-{{revision}} 대체"
+    }
   },
   "reply": {
     "placeholder": "답글 남기기...",

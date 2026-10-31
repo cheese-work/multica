@@ -30,6 +30,7 @@ func newPendingCopyOn(test *testing.T, name string, extra map[string]any, visibi
 	fixture.respond(test, fixture.withAction(map[string]any{"type": "agent.copy", "version": 1, "params": params}), http.StatusCreated, &created)
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
 	dbfx.Cleanup(test, `DELETE FROM agent WHERE name = $1`, name)
+	placeDecisionHuman(test, fixture.issueID, fixture.humanID, "member", true)
 	return pendingAction{fixture, created.ID, created.Action.ID}
 }
 

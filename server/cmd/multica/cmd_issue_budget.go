@@ -13,6 +13,7 @@ import (
 
 // multica issue budget raise <issue-id> --runs N — lift one issue's run cap
 // (CHE-2226). Members only; the server rejects an agent.
+// multica issue budget top-up <issue-id> — open a new run window (CHE-2297 L2d).
 
 var issueBudgetCmd = &cobra.Command{
 	Use:   "budget",
@@ -37,7 +38,18 @@ var issueBudgetGetCmd = &cobra.Command{
 	RunE:  runIssueBudgetGet,
 }
 
+var issueBudgetTopUpCmd = &cobra.Command{
+	Use:   "top-up <issue-id>",
+	Short: "Open a new run window on an issue (members only)",
+	Long: "Gives the issue a fresh run window, as a status move by a person does, without moving its status: " +
+		"the window credit is the workflow's run cap. Usage history is kept. The server rejects an agent.",
+	Args: exactArgs(1),
+	RunE: runIssueBudgetTopUp,
+}
+
 func init() {
+	issueBudgetTopUpCmd.Flags().String("output", "table", "Output format: table or json")
+	issueBudgetCmd.AddCommand(issueBudgetTopUpCmd)
 	issueBudgetGetCmd.Flags().String("output", "table", "Output format: table or json")
 	issueBudgetCmd.AddCommand(issueBudgetGetCmd)
 	issueBudgetRaiseCmd.Flags().Int("runs", 0, "Total runs the issue may use (required)")
@@ -120,5 +132,27 @@ func runIssueBudgetGet(cmd *cobra.Command, args []string) error {
 	if p := snap.RaisePreview; p != nil {
 		fmt.Fprintf(os.Stdout, "raise: multica issue budget raise %s --runs %d (%d left)\n", issueRef.Display, p.LimitAfter, p.BalanceAfter)
 	}
+	return nil
+}
+
+func runIssueBudgetTopUp(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/run-budget/top-up", nil, &result); err != nil {
+		return fmt.Errorf("top up run budget: %w", err)
+	}
+	if output, _ := cmd.Flags().GetString("output"); output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	fmt.Fprintf(os.Stdout, "%s opened a new run window of %v runs\n", issueRef.Display, result["max_runs"])
 	return nil
 }

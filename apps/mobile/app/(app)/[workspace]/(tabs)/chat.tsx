@@ -724,6 +724,7 @@ export default function ChatTab() {
       >
         <ChatMessageList
           messages={visibleMessages}
+          sessionId={activeSessionId}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
           agent={currentAgent}

@@ -76,12 +76,12 @@ func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueRevie
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
 ORDER BY created_at DESC LIMIT 1
 `
 
-// When a person last changed the issue's status: a person who moves a blocked
-// issue on starts its run budget over.
+// When a person last changed the issue's status or topped up its run budget: a
+// person who moves a blocked issue on, or tops it up, starts its run budget over.
 func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
 	row := q.db.QueryRow(ctx, latestMemberStatusChange, issueID)
 	var created_at pgtype.Timestamptz
@@ -136,6 +136,40 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMemberStatusChangesAfter = `-- name: ListMemberStatusChangesAfter :many
+SELECT created_at FROM activity_log
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+  AND created_at > $2::timestamptz
+ORDER BY created_at
+`
+
+type ListMemberStatusChangesAfterParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	After   pgtype.Timestamptz `json:"after"`
+}
+
+// Every time a person moved the issue's status or topped up its run budget after
+// a point: each one opened a run-budget window, whether or not anything was admitted in it.
+func (q *Queries) ListMemberStatusChangesAfter(ctx context.Context, arg ListMemberStatusChangesAfterParams) ([]pgtype.Timestamptz, error) {
+	rows, err := q.db.Query(ctx, listMemberStatusChangesAfter, arg.IssueID, arg.After)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Timestamptz{}
+	for rows.Next() {
+		var created_at pgtype.Timestamptz
+		if err := rows.Scan(&created_at); err != nil {
+			return nil, err
+		}
+		items = append(items, created_at)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

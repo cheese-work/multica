@@ -45,7 +45,6 @@ export function CliSection() {
               labels={{
                 group: d.platformGroup,
                 macosLinux: d.platformMacosLinux,
-                windows: d.platformWindows,
               }}
               classNames={PLATFORM_TABS}
             >
