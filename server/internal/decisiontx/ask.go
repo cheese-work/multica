@@ -42,6 +42,9 @@ type Artifact struct {
 	SHA256                 string             `json:"sha256"`
 	SupersedesAttachmentID string             `json:"supersedes_attachment_id,omitempty"`
 	SignedBy               *ArtifactSignature `json:"signed_by,omitempty"`
+	// SupersedesSignedBy is the signature of the superseded revision, so a diff
+	// can say who signed the file it is measured against.
+	SupersedesSignedBy *ArtifactSignature `json:"supersedes_signed_by,omitempty"`
 }
 
 // ArtifactSignature names the reviewer agent and the signed review comment.

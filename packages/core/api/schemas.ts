@@ -1054,6 +1054,34 @@ const DecisionRequestCardSchema = z.object({
   }).loose().optional().catch(undefined),
 }).loose();
 
+export const DecisionArtifactListSchema = z.object({
+  artifacts: z.array(z.object({
+    attachment_id: z.string(),
+    label: z.string().catch(""),
+    sha256: z.string().catch(""),
+    supersedes_attachment_id: z.string().optional().catch(undefined),
+    signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
+    supersedes_signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
+    attachment: z.object({
+      id: z.string(),
+      filename: z.string().catch(""),
+      content_type: z.string().catch(""),
+      size_bytes: z.number().catch(0),
+      download_url: z.string().catch(""),
+      attachment_download_url: z.string().optional().catch(undefined),
+    }).loose().optional().catch(undefined),
+    diff: z.object({
+      previous_filename: z.string().catch(""),
+      hunks: z.array(z.object({
+        old_start: z.number().catch(0),
+        new_start: z.number().catch(0),
+        lines: z.array(z.string()).catch([]),
+      }).loose()).catch([]),
+      problem: z.enum(["not_text", "too_large", "unavailable"]).optional().catch("unavailable"),
+    }).loose().optional().catch(undefined),
+  }).loose()).catch([]),
+}).loose();
+
 export const OpenDecisionRequestListSchema = z.array(z.object({
   id: z.string(),
   issue_id: z.string(),

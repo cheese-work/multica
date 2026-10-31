@@ -106,5 +106,5 @@ Test first (observed red then green, see the PR body):
 
 - Design approval: the Machine section and banner have no approved design. The doop MCP tools are not exposed in this run, so the design loop has not started. No UI code ships before approval.
 - A dispatched task whose claim response was lost is normally reclaimed inside the claim call. While the machine is paused that reclaim also waits for Resume.
-- The CLI `daemon maintenance` stays separate and in memory. L2 reconciles the two.
+- The CLI `daemon maintenance` stays separate and in memory. L2 ([CHE-2673](CHE-2673-machine-pause-l2.md)) makes the daemon mirror the server pause; the two stay separate, both can hold at once.
 - `daemon_running_tasks` counts server-side task state. A task the daemon already finished but has not yet reported still counts until the report arrives. This errs toward "not yet safe".

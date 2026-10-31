@@ -13,7 +13,7 @@ import (
 const SubjectArtifactApproval = "artifact_approval"
 
 var (
-	artifactFields  = []string{"attachment_id", "label", "sha256", "supersedes_attachment_id", "signed_by"}
+	artifactFields  = []string{"attachment_id", "label", "sha256", "supersedes_attachment_id", "signed_by", "supersedes_signed_by"}
 	signatureFields = []string{"reviewer", "comment_id"}
 	sha256Hex       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
@@ -44,12 +44,17 @@ func decodeArtifacts(raw json.RawMessage, into *[]Artifact) error {
 				return err
 			}
 		}
-		if signed := fields["signed_by"]; len(signed) > 0 {
-			signature, err := decodeSignature(prefix+".signed_by", signed)
-			if err != nil {
-				return err
+		for _, field := range []struct {
+			name string
+			into **ArtifactSignature
+		}{{"signed_by", &artifact.SignedBy}, {"supersedes_signed_by", &artifact.SupersedesSignedBy}} {
+			if raw := fields[field.name]; len(raw) > 0 {
+				signature, err := decodeSignature(prefix+"."+field.name, raw)
+				if err != nil {
+					return err
+				}
+				*field.into = signature
 			}
-			artifact.SignedBy = signature
 		}
 		*into = append(*into, artifact)
 	}
@@ -106,12 +111,21 @@ func (ask Ask) validateArtifacts() error {
 				return &AskError{prefix + ".supersedes_attachment_id", "must be a UUID"}
 			}
 		}
-		if signed := artifact.SignedBy; signed != nil {
-			if strings.TrimSpace(signed.Reviewer) == "" {
-				return &AskError{prefix + ".signed_by.reviewer", "is required"}
+		if artifact.SupersedesSignedBy != nil && artifact.SupersedesAttachmentID == "" {
+			return &AskError{prefix + ".supersedes_signed_by", "requires supersedes_attachment_id"}
+		}
+		for _, field := range []struct {
+			name string
+			from *ArtifactSignature
+		}{{"signed_by", artifact.SignedBy}, {"supersedes_signed_by", artifact.SupersedesSignedBy}} {
+			if field.from == nil {
+				continue
 			}
-			if _, err := util.ParseUUID(signed.CommentID); err != nil {
-				return &AskError{prefix + ".signed_by.comment_id", "must be a UUID"}
+			if strings.TrimSpace(field.from.Reviewer) == "" {
+				return &AskError{prefix + "." + field.name + ".reviewer", "is required"}
+			}
+			if _, err := util.ParseUUID(field.from.CommentID); err != nil {
+				return &AskError{prefix + "." + field.name + ".comment_id", "must be a UUID"}
 			}
 		}
 	}
