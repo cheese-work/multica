@@ -712,7 +712,21 @@
       "tasks_left_stale_other": "작업 {{count}}개 남음 (오프라인, 개수가 오래되었을 수 있음).",
       "drained": "안전하게 종료할 수 있습니다.",
       "ends_in": "{{duration}} 후 종료됩니다.",
-      "ends_soon": "{{duration}} 후 종료됩니다. 그 뒤 {{machine}}이(가) 다시 작업을 받습니다."
+      "ends_soon": "{{duration}} 후 종료됩니다. 그 뒤 {{machine}}이(가) 다시 작업을 받습니다.",
+      "close": "머신 배너 숨기기",
+      "summary_other": "머신 {{count}}대에 확인이 필요합니다.",
+      "tasks_wait_other": "작업 {{count}}개가 이 머신의 에이전트를 기다리고 있습니다.",
+      "tasks_wait_total_other": "작업 {{count}}개가 이 머신들의 에이전트를 기다리고 있습니다.",
+      "next_to_end": "가장 먼저 종료: {{machine}} 일시중지, {{duration}}.",
+      "details": "자세히",
+      "machine_of": "{{machine}} ({{owner}}의 머신)",
+      "offline": "{{machine}}이(가) 오프라인입니다.",
+      "last_seen": "마지막 확인 {{time}}.",
+      "new_event": "새로운",
+      "icon_paused": "{{machine}} 일시중지됨",
+      "icon_offline": "{{machine}} 오프라인",
+      "hide": "머신 배너 숨기기: {{summary}}",
+      "show": "머신 배너 표시: {{summary}}"
     }
   }
 }

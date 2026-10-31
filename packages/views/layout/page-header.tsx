@@ -1,5 +1,6 @@
 "use client";
 
+import { createContext, useContext } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { SidebarTrigger, useSidebarSafe } from "@multica/ui/components/ui/sidebar";
 import { ActionShortcutKeycaps } from "../common/shortcut-keycaps";
@@ -14,6 +15,13 @@ import { ActionShortcutKeycaps } from "../common/shortcut-keycaps";
  * anywhere that edge matters instead of writing the class again; a page that
  * spells its own gutter is the bug coming back.
  */
+/**
+ * What every `PageHeader` shows at its right end. The shell that mounts the
+ * pages fills it (the machine banner icon); a header rendered outside a shell,
+ * as in isolated tests, shows nothing and needs no providers for it.
+ */
+export const PageHeaderTrailingContext = createContext<React.ReactNode>(null);
+
 export const PAGE_GUTTER = "px-4";
 
 /**
@@ -108,6 +116,7 @@ interface PageHeaderProps {
  * every page, and the toolbar beneath the header reads the same constant.
  */
 export function PageHeader({ children, leading, className }: PageHeaderProps) {
+  const trailing = useContext(PageHeaderTrailingContext);
   return (
     <header
       className={cn(
@@ -118,6 +127,7 @@ export function PageHeader({ children, leading, className }: PageHeaderProps) {
     >
       {leading ?? <CollapsedNavTrigger />}
       {children}
+      {trailing}
     </header>
   );
 }

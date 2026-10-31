@@ -69,3 +69,9 @@ export const useDismissedMachineEventsStore = create<DismissedMachineEventsState
     },
   ),
 );
+
+/** Details open/closed, so reopening the banner from the header icon keeps it as it was. */
+export const useMachineBannerDetailsStore = create<{
+  open: boolean;
+  setOpen: (open: boolean) => void;
+}>((set) => ({ open: false, setOpen: (open) => set({ open }) }));

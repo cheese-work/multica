@@ -739,7 +739,24 @@
       "tasks_left_stale_other": "{{count}} tasks left (offline; count may be stale).",
       "drained": "Safe to shut down.",
       "ends_in": "Ends in {{duration}}.",
-      "ends_soon": "Ends in {{duration}}. {{machine}} takes work again then."
+      "ends_soon": "Ends in {{duration}}. {{machine}} takes work again then.",
+      "close": "Hide machine banner",
+      "summary_one": "{{count}} machine needs attention.",
+      "summary_other": "{{count}} machines need attention.",
+      "tasks_wait_one": "{{count}} task waits for agents on it.",
+      "tasks_wait_other": "{{count}} tasks wait for agents on it.",
+      "tasks_wait_total_one": "{{count}} task waits for agents on them.",
+      "tasks_wait_total_other": "{{count}} tasks wait for agents on them.",
+      "next_to_end": "Next to end: {{machine}} pause, {{duration}}.",
+      "details": "Details",
+      "machine_of": "{{machine}} ({{owner}}'s machine)",
+      "offline": "{{machine}} is offline.",
+      "last_seen": "Last seen {{time}}.",
+      "new_event": "New",
+      "icon_paused": "{{machine}} is paused",
+      "icon_offline": "{{machine}} is offline",
+      "hide": "Hide machine banner: {{summary}}",
+      "show": "Show machine banner: {{summary}}"
     }
   }
 }

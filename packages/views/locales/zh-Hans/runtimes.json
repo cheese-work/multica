@@ -712,7 +712,21 @@
       "tasks_left_stale_other": "还剩 {{count}} 个任务（离线，数量可能已过期）。",
       "drained": "可以安全关机。",
       "ends_in": "{{duration}}后结束。",
-      "ends_soon": "{{duration}}后结束，之后 {{machine}} 会恢复接收任务。"
+      "ends_soon": "{{duration}}后结束，之后 {{machine}} 会恢复接收任务。",
+      "close": "隐藏机器横幅",
+      "summary_other": "{{count}} 台机器需要关注。",
+      "tasks_wait_other": "{{count}} 个任务在等待其上的智能体。",
+      "tasks_wait_total_other": "{{count}} 个任务在等待这些机器上的智能体。",
+      "next_to_end": "最先结束：{{machine}} 的暂停，{{duration}}。",
+      "details": "详情",
+      "machine_of": "{{machine}}（{{owner}} 的机器）",
+      "offline": "{{machine}} 已离线。",
+      "last_seen": "最后在线 {{time}}。",
+      "new_event": "新",
+      "icon_paused": "{{machine}} 已暂停",
+      "icon_offline": "{{machine}} 已离线",
+      "hide": "隐藏机器横幅：{{summary}}",
+      "show": "显示机器横幅：{{summary}}"
     }
   }
 }

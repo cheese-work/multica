@@ -739,7 +739,24 @@
       "tasks_left_stale_other": "{{count}} tâches restantes (hors ligne ; le nombre peut être périmé).",
       "drained": "Arrêt sans risque possible.",
       "ends_in": "Se termine dans {{duration}}.",
-      "ends_soon": "Se termine dans {{duration}}. {{machine}} accepte ensuite du travail à nouveau."
+      "ends_soon": "Se termine dans {{duration}}. {{machine}} accepte ensuite du travail à nouveau.",
+      "close": "Masquer la bannière des machines",
+      "summary_one": "{{count}} machine demande votre attention.",
+      "summary_other": "{{count}} machines demandent votre attention.",
+      "tasks_wait_one": "{{count}} tâche attend des agents dessus.",
+      "tasks_wait_other": "{{count}} tâches attendent des agents dessus.",
+      "tasks_wait_total_one": "{{count}} tâche attend des agents dessus.",
+      "tasks_wait_total_other": "{{count}} tâches attendent des agents dessus.",
+      "next_to_end": "Prochaine fin : pause de {{machine}}, {{duration}}.",
+      "details": "Détails",
+      "machine_of": "{{machine}} (machine de {{owner}})",
+      "offline": "{{machine}} est hors ligne.",
+      "last_seen": "Dernière activité {{time}}.",
+      "new_event": "Nouveau",
+      "icon_paused": "{{machine}} est en pause",
+      "icon_offline": "{{machine}} est hors ligne",
+      "hide": "Masquer la bannière des machines : {{summary}}",
+      "show": "Afficher la bannière des machines : {{summary}}"
     }
   }
 }
