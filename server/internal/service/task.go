@@ -3654,6 +3654,36 @@ func chatReplySessionID(ctx context.Context, qtx *db.Queries, sessionID pgtype.U
 	}
 }
 
+// publishChatMessageInSuccessor announces a task outcome that was written into
+// a continuation DM instead of the task's own. Task events carry the task's
+// session, which clients viewing the continuation ignore, so the message needs
+// its own event for that session.
+func (s *TaskService) publishChatMessageInSuccessor(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage) {
+	if msg == nil || msg.ChatSessionID == task.ChatSessionID {
+		return
+	}
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
+	if workspaceID == "" {
+		return
+	}
+	s.Bus.Publish(events.Event{
+		Type:          protocol.EventChatMessage,
+		WorkspaceID:   workspaceID,
+		ActorType:     "agent",
+		ActorID:       util.UUIDToString(task.AgentID),
+		ChatSessionID: util.UUIDToString(msg.ChatSessionID),
+		Payload: protocol.ChatMessagePayload{
+			ChatSessionID: util.UUIDToString(msg.ChatSessionID),
+			MessageID:     util.UUIDToString(msg.ID),
+			Role:          msg.Role,
+			Content:       msg.Content,
+			TaskID:        util.UUIDToString(task.ID),
+			CreatedAt:     msg.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			MessageKind:   msg.MessageKind,
+		},
+	})
+}
+
 // createAssistantChatMessage writes an assistant outcome and reanchors the
 // newly-visible queued direct head in the caller's transaction. Keeping the two
 // statements together is the transcript-order boundary: readers must not see
@@ -3767,6 +3797,7 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 		return nil
 	}
 	var cancelled *CancelledChatMessageResult
+	var stopped *db.ChatMessage
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		// Same protocol as every other terminal path: this transaction marks the
 		// task row and then writes chat_message rows, whose FK takes a KEY SHARE
@@ -3843,16 +3874,22 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 			}
 			return nil
 		}
-		if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+		replySessionID, err := chatReplySessionID(ctx, qtx, task.ChatSessionID)
+		if err != nil {
+			return err
+		}
+		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 			ID:            dbid.NewV7(),
-			ChatSessionID: task.ChatSessionID,
+			ChatSessionID: replySessionID,
 			Role:          "assistant",
 			Content:       "Stopped.",
 			TaskID:        task.ID,
 			ElapsedMs:     computeChatElapsedMs(task),
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("create cancelled chat message: %w", err)
 		}
+		stopped = &row
 		return nil
 	}); err != nil {
 		slog.Error("failed to finalize cancelled chat message",
@@ -3862,6 +3899,7 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 		)
 		return nil
 	}
+	s.publishChatMessageInSuccessor(ctx, task, stopped)
 	return cancelled
 }
 
@@ -3946,6 +3984,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		payload protocol.ChatCancelFinalizedPayload
 		changed bool
 		settled bool
+		stopped *db.ChatMessage
 	)
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		// Lock the task's chat_session first. chat_draft_restore has no FK
@@ -4048,9 +4087,13 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			payload.MessageID = util.UUIDToString(deleted.ID)
 			return nil
 		}
+		replySessionID, err := chatReplySessionID(ctx, qtx, claimed.ChatSessionID)
+		if err != nil {
+			return err
+		}
 		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 			ID:            dbid.NewV7(),
-			ChatSessionID: claimed.ChatSessionID,
+			ChatSessionID: replySessionID,
 			Role:          "assistant",
 			Content:       "Stopped.",
 			TaskID:        claimed.ID,
@@ -4060,6 +4103,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		if err != nil {
 			return fmt.Errorf("create cancelled chat message: %w", err)
 		}
+		stopped = &row
 		payload.Outcome = protocol.ChatCancelOutcomeStopped
 		payload.MessageID = util.UUIDToString(row.ID)
 		payload.Content = row.Content
@@ -4081,6 +4125,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 	if !settled || payload.Outcome == "" {
 		return changed
 	}
+	s.publishChatMessageInSuccessor(ctx, task, stopped)
 	s.broadcastChatCancelFinalized(ctx, task, payload)
 	return changed
 }
@@ -5765,6 +5810,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
 	var dmNotified *dmnotify.Notified
+	var failureMsg *db.ChatMessage
 	// retryProviderHoldNotice: set inside the transaction below when a retry
 	// child was minted then immediately cancelled for a provider hold, read
 	// after commit to post the same post-commit issue comment
@@ -6029,6 +6075,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if dmNotified, err = dmnotify.Reply(ctx, qtx, replySessionID, failure); err != nil {
 				return fmt.Errorf("notify DM failure: %w", err)
 			}
+			failureMsg = &failure
 		}
 		return SettleTerminalTaskState(ctx, qtx, t)
 	}); err != nil {
@@ -6064,6 +6111,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
 	dmnotify.Publish(s.Bus, dmNotified)
+	s.publishChatMessageInSuccessor(ctx, task, failureMsg)
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast
