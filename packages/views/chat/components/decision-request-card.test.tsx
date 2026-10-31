@@ -14,6 +14,10 @@ vi.mock("../../navigation", async (importActual) => ({
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
+vi.mock("../../issues/components/issue-chip", () => ({
+  IssueChip: ({ fallbackLabel, children }: { fallbackLabel?: string; children?: React.ReactNode }) => <span data-testid="issue-chip">{children ?? fallbackLabel}</span>,
+}));
+
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
@@ -81,6 +85,14 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveFocus();
     expect(screen.getByRole("region", { name: "Decision request: Open" })).toHaveTextContent("27 Oct 2026, 06:30 ICT");
     expect(document.querySelector("time")).toHaveAttribute("datetime", card.created_at);
+  });
+
+  it("names the asking agent in the header and omits it when the name is missing", () => {
+    const view = renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, asking_agent_name: "x99-claude-sonnet" }} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.getByTestId("decision-request-asker")).toHaveTextContent("from x99-claude-sonnet");
+    view.unmount();
+    renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>);
+    expect(screen.queryByTestId("decision-request-asker")).toBeNull();
   });
 
   it("links an answered card to the issue comment that recorded it", () => {
@@ -170,6 +182,34 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByText(/original ask/)).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
+  });
+
+  // Copied from the golden output of decisiontx Ask.Content() (ask_test.go).
+  const goldenAsk = "**Context**\nA change is ready. You decide when it ships.\n\n**Decision**\nShip now?\n\n**What is at stake**\nA bad change could reach users.\n\n**Options**\n- **NOW**: NOW happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n- **LATER**: LATER happens.\n  - Pro: Pro\n  - Con: Con\n  - Cost or time: No extra time\n\n**Recommendation**\nLATER\n\n**Default if no reply**\nLATER\n\n<details>\n<summary>Details</summary>\n\n**Agent did**\nRan all requested checks.\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/11111111-1111-4111-8111-111111111111) · [Comment](/issue/11111111-1111-4111-8111-111111111111#comment-22222222-2222-4222-8222-222222222222)";
+
+  const renderCard = (ask: string) => renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, ask }} /></WorkspaceSlugProvider></QueryClientProvider>);
+
+  it("renders the ELI10 ask in order with Details collapsed", () => {
+    const { container } = renderCard(goldenAsk);
+    const text = container.textContent ?? "";
+    const marks = ["Context", "Options", "Recommendation", "Default if no reply", "Details", "Ran all requested checks.", "Investigate in issue"].map((mark) => text.indexOf(mark));
+    expect(marks.every((at, index) => at >= 0 && at > (marks[index - 1] ?? -1))).toBe(true);
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(details?.querySelector("summary")).toHaveTextContent("Details");
+    expect(details).toHaveTextContent("Ran all requested checks.");
+    expect(details).not.toHaveTextContent("Investigate in issue");
+    expect(text.match(/Investigate in issue/g)).toHaveLength(1);
+  });
+
+  it("renders a legacy ask unchanged", () => {
+    const legacy = "**Agent did**\nSwept PRs.\n\n**Decision**\nKeep gates?\n\n**Options**\n- KEEP\n- WAIVE";
+    const { container } = renderCard(legacy);
+    expect(container.querySelector("details")).toBeNull();
+    expect(container).toHaveTextContent("Swept PRs.");
+    expect(container).toHaveTextContent("Keep gates?");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
   });
 });
 

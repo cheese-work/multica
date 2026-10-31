@@ -63,7 +63,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 	}
 	response.Body.Close()
 	sourceID := fixture.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": "agent", "author_id": agentID, "source_task_id": taskID, "content": "Checks completed."})
-	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Checks completed.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
+	ask := decisiontx.Ask{ContextELI10: "A purchase is waiting. You decide whether to pay.", AgentDid: "Completed all the requested checks.", Decision: "Approve spend?", StakesIfWrong: "Money is spent for nothing.", Options: []decisiontx.AskOption{{Label: "Approve", WhatHappens: "Agents pay.", Pros: []string{"Unblocked"}, Cons: []string{"Costs money"}, CostOrTime: "10 USD"}, {Label: "Decline", WhatHappens: "No payment.", Pros: []string{"Free"}, Cons: []string{"Stays blocked"}, CostOrTime: "No extra time"}}, Recommendation: "Decline", DefaultIfNoReply: "Do not spend.", SourceIssueID: issueID, SourceCommentID: sourceID}
 	input := map[string]any{"issue_id": issueID, "session_id": sessionID, "ask": ask, "escalation_class": "spend"}
 	response = call(http.MethodPost, "/api/decisions", input, testToken, true)
 	if response.StatusCode != http.StatusForbidden {
@@ -78,7 +78,7 @@ func TestDecisionTaskTokenRoundTripThroughRouter(test *testing.T) {
 		test.Fatalf("task request failed: status=%d body=%+v", response.StatusCode, body)
 	}
 	readJSON(test, response, &created)
-	if !created.PingNotifiedAt.Valid || created.Ask != ask.Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
+	if !created.PingNotifiedAt.Valid || created.Ask != askedBy(ask, "Decision requester").Content(integrationTestWorkspaceSlug) || created.SourceCommentID != toPgUUID(test, sourceID) {
 		test.Fatalf("missing receipt or wrong ask: %+v", created)
 	}
 	var requestID string
@@ -175,4 +175,10 @@ func TestDecisionRequestCommentSkipsDuplicateTargetNotification(test *testing.T)
 	if items := inboxItemsForRecipient(test, queries, otherID); len(items) != 1 || items[0].Type != "new_comment" {
 		test.Fatalf("unrelated subscriber notification changed: %+v", items)
 	}
+}
+
+// askedBy mirrors the server, which names the asking agent in the Details block.
+func askedBy(ask decisiontx.Ask, agentName string) decisiontx.Ask {
+	ask.AskedBy = agentName
+	return ask
 }

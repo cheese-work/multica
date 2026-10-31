@@ -20,12 +20,13 @@ import (
 )
 
 type intentFixture struct {
-	agentID, issueID, taskID, humanID string
+	agentID, issueID, taskID, humanID, agentName string
 }
 
 func newIntentFixture(test *testing.T) intentFixture {
 	test.Helper()
-	agentID := createHandlerTestAgent(test, "decision-intent-"+uuid.NewString()[:8], []byte("[]"))
+	agentName := "decision-intent-" + uuid.NewString()[:8]
+	agentID := createHandlerTestAgent(test, agentName, []byte("[]"))
 	issueID := dbfx.Issue(test, "intent issue", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(test, agentID, testutil.Cols{"issue_id": issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	humanID := dbfx.User(test, "Asked human", "intent-"+uuid.NewString()+"@test.invalid")
@@ -36,7 +37,7 @@ func newIntentFixture(test *testing.T) intentFixture {
 			test.Error(err)
 		}
 	})
-	return intentFixture{agentID, issueID, taskID, humanID}
+	return intentFixture{agentID, issueID, taskID, humanID, agentName}
 }
 
 func (fixture intentFixture) mention() string {

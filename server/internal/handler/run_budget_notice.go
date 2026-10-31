@@ -28,10 +28,26 @@ var (
 // onRunBudgetEvent writes the 80% warning once the admission that raised it
 // committed (CHE-2297 L1a).
 func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent) {
+	if e.Kind == service.RunBudgetKindWarn80Tokens {
+		h.warnTokensAtEighty(ctx, e)
+		return
+	}
 	if e.Kind != service.RunBudgetKindWarn80 || !h.admissionCommitted(ctx, e) {
 		return
 	}
 	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue used %d of %d runs of its run budget. When the budget is spent, nothing derived from this issue runs until a member moves its status.", e.Runs, e.Max))
+}
+
+// warnTokensAtEighty writes the token warning once the usage report that
+// crossed 80% committed (CHE-2297 L2e). The report is the only event that
+// spends tokens, so nothing else raises it; a report that rolled back, or that
+// carries no transaction to follow, writes nothing and leaves the window's
+// claim free for the real crossing.
+func (h *Handler) warnTokensAtEighty(ctx context.Context, e service.RunBudgetEvent) {
+	if e.Xid == 0 || !h.admissionTxFinished(ctx, e) {
+		return
+	}
+	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue has %d of %d tokens left of its token allowance. When the allowance is spent, nothing derived from this issue runs until a member moves its status.", e.Tokens, e.TokenBase))
 }
 
 // admissionCommitted reports whether the admission that raised a warning has
@@ -184,8 +200,11 @@ func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e ser
 		slog.Warn("run budget: usage summary failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
-	if e.Kind == service.RunBudgetKindWarn80 {
+	switch e.Kind {
+	case service.RunBudgetKindWarn80:
 		return content, "Run budget at 80%"
+	case service.RunBudgetKindWarn80Tokens:
+		return content, "Token allowance at 80%"
 	}
 	return content, "Run budget used up"
 }
