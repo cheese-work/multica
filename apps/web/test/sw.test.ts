@@ -13,8 +13,10 @@ type WorkerOptions = {
   fetchResponses?: { ok: boolean; status: number }[];
   // The device choice the page saved in IndexedDB; "unreadable" models a database that errors. Default "on".
   intent?: "on" | "unset" | "unreadable";
-  // navigator.locks; omit to model a browser without it.
-  locks?: { request: (name: string, run: () => Promise<unknown>) => Promise<unknown> };
+  // navigator.locks; default is a working lock manager, null models a browser without it.
+  // Holds every CSRF cookie read until it resolves, to pause the worker after its last intent check.
+  csrfGate?: Promise<void>;
+  locks?: { request: (name: string, run: () => Promise<unknown>) => Promise<unknown> } | null;
 };
 
 // A lock manager that runs holders of one name one at a time, in request order.
@@ -87,11 +89,14 @@ function loadWorker(options: WorkerOptions = {}) {
   const scope = {
     fetch: fetchMock,
     indexedDB: fakeIndexedDb(state),
-    ...(options.locks ? { navigator: { locks: options.locks } } : {}),
+    ...(options.locks === null ? {} : { navigator: { locks: options.locks ?? fakeLocks() } }),
     ...(cookies
       ? {
           cookieStore: {
-            get: async (name: string) => (name in cookies ? { name, value: cookies[name] } : null),
+            get: async (name: string) => {
+              if (name.startsWith("multica_csrf")) await options.csrfGate;
+              return name in cookies ? { name, value: cookies[name] } : null;
+            },
           },
         }
       : {}),
@@ -303,18 +308,6 @@ describe("service worker pushsubscriptionchange", () => {
       }
       const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-      it("drops the replacement and sends nothing when the choice turned off during subscribe", async () => {
-        const worker = loadWorker({ cookies });
-        const release = pausedSubscribe(worker);
-        const done = worker.dispatch("pushsubscriptionchange", change);
-        await tick();
-        worker.state.intent = "unset"; // the opt-out finished: record deleted
-        release();
-        await done;
-        expect(worker.fetch).not.toHaveBeenCalled();
-        expect(worker.renewed.unsubscribe).toHaveBeenCalled();
-      });
-
       it("waits for an opt-out that holds the device lock, then registers nothing", async () => {
         const locks = fakeLocks();
         const worker = loadWorker({ cookies, locks });
@@ -346,6 +339,32 @@ describe("service worker pushsubscriptionchange", () => {
         await optOut;
         expect(order).toEqual(["opt-out"]);
         expect(worker.fetch).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("without Web Locks", () => {
+      const cookies = { multica_csrf_session: "c" };
+
+      it("neither subscribes nor registers, even while the device wants push, and tells open tabs instead", async () => {
+        const worker = loadWorker({ cookies, locks: null });
+        const tab = fakeWindow("https://app.example/acme");
+        worker.windows.push(tab);
+        await worker.dispatch("pushsubscriptionchange", change);
+        expect(worker.subscribe).not.toHaveBeenCalled();
+        expect(worker.fetch).not.toHaveBeenCalled();
+        expect(tab.postMessage).toHaveBeenCalledWith({ type: "push-subscription-changed" });
+      });
+
+      it("cannot restore an endpoint after an opt-out that finishes while the renewal is running", async () => {
+        let release: () => void = () => undefined;
+        const csrfGate = new Promise<void>((resolve) => (release = resolve));
+        const worker = loadWorker({ cookies, locks: null, csrfGate });
+        const run = worker.dispatch("pushsubscriptionchange", change);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        worker.state.intent = "unset"; // the opt-out and its server DELETE complete here
+        release();
+        await run;
+        expect(worker.fetch).not.toHaveBeenCalled();
       });
     });
 
