@@ -1232,6 +1232,16 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
 		return
 	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind:        "project.workflow.update",
+		WorkspaceID: wsUUID,
+		TargetID:    project.ID,
+		Before:      map[string]any{"workflow_id": optionalUUIDString(project.WorkflowID)},
+		After:       map[string]any{"workflow_id": optionalUUIDString(updated.WorkflowID), "issues_remapped": len(changed)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.workflow.update")
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to change workflow")
 		return
