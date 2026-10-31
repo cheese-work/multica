@@ -20,9 +20,9 @@ WITH touched_issue AS (
 ), inserted_comment AS (
     INSERT INTO comment (id,issue_id,workspace_id,author_type,author_id,content,type,github_notify_only)
     SELECT $3,touched_issue.id,touched_issue.workspace_id,'system','00000000-0000-0000-0000-000000000000',$4,'comment',true
-    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids
+    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read
 )
-SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids,touched_issue.revision AS issue_revision
+SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids, inserted_comment.external_read,touched_issue.revision AS issue_revision
 FROM inserted_comment JOIN touched_issue ON touched_issue.id=inserted_comment.issue_id
 `
 
@@ -60,6 +60,7 @@ type CreateGitHubNotifyCommentRow struct {
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
+	ExternalRead        bool               `json:"external_read"`
 	IssueRevision       int64              `json:"issue_revision"`
 }
 
@@ -98,6 +99,7 @@ func (q *Queries) CreateGitHubNotifyComment(ctx context.Context, arg CreateGitHu
 		&i.DecisionCommentKind,
 		&i.GithubNotifyOnly,
 		&i.TaintIds,
+		&i.ExternalRead,
 		&i.IssueRevision,
 	)
 	return i, err
@@ -171,7 +173,7 @@ func (q *Queries) GetGitHubIntakePinForTask(ctx context.Context, arg GetGitHubIn
 }
 
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one
-SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override FROM issue
+SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override, issue.description_external_read FROM issue
 JOIN issue_pull_request link ON link.issue_id=issue.id
 JOIN github_pull_request pull ON pull.id=link.pull_request_id AND pull.workspace_id=issue.workspace_id
 JOIN github_installation installation ON installation.workspace_id=issue.workspace_id AND installation.installation_id=pull.installation_id
@@ -229,6 +231,7 @@ func (q *Queries) GetGitHubRouteIssue(ctx context.Context, arg GetGitHubRouteIss
 		&i.WorkflowID,
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
 	)
 	return i, err
 }

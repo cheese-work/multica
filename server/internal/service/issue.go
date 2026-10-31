@@ -97,6 +97,9 @@ type IssueCreateParams struct {
 	// used by the standalone PUT path, then inserts the complete bag atomically.
 	Properties     map[pgtype.UUID]json.RawMessage
 	AllowDuplicate bool
+	// MarkedWriter: the creating task is marked external_read, so the description
+	// stores the mark (CHE-2216 plan 3.7).
+	MarkedWriter bool
 	// Stage groups this issue into an ordered barrier group under its parent
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
@@ -503,6 +506,12 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, ErrIssuePropertiesTooLarge
 		}
 		return IssueCreateResult{}, fmt.Errorf("create issue: %w", err)
+	}
+
+	if p.MarkedWriter && p.Description.Valid {
+		if err := qtx.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("mark description external_read: %w", err)
+		}
 	}
 
 	if p.SourceContext != nil {
