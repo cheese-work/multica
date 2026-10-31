@@ -1,0 +1,55 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "1AmQcGCI1A",
+  "page_id": "1AmQcGCI1A:page1",
+  "screens": [
+    {
+      "screen": "Direction A (Tree): sidebar Hierarchy minimap, states at sidebar 320 and 260, light and dark",
+      "frame_id": "HZbKCzDxOj",
+      "updatedAt": "2026-10-31T14:53:12.877Z",
+      "content_sha256": "c01fbe7b7249bcc0a6f69e502f6e8074203aa9ca6d85f7f7074de3059278911b",
+      "selection_id": "01a19285-0f08-7cbb-8cd6-8c5d8330ad16",
+      "ux_verdict_id": "01a1927f-de38-7c92-a9f0-5eb06287308e"
+    },
+    {
+      "screen": "D4: navigating from the dialog collapses it into the target's minimap (3 steps)",
+      "frame_id": "61GIbGrYNt",
+      "updatedAt": "2026-10-31T14:58:35.785Z",
+      "content_sha256": "cebd3e842a9d95d98e64da8ad450580e8bc28a548d9a6d9b347d061f3b9e3a3f",
+      "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
+      "ux_verdict_id": "PENDING"
+    },
+    {
+      "screen": "D5: canvas dialog zoomed out 40%, groups show totals",
+      "frame_id": "Kb3NjW8ywR",
+      "updatedAt": "2026-10-31T15:26:50.020Z",
+      "content_sha256": "25f141dd9e70e515eede96da2d67d1409ee82b4a576af17b25e13f6ef9830a7a",
+      "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
+      "ux_verdict_id": "PENDING"
+    },
+    {
+      "screen": "D6: canvas dialog zoomed in 130%, groups split into single issues",
+      "frame_id": "wJLp5mllsX",
+      "updatedAt": "2026-10-31T15:26:43.046Z",
+      "content_sha256": "5a65520d91b0fa72f9e6e98f882f5e8493d76a76400ccf15284d9af542147042",
+      "selection_id": "01a19293-4843-7853-8c95-9828c2a9c610",
+      "ux_verdict_id": "PENDING"
+    }
+  ],
+  "export_sha256": "58e4d1e275cbe710180ba13abdf161e2a6e04511443d8237acef3875891848fb",
+  "export_sha256_method": "sha256 of the lines '<sha256>  <file>' (newline after each), for export_files sorted by file name",
+  "export_files": {
+    "dialog-zoomed-in.html": "5a65520d91b0fa72f9e6e98f882f5e8493d76a76400ccf15284d9af542147042",
+    "dialog-zoomed-out.html": "25f141dd9e70e515eede96da2d67d1409ee82b4a576af17b25e13f6ef9830a7a",
+    "navigate-collapse.html": "cebd3e842a9d95d98e64da8ad450580e8bc28a548d9a6d9b347d061f3b9e3a3f",
+    "tree-minimap-states.html": "c01fbe7b7249bcc0a6f69e502f6e8074203aa9ca6d85f7f7074de3059278911b"
+  },
+  "export_transform": "none: each frame HTML is self-contained (system font stack, no external fetch); written as read from doop, without a trailing newline",
+  "exported_at": "2026-10-31 22:45 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2749",
+  "selection_id": "01a19285-0f08-7cbb-8cd6-8c5d8330ad16",
+  "ux_verdict_id": "01a1927f-de38-7c92-a9f0-5eb06287308e",
+  "notes": "Frame D5 and D6 updatedAt moved after their first PASS (verdict 01a19288-e171-7dd0-a01c-d1dbac176f2b, updatedAt 2026-10-31T15:13:31.831Z and 15:14:27.547Z) because Cheese moved the frames on the canvas; the HTML bytes are unchanged. ux_verdict_id on D4, D5 and D6 is the confirmation of the exact versions listed here."
+}

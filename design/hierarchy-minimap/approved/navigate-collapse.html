@@ -1,0 +1,65 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+:root{--pn:#18181b;--bd:#2e2e33;--cd:#232327;--lf:#1f1f23;--lb:#3a3a42;--tx:#e7e7ea;--mu:#a1a1aa;--ln:#52525b;--dn:#6b8cff;--ac:#f5a524;--bk:#ef4444;--yb:#252a3a;--yc:#6b8cff;--yt:#c7d2fe;--sk:#2c2c31}
+body{width:1500px;height:560px;position:relative;background:#0a0a0b;font:12px/1.4 "Helvetica Neue",Arial,"Liberation Sans",sans-serif;color:var(--tx);overflow:hidden;padding:20px 24px}
+h1{font-size:16px;margin-bottom:4px}.sub{color:var(--mu);font-size:12px;margin-bottom:16px;max-width:1100px}
+.row{display:flex;gap:20px}
+.st{width:456px;flex:none}
+.cap{font:700 11px "DejaVu Sans Mono",monospace;color:var(--mu);margin-bottom:8px}
+.cap2{margin-top:10px;font-size:12px;color:var(--mu);line-height:1.45}.cap2 b{color:var(--tx)}
+.box{position:relative;height:350px;border:1px solid var(--bd);border-radius:12px;background:#050506;overflow:hidden}
+.mini{position:absolute;background:var(--pn);border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+.mh{height:22px;border-bottom:1px solid var(--bd);padding:4px 8px;font-size:9.5px;font-weight:700}
+.c{position:absolute;background:var(--cd);border:1px solid var(--bd);border-radius:6px;padding:4px 6px;font-size:9px}
+.lf{position:absolute;background:var(--lf);border:1px dashed var(--lb);border-radius:6px;padding:5px 7px;font-size:9px}
+.id{font:700 9px "DejaVu Sans Mono",monospace;color:var(--mu)}
+.dt{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
+.nr{display:flex;align-items:center;gap:4px;padding:2px 4px;margin:1px -4px;border-radius:4px;font-size:9.5px;white-space:nowrap}
+.nr.h{background:#2a3150;outline:1px solid var(--dn)}
+.y{background:var(--yb);border:2px solid var(--yc);box-shadow:0 0 0 3px rgba(107,140,255,.2)}
+.sb{display:flex;height:4px;border-radius:2px;overflow:hidden;background:var(--sk);margin:4px 0}.sb i{display:block}
+.arrow{position:absolute;color:var(--dn);font-weight:700;font-size:11px}
+.pg{position:absolute;left:0;top:0;right:0;bottom:0;display:flex}
+.main{flex:1;padding:12px 14px}.main h3{font-size:13px;margin-bottom:6px}.main p{color:var(--mu);font-size:10.5px;margin-bottom:5px}
+.side{width:210px;border-left:1px solid var(--bd);padding:8px;background:var(--pn)}
+.sh{font-size:10px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between}
+.ph{height:7px;background:#2c2c31;border-radius:3px;margin-bottom:5px}
+.mm{position:relative;height:196px;border:1px solid var(--bd);border-radius:8px;background:radial-gradient(#2a2a2f 1px,transparent 1px) 0 0/12px 12px}
+.flash{box-shadow:0 0 0 2px var(--dn)}
+</style></head><body>
+<h1>D4 · Navigating from the dialog collapses it into the target issue's minimap</h1>
+<div class="sub">Example: CHE-2216 dialog, user opens child CHE-2493. The dialog shrinks toward the sidebar; the page swaps to CHE-2493; the new minimap is already fitted with CHE-2493 as "you are here". Reduced-motion: skip step 2, swap instantly. Focus lands on the minimap heading.</div>
+<div class="row">
+<div class="st"><div class="cap">1 · IN THE DIALOG</div>
+<div class="box"><div class="mini" style="left:18px;top:16px;width:420px;height:318px"><div class="mh">Hierarchy · CHE-2216</div>
+<div class="c" style="left:130px;top:34px;width:150px"><span class="id">CHE-2126</span> parent</div>
+<div class="lf" style="left:14px;top:84px;width:150px"><b>21 siblings</b><div class="sb"><i style="width:57%;background:var(--dn)"></i><i style="width:10%;background:var(--ac)"></i><i style="width:10%;background:var(--bk)"></i></div></div>
+<div class="c y" style="left:190px;top:84px;width:110px"><span class="id" style="color:var(--yt)">CHE-2216</span> you are here</div>
+<div class="lf" style="left:150px;top:126px;width:260px;border-style:solid;border-color:var(--dn)"><b>33 children</b>
+<div class="nr"><b class="dt" style="background:var(--ac)"></b><span class="id">CHE-2501</span> A5a sandbox policy</div>
+<div class="nr h"><b class="dt" style="border:1.5px solid var(--mu);width:7px;height:7px"></b><span class="id">CHE-2493</span> A2c issue pane wiring <span style="margin-left:auto;color:var(--yt)">Enter to open</span></div>
+<div class="nr"><b class="dt" style="border:1.5px solid var(--mu);width:7px;height:7px"></b><span class="id">CHE-2494</span> A7a relations API</div>
+<div class="nr"><b class="dt" style="border:1.5px solid var(--mu);width:7px;height:7px"></b><span class="id">CHE-2495</span> A7b wake counts</div></div>
+</div></div>
+<div class="cap2"><b>Click or Enter</b> on a listed issue (D leaf expanded). Single click selects, double click or Enter navigates.</div></div>
+
+<div class="st"><div class="cap">2 · ~180 MS TRANSITION</div>
+<div class="box"><div class="mini" style="left:18px;top:16px;width:420px;height:318px;opacity:.28;border-style:dashed"><div class="mh">Hierarchy · CHE-2216</div></div>
+<div class="mini" style="left:210px;top:70px;width:230px;height:170px;opacity:.55;border-color:var(--dn)"><div class="mh">Hierarchy · CHE-2216</div></div>
+<div class="mini" style="left:318px;top:112px;width:122px;height:90px;opacity:.9;border-color:var(--dn)"><div class="mh">Hierarchy</div></div>
+<div class="arrow" style="left:150px;top:150px">scale + move toward sidebar</div>
+<div class="arrow" style="left:40px;top:300px;color:var(--mu);font-weight:400">scrim fades out · page title swaps to CHE-2493 at the end</div></div>
+<div class="cap2"><b>Dialog shrinks</b> into the sidebar minimap slot. Ease-out, 180 ms. With reduced motion: no animation, instant swap.</div></div>
+
+<div class="st"><div class="cap">3 · ISSUE CHE-2493, MINIMAP FITTED</div>
+<div class="box"><div class="pg"><div class="main"><h3>CHE-2493 · A2c issue pane wiring</h3><p>Status: Todo · Parent CHE-2216</p><div class="ph" style="width:90%"></div><div class="ph" style="width:75%"></div><div class="ph" style="width:82%"></div><div class="ph" style="width:40%"></div></div>
+<div class="side"><div class="sh"><span>Hierarchy</span><span style="color:var(--mu)">expand</span></div>
+<div class="mm">
+<div class="c" style="left:36px;top:8px;width:128px"><span class="id">CHE-2216</span> parent<br>restricted and elevated runs</div>
+<div class="lf" style="left:6px;top:64px;width:92px"><b>32 siblings</b><div class="sb"><i style="width:36%;background:var(--dn)"></i><i style="width:3%;background:var(--ac)"></i></div></div>
+<div class="c y" style="left:104px;top:64px;width:86px"><span class="id" style="color:var(--yt)">CHE-2493</span><br><b>you are here</b></div>
+<div class="c" style="left:104px;top:128px;width:86px;border-style:dashed;color:var(--mu);background:transparent">no sub-issues</div>
+</div>
+<div class="ph" style="margin-top:10px;width:70%"></div><div class="ph" style="width:55%"></div></div></div></div>
+<div class="cap2"><b>Already fitted.</b> Parent, 32 siblings (CHE-2216's other children), CHE-2493 highlighted, and no children. Page content and Properties are unchanged.</div></div>
+</div></body></html>
