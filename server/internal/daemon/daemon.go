@@ -662,6 +662,10 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+
+	// hostSampler holds the latest host CPU/RAM/disk sample; nil until Run
+	// starts it. Attached to every runtime heartbeat via heartbeatRequest.
+	hostSampler *hostSampler
 	// Sticky for this process: a finished task can leave independent processes
 	// behind even after activeTasks reaches zero.
 	cleanupUnconfirmed atomic.Bool
@@ -2203,6 +2207,8 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
+	d.hostSampler = newHostSampler(newProcHostCollector())
+	go d.hostSampler.Run(ctx, hostSampleWarmup, protocol.HostSampleInterval, d.logger)
 	go d.heartbeatLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
@@ -4535,7 +4541,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4681,7 +4687,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {

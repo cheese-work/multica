@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
@@ -444,6 +447,38 @@ type DaemonHeartbeatRequestPayload struct {
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
 	// not report it; zero is a real "idle".
 	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
+	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
+	// not per runtime), repeated on every runtime heartbeat until the next
+	// sample. Nil from a daemon that does not sample (older, macOS, Windows).
+	HostSample *DaemonHostSample `json:"host_sample,omitempty"`
+}
+
+// HostSampleInterval is how often a daemon takes a host sample.
+const HostSampleInterval = time.Minute
+
+// HostSampleStaleAfter is three sample intervals: a sample older than this is
+// unknown, never the last value.
+const HostSampleStaleAfter = 3 * HostSampleInterval
+
+// MaxHostSampleDisks bounds the mounts in one sample.
+const MaxHostSampleDisks = 8
+
+// DaemonHostSample is one host reading. SampledAt is truncated to the minute.
+type DaemonHostSample struct {
+	SampledAt  time.Time        `json:"sampled_at"`
+	CPUPercent float64          `json:"cpu_percent"`
+	RAMPercent float64          `json:"ram_percent"`
+	Disks      []DaemonHostDisk `json:"disks,omitempty"`
+}
+
+type DaemonHostDisk struct {
+	MountPath string  `json:"mount_path"`
+	Percent   float64 `json:"percent"`
+}
+
+// HostSampleStale reports whether a sample taken at sampledAt is stale at now.
+func HostSampleStale(sampledAt, now time.Time) bool {
+	return now.Sub(sampledAt) > HostSampleStaleAfter
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
