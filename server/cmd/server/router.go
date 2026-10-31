@@ -2710,6 +2710,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/feed", h.ListDecisionFeed)
 				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
+				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
 				r.Get("/{id}/artifacts", h.ListDecisionArtifacts)
 				r.Post("/{id}/withdraw", h.WithdrawDecision)
