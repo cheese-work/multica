@@ -73,6 +73,11 @@ func (g ReviewGate) Apply(p *db.CreateAgentTaskParams) {
 // lost the head's admission to a concurrent enqueue writes no row and counts as
 // a duplicate: the winner is the review.
 func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskParams) (db.AgentTaskQueue, error) {
+	acting, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	p.TaintIds = append(p.TaintIds, acting...)
 	task, err := q.CreateAgentTask(ctx, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask

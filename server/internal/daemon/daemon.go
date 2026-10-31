@@ -695,6 +695,10 @@ type Daemon struct {
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
 
+	// pause is the server-reported machine pause, refreshed by every heartbeat
+	// ack (see pause.go). nil when the machine is not paused.
+	pause atomic.Pointer[heldPause]
+
 	// maintMu guards maint, the owner maintenance lease (see maintenance.go).
 	// The lease holds `updating` + the claim barrier; it adds no second flag.
 	maintMu sync.Mutex
@@ -4516,7 +4520,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4551,6 +4555,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	if resp == nil {
 		return
 	}
+	d.applyHeartbeatPause(resp.Paused)
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
@@ -4661,7 +4666,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -5201,7 +5206,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims {
+	if d.pauseClaims || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++

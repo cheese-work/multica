@@ -443,6 +443,10 @@ type ChatSessionUpdatedPayload struct {
 type DaemonHeartbeatRequestPayload struct {
 	RuntimeID           string `json:"runtime_id"`
 	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	// InFlightTasks is the number of tasks the whole daemon is running or
+	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
+	// not report it; zero is a real "idle".
+	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -471,6 +475,16 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+	// Paused is the machine's live pause (CHE-2673). Absent when the machine
+	// takes work. The server claim gate holds either way; the daemon mirrors it.
+	Paused *DaemonHeartbeatPaused `json:"paused,omitempty"`
+}
+
+// DaemonHeartbeatPaused is the desired pause state a heartbeat ack carries.
+type DaemonHeartbeatPaused struct {
+	Reason    string `json:"reason"`
+	PausedAt  string `json:"paused_at"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
