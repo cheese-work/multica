@@ -2219,6 +2219,35 @@ type ProviderFailureRecovery struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
+type PushDelivery struct {
+	ID             pgtype.UUID        `json:"id"`
+	RecordID       pgtype.UUID        `json:"record_id"`
+	SubscriptionID pgtype.UUID        `json:"subscription_id"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	ClaimedUntil   pgtype.Timestamptz `json:"claimed_until"`
+	Attempts       int32              `json:"attempts"`
+	SentAt         pgtype.Timestamptz `json:"sent_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ClaimToken     pgtype.UUID        `json:"claim_token"`
+}
+
+type PushSessionEnd struct {
+	SessionID string             `json:"session_id"`
+	EndedAt   pgtype.Timestamptz `json:"ended_at"`
+}
+
+type PushSubscription struct {
+	ID                pgtype.UUID        `json:"id"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	Endpoint          string             `json:"endpoint"`
+	P256dh            string             `json:"p256dh"`
+	Auth              string             `json:"auth"`
+	SessionID         string             `json:"session_id"`
+	SessionValidUntil pgtype.Timestamptz `json:"session_valid_until"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	LastSuccessAt     pgtype.Timestamptz `json:"last_success_at"`
+}
+
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
