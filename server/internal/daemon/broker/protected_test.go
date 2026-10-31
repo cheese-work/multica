@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -275,7 +276,7 @@ func TestMatchProtected(t *testing.T) {
 		want      bool
 	}{
 		{".github/**", ".github/workflows/x.yml", true},
-		{".github/**", ".github", false},
+		{".github/**", ".github", true}, // the directory root itself: a symlink or file there aliases the tree
 		{".github/**", "x/.github/a", false},
 		{"**/AGENTS.md", "AGENTS.md", true},
 		{"**/AGENTS.md", "a/b/AGENTS.md", true},
@@ -390,4 +391,133 @@ func TestPushRefusesTooManyCommits(t *testing.T) {
 	if got := r.remoteRef(t, r.pin.Ref); got != "" {
 		t.Fatalf("remote ref advanced to %s", got)
 	}
+}
+
+// seedUpstream commits files to the remote default branch and merges that into
+// the task branch, so they are in the branch tree but not in its diff.
+func (r *rig) seedUpstream(t testing.TB, files map[string]string, links map[string]string) {
+	t.Helper()
+	seed := filepath.Join(t.TempDir(), "s")
+	git(t, filepath.Dir(seed), "clone", "-q", r.remote, seed)
+	for f, body := range files {
+		full := filepath.Join(seed, f)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for l, target := range links {
+		full := filepath.Join(seed, l)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.Symlink(target, full); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, seed, "add", "-A")
+	git(t, seed, "commit", "-qm", "upstream layout")
+	git(t, seed, "push", "-q", "origin", "main")
+	git(t, r.work, "fetch", "-q", r.remote, "main")
+	git(t, r.work, "merge", "-q", "--no-edit", "FETCH_HEAD")
+}
+
+func (r *rig) symlink(t testing.TB, link, target string) {
+	t.Helper()
+	full := filepath.Join(r.work, link)
+	_ = os.MkdirAll(filepath.Dir(full), 0o755)
+	if err := os.Symlink(target, full); err != nil {
+		t.Fatal(err)
+	}
+	git(t, r.work, "add", "-A")
+	git(t, r.work, "commit", "-qm", "link "+link)
+}
+
+// A symlink can make a protected path resolve to content at an unprotected
+// one. The root of a protected directory is protected, and a change that an
+// alias in the pushed tree (new or already there) exposes under a protected
+// path is refused.
+func TestPushRefusesDirAlias(t *testing.T) {
+	t.Parallel()
+	for name, edit := range map[string]func(*rig, testing.TB){
+		"lone": func(r *rig, t testing.TB) { r.symlink(t, ".claude", "payload") },
+		"new": func(r *rig, t testing.TB) {
+			r.symlink(t, ".claude", "payload")
+			r.write(t, "payload/skills/example/SKILL.md", "x\n")
+		},
+		"old": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, map[string]string{"payload/keep": "k\n"}, map[string]string{".claude": "payload"})
+			r.write(t, "payload/skills/example/SKILL.md", "x\n")
+		},
+		"chain": func(r *rig, t testing.TB) {
+			r.seedUpstream(t, map[string]string{"real/keep": "k\n"}, map[string]string{".claude": "p1", "p1/sub": "../real"})
+			r.write(t, "real/x", "x\n")
+		},
+		"top": func(r *rig, t testing.TB) {
+			r.pin.Policy = func(context.Context) ([]string, error) { return []string{"mirror/src/**"}, nil }
+			r.seedUpstream(t, nil, map[string]string{"mirror": "."})
+			r.write(t, "src/b.go", "package b\n")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			edit(r, t)
+			r.start(t)
+			code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
+			if code != 403 || !strings.Contains(body, "protected path") {
+				t.Fatalf("status %d (%s), want 403 protected path", code, body)
+			}
+			if got := r.remoteRef(t, r.pin.Ref); got != "" {
+				t.Fatalf("remote gained %s at %s", r.pin.Ref, got)
+			}
+		})
+	}
+}
+
+// An alias into an unprotected tree is not a reason to refuse.
+func TestPushAllowsAliasToUnprotectedTree(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.symlink(t, "docs/link", "../src")
+	r.write(t, "src/a.go", "package a // changed\n")
+	r.start(t)
+	if code, body := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t))); code != 200 {
+		t.Fatalf("status %d (%s)", code, body)
+	}
+}
+
+// One compact commit can reuse a subtree under many names. The check counts
+// the paths it would expand and refuses past the cap, before any policy match
+// has to scan them all.
+func TestPushRefusesPathExplosion(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	leaf := mktree(t, r.work, "100644 blob "+git(t, r.work, "rev-parse", "HEAD:src/a.go")+"\tf1\n100644 blob "+git(t, r.work, "rev-parse", "HEAD:src/a.go")+"\tf2\n")
+	var in strings.Builder
+	in.WriteString(git(t, r.work, "ls-tree", "HEAD") + "\n")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&in, "040000 tree %s\tdir%03d\n", leaf, i)
+	}
+	root := mktree(t, r.work, in.String())
+	c := git(t, r.work, "commit-tree", root, "-p", "HEAD", "-m", "explode")
+	git(t, r.work, "reset", "-q", "--hard", c)
+	r.pin.MaxPaths = 100
+	r.start(t)
+	code, out := r.post(t, r.pushQuery(), bytes.NewReader(r.bundleOf(t)))
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d (%s), want 413", code, out)
+	}
+	if got := r.remoteRef(t, r.pin.Ref); got != "" {
+		t.Fatalf("remote gained %s at %s", r.pin.Ref, got)
+	}
+}
+
+func mktree(t testing.TB, dir, entries string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "mktree")
+	cmd.Stdin = strings.NewReader(entries)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("mktree: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }

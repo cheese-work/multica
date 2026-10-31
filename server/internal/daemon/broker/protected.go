@@ -91,8 +91,10 @@ func (b *Broker) defaultBranch(ctx context.Context) (string, error) {
 }
 
 // checkProtected refuses a push whose tree differs from its merge base with the
-// remote default branch at any path the policy protects. The net tree diff is
-// what a merge would land; renames are split so both sides are checked.
+// remote default branch at any path the policy protects, or at any path that a
+// symlink in the pushed tree makes reachable from one. The net tree diff is what
+// a merge would land; renames are split so both sides are checked. The walk is
+// bounded (see treewalk.go); a push over a bound is refused with 413.
 func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, patterns []string) (int, error) {
 	const def = "refs/multica/default"
 	if out, err := b.git(ctx, work, "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--quiet", b.pin.RemoteURL, "+"+defRef+":"+def); err != nil {
@@ -102,20 +104,64 @@ func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, p
 	if err != nil || bases == "" {
 		return http.StatusForbidden, errors.New("the pushed branch shares no history with the default branch")
 	}
+	limit := b.pin.MaxPaths
+	if limit <= 0 {
+		limit = defaultMaxPaths
+	}
+	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	defer cancel()
+	o, err := b.newObjReader(ctx, work, 2*limit)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	defer o.close()
+	tipTree, err := b.git(ctx, work, "rev-parse", sha+"^{tree}")
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("tip tree: %s", firstLine(tipTree))
+	}
+	var changed []string
+	w := &walker{o: o, max: limit, sink: func(p string) error { changed = append(changed, p); return nil }}
 	for _, base := range strings.Fields(bases) {
-		raw, err := exec.CommandContext(ctx, "git", "--git-dir", work, "diff", "--name-only", "-z", "--no-renames", base, sha).Output()
+		baseTree, err := b.git(ctx, work, "rev-parse", base+"^{tree}")
 		if err != nil {
-			return http.StatusInternalServerError, fmt.Errorf("diff: %w", err)
+			return http.StatusInternalServerError, fmt.Errorf("base tree: %s", firstLine(baseTree))
 		}
-		for _, p := range strings.Split(string(raw), "\x00") {
+		if err := w.diff(baseTree, tipTree, "", 0); err != nil {
+			return walkStatus(err), err
+		}
+	}
+	links, err := w.symlinks(tipTree)
+	if err != nil {
+		return walkStatus(err), err
+	}
+	idx := indexLinks(links)
+	for _, p := range changed {
+		reach, err := idx.aliases(p)
+		if err != nil {
+			return walkStatus(err), err
+		}
+		for _, q := range reach {
 			for _, pat := range patterns {
-				if p != "" && matchProtected(pat, p) {
+				if matchProtected(pat, q) {
+					if q != strings.ToLower(p) {
+						return http.StatusForbidden, fmt.Errorf("change to %q reaches protected path %q through a symlink (policy %q)", p, q, pat)
+					}
 					return http.StatusForbidden, fmt.Errorf("change to protected path %q (policy %q)", p, pat)
 				}
 			}
 		}
 	}
 	return 0, nil
+}
+
+// checkTimeout bounds the whole protected-path walk of one push.
+const checkTimeout = 2 * time.Minute
+
+func walkStatus(err error) int {
+	if errors.Is(err, errBudget) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusInternalServerError
 }
 
 // defaultMaxCommits caps the commits one push may add; maxCommitHeader caps the
@@ -225,7 +271,7 @@ func hashMessage(r *bufio.Reader, n int64) (string, error) {
 
 // matchProtected reports whether path falls under a policy pattern: slash
 // separated segments, `*` within a segment, `**` for any number of whole
-// segments (a trailing `**` needs at least one). Case-insensitive, so a
+// segments (a trailing `**` may match none, so `dir/**` protects `dir` itself, which a symlink or file swap can replace). Case-insensitive, so a
 // case-folding checkout cannot slip a protected file past a case variant. A
 // malformed segment matches: a bad pattern must refuse, not protect nothing.
 func matchProtected(pattern, p string) bool {
@@ -236,7 +282,7 @@ func matchSegs(pat, p []string) bool {
 	for len(pat) > 0 {
 		if pat[0] == "**" {
 			if len(pat) == 1 {
-				return len(p) > 0
+				return true
 			}
 			for i := 0; i <= len(p); i++ {
 				if matchSegs(pat[1:], p[i:]) {

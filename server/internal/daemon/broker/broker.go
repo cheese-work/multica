@@ -42,6 +42,9 @@ type Pin struct {
 	ReceiptLog string `json:"-"`
 	// MaxCommits caps the commits one push may add; zero means the default.
 	MaxCommits int `json:"-"`
+	// MaxPaths caps the paths one push may change, and so the work the
+	// protected-path check does; zero means the default.
+	MaxPaths int `json:"-"`
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
