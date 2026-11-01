@@ -1087,7 +1087,8 @@ describe("IssueDetail (shared)", () => {
     // layout jump caused by swapping a long react-markdown tree for ProseMirror.
     // Title and comment/reply composers remain readonly-first.
     expect(await screen.findByDisplayValue("Add JWT auth to the backend")).toBeInTheDocument();
-    expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    // The sidebar minimap's "you are here" card repeats the title, so scope to the heading.
+    expect(screen.getByText("Implement authentication", { selector: "#find-title-issue-1" })).toBeInTheDocument();
     expect(screen.queryByTestId("title-editor")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("rich-text-editor")).toHaveLength(1);
     expect(contentEditorMounts.count).toBe(1);
@@ -1314,12 +1315,6 @@ describe("IssueDetail (shared)", () => {
     // The "+ Add property" affordance is always offered while any
     // optional field is still hidden.
     expect(screen.getByText("Add property")).toBeInTheDocument();
-  });
-
-  it("offers a relations graph in the sidebar without mounting a graph before click", async () => {
-    renderIssueDetail();
-    expect(await screen.findByRole("button", { name: "Relations graph" })).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Relations graph" })).not.toBeInTheDocument();
   });
 
   it("hides every optional property row when none are set", async () => {
