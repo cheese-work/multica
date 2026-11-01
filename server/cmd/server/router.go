@@ -1720,6 +1720,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
+		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
@@ -2227,6 +2228,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
+					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
@@ -2269,6 +2271,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					r.Put("/preset", h.SetIssuePreset)
+					r.Delete("/preset", h.ClearIssuePreset)
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
@@ -2512,6 +2516,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
 					r.Post("/skills/add", h.AddAgentSkills)
+					// Agent presets (CHE-2249). The fixed names register before
+					// {name}; chi matches them first.
+					r.Get("/presets", h.ListAgentPresets)
+					r.Post("/presets", h.CreateAgentPreset)
+					r.Get("/presets/completions", h.AgentPresetCompletions)
+					r.Get("/presets/usage", h.AgentPresetUsage)
+					r.Put("/presets/default", h.SetAgentDefaultPreset)
+					r.Patch("/presets/{name}", h.UpdateAgentPreset)
+					r.Delete("/presets/{name}", h.DeleteAgentPreset)
 					r.Get("/labels", h.ListLabelsForAgent)
 					r.Post("/labels", h.AttachLabelToAgent)
 					r.Delete("/labels/{labelId}", h.DetachLabelFromAgent)
@@ -2582,6 +2595,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
+
+			// Ops — queue and machine health for operators (CHE-2586 L1).
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Get("/api/ops", h.GetOps)
 
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {

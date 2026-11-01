@@ -46,7 +46,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_preset":                       workspaceDelete,
 	"agent_runtime":                      workspaceDelete,
 	"agent_skill":                        workspaceDelete,
+	"agent_task_event":                   workspaceDelete,
 	"agent_task_queue":                   workspaceDelete,
+	"ops_snapshot":                       workspaceDelete,
+	"ops_snapshot_5m":                    workspaceDelete,
 	"agent_to_label":                     workspaceDelete,
 	"attachment":                         workspaceDelete,
 	"autopilot":                          workspaceDelete,
@@ -114,6 +117,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
 	"github_snapshot_approval":           workspaceDelete,
+	"read_snapshot_approval":             workspaceDelete, // CHE-2509 elevated-read approvals; workspace-owned leaf.
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.

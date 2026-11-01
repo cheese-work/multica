@@ -52,7 +52,10 @@ type AgentConversationStarter struct {
 }
 
 type AgentResponse struct {
-	ID          string `json:"id"`
+	// StalePresets is set only on an agent update response: presets the
+	// update left unable to run (CHE-2249 E5).
+	StalePresets []stalePreset `json:"stale_presets,omitempty"`
+	ID           string        `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
 	// RuntimeID is the empty string when the agent is unbound — it kept its
 	// configuration and history when its runtime was deleted, and needs a new
@@ -2661,8 +2664,11 @@ func (h *Handler) updatedAgentResponse(w http.ResponseWriter, r *http.Request, u
 	}
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
+	stale := h.stalePresetsOf(r.Context(), updated)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	// After the broadcast: subscribers get the agent, not this one caller's warning.
+	resp.StalePresets = stale
 	redactAgentResponseForActor(&resp, actorType)
 	// Workspace admins / non-owner members pass canManageAgent for legitimate
 	// admin actions (e.g. bulk reassigning agents off a leaving member's

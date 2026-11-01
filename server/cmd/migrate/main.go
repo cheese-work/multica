@@ -146,6 +146,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 var concurrentIndexCleanups = map[string]string{
 	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
 	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
+	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",
+	"860_ops_snapshot_ws_bucket_index":                          "idx_ops_snapshot_ws_bucket",
 	"815_agent_decision_reliance_instance":                      "agent_decision_reliance_instance_idx",
 	"810_agent_decision_events_index":                           "agent_decision_events_idx",
 	"811_agent_decision_scope_candidate_gate_index":             "agent_decision_scope_candidate_gate_uidx",
