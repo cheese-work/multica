@@ -183,6 +183,9 @@ type Step struct {
 	// creates a child issue that follows another workflow, and a children_done
 	// edge joins when every child of the stage is done.
 	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry are the conditions a status write must meet to put an issue into
+	// this step (CHE-2295); none means no gate.
+	Entry []EntryGate `json:"entry,omitempty"`
 }
 
 // SubWorkflow names the workflow a sub-workflow step starts and the stage its
@@ -234,6 +237,7 @@ type storedStep struct {
 	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
 	Edges         []Edge       `json:"edges,omitempty"`
 	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
+	Entry         []EntryGate  `json:"entry,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -277,6 +281,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			AdvanceOnCIGreen: s.AdvanceOnCI,
 			Edges:            s.Edges,
 			SubWorkflow:      s.SubWorkflow,
+			Entry:            s.Entry,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -298,7 +303,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
@@ -471,6 +476,7 @@ func NormalizeHandoff(s Step) Step {
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
 	s.Edges = normalizeEdges(s.Edges)
+	s.Entry = normalizeEntry(s.Entry)
 	if s.SubWorkflow != nil {
 		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
 	}
@@ -517,6 +523,9 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
 	if err := validateSubWorkflow(s); err != nil {
+		return err
+	}
+	if err := validateEntry(s); err != nil {
 		return err
 	}
 	return validateEdges(s, def)

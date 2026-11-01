@@ -474,6 +474,8 @@ type Handler struct {
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
+	// readApprovalSnapshot overrides the snapshot read of the R3 approval action; nil uses PRRefresh.
+	readApprovalSnapshot githubSnapshotReader
 	cfg                  Config
 }
 

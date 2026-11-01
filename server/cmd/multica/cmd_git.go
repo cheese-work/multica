@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,7 +21,8 @@ var gitPushCmd = &cobra.Command{
 	Use:   "push [origin] [HEAD|<branch>]",
 	Short: "Push the task branch through the daemon's push broker",
 	Long: "Sends the checked-out task branch to the daemon, which pushes it with a credential this run never holds.\n" +
-		"Only the task branch of the task repository is accepted; force, delete, tags and other refs are refused.\n" +
+		"Only the task branch of the task repository is accepted; delete, tags, other refs and a bare --force are refused.\n" +
+		"--force-with-lease=<branch>:<sha> may replace the remote task branch when it still points at <sha>.\n" +
 		"The `git` wrapper in a restricted run maps `git push` to this command.",
 	Args: cobra.MaximumNArgs(2),
 	RunE: runGitPush,
@@ -29,20 +31,25 @@ var gitPushCmd = &cobra.Command{
 func init() {
 	gitCmd.AddCommand(gitPushCmd)
 	gitPushCmd.Flags().BoolP("set-upstream", "u", false, "Accepted and ignored: the broker owns the remote")
-	for _, f := range []string{"force", "force-with-lease"} {
-		gitPushCmd.Flags().Bool(f, false, "Refused: the broker never force-pushes")
-	}
+	gitPushCmd.Flags().Bool("force", false, "Refused: force needs a lease")
+	gitPushCmd.Flags().String("force-with-lease", "", "Replace the remote task branch only if it still points at <sha>: =<branch>:<sha>, or the remote-tracking ref when bare")
+	gitPushCmd.Flags().Lookup("force-with-lease").NoOptDefVal = broker.TrackingLease
 	gitPushCmd.Flags().BoolP("f", "f", false, "")
 	_ = gitPushCmd.Flags().MarkHidden("f")
 }
 
 func runGitPush(cmd *cobra.Command, args []string) error {
-	for _, f := range []string{"force", "force-with-lease", "f"} {
+	for _, f := range []string{"force", "f"} {
 		if on, _ := cmd.Flags().GetBool(f); on {
-			return fmt.Errorf("push --%s is refused: the broker never force-pushes", f)
+			return errors.New("push --force is refused: use --force-with-lease=<branch>:<sha>")
 		}
 	}
 	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	spec, _ := cmd.Flags().GetString("force-with-lease")
+	lease, err := broker.Lease(dir, spec)
 	if err != nil {
 		return err
 	}
@@ -53,7 +60,7 @@ func runGitPush(cmd *cobra.Command, args []string) error {
 	if sock == "" {
 		return fmt.Errorf("%s is not set: this run has no push broker", broker.SocketEnv)
 	}
-	return broker.Push(cmd.Context(), sock, dir, cmd.OutOrStdout())
+	return broker.PushWithLease(cmd.Context(), sock, dir, lease, cmd.OutOrStdout())
 }
 
 // checkPushArgs accepts the remote "origin" and the current branch (or HEAD);

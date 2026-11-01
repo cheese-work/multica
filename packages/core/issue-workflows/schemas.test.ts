@@ -46,6 +46,25 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(parsed.steps[0]?.edges).toEqual(edges);
   });
 
+  it("keeps step entry gates and defaults member_override (CHE-2531)", () => {
+    const parsed = IssueWorkflowSchema.parse({
+      ...baseWorkflow,
+      steps: [{ status_key: "in_review", handler: { type: "none" }, instructions: "", entry: [{ guard: "pr.ready", mode: "block" }] }],
+    });
+    expect(parsed.steps[0]?.entry).toEqual([{ guard: "pr.ready", mode: "block", member_override: true }]);
+    expect(IssueWorkflowSchema.parse(baseWorkflow).steps[0]?.entry).toBeUndefined();
+  });
+
+  it("falls back to an empty workflow list when an entry gate is malformed (CHE-2531)", () => {
+    const parsed = parseWithFallback(
+      { workflows: [{ ...baseWorkflow, steps: [{ status_key: "todo", entry: [{ guard: 7 }] }] }], total: 1 },
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { endpoint: "GET /api/workflows" },
+    );
+    expect(parsed).toEqual({ workflows: [], total: 0 });
+  });
+
   it("keeps a sub-workflow step so a save does not drop it (CHE-2031)", () => {
     const sub_workflow = { workflow_id: "wf-2", stage: 1 };
     const parsed = IssueWorkflowSchema.parse({

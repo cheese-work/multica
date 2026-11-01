@@ -565,6 +565,12 @@ const IssueWorkflowEdgeSchema = z.object({
   on_timeout: z.string().optional(),
 });
 
+const IssueWorkflowEntryGateSchema = z.object({
+  guard: z.string(),
+  mode: z.string(),
+  member_override: z.boolean().default(true),
+});
+
 const IssueWorkflowSubWorkflowSchema = z.object({
   workflow_id: z.string(),
   stage: z.number().optional(),
@@ -578,6 +584,7 @@ const IssueWorkflowStepSchema = z.object({
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
@@ -1115,6 +1122,7 @@ export const ChatMessageSchema = z.object({
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
+  carried_from_session_id: z.string().nullable().optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
