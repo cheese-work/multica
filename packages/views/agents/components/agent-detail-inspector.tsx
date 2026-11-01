@@ -44,6 +44,7 @@ import {
 import { RuntimePicker } from "./inspector/runtime-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
+import { AgentPresetsSection } from "./inspector/agent-presets-section";
 
 interface InspectorProps {
   agent: Agent;
@@ -413,6 +414,8 @@ export function AgentDetailInspector({
               </SettingsRow>
             </SettingsCard>
           </SettingsSection>
+
+          <AgentPresetsSection wsId={agent.workspace_id} agentId={agent.id} />
         </div>
 
         {qoderRuntime ? null : (
