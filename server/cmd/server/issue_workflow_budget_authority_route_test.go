@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
 )
 
 // CHE-2829 (CHE-2798 S1b) through the real Auth -> router -> handler chain: only
@@ -130,4 +134,66 @@ func TestIssueWorkflowRunCapNeedsInteractiveSessionOnRoute(t *testing.T) {
 			t.Fatalf("task token same cap: status = %d, want 403 (unbound machine write, as today)", got)
 		}
 	})
+}
+
+// A cloud-node PAT (mcn_) is a machine credential too. The shared test server
+// has no Fleet configured, so this builds its own router against a stub Fleet.
+func TestIssueWorkflowRunCapRefusesCloudPATOnRoute(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	ctx := context.Background()
+
+	fleet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"valid":true,"owner_id":"` + testUserID + `","instance_id":"i-che2829","instance_record_id":"` + testUserID + `"}`))
+	}))
+	defer fleet.Close()
+	t.Setenv("MULTICA_CLOUD_URL", fleet.URL)
+
+	hub := realtime.NewHub()
+	go hub.Run()
+	server := httptest.NewServer(NewRouter(testPool, hub, events.New(), analytics.NoopClient{}, nil))
+	defer server.Close()
+
+	var workflowID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue_workflow (workspace_id, name, initial_status_key, owner_id, max_runs_per_issue)
+		VALUES ($1, 'che-2829-budget-cloud-pat', 'backlog', $2, 7) RETURNING id::text
+	`, testWorkspaceID, testUserID).Scan(&workflowID); err != nil {
+		t.Fatalf("insert workflow: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue_workflow WHERE id = $1`, workflowID) })
+
+	for _, forged := range []string{"", "interactive_jwt"} {
+		for _, n := range []int{0, 8, 9} {
+			body, _ := json.Marshal(map[string]any{"max_runs_per_issue": n})
+			req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/issue-workflows/"+workflowID, bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("create request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer mcn_che2829cloudpat")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			if forged != "" {
+				req.Header.Set("X-Actor-Source", forged)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("perform request: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("forged %q cap %d: status = %d, want 403", forged, n, resp.StatusCode)
+			}
+		}
+	}
+
+	var stored *int32
+	if err := testPool.QueryRow(ctx, `SELECT max_runs_per_issue FROM issue_workflow WHERE id = $1`, workflowID).Scan(&stored); err != nil {
+		t.Fatalf("read cap: %v", err)
+	}
+	if stored == nil || *stored != 7 {
+		t.Fatalf("stored cap = %v, want 7", stored)
+	}
 }
