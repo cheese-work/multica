@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const issueNoopAction = "test.issue.noop"
@@ -97,5 +99,28 @@ func TestApproveDecisionActionOnServerRequestNeedsAnOwner(test *testing.T) {
 	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, map[string]string{}), http.StatusOK)
 	if state := action.state(test); state != "executed" {
 		test.Fatalf("action state = %s, want executed", state)
+	}
+}
+
+// A role change can commit while the passkey is being verified, after the
+// authority reads and before the member lock. The approver's role is read again
+// under that lock, for either origin.
+func TestApproveDecisionActionRefusesDemotionDuringVerification(test *testing.T) {
+	for _, origin := range []string{"server", "agent"} {
+		test.Run(origin, func(test *testing.T) {
+			action := newPendingIssueAction(test)
+			if origin == "server" {
+				dbfx.Exec(test, `UPDATE decision_request SET request_fingerprint = 'server:test:' || id::text WHERE id = $1`, action.requestID)
+			}
+			demoteDuringVerification := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) {
+				dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+				return pgtype.UUID{}, nil
+			}
+			body := action.approve(test, withVerifier(demoteDuringVerification), action.claim(test, map[string]string{}), http.StatusForbidden)
+			if !strings.Contains(body, "class_needs_owner") {
+				test.Fatalf("body %q; want class_needs_owner", body)
+			}
+			action.assertUntouched(test)
+		})
 	}
 }

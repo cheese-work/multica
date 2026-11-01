@@ -160,18 +160,24 @@ func isIssueTargetAction(action db.DecisionAction) bool {
 	return found && definition.Target == decisionaction.TargetIssue
 }
 
+// actionPreconditions records what the approver must still find true: the
+// issue itself for an issue target, otherwise the agent's snapshot.
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+	if draft.Definition.Target != decisionaction.TargetIssue {
+		return snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
+	}
+	if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
+		return nil, err
+	}
+	return map[string]any{"issue_id": uuidToString(issue.ID)}, nil
+}
+
 // createDecisionAction stores the action in the request's transaction, so a
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	var preconditions map[string]any
-	var err error
-	if draft.Definition.Target == decisionaction.TargetIssue {
-		if err = checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
-			return empty, err
-		}
-		preconditions = map[string]any{"issue_id": uuidToString(issue.ID)}
-	} else if preconditions, err = snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft); err != nil {
+	preconditions, err := actionPreconditions(ctx, queries, issue, draft)
+	if err != nil {
 		return empty, err
 	}
 	preconditionsJSON, err := json.Marshal(preconditions)

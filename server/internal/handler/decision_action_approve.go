@@ -76,6 +76,7 @@ var (
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
+	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action changes an issue and needs the workspace owner"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
@@ -245,6 +246,11 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		return empty, errNotTheHuman
 	} else if err != nil {
 		return empty, err
+	}
+	// The passkey check above can outlast a role change that committed after the
+	// pre-lock reads, so an issue target re-reads the role under the member lock.
+	if issueTarget && approver.Role != "owner" {
+		return empty, errNeedsOwner
 	}
 	if !issueTarget && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
 		return empty, errNotPermitted
