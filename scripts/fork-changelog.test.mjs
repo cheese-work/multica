@@ -88,24 +88,34 @@ test("blank values and <placeholders> count as missing, none is explicit", async
   assert.equal(parseChangelogLine(undefined).status, "missing");
 });
 
-test("text over 140 code points is rejected, not cut", async () => {
+test("text over 140 code points is kept whole and flagged, never cut", async () => {
   const { parseChangelogLine, evaluatePr, formatCheck } = await load();
   const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"; // one grapheme, 5 code points
   const long = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
-  assert.equal(long.status, "too-long");
-  assert.equal(long.text, null);
-  assert.ok(long.warnings.some((w) => /140/.test(w)), long.warnings.join("|"));
+  assert.equal(long.status, "text");
+  assert.equal(long.text, `${"a".repeat(138)}${family}`, "the sentence is complete");
+  assert.equal(long.overLimit, true);
+  assert.ok(long.warnings.some((w) => /over 140/.test(w)), long.warnings.join("|"));
 
   const exact = parseChangelogLine(`Changelog: ${"b".repeat(140)}`);
-  assert.equal(exact.status, "text");
   assert.equal(exact.text.length, 140);
-  assert.equal(parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`).status, "too-long");
+  assert.notEqual(exact.overLimit, true);
+  assert.equal(parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`).overLimit, true);
 
   // the PR check fails the PR, whatever its type, so the author shortens the line
   for (const title of ["feat: x", "fix: x", "docs: x"]) {
     const check = formatCheck(evaluatePr({ number: 1, title, body: `Changelog: ${"c".repeat(141)}`, headRef: "h" }));
     assert.equal(check.failing, true, title);
   }
+});
+
+test("a merged PR whose line is over the limit still publishes its complete sentence", async () => {
+  const text = "Agents can now keep named presets and switch them with a command or in a chat, and the list shows which preset each agent uses today, so nobody has to open each agent to check.";
+  assert.ok([...text].length > 140);
+  const result = await run([pr(731, { body: `Changelog: ${text}` })]);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].text, text);
+  assert.equal(result.counts.byReason["too-long"], undefined);
 });
 
 // --- sanitizing ------------------------------------------------------------
