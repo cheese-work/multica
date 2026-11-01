@@ -71,7 +71,7 @@ What happens to the request depends on where the answer came from:
 | Answer came from | Disclaim result |
 | --- | --- |
 | A live asked request | The request reopens and the agent can be answered again. A `card_required` withdrawal links the card. |
-| An unprompted record (no request) | The request is cancelled. The agent must ask again. If the record was withdrawn as `card_required` (a non-reversible class), the request reopens and the withdrawal comment links the lane; the agent posts a new decision request and the person answers on its card. |
+| An unprompted record (no request) | The request is cancelled. The agent must ask again. If the record was withdrawn as `card_required` (a non-reversible class), the request reopens and the withdrawal comment links the lane; the agent posts a new decision request and the person answers on its card. That card answer cancels the reopened request with reason `card_replaced`, so it no longer blocks agent completion or archiving the lane. |
 | A request whose DM is archived | The request is cancelled and a cancel note is posted. The agent must ask again. |
 
 If the agent was not woken yet, nothing is delivered. If the agent was already

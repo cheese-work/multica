@@ -133,7 +133,7 @@ lock order and withdrawal primitive. Only a completed answering task on an
 answered request sets `wake_at = max(effective_at, now)`. Failed/cancelled turns
 withdraw in the same transaction as their comments. Running turns remain
 pending, archived lanes cancel with `lane_archived`, unprompted records do not
-reopen (except a `card_required` withdrawal, which reopens them), and an already-cancelled request keeps its original cancellation.
+reopen (except a `card_required` withdrawal, which reopens them; a later card answer on the issue cancels a reopened unprompted request as `card_replaced`), and an already-cancelled request keeps its original cancellation.
 
 Orphan cleanup locks the surviving workspace, then intents/targets and
 requests/answers in ID order. Only decision parents are deleted; the existing

@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // taskDigest fingerprints every task, wakeup receipt and scoped wakeup event of
@@ -242,5 +245,22 @@ func TestDecisionDeliveryRefusedUnpromptedRecordTakesReplacementCard(test *testi
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, fixture.agentID, card.Comment.ID); count != 1 {
 		test.Fatalf("replacement card answer runs = %d, want 1", count)
+	}
+
+	// The replacement's answer settles the refused original: it neither blocks
+	// the agent from completing the issue nor the lane from being archived.
+	var status, reason string
+	dbfx.QueryRow(test, `SELECT status, COALESCE(cancel_reason, '') FROM decision_request WHERE id = $1`, uuidToString(recorded.Request.ID)).Scan(&status, &reason)
+	if status != "cancelled" || reason != "card_replaced" {
+		test.Fatalf("refused original = %s/%s, want cancelled/card_replaced", status, reason)
+	}
+	// Settle the fixture's own card request, so only the original can block.
+	dbfx.Exec(test, `UPDATE decision_request SET status = 'cancelled', cancel_reason = 'human_removed' WHERE id = $1`, fixture.decision.ID)
+	completion := context.WithValue(context.Background(), wakeupActorKey{}, wakeupActor{kind: "agent", id: fixture.agentID})
+	if err := guardAgentIssueStatus(completion, testHandler.Queries, db.UpdateIssueParams{ID: parseUUID(fixture.issueID), Status: pgtype.Text{String: "done", Valid: true}}); err != nil {
+		test.Fatalf("completion still blocked: %v", err)
+	}
+	if open, err := testHandler.Queries.DecisionOpenLaneExists(context.Background(), db.DecisionOpenLaneExistsParams{WorkspaceID: recorded.Request.WorkspaceID, SessionID: recorded.Request.ChatSessionID}); err != nil || open {
+		test.Fatalf("lane archive still blocked: open=%v err=%v", open, err)
 	}
 }

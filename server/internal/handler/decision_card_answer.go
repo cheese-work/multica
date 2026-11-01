@@ -201,6 +201,17 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
+	// An unprompted record refused for want of a card has no card of its own, so
+	// the person's card answer on this issue is what settles it.
+	replaced, err := queries.CancelReplacedUnpromptedDecisionRequests(ctx, db.CancelReplacedUnpromptedDecisionRequestsParams{WorkspaceID: workspaceID, IssueID: issue.ID, AskingAgentID: decision.AskingAgentID})
+	if err != nil {
+		return empty, err
+	}
+	for _, request := range replaced {
+		if _, err := decisiontx.EndAction(ctx, queries, request, "card_replaced"); err != nil {
+			return empty, err
+		}
+	}
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}

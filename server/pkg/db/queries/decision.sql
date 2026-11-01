@@ -130,6 +130,13 @@ UPDATE decision_request SET status = 'cancelled', cancel_reason = sqlc.arg('canc
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
+-- name: CancelReplacedUnpromptedDecisionRequests :many
+UPDATE decision_request SET status = 'cancelled', cancel_reason = 'card_replaced', cancel_notice_posted_at = clock_timestamp()
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND asking_agent_id = sqlc.arg('asking_agent_id')
+  AND origin = 'unprompted' AND status = 'open'
+  AND EXISTS (SELECT 1 FROM decision_answer answer WHERE answer.decision_request_id = decision_request.id AND answer.disclaim_reason = 'card_required')
+RETURNING *;
+
 -- name: DecisionOpenLaneExists :one
 SELECT EXISTS (
     SELECT 1 FROM decision_request
