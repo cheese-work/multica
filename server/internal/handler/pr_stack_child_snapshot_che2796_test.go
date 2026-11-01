@@ -130,7 +130,9 @@ func TestRetargetEditSkipsGitHubDisabledWorkspace(t *testing.T) {
 	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id = $1`, disabled); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE workspace_id = $1`, disabled) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE workspace_id = $1`, disabled)
+	})
 	enabledPR := seedDecidedCleanPR(t, parseUUID(testWorkspaceID), installationID, 2796303, "fix/ship-it")
 	disabledPR := seedDecidedCleanPR(t, disabled, installationID, 2796303, "fix/ship-it")
 
