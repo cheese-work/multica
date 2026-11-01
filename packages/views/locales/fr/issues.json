@@ -1920,6 +1920,8 @@
     "recorded_for": "Enregistrée pour {{issue}}",
     "option_n": "Option {{number}}",
     "jump_to_card": "Aller à la carte",
+    "jump_to_ask": "Aller à la question",
+    "jump_to_answer": "Aller à la réponse",
     "answered_in_dm": "Répondu dans le DM",
     "private_dm": "d'un DM privé",
     "disclaim_action": "Retirer",
