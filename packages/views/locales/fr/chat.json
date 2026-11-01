@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "Décision requise",
+    "waiting": "L’agent n’a pas encore envoyé la carte de décision.",
+    "queued_since": "En file depuis {{time}}",
+    "running_since": "En cours depuis {{time}}",
+    "no_run": "Aucune exécution active."
+  },
   "needs_you": {
     "title": "À vous de décider",
     "loading": "Chargement des demandes…",
@@ -390,6 +397,7 @@
     "answer_send": "Envoyer",
     "answer_error": "Échec de l'envoi. Réessayez.",
     "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
+    "answer_helper_issue": "Envoyer publie votre réponse sur {{issue}}.",
     "answer_hint": "Entrée envoie · Maj+Entrée pour un saut de ligne",
     "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
     "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",

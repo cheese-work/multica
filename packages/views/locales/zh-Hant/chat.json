@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做決定",
+    "waiting": "代理尚未傳送決策卡片。",
+    "queued_since": "自 {{time}} 起排隊中",
+    "running_since": "自 {{time}} 起執行中",
+    "no_run": "沒有進行中的執行。"
+  },
   "needs_you": {
     "title": "待你決定",
     "loading": "正在載入待處理請求…",
@@ -347,6 +354,7 @@
     "answer_send": "傳送",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
+    "answer_helper_issue": "傳送會將你的回答發佈到 {{issue}}。",
     "answer_hint": "Enter 傳送 · Shift+Enter 換行",
     "answer_offline": "你已離線。回答已保留，重新連線後即可傳送。",
     "answer_conflict": "此卡片已無法接收你的回答，例如已被先回答。你的草稿未被發佈。你的草稿：",
