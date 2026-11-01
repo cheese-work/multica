@@ -65,6 +65,7 @@ export type WSEventType =
   | "chat:session_read"
   | "chat:session_deleted"
   | "chat:session_updated"
+  | "chat:supplement_updated"
   | "project:created"
   | "project:updated"
   | "project:deleted"
@@ -438,6 +439,10 @@ export interface ChatMessageEventPayload {
   message_kind?: import("./chat").ChatMessageKind;
 }
 
+export interface ChatSupplementUpdatedPayload {
+  supplement: import("./chat").ChatSupplement;
+}
+
 export interface ChatDonePayload {
   chat_session_id: string;
   task_id: string;
@@ -643,6 +648,7 @@ export interface WSEventPayloadMap {
   "chat:session_read": ChatSessionReadPayload;
   "chat:session_deleted": ChatSessionDeletedPayload;
   "chat:session_updated": unknown;
+  "chat:supplement_updated": ChatSupplementUpdatedPayload;
   "project:created": ProjectCreatedPayload;
   "project:updated": ProjectUpdatedPayload;
   "project:deleted": ProjectDeletedPayload;

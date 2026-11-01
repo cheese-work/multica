@@ -71,7 +71,25 @@
     "remove": "Retirer le message de la file d'attente",
     "more": "Plus d'actions sur la file d'attente",
     "fallback": "Message en file d'attente",
+    "steer_starting": "L'exécution démarre",
+    "steer_unsupported": "Cette exécution ne peut pas recevoir de nouveaux messages. Le message reste en file d'attente.",
+    "stop_and_send": "Arrêter et envoyer",
     "action_failed_toast": "Impossible de mettre à jour le message en file d'attente"
+  },
+  "supplement": {
+    "added": "Ajouté à l'exécution",
+    "read": "Lu par l'agent",
+    "read_twice": "Lu par l'agent ; aussi renvoyé, l'agent peut le voir deux fois",
+    "not_received": "Non reçu",
+    "unconfirmed": "Livraison non confirmée",
+    "resent": "Renvoyé comme nouvelle exécution",
+    "send_new_run": "Envoyer comme nouvelle exécution",
+    "send_again_anyway": "Renvoyer quand même",
+    "confirm_title": "Renvoyer ce message ?",
+    "confirm_body": "L'agent a peut-être déjà reçu ce message. Le renvoyer peut le faire agir deux fois dessus.",
+    "confirm_send": "Renvoyer",
+    "cancel": "Annuler",
+    "resend_failed_toast": "Impossible de renvoyer le message"
   },
   "message_list": {
     "continued_from": "Suite de",

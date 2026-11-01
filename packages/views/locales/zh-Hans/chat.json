@@ -69,7 +69,25 @@
     "remove": "移除排队消息",
     "more": "更多队列操作",
     "fallback": "排队消息",
+    "steer_starting": "运行正在启动",
+    "steer_unsupported": "此运行无法接收新消息。消息仍在队列中。",
+    "stop_and_send": "停止并发送",
     "action_failed_toast": "无法更新排队消息"
+  },
+  "supplement": {
+    "added": "已加入运行",
+    "read": "智能体已读",
+    "read_twice": "智能体已读；也已重新发送，智能体可能会看到两次",
+    "not_received": "未收到",
+    "unconfirmed": "送达未确认",
+    "resent": "已作为新运行重新发送",
+    "send_new_run": "作为新运行发送",
+    "send_again_anyway": "仍然重新发送",
+    "confirm_title": "重新发送此消息？",
+    "confirm_body": "智能体可能已经收到此消息。重新发送可能导致智能体处理两次。",
+    "confirm_send": "重新发送",
+    "cancel": "取消",
+    "resend_failed_toast": "无法重新发送消息"
   },
   "message_list": {
     "continued_from": "续接自",
