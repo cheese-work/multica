@@ -103,10 +103,15 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
 	// The lock holds through the grant, so a person's move cannot read this
-	// issue's status between this write and the grant.
-	release, err := h.lockRunBudgetBoundary(ctx, issue.ID)
-	if err != nil {
-		return false, false, fmt.Errorf("run budget boundary: %w", err)
+	// issue's status between this write and the grant. The block an exhausted
+	// budget causes neither grants nor needs it: it runs under the refused
+	// admission's locks, after that admission wrote the window's ledger row, and
+	// the boundary lock comes before those locks everywhere else.
+	release := func() {}
+	if source != "run_budget" {
+		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
+			return false, false, fmt.Errorf("run budget boundary: %w", err)
+		}
 	}
 	defer release()
 	params := db.UpdateIssueParams{

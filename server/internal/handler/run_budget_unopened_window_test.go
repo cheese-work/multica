@@ -365,3 +365,29 @@ func TestRunBudgetWorkflowEdgeMoveWaitsForAMoveInFlight(t *testing.T) {
 		t.Fatal("the edge move did not happen after the boundary was released")
 	}
 }
+
+// The block an exhausted budget causes runs under the locks of the admission
+// that was refused, and that admission has already written the window's
+// ledger row. Taking the boundary lock there inverts the order a person's move
+// uses (boundary lock first), which deadlocked concurrent refusals.
+func TestRunBudgetExhaustionBlockDoesNotWaitForTheBoundaryLock(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		testHandler.moveIssueOnEdge(context.Background(), issue, "blocked", "run_budget", nil, false)
+	}()
+	if stillRunning(done) {
+		t.Fatal("the exhaustion block waited for the window boundary lock")
+	}
+}
