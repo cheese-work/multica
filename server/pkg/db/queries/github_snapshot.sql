@@ -249,6 +249,8 @@ SELECT * FROM github_pull_request WHERE id = $1;
 -- merge handler refreshes the returned PRs, and one the refresh queue drops is
 -- undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 -- not known yet (no snapshot since the column was added) is included.
+-- CHE-2796: a stack child is based on the merged PR's head branch, which GitHub
+-- retargets to the base when the parent merges, so it is included as well.
 UPDATE github_pull_request
 SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
@@ -258,5 +260,18 @@ WHERE installation_id = sqlc.arg('installation_id')
   AND repo_name = sqlc.arg('repo_name')
   AND state IN ('open', 'draft')
   AND pr_number <> sqlc.arg('merged_pr_number')
-  AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref IS NULL)
+  AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref = sqlc.arg('head_ref') OR snapshot_base_ref IS NULL)
 RETURNING installation_id, repo_owner, repo_name, pr_number;
+
+-- name: InvalidateGitHubPRMergeState :exec
+-- CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
+-- stored API merge verdict describe the old base, so it is cleared for the
+-- caller's refresh to decide again.
+UPDATE github_pull_request
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
+WHERE installation_id = sqlc.arg('installation_id')
+  AND repo_owner = sqlc.arg('repo_owner')
+  AND repo_name = sqlc.arg('repo_name')
+  AND pr_number = sqlc.arg('pr_number');
