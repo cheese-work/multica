@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // The workflow edge engine (CHE-2152). A trigger on issue.status keeps one
@@ -286,11 +287,19 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 }
 
 // prepareBudgetRecovery reads the blocked step's handler's recovery run for
-// the notice's transaction to claim. Only an agent handler gets one, and the
-// claim allows one per window. It returns nil when the issue is owed none.
+// the notice's transaction to claim. Only an agent handler gets one, only for an
+// issue the budget blocked in this window (this callback's block, or an earlier
+// callback's that exited before its notice), and the claim allows one per
+// window. It returns nil when the issue is owed none: an issue a person or
+// another rule blocked gets the notice alone.
 func (h *Handler) prepareBudgetRecovery(ctx context.Context, e service.RunBudgetExhausted) *service.BudgetRecoveryRun {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || issue.Status != issuestatus.Blocked || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return nil
+	}
+	if parked, err := h.Queries.HasRunBudgetNotice(ctx, db.HasRunBudgetNoticeParams{
+		IssueID: issue.ID, WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: service.RunBudgetKindBlocked,
+	}); err != nil || !parked {
 		return nil
 	}
 	if id, ok := h.blockedAgentHandler(ctx, issue); !ok || id != uuidToString(issue.AssigneeID) {
@@ -395,7 +404,15 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 			}
 			return err
 		}
-		return nil
+		// Committed with the move: the budget parked this issue in this window.
+		_, err := q.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
+			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: service.RunBudgetKindBlocked,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
 	}
 	moved, _, err = h.tryMoveIssueOnEdge(withIssueMoveGuard(ctx, stillRefused), issue, issuestatus.Blocked, "run_budget", details, false)
 	if errors.Is(err, errRefusalLifted) {

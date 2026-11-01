@@ -276,18 +276,49 @@ func raiseAndAdmit(t *testing.T, c edgeCase, p service.RunBudgetPreview) {
 	wantAdmitted(t, c, p.BalanceAfter)
 }
 
-// An issue that is already blocked (the callback that blocked it exited before
-// its recovery run, or a person blocked it) still gets the window's recovery
-// run, in the notice's transaction, and the notice counts that run.
-func TestNoticeOnAnAlreadyBlockedIssueGivesAndCountsTheRecoveryRun(t *testing.T) {
+// An issue something else blocked (a person, another rule) keeps the behavior
+// it had before this change: the refusal posts the notice and gives no recovery
+// run, because the budget did not park it.
+func TestNoticeOnAnIndependentlyBlockedIssueGivesNoRecoveryRun(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")
 	}
 	c := newBudgetCase(t, 2886103, recoverySteps(seededReadyAgentID(t)), 2)
 	e := refusedEventAfter(t, c, func() { c.enter(t, "blocked") })
 	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (the budget did not block this issue)", n)
+	}
+	if n := raiseNotices(t, c); n != 1 {
+		t.Fatalf("notices = %d, want 1", n)
+	}
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, false)
+	if p.LimitAfter != 12 || p.BalanceAfter != 10 {
+		t.Fatalf("preview = %+v, want a cap of 12 leaving 10", p)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
+}
+
+// A callback that blocked the issue and exited before its notice leaves the
+// window's recovery run owed: the next refusal of the window finds the issue
+// already blocked by the budget and gives it with the notice.
+func TestNoticeAfterAnInterruptedCallbackGivesTheRecoveryRun(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886107, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), e.IssueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved, lifted := testHandler.blockExhaustedIssue(context.Background(), issue, e, ""); !moved || lifted {
+		t.Fatalf("block moved=%v lifted=%v, want moved", moved, lifted)
+	}
+	testHandler.onRunBudgetExhausted(context.Background(), e)
 	if n := recoveryRuns(t, c.edgeCase); n != 1 {
-		t.Fatalf("recovery runs = %d, want 1 (the window's run was still owed)", n)
+		t.Fatalf("recovery runs = %d, want 1 (the interrupted callback's run was still owed)", n)
 	}
 	finishRuns(t, c.edgeCase)
 	c.enter(t, "in_progress")

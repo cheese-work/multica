@@ -20,6 +20,10 @@ import (
 const (
 	// RunBudgetKindRecovery is the kind half of the recovery claim key.
 	RunBudgetKindRecovery = "recovery"
+	// RunBudgetKindBlocked marks a window whose refusal moved the issue to
+	// blocked. It commits with that move, and is what tells a later refusal of
+	// the window that the budget parked the issue, not a person.
+	RunBudgetKindBlocked = "blocked"
 	// BudgetRecoveryTaskKind marks the recovery run's task row.
 	BudgetRecoveryTaskKind = "budget_recovery"
 	// BudgetRecoveryLimit is the wall-clock limit after which the server
