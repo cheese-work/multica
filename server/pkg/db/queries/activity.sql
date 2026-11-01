@@ -66,3 +66,15 @@ SELECT actor_type, actor_id FROM activity_log
 WHERE issue_id = @issue_id AND action = 'status_changed'
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: CountEntryGateWarnings :one
+-- Entry-gate warnings already recorded for an issue and step: those for this
+-- PR head, and all of them. The write holds the issue row lock, so the pair
+-- decides, without a table of its own, whether this warning is new and
+-- whether it is the step's first (CHE-2295).
+SELECT (count(*) FILTER (WHERE details->>'head' = sqlc.arg('head')::text))::bigint AS same_head,
+       count(*)::bigint AS total
+FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')::uuid
+  AND action = 'entry_gate_warning'
+  AND details->>'step' = sqlc.arg('step')::text;
