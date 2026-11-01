@@ -826,6 +826,25 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 	return resp.Status, nil
 }
 
+// BrokerPolicyName is the server policy record the push broker enforces.
+const BrokerPolicyName = "default"
+
+// BrokerPolicy returns the push broker's Policy: it reads the workspace's
+// protected-path record from the server on every call, so an admin edit applies
+// to the next push and a failed read is an error the broker refuses on.
+func (c *Client) BrokerPolicy(workspaceID string) func(context.Context) ([]string, error) {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/protected-path-policies/%s", workspaceID, BrokerPolicyName)
+	return func(ctx context.Context) ([]string, error) {
+		var resp struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := c.getJSON(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Patterns, nil
+	}
+}
+
 // HeartbeatResponse, PendingUpdate, etc. alias the wire types so HTTP and WS
 // heartbeat paths share a single type and a single decoder shape. Aliases
 // (rather than wrappers) keep call sites unchanged.

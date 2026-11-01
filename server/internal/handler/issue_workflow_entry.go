@@ -232,6 +232,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var gated *EntryGateError
+	if errors.As(err, &gated) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         gated.Error(),
+			"code":          "entry_gate_failed",
+			"step":          gated.Step,
+			"failed_guards": gated.Failed,
+		})
+		return true
+	}
 	if errors.Is(err, errHandoffPreviewStale) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; review the move again",

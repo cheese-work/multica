@@ -91,6 +91,9 @@ type IssueWorkflowStepPayload struct {
 	Edges []issueworkflow.Edge `json:"edges,omitempty"`
 	// SubWorkflow makes the step a sub-workflow node; see issueworkflow.SubWorkflow.
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
+	// keeps the stored gates, [] clears them.
+	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -149,6 +152,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
+		Entry:            s.Entry,
 	}
 }
 
@@ -163,6 +167,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
+		Entry:            in.Entry,
 	}
 }
 
@@ -381,6 +386,8 @@ type IssueWorkflowStepInput struct {
 	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
 	// SubWorkflow: see IssueWorkflowStepPayload.
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry: see IssueWorkflowStepPayload.
+	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -443,6 +450,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
+			Entry:            in.Entry,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -460,6 +468,23 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 		steps = append(steps, step)
 	}
 	return steps, created, "", nil
+}
+
+// keepStoredEntry gives a step that omits entry the gates stored for its
+// status, so a client that predates the field cannot drop them by saving. An
+// explicit empty list clears.
+func keepStoredEntry(steps, stored []issueworkflow.Step) {
+	for i := range steps {
+		if steps[i].Entry != nil {
+			continue
+		}
+		for _, old := range stored {
+			if old.StatusKey == steps[i].StatusKey {
+				steps[i].Entry = old.Entry
+				break
+			}
+		}
+	}
 }
 
 func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, in NewWorkflowStatus, allowCreate bool) (db.IssueStatus, bool, string, error) {
@@ -854,6 +879,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	keepStoredEntry(steps, currentSteps)
 	name, description, steps = issueworkflow.Normalize(name, description, steps)
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
 	if err != nil {
@@ -1335,6 +1361,9 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 		if step.SubWorkflow == nil {
 			step.SubWorkflow = stored.SubWorkflow
+		}
+		if step.Entry == nil {
+			step.Entry = stored.Entry
 		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
