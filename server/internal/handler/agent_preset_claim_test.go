@@ -476,7 +476,8 @@ func TestClaimPreset_G3_RequeueClearsSnapshot(t *testing.T) {
 // column, so a future generation writer cannot skip the reset.
 func TestClaimPreset_G4_EveryDispatchedAtWriterResetsSnapshot(t *testing.T) {
 	columns := []string{"preset_name", "preset_source", "preset_skips", "claimed_model",
-		"claimed_thinking_level", "claimed_service_tier", "claimed_context_args"}
+		"claimed_thinking_level", "claimed_service_tier", "claimed_context_args",
+		"applied_model", "applied_thinking_level", "applied_service_tier", "applied_context_args", "applied_reported_at"}
 	assign := regexp.MustCompile(`(?m)^\s*(SET\s+)?dispatched_at\s*=`)
 	entries, err := os.ReadDir("../../pkg/db/queries")
 	if err != nil {

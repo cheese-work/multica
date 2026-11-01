@@ -116,6 +116,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
+	"github_snapshot_approval":           workspaceDelete,
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
@@ -201,6 +202,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
+	"recovery_claim":                     workspaceDelete,     // CHE-1126 gateway-recovery claim ledger; workspace_id FK ON DELETE CASCADE plus explicit teardown.
 	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
 	"push_session_end":                   workspaceDeleteKeep, // Ended login sessions, account-level, expire with the session lifetime (CHE-1795).
 	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).

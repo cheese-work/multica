@@ -818,6 +818,8 @@ SET status = 'dispatched',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
     chat_compaction_epoch = COALESCE(
         chat_compaction_epoch,
@@ -926,6 +928,8 @@ SET status = 'queued',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
 WHERE agent_task_queue.id = @task_id
@@ -955,6 +959,8 @@ SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -1051,6 +1057,8 @@ SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
 RETURNING *
@@ -3228,3 +3236,18 @@ WHERE id = @id
   AND runtime_id = @runtime_id
   AND dispatched_at = @dispatched_at
   AND status = 'dispatched';
+
+-- name: SetTaskAppliedSettings :execrows
+-- The daemon-reported launch selection for one claim generation (CHE-2248):
+-- what the daemon passed to the CLI after its own fallbacks and drops, not what
+-- the provider served. Written once per generation; a duplicate matches no row
+-- and the handler tells an identical retry from a conflicting one.
+UPDATE agent_task_queue
+SET applied_model = @applied_model, applied_thinking_level = @applied_thinking_level,
+    applied_service_tier = @applied_service_tier, applied_context_args = @applied_context_args,
+    applied_reported_at = now()
+WHERE id = @id
+  AND runtime_id = @runtime_id
+  AND dispatched_at = @dispatched_at
+  AND status IN ('dispatched', 'waiting_local_directory', 'running')
+  AND applied_reported_at IS NULL;

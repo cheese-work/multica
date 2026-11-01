@@ -2897,6 +2897,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		generation := task.DispatchedAt.Time.UTC().Format(time.RFC3339Nano)
 		resp.DispatchedAt = &generation
 		resp.StartClaimSupported = true
+		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
 	var issueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the

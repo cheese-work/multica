@@ -79,16 +79,18 @@ type Task struct {
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	// StartClaimSupported gates retries when talking to older servers.
-	StartClaimSupported  bool                   `json:"start_claim_supported,omitempty"`
-	DispatchedAt         string                 `json:"dispatched_at,omitempty"`
-	ID                   string                 `json:"id"`
-	AgentID              string                 `json:"agent_id"`
-	RuntimeID            string                 `json:"runtime_id"`
-	IssueID              string                 `json:"issue_id"`
-	WorkspaceID          string                 `json:"workspace_id"`
-	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
-	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
+	StartClaimSupported bool `json:"start_claim_supported,omitempty"`
+	// AppliedSettingsSupported: the server accepts this claim's applied-settings report.
+	AppliedSettingsSupported bool                   `json:"applied_settings_supported,omitempty"`
+	DispatchedAt             string                 `json:"dispatched_at,omitempty"`
+	ID                       string                 `json:"id"`
+	AgentID                  string                 `json:"agent_id"`
+	RuntimeID                string                 `json:"runtime_id"`
+	IssueID                  string                 `json:"issue_id"`
+	WorkspaceID              string                 `json:"workspace_id"`
+	WorkspaceSlug            string                 `json:"workspace_slug,omitempty"`
+	IssueIdentifier          string                 `json:"issue_identifier,omitempty"`
+	RemoteMCPConnections     []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// Profile, Scopes, Epoch and TaintIDs are the server's claim-time launch hint
 	// (CHE-2216 plan 3.1). Read the profile through EffectiveProfile.
 	Profile  string   `json:"profile,omitempty"`

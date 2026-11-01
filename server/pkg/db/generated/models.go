@@ -235,6 +235,11 @@ type AgentTaskQueue struct {
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 	TaintIds                  []string           `json:"taint_ids"`
+	AppliedModel              pgtype.Text        `json:"applied_model"`
+	AppliedThinkingLevel      pgtype.Text        `json:"applied_thinking_level"`
+	AppliedServiceTier        pgtype.Text        `json:"applied_service_tier"`
+	AppliedContextArgs        []byte             `json:"applied_context_args"`
+	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 }
 
 type AgentToLabel struct {
@@ -1180,6 +1185,23 @@ type GithubRouteGrant struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	GrantedBy pgtype.UUID        `json:"granted_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type GithubSnapshotApproval struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RevisionID     pgtype.UUID        `json:"revision_id"`
+	ApproverUserID pgtype.UUID        `json:"approver_user_id"`
+	SnapshotHash   string             `json:"snapshot_hash"`
+	ObjectKind     string             `json:"object_kind"`
+	ObjectID       int64              `json:"object_id"`
+	AuthorID       int64              `json:"author_id"`
+	BodyHash       string             `json:"body_hash"`
+	ReviewState    string             `json:"review_state"`
+	EditorType     string             `json:"editor_type"`
+	EditorID       int64              `json:"editor_id"`
+	LastEditedAt   pgtype.Timestamptz `json:"last_edited_at"`
+	ReadAt         pgtype.Timestamptz `json:"read_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type GithubWebhookDispatch struct {
@@ -2422,6 +2444,19 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RecoveryClaim struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	FailedTaskID      pgtype.UUID        `json:"failed_task_id"`
+	LineageRootTaskID pgtype.UUID        `json:"lineage_root_task_id"`
+	Mode              string             `json:"mode"`
+	State             string             `json:"state"`
+	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
+	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
+	SettledAt         pgtype.Timestamptz `json:"settled_at"`
 }
 
 type RunBudgetNotice struct {

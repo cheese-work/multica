@@ -31,6 +31,12 @@ func git(t testing.TB, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// testPolicy mirrors the server's initial protected-path policy (plan 3.2).
+var testPolicy = []string{
+	".github/**", "**/AGENTS.md", "**/CLAUDE.md", ".claude/**", ".codex/**", "skills/**", "standards/**",
+	".opencodereview/**", "scripts/post-handoff-comment.sh", "scripts/check-handoff-links.sh",
+}
+
 // rig is a local bare "GitHub" remote, a bare cache clone of it, and a task
 // checkout that borrows the cache's objects through alternates (the A2c
 // layout) with a task branch off the base.
@@ -59,7 +65,16 @@ func newRig(t testing.TB) *rig {
 	}
 	git(t, r.remote, "init", "--bare", "-b", "main")
 	git(t, seed, "init", "-b", "main")
-	git(t, seed, "commit", "--allow-empty", "-m", "base")
+	for f, body := range map[string]string{"AGENTS.md": "rules\n", ".github/ci.yml": "ci\n", "src/a.go": "package a\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(seed, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(seed, f), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, seed, "add", ".")
+	git(t, seed, "commit", "-m", "base")
 	git(t, seed, "push", r.remote, "main")
 	r.base = git(t, seed, "rev-parse", "HEAD")
 	git(t, root, "clone", "--bare", r.remote, r.cache)
@@ -70,6 +85,7 @@ func newRig(t testing.TB) *rig {
 	r.pin = Pin{
 		Repo: "42", Ref: "refs/heads/" + r.branch, Base: r.base,
 		RemoteURL: r.remote, Objects: filepath.Join(r.cache, "objects"),
+		Task: "task-1", Policy: func(context.Context) ([]string, error) { return testPolicy, nil },
 	}
 	return r
 }
@@ -272,6 +288,7 @@ func TestNewRejectsBadPin(t *testing.T) {
 		"no repo":       func(p *Pin) { p.Repo = "" },
 		"no remote":     func(p *Pin) { p.RemoteURL = "" },
 		"relative objs": func(p *Pin) { p.Objects = "objects" },
+		"no policy":     func(p *Pin) { p.Policy = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := r.pin
