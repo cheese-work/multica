@@ -65,11 +65,12 @@ multica issue budget get <issue-id> --output json
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
   its state and what a suggested raise would leave.
-- Raise and top-up are not CLI commands: the server takes both only from an
-  interactive web or desktop session. Approve in the web app; until then, a
-  person moves the status in the web app, which opens a new run window. An
-  agent that hit the cap reports the blocker and asks a person; it never raises
-  its own budget.
+- `multica issue budget raise` and `multica issue budget top-up` only print a
+  pointer to the web app and send nothing: the server takes a raise or top-up
+  only from an interactive web or desktop session. Approve in the web app; until
+  then, a person moves the status in the web app, which opens a new run window.
+  An agent that hit the cap reports the blocker and asks a person; it never
+  raises its own budget.
 
 ## Inbound webhook endpoints
 
