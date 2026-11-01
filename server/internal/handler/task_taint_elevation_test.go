@@ -61,16 +61,20 @@ func (f elevatedFixture) refuseEveryEpoch(t *testing.T, scope string) {
 func TestNormalResumeOfTaintedSessionRefusesOperationAuthority(t *testing.T) {
 	f := claimTaintedResume(t, false)
 	f.refuseEveryEpoch(t, "repo_write:1234")
-	if state, _ := f.state(t); state == "elevated" {
-		t.Fatalf("elevation state = %q after a restricted claim, want it fenced", state)
+	// The issue holds the predecessor's taint, so the claim records no elevation
+	// at all; a row that existed would have to be fenced.
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1 AND state = 'elevated'`, f.taskID); n != 0 {
+		t.Fatalf("elevated rows = %d after a restricted claim, want 0", n)
 	}
 }
 
 func TestRerunInTaintedSessionRefusesOperationAuthority(t *testing.T) {
 	f := claimTaintedResume(t, true)
 	f.refuseEveryEpoch(t, "repo_write:1234")
-	if state, _ := f.state(t); state == "elevated" {
-		t.Fatalf("elevation state = %q after a restricted claim, want it fenced", state)
+	// The issue holds the predecessor's taint, so the claim records no elevation
+	// at all; a row that existed would have to be fenced.
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1 AND state = 'elevated'`, f.taskID); n != 0 {
+		t.Fatalf("elevated rows = %d after a restricted claim, want 0", n)
 	}
 }
 
