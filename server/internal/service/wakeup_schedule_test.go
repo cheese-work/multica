@@ -193,10 +193,11 @@ func TestScheduleOneFixedInstantAppliesToEveryMatchingIssue(t *testing.T) {
 
 func TestScheduleLateEnteringIssueDoesNotReplayAnElapsedOneShot(t *testing.T) {
 	k := newCustomEnv(t)
-	rule := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("at", `{"at":"`+inFuture(3*time.Second)+`"}`))
+	rule := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("at", `{"at":"`+inFuture(time.Hour)+`"}`))
 	k.sweepAll(t)
 	k.onlyScheduled(t, rule.RuleKey)
-	time.Sleep(3500 * time.Millisecond) // the instant passes
+	// The instant passes: a stored instant in the past is still a readable schedule.
+	k.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{schedule,at}',to_jsonb($3::text)) WHERE workspace_id=$1 AND rule_key=$2`, k.f.WorkspaceID, rule.RuleKey, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
 	late := k.f.Issue(t, "late", testutil.Cols{"project_id": k.project})
 	k.f.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id=$1", late)
 	k.f.Exec(t, `UPDATE issue_wakeup_definition SET sweep_done=false WHERE workspace_id=$1 AND rule_key=$2`, k.f.WorkspaceID, rule.RuleKey)
@@ -319,6 +320,25 @@ func TestScheduleFullPoolDelaysWithAReasonAndResumesAtTheNextFutureTick(t *testi
 	k.wantRuns(t, rule.RuleKey, 0)
 }
 
+func TestScheduleFullPoolOneShotIsDeliveredLateNotDropped(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	rule := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("relative", `{"after_seconds":600}`))
+	k.sweepAll(t)
+	if held := k.onlyScheduled(t, rule.RuleKey); held.Enabled || held.CapacityReason == nil {
+		t.Fatalf("instance = %+v, want it unapplied with its visible reason", held)
+	}
+	// The pool stayed full past the one-shot's instant.
+	k.f.Exec(t, `UPDATE issue_wakeup SET next_fire_at=now()-interval '2 hours' WHERE default_rule_key=$1`, rule.RuleKey)
+	k.freePool(t)
+	k.sweep(t)
+	if w := k.instanceRow(t, rule.RuleKey); !w.Enabled || w.TimedOutAt.Valid {
+		t.Fatalf("instance enabled=%v timed_out=%v, want the delayed one-shot applied, not ended", w.Enabled, w.TimedOutAt.Valid)
+	}
+	k.tick(t)
+	k.wantRuns(t, rule.RuleKey, 1)
+}
+
 func TestScheduleAggregateCapDelaysDueInstancesAndSharesTurnsFairly(t *testing.T) {
 	k := newCustomEnv(t)
 	k.bulkIssues(t, 3, k.project, "todo")
@@ -424,6 +444,47 @@ func TestScheduleBrokenSettingsFailClosedPerRule(t *testing.T) {
 		t.Fatalf("a rule with an unreadable schedule made instances: %+v", got)
 	}
 	k.onlyScheduled(t, good.RuleKey)
+}
+
+func TestScheduleOutOfRangeStoredIntervalsAreIsolatedPerRule(t *testing.T) {
+	k := newCustomEnv(t)
+	good := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":3600}`))
+	rules := map[string]WakeupDefinitionView{
+		"zero":     k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":7200}`)),
+		"negative": k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":10800}`)),
+		"huge":     k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":14400}`)),
+		"delay":    k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("relative", `{"after_seconds":3600}`)),
+	}
+	// Settings behind the validator's back: numbers the write would refuse.
+	for name, stored := range map[string]string{"zero": `{"interval_seconds":0}`, "negative": `{"interval_seconds":-60}`, "huge": `{"interval_seconds":99999999999}`, "delay": `{"after_seconds":0}`} {
+		k.f.Exec(t, `UPDATE issue_wakeup_definition SET config=jsonb_set(config,'{schedule}',$3::jsonb) WHERE workspace_id=$1 AND rule_key=$2`, k.f.WorkspaceID, rules[name].RuleKey, stored)
+	}
+	k.f.Exec(t, `UPDATE issue_wakeup_definition SET sweep_done=false WHERE workspace_id=$1`, k.f.WorkspaceID)
+	k.sweepAll(t)
+	for name, rule := range rules {
+		if got := k.scheduled(t, rule.RuleKey); len(got) != 0 {
+			t.Fatalf("%s: a rule with an out-of-range schedule made instances: %+v", name, got)
+		}
+	}
+	k.onlyScheduled(t, good.RuleKey)
+}
+
+func TestScheduleOutOfRangeStoredInstanceEndsAloneWhenCapacityFrees(t *testing.T) {
+	k := newCustomEnv(t)
+	k.fillIssuePool(t, 32)
+	bad := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":3600}`))
+	good := k.mustSave(t, WakeupScopeProject, "", k.scheduleRule("every", `{"interval_seconds":7200}`))
+	k.sweepAll(t)
+	// An instance row with an interval the write would refuse.
+	k.f.Exec(t, `UPDATE issue_wakeup SET interval_seconds=0 WHERE default_rule_key=$1`, bad.RuleKey)
+	k.freePool(t)
+	k.sweep(t)
+	if w := k.instanceRow(t, bad.RuleKey); w.Enabled || !w.TimedOutAt.Valid {
+		t.Fatalf("instance enabled=%v timed_out=%v, want it ended without a panic", w.Enabled, w.TimedOutAt.Valid)
+	}
+	if got := k.onlyScheduled(t, good.RuleKey); !got.Enabled {
+		t.Fatalf("healthy instance = %+v, want it applied", got)
+	}
 }
 
 func TestScheduleOccurrencesAcrossDaylightSavingTime(t *testing.T) {

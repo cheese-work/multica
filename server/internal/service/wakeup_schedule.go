@@ -61,11 +61,22 @@ func (s wakeupScheduleSpec) kind() (string, error) {
 	if (s.Timezone != "") != (kinds[0] == wakeupTriggerKindCron) {
 		return "", wakeupDefinitionBad("a cron schedule takes a timezone, and no other schedule does")
 	}
+	switch kinds[0] {
+	case wakeupTriggerKindRelative:
+		if *s.AfterSeconds < 60 || *s.AfterSeconds > maxWakeupSeconds {
+			return "", wakeupDefinitionBad("schedule after_seconds must be 60–%d", maxWakeupSeconds)
+		}
+	case wakeupTriggerKindEvery:
+		if *s.IntervalSeconds < 60 || *s.IntervalSeconds > maxWakeupSeconds {
+			return "", wakeupDefinitionBad("schedule interval_seconds must be 60–%d", maxWakeupSeconds)
+		}
+	}
 	return kinds[0], nil
 }
 
-// validate checks the spec as a write: ranges, an instant still ahead, and a
-// cron expression that parses in its zone and has an occurrence.
+// validate checks the spec as a write: an instant still ahead and a cron
+// expression that parses in its zone and has an occurrence, on top of the
+// shape and ranges kind checks for every read.
 func (s wakeupScheduleSpec) validate(now time.Time) (string, error) {
 	kind, err := s.kind()
 	if err != nil {
@@ -75,14 +86,6 @@ func (s wakeupScheduleSpec) validate(now time.Time) (string, error) {
 	case wakeupTriggerKindAt:
 		if !s.At.After(now) || s.At.Sub(now) > maxWakeupSeconds*time.Second {
 			return "", wakeupDefinitionBad("schedule at must be in the next year")
-		}
-	case wakeupTriggerKindRelative:
-		if *s.AfterSeconds < 60 || *s.AfterSeconds > maxWakeupSeconds {
-			return "", wakeupDefinitionBad("schedule after_seconds must be 60–%d", maxWakeupSeconds)
-		}
-	case wakeupTriggerKindEvery:
-		if *s.IntervalSeconds < 60 || *s.IntervalSeconds > maxWakeupSeconds {
-			return "", wakeupDefinitionBad("schedule interval_seconds must be 60–%d", maxWakeupSeconds)
 		}
 	case wakeupTriggerKindCron:
 		if strings.Contains(s.Cron, "TZ=") {
@@ -234,33 +237,34 @@ func scheduleUnchanged(w db.IssueWakeup, s *wakeupSchedule) bool {
 }
 
 // settleScheduledInstance runs before a default-derived schedule instance is
-// applied (a new one, one a full pool held, one a retired rule left idle) and
-// puts it on its next future occurrence, so what was missed meanwhile is not
-// replayed. A one-shot whose instant passed in the meantime is over: it rests
-// as timed out and is never applied. live says the instance may be applied.
+// applied (a new one, one a full pool held, one a retired rule left idle). A
+// repeating schedule moves to its next future occurrence, so what was missed
+// meanwhile is not replayed. A one-shot keeps its instant even when a full pool
+// held it past that instant: the delayed fire is delivered once the pool admits
+// it, subject to expiry. A one-shot with no instant left has fired or was
+// retired, so it is not owed again. A stored schedule that is not readable or is
+// out of range ends only this instance. live says the instance may be applied.
 func settleScheduledInstance(ctx context.Context, q *db.Queries, w db.IssueWakeup, now time.Time) (live bool, err error) {
 	var spec wakeupScheduleSpec
 	switch w.Kind {
 	case wakeupTriggerKindAt:
-		// A one-shot with no instant left has fired (the tick clears it) or was
-		// retired: it is not owed again, so it ends instead of being rearmed.
-		if w.NextFireAt.Valid && w.NextFireAt.Time.After(now) {
+		if w.NextFireAt.Valid {
 			return true, nil
 		}
 	case wakeupTriggerKindEvery:
-		spec.IntervalSeconds = &w.IntervalSeconds.Int64
+		if w.IntervalSeconds.Valid {
+			spec.IntervalSeconds = &w.IntervalSeconds.Int64
+		}
 	case wakeupTriggerKindCron:
 		spec.Cron, spec.Timezone = w.CronExpression.String, w.Timezone
 	default:
 		return true, nil
 	}
 	if w.Kind != wakeupTriggerKindAt {
-		next, err := scheduleOf(w.Kind, spec, w.CreatedAt.Time, now)
-		if err != nil {
-			return false, err
-		}
-		if !next.Elapsed {
-			return true, q.SetScheduledWakeupNext(ctx, db.SetScheduledWakeupNextParams{ID: w.ID, NextFireAt: next.Next})
+		if _, kindErr := spec.kind(); kindErr == nil {
+			if next, err := scheduleOf(w.Kind, spec, w.CreatedAt.Time, now); err == nil && !next.Elapsed {
+				return true, q.SetScheduledWakeupNext(ctx, db.SetScheduledWakeupNextParams{ID: w.ID, NextFireAt: next.Next})
+			}
 		}
 	}
 	if err := q.MarkWakeupTimedOut(ctx, w.ID); err != nil {
