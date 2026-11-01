@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -136,35 +137,46 @@ func TestRuleE_ClaimRestampsRequeuedTask(t *testing.T) {
 	}
 }
 
-// (r) stale snapshot: the stamp read epoch N while the DM is already N+1. The
-// rebase statement runs on a fresh snapshot and moves only a dispatched,
-// never-started task.
-func TestRuleE_RebaseClaimedChatTaskEpoch(t *testing.T) {
+// (r) stale snapshot, through the claim path. The claim statement computes the
+// epoch stamp from its own snapshot; a compact that commits after that snapshot
+// leaves the stamp one behind. A BEFORE UPDATE trigger bumps the DM epoch in the
+// claim transaction right after the stamp is evaluated, which reproduces that
+// state deterministically. The claim must end with the stamp at the DM epoch.
+func TestRuleE_ClaimRebasesStaleEpochStamp(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
 	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
-	chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "rebase", "compaction_epoch": 3})
-	mk := func(status string, started bool) string {
-		cols := testutil.Cols{
-			"runtime_id": runtimeID, "chat_session_id": chatID, "status": status, "chat_compaction_epoch": 2,
+	chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "stale-stamp", "compaction_epoch": 3})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatID, "status": "queued"})
+
+	fn := "rule_e_stale_" + strings.ReplaceAll(chatID, "-", "")
+	for _, ddl := range []string{
+		`CREATE FUNCTION ` + fn + `() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN UPDATE chat_session SET compaction_epoch = compaction_epoch + 1 WHERE id = NEW.chat_session_id; RETURN NEW; END $$`,
+		`CREATE TRIGGER ` + fn + ` BEFORE UPDATE ON agent_task_queue FOR EACH ROW
+			WHEN (OLD.status = 'queued' AND NEW.status = 'dispatched' AND NEW.chat_session_id = '` + chatID + `')
+			EXECUTE FUNCTION ` + fn + `()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
 		}
-		if started {
-			cols["started_at"] = testutil.Raw("now()")
-		}
-		return dbfx.Task(t, agentID, cols)
 	}
-	dispatched, started := mk("dispatched", false), mk("running", true)
-	for _, id := range []string{dispatched, started} {
-		if err := testHandler.Queries.RebaseClaimedChatTaskEpoch(ctx, parseUUID(id)); err != nil {
-			t.Fatalf("rebase %s: %v", id, err)
-		}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS `+fn+` ON agent_task_queue`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS `+fn+`()`)
+	})
+
+	if got := ruleEClaim(t, runtimeID); got == nil || got.ID != taskID {
+		t.Fatalf("claim = %+v, want task %s", got, taskID)
 	}
-	if _, epoch := ruleETaskState(t, dispatched); epoch != 3 {
-		t.Fatalf("dispatched epoch = %d, want 3", epoch)
+	var dmEpoch int64
+	dbfx.QueryRow(t, `SELECT compaction_epoch FROM chat_session WHERE id = $1`, chatID).Scan(&dmEpoch)
+	if dmEpoch != 4 {
+		t.Fatalf("DM epoch = %d, want 4 (the trigger moved it once)", dmEpoch)
 	}
-	if _, epoch := ruleETaskState(t, started); epoch != 2 {
-		t.Fatalf("started epoch = %d, want 2 (a started run is never re-stamped)", epoch)
+	if status, epoch := ruleETaskState(t, taskID); status != "dispatched" || epoch != dmEpoch {
+		t.Fatalf("task = %q epoch %d, want dispatched at DM epoch %d", status, epoch, dmEpoch)
 	}
 }

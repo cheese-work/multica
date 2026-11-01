@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -93,59 +96,108 @@ func claimNow(t *testing.T, agentID, runtimeID string) *db.AgentTaskQueue {
 	return &task
 }
 
-// (s) lock order: compact (DM, then task NOWAIT), a task completing and claim
-// polls run in a barrier loop. No deadlock, no 5xx, and the queued task is
-// never lost.
+// (s) lock order, real paths: the compact handler (DM, then task NOWAIT),
+// CompleteTaskWithRunContext (DM, then task) and the service claim
+// (ClaimTaskForRuntime) race behind a barrier. Nothing deadlocks or errors, the
+// caller completes, the queued task is claimable afterwards, and a claimed
+// task's epoch stamp equals the DM epoch (Rule E).
 func TestChatCompactClaimLockOrderHasNoDeadlock(t *testing.T) {
-	for i := 0; i < 25; i++ {
-		fx := newCompactFixture(t)
-		queued := addRuleEChatTask(t, fx.sessionID, "queued")
-		var agentID, runtimeID string
-		if err := testPool.QueryRow(ctx(), `SELECT agent_id, runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&agentID, &runtimeID); err != nil {
-			t.Fatal(err)
-		}
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		codes := make(chan int, 1)
-		wg.Add(3)
-		go func() {
-			defer wg.Done()
-			<-start
-			status, _ := postCompact(t, fx.token, "x")
-			codes <- status
-		}()
-		go func() {
-			defer wg.Done()
-			<-start
-			testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, fx.taskID)
-		}()
-		go func() {
-			defer wg.Done()
-			<-start
-			for j := 0; j < 5; j++ {
-				db.New(testPool).ClaimAgentTask(ctx(), db.ClaimAgentTaskParams{
-					AgentID: ruleEUUID(t, agentID), RuntimeID: ruleEUUID(t, runtimeID), PrepareLeaseSecs: 30, RuntimeStaleSecs: 3600,
-				})
+	svc := service.NewTaskService(db.New(testPool), testPool, nil, events.New())
+	for i := 0; i < 40; i++ {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			fx := newCompactFixture(t)
+			queued := addRuleEChatTask(t, fx.sessionID, "queued")
+			// Each subtest's fixture cleanup frees the agent's concurrency slot.
+			var runtimeID string
+			if err := testPool.QueryRow(ctx(), `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&runtimeID); err != nil {
+				t.Fatal(err)
 			}
-		}()
-		close(start)
-		finished := make(chan struct{})
-		go func() { wg.Wait(); close(finished) }()
-		select {
-		case <-finished:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("iteration %d: compact, completion and claim did not finish (deadlock)", i)
-		}
-		// 403 when the caller completed before the handler read it.
-		if code := <-codes; code != http.StatusOK && code != http.StatusConflict && code != http.StatusForbidden {
-			t.Fatalf("iteration %d: compact = %d, want 200, 403 or 409", i, code)
-		}
-		var status string
-		if err := testPool.QueryRow(ctx(), `SELECT status FROM agent_task_queue WHERE id = $1`, queued).Scan(&status); err != nil {
-			t.Fatal(err)
-		}
-		if status != "queued" && status != "dispatched" {
-			t.Fatalf("iteration %d: queued task ended %q, want queued or dispatched", i, status)
-		}
+			if _, err := testPool.Exec(ctx(), `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, runtimeID); err != nil {
+				t.Fatal(err)
+			}
+			claim := func() (claimedQueued bool, err error) {
+				for k := 0; k < 10; k++ {
+					got, err := svc.ClaimTaskForRuntime(ctx(), ruleEUUID(t, runtimeID))
+					if err != nil || got == nil {
+						return claimedQueued, err
+					}
+					if util.UUIDToString(got.ID) == queued {
+						return true, nil
+					}
+				}
+				return false, nil
+			}
+
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			var compactCode int
+			var compactBody []byte
+			var completeErr, claimErr error
+			var claimedInRace bool
+			wg.Add(3)
+			go func() {
+				defer wg.Done()
+				<-start
+				compactCode, compactBody = postCompact(t, fx.token, "x")
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				_, _, completeErr = svc.CompleteTaskWithRunContext(ctx(), ruleEUUID(t, fx.taskID), []byte(`{"output":"done"}`), "", "", "", false, "", "", nil)
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				claimedInRace, claimErr = claim()
+			}()
+			close(start)
+			finished := make(chan struct{})
+			go func() { wg.Wait(); close(finished) }()
+			select {
+			case <-finished:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("iteration %d: compact, completion and claim did not finish (deadlock)", i)
+			}
+
+			if completeErr != nil {
+				t.Fatalf("iteration %d: complete caller: %v", i, completeErr)
+			}
+			if claimErr != nil {
+				t.Fatalf("iteration %d: claim: %v", i, claimErr)
+			}
+			// 403: the caller completed before the handler read it. 409: the claim won.
+			if compactCode != http.StatusOK && compactCode != http.StatusConflict && compactCode != http.StatusForbidden {
+				t.Fatalf("iteration %d: compact = %d %s, want 200, 403 or 409", i, compactCode, compactBody)
+			}
+			var callerStatus string
+			if err := testPool.QueryRow(ctx(), `SELECT status FROM agent_task_queue WHERE id = $1`, fx.taskID).Scan(&callerStatus); err != nil {
+				t.Fatal(err)
+			}
+			if callerStatus != "completed" {
+				t.Fatalf("iteration %d: caller ended %q, want completed", i, callerStatus)
+			}
+			if !claimedInRace {
+				if _, err := claim(); err != nil {
+					t.Fatalf("iteration %d: claim after the race: %v", i, err)
+				}
+			}
+			var status string
+			var stamp *int64
+			var epoch int64
+			if err := testPool.QueryRow(ctx(), `
+				SELECT atq.status, atq.chat_compaction_epoch, cs.compaction_epoch
+				FROM agent_task_queue atq JOIN chat_session cs ON cs.id = atq.chat_session_id WHERE atq.id = $1`, queued).Scan(&status, &stamp, &epoch); err != nil {
+				t.Fatal(err)
+			}
+			if status != "dispatched" {
+				t.Fatalf("iteration %d: queued task ended %q, want dispatched after the race", i, status)
+			}
+			if stamp == nil || *stamp != epoch {
+				t.Fatalf("iteration %d: claimed task epoch %v, DM epoch %d (compact = %d)", i, stamp, epoch, compactCode)
+			}
+			if (compactCode == http.StatusOK) != (epoch == 1) {
+				t.Fatalf("iteration %d: compact = %d but DM epoch = %d", i, compactCode, epoch)
+			}
+		})
 	}
 }
