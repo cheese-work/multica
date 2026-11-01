@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import type { ChatMessage } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -26,6 +26,15 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
   const draftKey: CommentDraftKey = `chat:${sessionId ?? ""}`;
   const annotations = useCommentDraftStore((state) => state.getAnnotations(draftKey));
   const firstSource = annotations[0]?.sourceCommentId;
+  // A comment on a decision card that was answered or withdrawn is stale: left in
+  // the draft it would route every later send as a reply to that card, or block
+  // it as a mixed request. Only a card seen closed counts; an unloaded one stays.
+  useEffect(() => {
+    const closed = new Set(messages.flatMap((message) =>
+      (message.decision_requests ?? (message.decision_request ? [message.decision_request] : []))
+        .filter((card) => card.state !== "open").map((card) => `${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`)));
+    for (const a of annotations) if (closed.has(a.sourceCommentId)) useCommentDraftStore.getState().removeAnnotation(draftKey, a.id);
+  }, [annotations, messages, draftKey]);
   const [earlier, setEarlier] = useState<Record<string, string>>({});
   const registerSource = useCallback(
     (id: string, name: string) => setEarlier((prev) => (prev[id] === name ? prev : { ...prev, [id]: name })),

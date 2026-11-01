@@ -305,7 +305,8 @@
     "delete": "Delete chat",
     "statistics": "Statistics",
     "pin": "Pin chat",
-    "unpin": "Unpin chat"
+    "unpin": "Unpin chat",
+    "preset": { "label": "Preset", "inherit": "Inherit", "base": "Base" }
   },
   "scheduled": {
     "chip": "Scheduled {{count}}",

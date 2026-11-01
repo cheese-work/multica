@@ -305,7 +305,8 @@
     "delete": "Supprimer la discussion",
     "statistics": "Statistiques",
     "pin": "Épingler la discussion",
-    "unpin": "Détacher la discussion"
+    "unpin": "Détacher la discussion",
+    "preset": { "label": "Préréglage", "inherit": "Hériter", "base": "Base" }
   },
   "scheduled": {
     "chip": "Planifié {{count}}",
