@@ -81,6 +81,7 @@ export function IssueStatusPage({ target, query }: { target: IssueTarget; query:
     wsId,
     single ? single.project_id : (sharedProjectId ?? undefined),
     single?.status,
+    single?.workflow_id,
   );
   const allowed = useMemo(
     () => (single || sharedProjectId ? null : sharedWorkflowStatusKeys(workflows, projects, issues)),
