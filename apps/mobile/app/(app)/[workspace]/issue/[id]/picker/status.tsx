@@ -115,7 +115,7 @@ export default function IssueStatusPickerRoute() {
     <StatusPickerBody
       value={issue?.status ?? "todo"}
       onChange={(next) => void choose(next)}
-      narrow={issue ? (options) => issueWorkflowStatusOptions(options, workflows, projects, issue) : undefined}
+      narrow={issue ? (options) => issueWorkflowStatusOptions(options, catalog, workflows, projects, issue) : undefined}
     />
   );
 }

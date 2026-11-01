@@ -5,9 +5,13 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "@/data/api";
 
+export const issueWorkflowKeys = {
+  list: (wsId: string | null) => ["issue-workflows", wsId, "list"] as const,
+};
+
 export const issueWorkflowListOptions = (wsId: string | null) =>
   queryOptions({
-    queryKey: ["issue-workflows", wsId, "list"] as const,
+    queryKey: issueWorkflowKeys.list(wsId),
     queryFn: async ({ signal }) => (await api.listIssueWorkflows({ signal })).workflows,
     enabled: !!wsId,
     staleTime: 5 * 60_000,
