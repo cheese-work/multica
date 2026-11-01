@@ -14,16 +14,19 @@ DELETE FROM issue_wakeup WHERE id = sqlc.arg('id')::uuid AND system_rule = 'work
 -- edge guards read. Only a GitHub PR carries a checks snapshot; head_fresh says
 -- the snapshot belongs to the PR's newest head; review is the latest human
 -- review decision, and counts only while it is on the PR's current head.
+-- pr_head_sha is the PR's own newest head, which a checks snapshot may not have
+-- caught up with.
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
        pr.snapshot_head_sha::text AS head_sha,
+       pr.head_sha::text AS pr_head_sha,
        (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);

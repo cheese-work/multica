@@ -20,10 +20,15 @@ func githubNotifyContent(ctx context.Context, queries *db.Queries, revision db.G
 	anchor := map[string]string{"review": "pullrequestreview-", "review_comment": "discussion_r", "issue_comment": "issuecomment-"}[revision.ObjectKind]
 	if anchor == "" || !githubNotifyLoginPattern.MatchString(revision.AuthorLogin) ||
 		!githubNotifyLoginPattern.MatchString(pull.RepoOwner) || !githubNotifyRepositoryPattern.MatchString(pull.RepoName) ||
-		!revision.SourceDeliveryGuid.Valid || !githubNotifyIntakePattern.MatchString(revision.SourceDeliveryGuid.String) {
+		(revision.SourceDeliveryGuid.Valid && !githubNotifyIntakePattern.MatchString(revision.SourceDeliveryGuid.String)) {
 		return "", fmt.Errorf("github: invalid notify-only metadata")
+	}
+	// An approved unsigned revision (R3) has no delivery; its revision ID stands in.
+	intakeID := uuidToString(revision.ID)
+	if revision.SourceDeliveryGuid.Valid {
+		intakeID = revision.SourceDeliveryGuid.String
 	}
 	return fmt.Sprintf("GitHub %s\nhttps://github.com/%s/%s/pull/%d#%s%d\nAuthor: %s (%d)\nObject ID: %d\nIntake ID: %s",
 		revision.Event, pull.RepoOwner, pull.RepoName, pull.PrNumber, anchor, revision.ObjectID,
-		revision.AuthorLogin, revision.AuthorID, revision.ObjectID, revision.SourceDeliveryGuid.String), nil
+		revision.AuthorLogin, revision.AuthorID, revision.ObjectID, intakeID), nil
 }
