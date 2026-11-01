@@ -115,6 +115,14 @@ export function ChatQueue({
             "animate-in fade-in slide-in-from-bottom-2 duration-300",
           )}
         >
+          {!canSteer ? (
+            <p
+              data-slot="chat-queue-reason"
+              className="px-3.5 pt-1.5 text-caption text-muted-foreground"
+            >
+              {steerLabel}
+            </p>
+          ) : null}
           <div
             data-slot="chat-queue-list"
             className="max-h-40 overflow-y-auto px-2 py-1"

@@ -198,4 +198,26 @@ describe("ChatQueue Steer and Stop & send", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Stop & send" }));
     await waitFor(() => expect(actions.onStopAndSend).toHaveBeenCalledWith("task-2"));
   });
+
+  it.each([
+    ["running", "starting", "Run is starting"],
+    ["running", "unsupported", "This run can't take new messages. The message stays queued."],
+    ["running", "absent", "This run can't take new messages. The message stays queued."],
+    ["queued", "capable", "Steer is available after the current reply starts"],
+  ] as const)(
+    "shows the fallback reason as visible text (head %s, support %s)",
+    (headStatus, support, reason) => {
+      renderQueue(headStatus, false, support);
+
+      const visible = screen.getByText(reason);
+      expect(visible).toBeVisible();
+      expect(visible).toHaveAttribute("data-slot", "chat-queue-reason");
+    },
+  );
+
+  it("shows no reason text while Steer is available", () => {
+    const { container } = renderQueue("running", false, "capable");
+
+    expect(container.querySelector('[data-slot="chat-queue-reason"]')).toBeNull();
+  });
 });
