@@ -213,7 +213,7 @@ export function sessionCls(entries: ShiftEntry[]): number {
   let last = 0;
   for (const e of entries) {
     if (e.hadRecentInput) continue;
-    if (sum > 0 && (e.startTime - last > 1000 || e.startTime - windowStart > 5000)) sum = 0;
+    if (sum > 0 && (e.startTime - last >= 1000 || e.startTime - windowStart >= 5000)) sum = 0;
     if (sum === 0) windowStart = e.startTime;
     sum += e.value;
     last = e.startTime;

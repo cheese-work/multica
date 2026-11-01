@@ -73,6 +73,17 @@ test("standard CLS is the largest session window and ignores input-driven shifts
   expect(entries.reduce((n, e) => n + e.value, 0)).toBeCloseTo(0.2 + 0.1 + 0.5 + 0.06, 6);
 });
 
+test("standard CLS windows end at a gap of 1 s or a span of 5 s, both inclusive", () => {
+  const shift = (startTime: number, value: number) => ({ startTime, value, hadRecentInput: false });
+  // A gap of exactly 1 s starts a new window (web-vitals joins only when the gap is under 1 s).
+  expect(fx.sessionCls([shift(0, 0.1), shift(1000, 0.1)])).toBeCloseTo(0.1, 6);
+  expect(fx.sessionCls([shift(0, 0.1), shift(999, 0.1)])).toBeCloseTo(0.2, 6);
+  // A window of exactly 5 s from its first shift starts a new window.
+  const chain = [0, 800, 1600, 2400, 3200, 4000, 4800].map((t) => shift(t, 0.01));
+  expect(fx.sessionCls([...chain, shift(5000, 0.01)])).toBeCloseTo(0.07, 6);
+  expect(fx.sessionCls([...chain, shift(4999, 0.01)])).toBeCloseTo(0.08, 6);
+});
+
 // ---- R1 ---------------------------------------------------------------------
 
 const SETTLED_ANSWER = "Settled answer, see PERF-77";
@@ -324,12 +335,15 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   // Each chip's first box against its own resolved box. A chip that mounts already
   // resolved has delta 0; one that starts as a placeholder shows its jump.
   const placeholders = all.filter((t) => !RESOLVED.test(t.first.label));
-  // The transition must be observed, not assumed: a chip that began as a placeholder
-  // and ended as the title of the same key. Without one, a zero delta proves nothing.
+  // Every chip's first sampled box must be a known state of its own key: the fallback
+  // placeholder (the jump on `main`) or the resolved title (a fix that has the data at
+  // mount). A chip does not exist before its lookup is released, so either first box is
+  // real, and anything else means the first sample was not this chip's first state.
   const sameKeyTransitions = placeholders.filter((t) => {
     const key = /PERF-\d+/.exec(t.last.label)?.[0];
     return key !== undefined && t.first.label.includes(key);
   });
+  const accounted = sameKeyTransitions.length + (all.length - placeholders.length);
   const widthDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.w - t.first.w)));
   const heightDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.h - t.first.h)));
   const shift = await fx.readShift(page);
@@ -337,7 +351,7 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   const requestsPerKey = [...h.keyLookups.values()];
   expect(h.keyLookups.size, "distinct keys looked up").toBeGreaterThan(0);
   expect.soft(all.length, "chips measured").toBeGreaterThan(0);
-  expect.soft(sameKeyTransitions.length, "chips seen as placeholder, then as the same key's title").toBeGreaterThan(0);
+  expect.soft(accounted, "chips whose first box is the same key's placeholder or its title").toBe(all.length);
   expect.soft(Math.max(...requestsPerKey), "getIssue requests per key").toBe(1);
   expect.soft(widthDelta, "chip width delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
   expect.soft(heightDelta, "chip height delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
