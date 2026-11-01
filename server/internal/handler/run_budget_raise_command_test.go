@@ -300,6 +300,27 @@ func TestNoticeOnAnIndependentlyBlockedIssueGivesNoRecoveryRun(t *testing.T) {
 	raiseAndAdmit(t, c.edgeCase, p)
 }
 
+// blockWithoutNotice is the exhaustion callback that blocks the issue and
+// exits before its notice. It re-reads the issue after a lost revision race,
+// as the callback does.
+func blockWithoutNotice(t *testing.T, e service.RunBudgetExhausted) {
+	t.Helper()
+	for try := 0; try < runBudgetBlockTries; try++ {
+		issue, err := testHandler.Queries.GetIssue(context.Background(), e.IssueID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moved, lifted := testHandler.blockExhaustedIssue(context.Background(), issue, e, "")
+		if lifted {
+			t.Fatal("the refusal was lifted")
+		}
+		if moved {
+			return
+		}
+	}
+	t.Fatal("the block never moved the issue")
+}
+
 // A callback that blocked the issue and exited before its notice leaves the
 // window's recovery run owed: the next refusal of the window finds the issue
 // already blocked by the budget and gives it with the notice.
@@ -309,13 +330,7 @@ func TestNoticeAfterAnInterruptedCallbackGivesTheRecoveryRun(t *testing.T) {
 	}
 	c := newBudgetCase(t, 2886107, recoverySteps(seededReadyAgentID(t)), 2)
 	e := refusedEvent(t, c)
-	issue, err := testHandler.Queries.GetIssue(context.Background(), e.IssueID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if moved, lifted := testHandler.blockExhaustedIssue(context.Background(), issue, e, ""); !moved || lifted {
-		t.Fatalf("block moved=%v lifted=%v, want moved", moved, lifted)
-	}
+	blockWithoutNotice(t, e)
 	testHandler.onRunBudgetExhausted(context.Background(), e)
 	if n := recoveryRuns(t, c.edgeCase); n != 1 {
 		t.Fatalf("recovery runs = %d, want 1 (the interrupted callback's run was still owed)", n)
@@ -327,6 +342,26 @@ func TestNoticeAfterAnInterruptedCallbackGivesTheRecoveryRun(t *testing.T) {
 		t.Fatalf("preview = %+v, want a cap of 13 leaving 10", p)
 	}
 	raiseAndAdmit(t, c.edgeCase, p)
+}
+
+// The marker names the budget's block, not the window: once the issue leaves
+// blocked and a person blocks it again, the next refusal gives no recovery run.
+func TestNoticeAfterTheBudgetBlockWasReplacedByAnotherGivesNoRecoveryRun(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886108, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	blockWithoutNotice(t, e)
+	c.enter(t, "in_progress")
+	c.enter(t, "blocked")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (the budget's block ended; another writer blocked the issue)", n)
+	}
+	if n := raiseNotices(t, c); n != 1 {
+		t.Fatalf("notices = %d, want 1", n)
+	}
 }
 
 // A recovery run that is not enqueued (the window's claim is taken) debits
