@@ -194,3 +194,29 @@ func TestRunBudgetExhaustionNoticeLosesToATopUpLandingBeforeTheNotice(t *testing
 		})
 	}
 }
+
+// The block commits while the window is exhausted, then a top-up lands before
+// the notice. The notice drops the stale refusal, and the recovery run, which
+// bypasses the exhaustion refusal, must not claim the old window either.
+func TestRunBudgetExhaustionRecoveryLosesToATopUpLandingAfterTheBlock(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2807008, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	landBeforeNotice(t, func() {
+		if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+			t.Errorf("top-up = %d: %s", w.Code, w.Body.String())
+		}
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("status = %s, want the committed block kept", got)
+	}
+	if n := c.decisionRows(t); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0", n)
+	}
+}
