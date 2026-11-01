@@ -124,3 +124,20 @@ func TestApproveDecisionActionRefusesDemotionDuringVerification(test *testing.T)
 		})
 	}
 }
+
+// The owner rule covers every action on a server-opened request, not only an
+// issue target: an agent's own owner is not a workspace owner.
+func TestApproveServerAgentActionRefusesDemotionDuringVerification(test *testing.T) {
+	action := newPendingAction(test)
+	dbfx.Exec(test, `UPDATE decision_request SET request_fingerprint = 'server:test:' || id::text WHERE id = $1`, action.requestID)
+	dbfx.Exec(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	demoteDuringVerification := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) {
+		dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+		return pgtype.UUID{}, nil
+	}
+	body := action.approve(test, withVerifier(demoteDuringVerification), action.claim(test, nil), http.StatusForbidden)
+	if !strings.Contains(body, "class_needs_owner") {
+		test.Fatalf("body %q; want class_needs_owner", body)
+	}
+	action.assertUntouched(test)
+}

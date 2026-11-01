@@ -248,8 +248,9 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		return empty, err
 	}
 	// The passkey check above can outlast a role change that committed after the
-	// pre-lock reads, so an issue target re-reads the role under the member lock.
-	if issueTarget && approver.Role != "owner" {
+	// pre-lock reads, so the owner rule is applied again to the role read under
+	// the member lock: for an issue target and for any server-opened request.
+	if (issueTarget || isServerDecision(current)) && approver.Role != "owner" {
 		return empty, errNeedsOwner
 	}
 	if !issueTarget && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
