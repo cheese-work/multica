@@ -213,8 +213,19 @@ func (c budgetCase) memberRequester(t *testing.T, email string) string {
 // issue, as the admission hook does after a refusal.
 func (c budgetCase) writeExhausted(t *testing.T) {
 	t.Helper()
-	e := service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindExhausted, Runs: 2, Max: 2, Since: time.Now().Add(-time.Hour)}
-	testHandler.writeRunBudgetNotice(context.Background(), e, "This issue used up its run budget.")
+	testHandler.writeRunBudgetNotice(context.Background(), c.exhaustedEvent(t), "This issue used up its run budget.")
+}
+
+// exhaustedEvent is the exhaustion event for the issue's open window: the
+// notice revalidates the window it names, so a made-up Since is a stale one.
+func (c budgetCase) exhaustedEvent(t *testing.T) service.RunBudgetEvent {
+	t.Helper()
+	events := make(chan service.RunBudgetExhausted, 1)
+	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+	c.refuse(t)
+	e := <-events
+	return service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since}
 }
 
 func (c budgetCase) requestRow(t *testing.T) (id, human string) {
@@ -257,8 +268,9 @@ func TestRunBudgetDecisionRequestDoesNotDependOnAssignee(t *testing.T) {
 	t.Run("issue has no assignee", func(t *testing.T) {
 		c := newBudgetCase(t, 2318010, mergeEdgeSteps, 2)
 		c.spend(t, 2)
+		e := c.exhaustedEvent(t)
 		dbfx.Exec(t, `UPDATE issue SET assignee_type=NULL, assignee_id=NULL WHERE id=$1`, c.issueID)
-		c.writeExhausted(t)
+		testHandler.writeRunBudgetNotice(context.Background(), e, "This issue used up its run budget.")
 		if n := c.decisionRows(t); n != 1 {
 			t.Fatalf("decision requests = %d, want 1", n)
 		}
@@ -453,7 +465,7 @@ func TestRunBudgetDecisionRequestWithNoActiveAgent(t *testing.T) {
 	c.spend(t, 2)
 	archiveAllAgents(t)
 	// The same event twice is a retried delivery: one window, one request.
-	e := service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindExhausted, Runs: 2, Max: 2, Since: time.Now().Add(-time.Hour)}
+	e := c.exhaustedEvent(t)
 	testHandler.writeRunBudgetNotice(context.Background(), e, "This issue used up its run budget.")
 	if n := c.decisionRows(t); n != 1 {
 		t.Fatalf("decision requests = %d, want 1", n)
@@ -540,7 +552,7 @@ func TestRunBudgetDecisionRequestDoesNotStarveThePool(t *testing.T) {
 	small.TxStarter = pool
 	c := newBudgetCase(t, 2318050, mergeEdgeSteps, 2)
 	c.spend(t, 2)
-	e := service.RunBudgetEvent{IssueID: parseUUID(c.issueID), Kind: service.RunBudgetKindExhausted, Runs: 2, Max: 2, Since: time.Now().Add(-time.Hour)}
+	e := c.exhaustedEvent(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
