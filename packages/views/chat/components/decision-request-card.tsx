@@ -6,6 +6,7 @@ import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, useEditorUpload, useUploadGate, type ContentEditorRef } from "../../editor";
@@ -51,6 +52,7 @@ function DecisionAnswerForm({
 }) {
   const { t } = useT("chat");
   const online = useOnline();
+  const sendShortcut = formatShortcut(useShortcut("send"));
   const { option, text } = draft;
   const setOption = (next: string) => onDraftChange({ option: next, text });
   const setText = (next: string) => onDraftChange({ option, text: next });
@@ -129,7 +131,7 @@ function DecisionAnswerForm({
         />
       </div>
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
-        {t(($) => $.decision.answer_hint)}
+        {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">

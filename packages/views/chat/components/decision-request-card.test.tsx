@@ -398,9 +398,10 @@ describe("DecisionRequestCard answering", () => {
   it("explains where Send posts and the keyboard contract, with a visible field label", () => {
     renderCard();
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
-    expect(screen.getByText("Enter sends · Shift+Enter for a new line")).toBeVisible();
+    // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
+    expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
     expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
+    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
   it("keeps the answer and disables Send while offline", async () => {
