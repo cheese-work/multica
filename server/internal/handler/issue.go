@@ -290,7 +290,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -326,9 +326,28 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	rec := statusRecordFrom(ctx)
+	recordStatus := rec != nil && params.Status.Valid
+	var fromStatus string
+	if recordStatus {
+		// Lock first so "from" is the status this write replaces, not the
+		// caller's earlier read.
+		prior, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: params.ID, WorkspaceID: rec.workspaceID})
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
+		}
+		fromStatus = prior.Status
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if recordStatus && fromStatus != issue.Status {
+		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, nil)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
+		}
+		rec.activity = &row
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
@@ -4284,6 +4303,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Status history is written in the status transaction. A workflow handoff
+	// and a duplicate mark keep the listener's richer row until they migrate.
+	var statusRec *statusRecord
+	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		writeCtx = withStatusRecord(writeCtx, statusRec)
+	}
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -4402,7 +4428,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
+	if statusRec != nil && statusRec.activity != nil {
+		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
