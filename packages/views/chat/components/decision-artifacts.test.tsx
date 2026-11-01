@@ -126,7 +126,13 @@ describe("DecisionArtifacts", () => {
     expect(changes).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveAttribute("aria-labelledby", changes.id);
     expect(within(panel).getByRole("region", { name: /Text changes since design-rev4\.md/ })).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("tab", { name: "Preview" }));
+    // Every tab names the panel it controls, selected or not, before and after a selection change.
+    const preview = within(dialog).getByRole("tab", { name: "Preview" });
+    expect(preview).toHaveAttribute("aria-controls", panel.id);
+    await user.click(preview);
+    expect(changes).toHaveAttribute("aria-controls", panel.id);
+    expect(preview).toHaveAttribute("aria-controls", panel.id);
+    expect(within(dialog).getByRole("tabpanel")).toHaveAttribute("aria-labelledby", preview.id);
     expect(await within(dialog).findByRole("heading", { name: "Decision card" })).toBeInTheDocument();
     // Selecting the open tab does not close it: one tab is always open.
     await user.click(within(dialog).getByRole("tab", { name: "Preview" }));

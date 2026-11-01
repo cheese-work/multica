@@ -230,7 +230,7 @@ function ArtifactDialogContent({ artifact, attachment, onRetryChanges }: { artif
               role="tab"
               id={tabId(key)}
               aria-selected={open === key}
-              aria-controls={open === key ? `${id}-panel` : undefined}
+              aria-controls={`${id}-panel`}
               tabIndex={focused === key ? 0 : -1}
               onFocus={() => setFocused(key)}
               onKeyDown={(event) => onKeyDown(event, key)}
