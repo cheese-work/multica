@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -185,6 +186,18 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// any owner-only handler can deny without re-querying the
 				// token table.
 				r.Header.Set("X-Actor-Source", "task_token")
+				// The mark comes from the stored task, never a header. If it
+				// cannot be read the request is refused: a recovery run must
+				// not pass as an ordinary one.
+				recovery, err := queries.IsBudgetRecoveryTask(r.Context(), tt.TaskID)
+				if err != nil {
+					slog.Warn("auth: read task kind", "path", r.URL.Path, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to authenticate")
+					return
+				}
+				if recovery {
+					r = r.WithContext(dispatch.WithBudgetRecoveryCaller(r.Context()))
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -282,6 +295,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 
+				// A scoped PAT is a restricted credential: it reaches only the
+				// routes its scope names and is never cached, so a cache hit
+				// can never widen it to the owner's full access.
+				if len(pat.Scopes) > 0 && !scopedPATMayCall(r) {
+					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
+					return
+				}
+
 				userID := uuidToString(pat.UserID)
 				if rejectTemporarilyDisabledUser(w, r, userID, "", "pat") {
 					return
@@ -296,7 +317,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				if pat.ExpiresAt.Valid {
 					expiresAt = pat.ExpiresAt.Time
 				}
-				patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+				if len(pat.Scopes) == 0 {
+					patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+				}
 
 				// Cache miss = TTL expired (or first use after revoke /
 				// process restart). Refresh last_used_at; subsequent hits
@@ -372,4 +395,19 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 	}
 
 	return "", false
+}
+
+// scopedPATMayCall reports whether a scoped PAT may call this route. The only
+// scope today, decisions:feed, opens the answer feed and its ack and nothing else.
+func scopedPATMayCall(r *http.Request) bool {
+	path := r.URL.Path
+	switch r.Method {
+	case http.MethodGet:
+		return path == "/api/decisions/feed"
+	case http.MethodPost:
+		rest, found := strings.CutPrefix(path, "/api/decisions/feed/")
+		id, ack := strings.CutSuffix(rest, "/ack")
+		return found && ack && id != "" && !strings.Contains(id, "/")
+	}
+	return false
 }

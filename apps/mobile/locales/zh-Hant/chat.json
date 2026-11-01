@@ -106,6 +106,7 @@
   },
   "picker.title": "選擇智慧體",
   "no_response": "本輪已結束，智慧體沒有返回文字回覆。",
+  "continuation_summary": "對話摘要",
   "failure_reason": {
     "default": "執行失敗",
     "queued_expired": "排隊已過期",

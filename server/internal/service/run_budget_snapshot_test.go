@@ -28,7 +28,7 @@ func TestNewRunBudgetSnapshotStatesAndRaisePreview(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := NewRunBudgetSnapshot(c.used, c.limit, "workflow", start)
+			got := NewRunBudgetSnapshot(c.used, c.limit, int64(c.limit)-c.used, "workflow", start)
 			if !got.Budgeted || got.RunsUsed != c.used || got.RunsLimit != c.limit || got.RunsSource != "workflow" || !got.WindowStartedAt.Equal(start) {
 				t.Fatalf("identity fields wrong: %+v", got)
 			}

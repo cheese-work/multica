@@ -2,7 +2,7 @@
 
 import { SettingsPage } from "@multica/views/settings";
 import { useT } from "@multica/views/i18n";
-import { Search } from "lucide-react";
+import { Search } from "@multica/ui/icons";
 import { SiteSearchTab } from "@/components/site-search-tab";
 
 export default function Page() {

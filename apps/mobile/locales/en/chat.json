@@ -171,6 +171,7 @@
   },
   "picker.title": "Choose an agent",
   "no_response": "The agent finished this turn without a text reply.",
+  "continuation_summary": "Conversation summary",
   "failure_reason": {
     "default": "Run failed",
     "queued_expired": "Expired in queue",

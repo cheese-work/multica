@@ -123,7 +123,7 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := uuidToString(session.ID)
-	h.publishChat(protocol.EventChatMessage, workspaceID, "agent", uuidToString(task.AgentID), sessionID, protocol.ChatMessagePayload{
+	h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", uuidToString(task.AgentID), uuidToString(session.CreatorID), sessionID, protocol.ChatMessagePayload{
 		ChatSessionID: sessionID, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
 		TaskID: uuidToString(task.ID), CreatedAt: timestampToString(summary.CreatedAt),
 	})

@@ -109,10 +109,11 @@ func (s *TaskService) syncChatCompacting(workspaceID string, task db.AgentTaskQu
 
 func (s *TaskService) publishChatCompacting(workspaceID string, session db.ChatSession, compacting bool) {
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatSessionUpdated,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ChatSessionID: util.UUIDToString(session.ID),
+		Type:               protocol.EventChatSessionUpdated,
+		WorkspaceID:        workspaceID,
+		ActorType:          "system",
+		ChatSessionID:      util.UUIDToString(session.ID),
+		ChatSessionOwnerID: util.UUIDToString(session.CreatorID),
 		Payload: protocol.ChatSessionUpdatedPayload{
 			ChatSessionID: util.UUIDToString(session.ID),
 			Title:         session.Title,

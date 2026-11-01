@@ -93,3 +93,7 @@ export const CLI_STOP_WAIT_MS = 35_000;
 // CLI's 2s /health probe and 2s /shutdown request, or Electron kills the CLI
 // mid-drain and a restart never reaches the start step.
 export const DAEMON_STOP_EXEC_TIMEOUT_MS = CLI_STOP_WAIT_MS + 10_000;
+
+// execFile timeout for `daemon stop --force`, which waits up to 40s for the
+// profile lock (daemonShutdownLockWait) before it terminates the daemon.
+export const DAEMON_FORCE_STOP_EXEC_TIMEOUT_MS = 55_000;

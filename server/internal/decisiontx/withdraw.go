@@ -11,6 +11,20 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
+// ClassNeedsOwner is the reason for a decision that only the workspace owner may
+// make. It cancels the request and never reopens it.
+const ClassNeedsOwner = "class_needs_owner"
+
+// OwnerRequiredNotice tells the asking agent where a refused decision goes next.
+const OwnerRequiredNotice = "This decision concerns the workspace owner. Post a fresh --decision-intent that names the owner, then ping in a new request."
+
+func withdrawalContent(reason string) string {
+	if reason == ClassNeedsOwner {
+		return "Decision withdrawn: " + reason + ". " + OwnerRequiredNotice
+	}
+	return "Decision withdrawn: " + reason + "."
+}
+
 type Withdrawal struct {
 	Request         db.DecisionRequest
 	Answer          db.DecisionAnswer
@@ -46,7 +60,7 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	var err error
 	params := db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID}
 	if veto == nil {
-		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: "Decision withdrawn: " + reason + ".", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
+		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: withdrawalContent(reason), DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
 		if err != nil {
 			return Withdrawal{}, err
 		}
@@ -71,7 +85,9 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 		return result, nil
 	}
 	cancelReason := ""
-	if request.Origin == "unprompted" {
+	if reason == ClassNeedsOwner {
+		cancelReason = ClassNeedsOwner
+	} else if request.Origin == "unprompted" {
 		cancelReason = "record_disclaimed"
 		if veto != nil {
 			cancelReason = "record_vetoed"

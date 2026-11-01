@@ -104,6 +104,10 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 // (issue, budget window, kind). The claim row, the comment and the inbox items
 // share one transaction: the inserting transaction alone writes the notice, and
 // a failed write rolls the claim back so the next event retries it.
+// runBudgetBeforeNotice runs after the notice's reads and before its
+// transaction. Tests use it to land a budget write in that window.
+var runBudgetBeforeNotice = func() {}
+
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
@@ -111,9 +115,11 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		return
 	}
 	content, title := h.runBudgetNoticeText(ctx, issue, e, text)
+	runBudgetBeforeNotice()
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
+	var decisions []decisionRequestResult
 	err = h.withTx(ctx, func(qtx *db.Queries) error {
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
@@ -125,6 +131,27 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		if err != nil {
 			return fmt.Errorf("claim notice: %w", err)
 		}
+		recipients, err := runBudgetRecipients(ctx, qtx, issue)
+		if err != nil {
+			return fmt.Errorf("recipients: %w", err)
+		}
+		// Decision locks come before the comment, which locks the issue: the
+		// order every decision transaction takes.
+		var plan runBudgetDecisionPlan
+		if e.Kind == service.RunBudgetKindExhausted {
+			if plan, err = h.planRunBudgetDecisions(ctx, qtx, issue, recipients); err != nil {
+				return fmt.Errorf("plan decisions: %w", err)
+			}
+		}
+		// The budget lock is the issue lock the comment takes next, so it comes
+		// after the decision locks too. Under it, a top-up or grant that
+		// committed first has ended this window's refusal: no comment, no
+		// decision, and the claim rolls back with the transaction.
+		if e.Kind == service.RunBudgetKindExhausted {
+			if err := runBudgetRefusalStillHolds(ctx, qtx, e); err != nil {
+				return err
+			}
+		}
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -135,10 +162,6 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		comment, revision = created.Comment(), created.IssueRevision
 		if err := qtx.SetRunBudgetNoticeComment(ctx, db.SetRunBudgetNoticeCommentParams{ID: noticeID, CommentID: comment.ID}); err != nil {
 			return fmt.Errorf("set notice comment: %w", err)
-		}
-		recipients, err := runBudgetRecipients(ctx, qtx, issue)
-		if err != nil {
-			return fmt.Errorf("recipients: %w", err)
 		}
 		for _, userID := range recipients {
 			item, inserted, err := inbox.CreateIfEligible(ctx, qtx, db.CreateInboxItemParams{
@@ -155,8 +178,15 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 				items = append(items, item)
 			}
 		}
-		return nil
+		if e.Kind != service.RunBudgetKindExhausted {
+			return nil
+		}
+		decisions, err = h.openRunBudgetDecisions(ctx, qtx, issue, e, comment, plan)
+		return err
 	})
+	if errors.Is(err, errRefusalLifted) {
+		return
+	}
 	if err != nil {
 		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
 		return
@@ -176,6 +206,23 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 	for _, item := range items {
 		h.publish(protocol.EventInboxNew, workspaceID, "system", "", map[string]any{"item": inboxToResponse(item)})
 	}
+	h.publishRunBudgetDecisions(issue, decisions)
+}
+
+// runBudgetRefusalStillHolds takes the budget lock and reports errRefusalLifted
+// when the exhausted window is no longer the current, spent one.
+func runBudgetRefusalStillHolds(ctx context.Context, q *db.Queries, e service.RunBudgetEvent) error {
+	if _, err := q.LockIssueRunBudget(ctx, e.IssueID); err != nil {
+		return fmt.Errorf("lock budget: %w", err)
+	}
+	still, err := service.RunBudgetStillRefuses(ctx, q, e.IssueID, e.Since)
+	if err != nil {
+		return err
+	}
+	if !still {
+		return errRefusalLifted
+	}
+	return nil
 }
 
 // runBudgetRecipients is the requester, else the member creator, else the

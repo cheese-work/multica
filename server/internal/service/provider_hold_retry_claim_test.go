@@ -521,7 +521,7 @@ func TestRerunIssueRefusesHeldProvider(t *testing.T) {
 	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "openai")
 
 	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
-	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), nil)
+	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), false, nil)
 	if !errors.Is(err, ErrRerunProviderHeld) {
 		t.Fatalf("RerunIssue error = %v, want ErrRerunProviderHeld", err)
 	}
@@ -548,7 +548,7 @@ func TestRerunIssueClaudeUnaffectedByHold(t *testing.T) {
 	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "claude-sonnet-5[1m]", "openai")
 
 	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
-	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), nil)
+	task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), pgtype.UUID{}, pgtype.UUID{}, util.MustParseUUID(actorID), false, nil)
 	if err != nil {
 		t.Fatalf("RerunIssue: %v", err)
 	}

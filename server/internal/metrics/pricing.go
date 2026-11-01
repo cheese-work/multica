@@ -35,8 +35,9 @@ var modelPrices = map[string]ModelPrice{
 	// cache shape as 5.6. Long-prompt (>272K) surcharges are per request and
 	// not expressible on an aggregated usage row, same trade-off as Grok.
 	// Standard short-context rates from developers.openai.com/api/docs/models/.
-	// GPT-6.1 Sol caches at 0.05x input, not GPT-6 Sol's 0.1x.
+	// GPT-6.1 Sol and Terra cache at 0.05x input, not GPT-6 Sol's 0.1x.
 	"openai:gpt-6.1-sol":   {Provider: "openai", Model: "gpt-6.1-sol", InputPerM: 2.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, OutputPerM: 10.00},
+	"openai:gpt-6.1-terra": {Provider: "openai", Model: "gpt-6.1-terra", InputPerM: 1.00, CacheReadPerM: 0.05, CacheWritePerM: 1.25, OutputPerM: 5.00},
 	"openai:gpt-6-sol":     {Provider: "openai", Model: "gpt-6-sol", InputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, OutputPerM: 10.00},
 	"openai:gpt-6-luna":    {Provider: "openai", Model: "gpt-6-luna", InputPerM: 0.10, CacheReadPerM: 0.01, CacheWritePerM: 0.125, OutputPerM: 0.50},
 	"openai:gpt-5.6-sol":   {Provider: "openai", Model: "gpt-5.6-sol", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 30.00},
@@ -197,6 +198,7 @@ var modelAliasRules = []struct {
 	// as unmapped on both sides rather than silently borrowing a tier here.
 	{regexp.MustCompile(`(^|/|:)gpt-6-astra$`), "openai:gpt-6-astra"},
 	{regexp.MustCompile(`(^|/|:)gpt-6\.1-sol$`), "openai:gpt-6.1-sol"},
+	{regexp.MustCompile(`(^|/|:)gpt-6\.1-terra$`), "openai:gpt-6.1-terra"},
 	{regexp.MustCompile(`(^|/|:)gpt-6-sol$`), "openai:gpt-6-sol"},
 	{regexp.MustCompile(`(^|/|:)gpt-6-luna$`), "openai:gpt-6-luna"},
 	{regexp.MustCompile(`(^|/|:)gpt-5\.6-sol$`), "openai:gpt-5.6-sol"},

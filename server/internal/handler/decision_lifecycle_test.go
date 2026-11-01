@@ -90,7 +90,7 @@ func TestDecisionLifecycleRestoredEligibility(test *testing.T) {
 			case "member":
 				dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID)
 				handler.TxStarter = &decisionDeliveryMutation{txStarter: testPool, mutate: func() {
-					dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": fixture.humanID, "role": "member"})
+					dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": fixture.humanID, "role": "owner"})
 				}}
 			case "agent":
 				dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)

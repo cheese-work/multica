@@ -1,0 +1,9 @@
+{
+  "_doc": "GitHub agent-read rule (CHE-2213). Match numeric IDs only; logins are notes. instruction_authors: text by these IDs may be an instruction. workspace_bots: agent output, printed as labelled data. A change here is an instruction change: PR in cheese-work/multica-dotfiles, Cheese merges. This list maps nothing in Multica github_review_members and dispatches no run.",
+  "instruction_authors": [
+    {"id": 129714106, "login": "congvc-dev", "note": "Cheese, workspace owner (human)"}
+  ],
+  "workspace_bots": [
+    {"id": 282619718, "login": "congvc-bot-x99[bot]", "note": "X99 agent GitHub App identity"}
+  ]
+}

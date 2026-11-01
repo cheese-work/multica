@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight } from "@multica/ui/icons";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { workflowHandoffPreviewOptions } from "@multica/core/issue-workflows";
 import type { HandoffPreviewBinding, WorkflowHandoffPreview } from "@multica/core/types";

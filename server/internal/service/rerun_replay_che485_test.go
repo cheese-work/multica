@@ -51,7 +51,7 @@ func TestRerunIssueReplayReturnsExistingTask(t *testing.T) {
 
 	// First rerun: the authorized force action. Cancels the original pending
 	// task and enqueues a fresh one.
-	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (first): %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRerunIssueReplayReturnsExistingTask(t *testing.T) {
 	// Replay: identical request (same source task_id, same actor) submitted
 	// again before the rerun task has settled. Must return the SAME task,
 	// with zero additional rows and zero additional cancellations.
-	replay, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+	replay, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (replay): %v", err)
 	}
@@ -95,7 +95,7 @@ func TestRerunIssueReplayReturnsExistingTask(t *testing.T) {
 		workspaceID, otherActorID); err != nil {
 		t.Fatalf("seed other actor member: %v", err)
 	}
-	distinct, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, util.MustParseUUID(otherActorID), allow)
+	distinct, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, util.MustParseUUID(otherActorID), false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (distinct actor): %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRerunIssueReplayAfterTerminalAdmitsFreshAttempt(t *testing.T) {
 	allow := func(db.Agent) bool { return true }
 	actorUUID := util.MustParseUUID(actorID)
 
-	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (first): %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRerunIssueReplayAfterTerminalAdmitsFreshAttempt(t *testing.T) {
 		t.Fatalf("settle first rerun as failed: %v", err)
 	}
 
-	again, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+	again, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (after terminal): %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRerunIssueReplayConcurrentSubmissionsAdmitOnce(t *testing.T) {
 	// Seed the first admitted rerun outside the race so every concurrent
 	// caller below is a pure replay against an already-live lineage — this
 	// isolates the replay guard's race behavior from the initial admission's.
-	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+	first, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 	if err != nil {
 		t.Fatalf("RerunIssue (seed): %v", err)
 	}
@@ -198,7 +198,7 @@ func TestRerunIssueReplayConcurrentSubmissionsAdmitOnce(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -277,7 +277,7 @@ func TestRerunIssueConcurrentFirstAdmissionSettlesOnce(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, allow)
+			task, err := svc.RerunIssue(ctx, util.MustParseUUID(issueID), orig.ID, pgtype.UUID{}, actorUUID, false, allow)
 			if err != nil {
 				errs[idx] = err
 				return

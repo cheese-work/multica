@@ -79,6 +79,10 @@ interface Props {
    *  flash that reply's wrapper (bg only). Mirrors web's distinction at
    *  packages/views/issues/components/comment-card.tsx:498-682. */
   highlightedCommentId?: string | null;
+  /** "rev-N" number of each comment in a supersession chain (CHE-2121). */
+  revisions?: ReadonlyMap<string, number>;
+  /** Scrolls the timeline to a comment; the supersession links call it. */
+  onJumpToComment?: (commentId: string) => void;
 }
 
 export function CommentCard({
@@ -87,6 +91,8 @@ export function CommentCard({
   issueId,
   issueIdentifier,
   highlightedCommentId,
+  revisions,
+  onJumpToComment,
 }: Props) {
   // Resolved threads default to a single-line bar; tap expands in place for
   // the current session. Unmount (scroll out of viewport) resets — same
@@ -148,6 +154,8 @@ export function CommentCard({
         entry={entry}
         replies={replies}
         onExpand={() => setExpanded(true)}
+        revisions={revisions}
+        onJumpToComment={onJumpToComment}
       />
     );
   }
@@ -183,6 +191,11 @@ export function CommentCard({
               onCollapse={() => setExpanded(false)}
             />
           ) : null}
+          <SupersedesLinks
+            entry={entry}
+            revisions={revisions}
+            onJumpToComment={onJumpToComment}
+          />
           <CommentBody
             entry={entry}
             issueId={issueId}
@@ -196,6 +209,11 @@ export function CommentCard({
            *  still renders its placeholder — it heads the thread. */}
           {visibleReplies.map((reply) => (
             <View key={reply.id} className="border-t border-border/60 pt-3">
+              <SupersedesLinks
+                entry={reply}
+                revisions={revisions}
+                onJumpToComment={onJumpToComment}
+              />
               <CommentBody
                 entry={reply}
                 issueId={issueId}
@@ -228,10 +246,14 @@ function ResolvedThreadBar({
   entry,
   replies,
   onExpand,
+  revisions,
+  onJumpToComment,
 }: {
   entry: TimelineEntry;
   replies: TimelineEntry[];
   onExpand: () => void;
+  revisions?: ReadonlyMap<string, number>;
+  onJumpToComment?: (commentId: string) => void;
 }) {
   const { getName } = useActorLookup();
   const { t } = useT("issues");
@@ -293,6 +315,84 @@ function ResolvedThreadBar({
         </Text>
         <Ionicons name="chevron-down" size={14} color={mutedFg} />
       </Pressable>
+      <SupersededByLink
+        entry={entry}
+        revisions={revisions}
+        onJumpToComment={onJumpToComment}
+      />
+    </View>
+  );
+}
+
+/**
+ * "Superseded by rev-N →" under a resolved, superseded thread's bar. Mirrors
+ * web's `<SupersededByLink>` (`packages/views/issues/components/
+ * supersession-links.tsx`); hidden until the new revision is loaded.
+ */
+function SupersededByLink({
+  entry,
+  revisions,
+  onJumpToComment,
+}: {
+  entry: TimelineEntry;
+  revisions?: ReadonlyMap<string, number>;
+  onJumpToComment?: (commentId: string) => void;
+}) {
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const byId = entry.superseded_by_id;
+  const revision = byId ? revisions?.get(byId) : undefined;
+  if (!byId || revision === undefined) return null;
+  const label = t("supersession.superseded_by", { revision });
+  return (
+    <Pressable
+      onPress={() => onJumpToComment?.(byId)}
+      className="flex-row items-center gap-1 px-4 pt-1.5 active:opacity-60"
+      accessibilityRole="link"
+      accessibilityLabel={label}
+    >
+      <Text className="text-xs text-muted-foreground">{label}</Text>
+      <Ionicons
+        name="arrow-forward"
+        size={12}
+        color={THEME[colorScheme].mutedForeground}
+      />
+    </Pressable>
+  );
+}
+
+/** "Supersedes rev-N" above the body of the new revision, one per loaded older revision. */
+function SupersedesLinks({
+  entry,
+  revisions,
+  onJumpToComment,
+}: {
+  entry: TimelineEntry;
+  revisions?: ReadonlyMap<string, number>;
+  onJumpToComment?: (commentId: string) => void;
+}) {
+  const { t } = useT("issues");
+  const links = (entry.supersedes ?? []).flatMap((link) => {
+    const revision = revisions?.get(link.comment_id);
+    return revision === undefined ? [] : [{ id: link.comment_id, revision }];
+  });
+  if (links.length === 0) return null;
+  return (
+    <View className="flex-row flex-wrap gap-x-3">
+      {links.map(({ id, revision }) => {
+        const label = t("supersession.supersedes", { revision });
+        return (
+          <Pressable
+            key={id}
+            onPress={() => onJumpToComment?.(id)}
+            className="active:opacity-60"
+            accessibilityRole="link"
+            accessibilityLabel={label}
+          >
+            <Text className="text-xs text-muted-foreground">{label}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }

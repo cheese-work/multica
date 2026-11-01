@@ -1,5 +1,5 @@
 import { deriveRuntimeHealth, type RuntimeHealth } from "@multica/core/runtimes";
-import type { AgentRuntime } from "@multica/core/types";
+import type { AgentRuntime, RuntimeUpdateInfo } from "@multica/core/types";
 import { formatDeviceInfo } from "../utils";
 
 export type RuntimeMachineSection = "local" | "remote" | "cloud";
@@ -20,6 +20,8 @@ export interface RuntimeMachine {
   deviceInfo: string | null;
   cliVersion: string | null;
   launchedBy: string | null;
+  /** Server's commit-based update verdict for this machine's daemon. */
+  update: RuntimeUpdateInfo;
   mode: AgentRuntime["runtime_mode"];
   section: RuntimeMachineSection;
   isCurrent: boolean;
@@ -138,6 +140,7 @@ function placeholderLocalMachine(
     deviceInfo: null,
     cliVersion: null,
     launchedBy: null,
+    update: NO_UPDATE,
     mode: "local",
     section: "local",
     isCurrent: true,
@@ -260,6 +263,7 @@ function finalizeRuntimeMachine(
     deviceInfo,
     cliVersion: currentMachineMetadata(runtimes, "cli_version"),
     launchedBy: currentMachineMetadata(runtimes, "launched_by"),
+    update: currentMachineUpdate(runtimes),
     mode: draft.mode,
     section: isCurrent ? "local" : draft.mode === "cloud" ? "cloud" : "remote",
     isCurrent,
@@ -390,14 +394,38 @@ function latestLastSeenAt(runtimes: AgentRuntime[]): string | null {
   return latest;
 }
 
+const NO_UPDATE: RuntimeUpdateInfo = {
+  available: false,
+  serverCommit: "",
+  serverVersion: "",
+  reason: "",
+};
+
+// Online runtimes first, freshest report first: the same pick as
+// currentMachineMetadata, so version and update verdict never disagree.
+function freshestReports(runtimes: AgentRuntime[]): AgentRuntime[] {
+  const online = runtimes.filter((runtime) => runtime.status === "online");
+  return (online.length > 0 ? online : runtimes).toSorted(compareRuntimeReports);
+}
+
+function currentMachineUpdate(runtimes: AgentRuntime[]): RuntimeUpdateInfo {
+  const report = freshestReports(runtimes)[0];
+  if (!report) return NO_UPDATE;
+  return {
+    available: report.update_available === true,
+    serverCommit: report.server_commit ?? "",
+    serverVersion: report.server_version ?? "",
+    reason: report.update_reason ?? "",
+  };
+}
+
 function currentMachineMetadata(
   runtimes: AgentRuntime[],
   key: "cli_version" | "launched_by",
 ): string | null {
-  const online = runtimes.filter((runtime) => runtime.status === "online");
-  const candidates = online.length > 0 ? online : runtimes;
+  const candidates = freshestReports(runtimes);
 
-  for (const runtime of candidates.toSorted(compareRuntimeReports)) {
+  for (const runtime of candidates) {
     const value = runtime.metadata?.[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }

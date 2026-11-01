@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ChatMessageSchema,
   ChatPendingTaskSchema,
   ChatSessionSchema,
   ChatSessionUsageSchema,
@@ -123,5 +124,21 @@ describe("ChatSessionUsageSchema", () => {
     expect(parsed.runs.unreported).toBe(1);
     expect(Object.keys(parsed.by_model)).toEqual(["claude-sonnet-4-5"]);
     expect(EMPTY_CHAT_SESSION_USAGE.session_id).toBe("");
+  });
+});
+
+describe("ChatMessageSchema", () => {
+  // CHE-2119: the agent-only summary must stay identifiable on mobile so the
+  // list can collapse it instead of showing it as the DM's first reply.
+  it("keeps the continuation_summary kind", () => {
+    const parsed = ChatMessageSchema.parse({
+      id: "message-1",
+      chat_session_id: "session-1",
+      role: "assistant",
+      content: "Summary",
+      message_kind: "continuation_summary",
+    });
+
+    expect(parsed.message_kind).toBe("continuation_summary");
   });
 });

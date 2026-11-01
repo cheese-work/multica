@@ -120,7 +120,7 @@ func TestJevRouteCommentSuppressesTriggers(t *testing.T) {
 		AuthorType: "system",
 	}
 
-	outcomes := h.triggerTasksForComment(context.Background(), issue, comment, nil, "system", "", "", nil, nil)
+	outcomes := h.triggerTasksForComment(context.Background(), issue, comment, nil, "system", "", "", nil, commentSteerRequest{})
 	if outcomes != nil {
 		t.Fatalf("triggerTasksForComment with type='jev_route' returned %v, want nil", outcomes)
 	}

@@ -144,6 +144,10 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
+	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
+	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",
+	"860_ops_snapshot_ws_bucket_index":                          "idx_ops_snapshot_ws_bucket",
 	"815_agent_decision_reliance_instance":                      "agent_decision_reliance_instance_idx",
 	"810_agent_decision_events_index":                           "agent_decision_events_idx",
 	"811_agent_decision_scope_candidate_gate_index":             "agent_decision_scope_candidate_gate_uidx",
@@ -179,6 +183,7 @@ var concurrentIndexCleanups = map[string]string{
 	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
 	"802_idx_run_capability_grant_issue":                        "idx_run_capability_grant_issue",
 	"849_idx_provider_failure_recovery_wakeup":                  "provider_failure_recovery_wakeup_idx",
+	"868_host_sample_key_idx":                                   "host_sample_key_idx",
 	"797_chat_wakeup_fired_task_index":                          "idx_chat_wakeup_fired_task",
 	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
 	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
@@ -221,6 +226,7 @@ var concurrentIndexCleanups = map[string]string{
 	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
 	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
 	"677_issue_workflow_override_index":                         "idx_issue_workflow_override",
+	"851_comment_supersession_issue_index":                      "idx_comment_supersession_issue",
 	"700_comment_trigger_rate_limit_unique_index":               "comment_trigger_rate_limit_issue_agent_uidx",
 	"675_issue_ci_advance_index":                                "idx_issue_ci_advance_issue_head",
 	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",

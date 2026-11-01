@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -56,6 +57,9 @@ const (
 	// OriginNamed: a person wrote this agent's name — an @mention, or a reply
 	// to something it said. Allowed in Triage.
 	OriginNamed
+	// OriginBudgetRecovery: the run the exhaustion move itself enqueues for the
+	// blocked step's handler (CHE-2297 L3). Admitted at zero like a named run.
+	OriginBudgetRecovery
 )
 
 // ErrIssueInTriage is returned by a derived enqueue path when the issue is
@@ -68,6 +72,11 @@ var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived fr
 // the issue may well be runnable — it is the target that is not an execution
 // run. Redoing triage is re-triage.
 var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which is redone by re-triaging the issue rather than by rerunning it")
+
+// ErrRecoveryCaused is returned for any run a budget recovery run's own request
+// would start: its assignment, rerun, @mention or reply. The recovery reserve
+// buys one run; what that run causes buys nothing (CHE-2297 L3).
+var ErrRecoveryCaused = errors.New("a budget recovery run cannot start another run")
 
 // guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
 // whose workflow run budget is spent (guardRunBudget). q is
@@ -105,7 +114,10 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if !issueID.Valid {
 		return ReviewGate{}, nil
 	}
-	if origin == OriginNamed {
+	if origin != OriginBudgetRecovery && dispatch.BudgetRecoveryCaller(ctx) {
+		return ReviewGate{}, ErrRecoveryCaused
+	}
+	if origin == OriginNamed || origin == OriginBudgetRecovery {
 		// Never refused, but the lock and the window credit are taken here so
 		// the named run's debit lands in the same window the others read.
 		if _, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
