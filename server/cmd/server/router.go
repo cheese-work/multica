@@ -2971,6 +2971,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 	return userID, true
 }
 
+// GetUserSessionGeneration lets the WebSocket handshake refuse revoked JWTs.
+func (pr *patResolver) GetUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	return pr.queries.GetUserSessionGeneration(ctx, id)
+}
+
 // parseUUID is a thin alias for util.MustParseUUID. Call sites here are all
 // internal round-trips of DB-sourced UUIDs (e.g. issue.ID, e.ActorID), so an
 // invalid value indicates a programming error and should panic loudly.
