@@ -58,8 +58,8 @@ func TestDecisionRecordRefusesNonReversibleClasses(test *testing.T) {
 	}
 }
 
-// Route level: a PAT-authored source comment and a non-reversible DM record both fail;
-// the reversible record keeps working.
+// Route level: a source comment created over a PAT and recorded by a valid task token
+// against a non-reversible ask is refused; the reversible asked record still works.
 func TestDecisionRecordRouteCardOnly(test *testing.T) {
 	for _, mutation := range []string{"pat_source_comment", "deploy_unprompted", "deploy_asked", "reversible_asked"} {
 		test.Run(mutation, func(test *testing.T) {
@@ -69,9 +69,15 @@ func TestDecisionRecordRouteCardOnly(test *testing.T) {
 			wanted := http.StatusForbidden
 			switch mutation {
 			case "pat_source_comment":
-				sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "member", "author_id": fixture.humanID, "content": "Go."})
-				body = `{"decision_record":true,"source_comment_id":"` + sourceID + `","parent_id":"` + fixture.parentID + `"}`
-				request.Header.Set("X-Actor-Source", "pat")
+				dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, fixture.decision.ID)
+				patRequest := newRequest(http.MethodPost, "/", map[string]any{"content": "Go."})
+				patRequest.Header.Set("X-Actor-Source", "pat")
+				patRequest.Header.Set("X-User-ID", fixture.humanID)
+				var source CommentResponse
+				testutil.Call(test, testHandler.CreateComment, withIssueParam(patRequest, fixture.issueID)).Want(http.StatusCreated).JSON(&source)
+				dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, fixture.taskID)
+				request = fixture.request()
+				body = `{"decision_record":true,"source_comment_id":"` + source.ID + `","parent_id":"` + fixture.parentID + `"}`
 			case "deploy_unprompted":
 				body = `{"decision_record":true,"message_ids":["` + fixture.messageID + `"],"escalation_class":"deploy"}`
 			case "deploy_asked":
@@ -86,8 +92,26 @@ func TestDecisionRecordRouteCardOnly(test *testing.T) {
 				test.Fatalf("status=%d want=%d body=%s", response.Code, wanted, response.Body.String())
 			}
 			if wanted == http.StatusForbidden {
+				if mutation != "deploy_unprompted" && !strings.Contains(response.Body.String(), "chat?session="+uuidToString(fixture.decision.ChatSessionID)) {
+					test.Fatalf("refusal lacks the card URL: %s", response.Body.String())
+				}
 				fixture.assertRecordCounts(test, 0)
 			}
 		})
+	}
+}
+
+// A retry of a record made while the request was reversible must not replay once the
+// request is raised to a card-only class.
+func TestDecisionRecordReplayRefusedAfterClassRaise(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
+	_, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || refusal.status != http.StatusForbidden || !strings.Contains(refusal.message, "chat?session=") {
+		test.Fatalf("replay after class raise must be refused with the card URL, got %v", err)
 	}
 }

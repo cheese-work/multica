@@ -278,6 +278,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 					if err != nil {
 						return empty, err
 					}
+					if decision.EscalationClass != "reversible" {
+						return empty, handler.cardOnlyRefusal(ctx, queries, issue.WorkspaceID, decision.ChatSessionID)
+					}
 					return decisionRecordResult{Request: decision, Answer: answer, Comment: comment, Message: message, Replayed: true}, nil
 				}
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
