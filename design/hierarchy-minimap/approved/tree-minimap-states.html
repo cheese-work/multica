@@ -1,0 +1,106 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+body{background:#0b0b0c;font:12px/1.4 "Helvetica Neue",Arial,"Liberation Sans",sans-serif;color:#e7e7ea;padding:24px}
+.d{--pn:#18181b;--bd:#2e2e33;--cd:#232327;--lf:#1f1f23;--lb:#3a3a42;--tx:#e7e7ea;--mu:#a1a1aa;--ln:#52525b;--dn:#6b8cff;--ac:#f5a524;--bk:#ef4444;--td:#71717a;--yb:#252a3a;--yc:#6b8cff;--yt:#c7d2fe;--bg:#0b0b0c;--sk:#2c2c31}
+.w{--pn:#fff;--bd:#e4e4e7;--cd:#f7f7f8;--lf:#fafafa;--lb:#c4c4cc;--tx:#18181b;--mu:#52525b;--ln:#a1a1aa;--dn:#3b5bdb;--ac:#d97706;--bk:#dc2626;--td:#71717a;--yb:#eef2ff;--yc:#3b5bdb;--yt:#3730a3;--bg:#f0f0f2;--sk:#e4e4e7}
+h1{font-size:15px;font-weight:700;margin-bottom:4px}.sub{color:#a1a1aa;margin-bottom:16px;max-width:980px}
+.g{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+.s{background:var(--bg);color:var(--tx);padding:12px;border-radius:14px;border:1px solid #1f1f23}
+.l{font:600 10.5px "DejaVu Sans Mono",monospace;color:var(--mu);margin-bottom:7px}
+.p{background:var(--pn);border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+.h{display:flex;justify-content:space-between;align-items:center;padding:6px 8px 6px 12px;border-bottom:1px solid var(--bd);font-weight:700;font-size:12.5px}
+.x{width:28px;height:28px;border:1px solid var(--bd);background:var(--cd);color:var(--mu);border-radius:7px;display:grid;place-items:center}
+.b{padding:12px}.f{padding:7px 12px;border-top:1px solid var(--bd);font-size:11px;color:var(--mu)}
+.c{background:var(--cd);border:1px solid var(--bd);border-radius:9px;padding:7px 9px;min-width:0}
+.y{background:var(--yb);border:2px solid var(--yc);box-shadow:0 0 0 4px color-mix(in srgb,var(--yc) 20%,transparent)}
+.r{display:flex;justify-content:space-between;align-items:center;gap:2px 6px;flex-wrap:wrap}
+.id{font:700 10.5px "DejaVu Sans Mono",monospace;color:var(--mu)}.y .id{color:var(--yt)}
+.tg{font-size:10px;font-weight:700;color:var(--yt)}
+.pl{font-style:normal;font-size:10px;color:var(--mu);display:inline-flex;align-items:center;gap:4px}
+.dt{display:inline-block;width:7px;height:7px;border-radius:50%}
+.t{margin-top:3px;color:var(--tx);overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.y .t{font-weight:700}
+.st{width:2px;height:10px;background:var(--ln)}.br{height:12px;border:2px solid var(--ln);border-bottom:0}
+.row{display:flex;gap:10px;align-items:flex-start}
+.lf{background:var(--lf);border:1px dashed var(--lb);border-radius:9px;padding:6px 8px;min-width:0}
+.lt{display:flex;justify-content:space-between;font-weight:700;gap:4px;white-space:nowrap}.lt small{color:var(--mu);font-weight:400;font-size:10.5px}
+.sb{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--sk);margin:5px 0}.sb i{display:block}
+.ch{display:inline-flex;gap:4px;align-items:center;font:700 10px "DejaVu Sans Mono",monospace;border:1px solid var(--c);border-radius:6px;padding:1px 5px;margin:0 3px 3px 0}.ch b{width:6px;height:6px;border-radius:50%;background:var(--c)}
+.mo{font-size:10.5px;color:var(--mu);margin-top:2px}.nm small{font-size:10.5px;color:var(--mu)}
+.k{background:var(--sk);border-radius:6px}
+</style></head><body>
+<h1>Direction A · Tree minimap</h1>
+<p class="sub">Parent on top, siblings leaf (left) and current issue (right) on one row, children leaf below. Replaces Relations-graph button and Parent-issue section. Leaf style D. Current issue = filled card + 2px ring + "you are here". Status is never colour-only: every dot has a count or word beside it. Fonts: product Inter / mono (fallbacks shown here).</p>
+<div class="g">
+
+<div class="s d"><div class="l">A1 · dark · sidebar 320 · CHE-2216 (child, 21 siblings, 33 children)</div>
+<div class="p" style="width:320px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c"><div class="r"><b class="id">CHE-2126</b><em class="pl"><b class="dt" style="background:var(--ac)"></b>In progress</em></div><div class="t">plan(github): route authorised PR comments to the owning agent</div></div>
+<div class="st" style="margin-left:135px"></div><div class="br" style="margin:0 82px 0 60px"></div>
+<div class="row"><div class="lf" style="width:120px"><div class="lt"><span>21 siblings</span><small>12/21</small></div><div class="sb"><i style="width:57.1%;background:var(--dn)"></i><i style="width:9.5%;background:var(--ac)"></i><i style="width:9.5%;background:var(--bk)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2273</span><span class="ch" style="--c:var(--ac)"><b></b>2669</span><span class="ch" style="--c:var(--bk)"><b></b>2218</span><span class="ch" style="--c:var(--bk)"><b></b>2221</span></div><div class="mo">+12 done · +5 todo ›</div></div>
+<div class="c y" style="flex:1"><div class="r"><b class="id">CHE-2216</b><span class="tg">you are here</span></div><div class="t">plan(github-runner): restricted and elevated runs</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--ac)"></b>In progress</div></div></div>
+<div class="st" style="margin-left:211px"></div>
+<div class="lf" style="margin-left:130px"><div class="lt"><span>33 children</span><small>12/33</small></div><div class="sb"><i style="width:36.4%;background:var(--dn)"></i><i style="width:3%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2501</span><small>in review</small></div><div class="mo">+20 todo · +12 done ›</div></div>
+</div><div class="f">27 wakes · 3 mentions</div></div></div>
+
+<div class="s d"><div class="l">A2 · dark · sidebar 260 (min) · same issue</div>
+<div class="p" style="width:260px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c"><div class="r"><b class="id">CHE-2126</b><em class="pl"><b class="dt" style="background:var(--ac)"></b>In progress</em></div><div class="t">plan(github): route authorised PR comments to the owning agent</div></div>
+<div class="st" style="margin-left:110px"></div><div class="br" style="margin:0 62px 0 50px"></div>
+<div class="row"><div class="lf" style="width:100px"><div class="lt"><span>21 sib.</span><small>12/21</small></div><div class="sb"><i style="width:57.1%;background:var(--dn)"></i><i style="width:9.5%;background:var(--ac)"></i><i style="width:9.5%;background:var(--bk)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2273</span><span class="ch" style="--c:var(--ac)"><b></b>2669</span><span class="ch" style="--c:var(--bk)"><b></b>2218</span><span class="ch" style="--c:var(--bk)"><b></b>2221</span></div><div class="mo">+12 done · +5 todo ›</div></div>
+<div class="c y" style="flex:1"><div class="r"><b class="id">CHE-2216</b><span class="tg">you are here</span></div><div class="t" style="-webkit-line-clamp:3">plan(github-runner): restricted and elevated runs</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--ac)"></b>In progress</div></div></div>
+<div class="st" style="margin-left:171px"></div>
+<div class="lf" style="margin-left:110px"><div class="lt"><span>33 children</span><small>12/33</small></div><div class="sb"><i style="width:36.4%;background:var(--dn)"></i><i style="width:3%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2501</span><small>in review</small></div><div class="mo">+20 todo · +12 done ›</div></div>
+</div><div class="f">27 wakes · 3 mentions</div></div></div>
+
+<div class="s w"><div class="l">A3 · light · sidebar 320</div>
+<div class="p" style="width:320px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c"><div class="r"><b class="id">CHE-2126</b><em class="pl"><b class="dt" style="background:var(--ac)"></b>In progress</em></div><div class="t">plan(github): route authorised PR comments to the owning agent</div></div>
+<div class="st" style="margin-left:135px"></div><div class="br" style="margin:0 82px 0 60px"></div>
+<div class="row"><div class="lf" style="width:120px"><div class="lt"><span>21 siblings</span><small>12/21</small></div><div class="sb"><i style="width:57.1%;background:var(--dn)"></i><i style="width:9.5%;background:var(--ac)"></i><i style="width:9.5%;background:var(--bk)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2273</span><span class="ch" style="--c:var(--ac)"><b></b>2669</span><span class="ch" style="--c:var(--bk)"><b></b>2218</span><span class="ch" style="--c:var(--bk)"><b></b>2221</span></div><div class="mo">+12 done · +5 todo ›</div></div>
+<div class="c y" style="flex:1"><div class="r"><b class="id">CHE-2216</b><span class="tg">you are here</span></div><div class="t">plan(github-runner): restricted and elevated runs</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--ac)"></b>In progress</div></div></div>
+<div class="st" style="margin-left:211px"></div>
+<div class="lf" style="margin-left:130px"><div class="lt"><span>33 children</span><small>12/33</small></div><div class="sb"><i style="width:36.4%;background:var(--dn)"></i><i style="width:3%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2501</span><small>in review</small></div><div class="mo">+20 todo · +12 done ›</div></div>
+</div><div class="f">27 wakes · 3 mentions</div></div></div>
+
+<div class="s d"><div class="l">A4 · dark · loading (skeleton, same footprint)</div>
+<div class="p" style="width:320px" aria-busy="true"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy" style="opacity:.4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="k" style="height:52px"></div>
+<div class="st" style="margin-left:135px"></div><div class="br" style="margin:0 82px 0 60px"></div>
+<div class="row"><div class="k" style="width:120px;height:82px"></div><div class="k" style="flex:1;height:82px"></div></div>
+<div class="st" style="margin-left:211px"></div>
+<div class="k" style="margin-left:130px;height:62px"></div>
+</div><div class="f">Loading hierarchy…</div></div></div>
+
+<div class="s d"><div class="l">A5 · dark · root issue (no parent) — CHE-2126</div>
+<div class="p" style="width:320px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c y"><div class="r"><b class="id">CHE-2126</b><span class="tg">you are here · root</span></div><div class="t">plan(github): route authorised PR comments to the owning agent</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--ac)"></b>In progress</div></div>
+<div class="st" style="margin-left:155px;height:12px"></div>
+<div class="lf"><div class="lt"><span>22 children</span><small>12/22</small></div><div class="sb"><i style="width:54.5%;background:var(--dn)"></i><i style="width:22.7%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2216</span><small>plan(github-runner)…</small><br><span class="ch" style="--c:var(--ac)"><b></b>2273</span><small>feat(github-ux)…</small></div><div class="mo">+3 more active · +5 todo · +12 done ›</div></div>
+</div><div class="f">27 wakes · 3 mentions</div></div></div>
+
+<div class="s d"><div class="l">A6 · dark · leaf issue (no children) — CHE-2493</div>
+<div class="p" style="width:320px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c"><div class="r"><b class="id">CHE-2216</b><em class="pl"><b class="dt" style="background:var(--ac)"></b>In progress</em></div><div class="t">plan(github-runner): restricted and elevated runs</div></div>
+<div class="st" style="margin-left:135px"></div><div class="br" style="margin:0 82px 0 60px"></div>
+<div class="row"><div class="lf" style="width:120px"><div class="lt"><span>32 siblings</span><small>12/32</small></div><div class="sb"><i style="width:37.5%;background:var(--dn)"></i><i style="width:3.1%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2501</span></div><div class="mo">+19 todo · +11 done ›</div></div>
+<div class="c y" style="flex:1"><div class="r"><b class="id">CHE-2493</b><span class="tg">you are here</span></div><div class="t">feat(github-runner): A2c standalone runner profile</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--dn)"></b>Done</div></div></div>
+</div><div class="f">0 wakes · 1 mention</div></div></div>
+
+<div class="s d"><div class="l">A7 · dark · many siblings (58) — blocked first, named capped at 3</div>
+<div class="p" style="width:320px"><div class="h">Hierarchy<button class="x" aria-label="Expand hierarchy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button></div>
+<div class="b">
+<div class="c"><div class="r"><b class="id">CHE-1858</b><em class="pl"><b class="dt" style="background:var(--ac)"></b>In progress</em></div><div class="t">epic(decisions): decision request lifecycle</div></div>
+<div class="st" style="margin-left:135px"></div><div class="br" style="margin:0 82px 0 60px"></div>
+<div class="row"><div class="lf" style="width:120px"><div class="lt"><span>58 siblings</span><small>31/58</small></div><div class="sb"><i style="width:53.4%;background:var(--dn)"></i><i style="width:6.9%;background:var(--ac)"></i><i style="width:5.2%;background:var(--bk)"></i></div><div class="nm"><span class="ch" style="--c:var(--bk)"><b></b>2203</span><span class="ch" style="--c:var(--bk)"><b></b>2210</span><span class="ch" style="--c:var(--bk)"><b></b>2218</span><span class="ch" style="--c:var(--ac)"><b></b>2273</span></div><div class="mo">+3 active · +20 todo · +31 done ›</div></div>
+<div class="c y" style="flex:1"><div class="r"><b class="id">CHE-2341</b><span class="tg">you are here</span></div><div class="t">feat(decisions): answer card UI</div><div class="pl" style="margin-top:4px"><b class="dt" style="background:var(--ac)"></b>In review</div></div></div>
+<div class="st" style="margin-left:211px"></div>
+<div class="lf" style="margin-left:130px"><div class="lt"><span>4 children</span><small>1/4</small></div><div class="sb"><i style="width:25%;background:var(--dn)"></i><i style="width:25%;background:var(--ac)"></i></div><div class="nm"><span class="ch" style="--c:var(--ac)"><b></b>2611</span><small>in review</small></div><div class="mo">+2 todo · +1 done ›</div></div>
+</div><div class="f">9 wakes · 0 mentions</div></div></div>
+
+</div></body></html>

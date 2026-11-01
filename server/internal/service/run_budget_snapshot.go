@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -15,8 +16,11 @@ import (
 // runs used in the open window against the limit in force, and what a raise
 // would do. Token fields join it when CHE-2297 turns token accounting on.
 type RunBudgetSnapshot struct {
-	Budgeted        bool      `json:"budgeted"`
-	RunsUsed        int64     `json:"runs_used"`
+	Budgeted bool  `json:"budgeted"`
+	RunsUsed int64 `json:"runs_used"`
+	// RunsLeft is the admitted balance: what the guard reads, so grants and
+	// refunds show here. Negative when named runs went past it.
+	RunsLeft        int64     `json:"runs_left"`
 	RunsLimit       int       `json:"runs_limit"`
 	RunsSource      string    `json:"runs_source,omitempty"` // "workflow" or "issue"
 	WindowStartedAt time.Time `json:"window_started_at"`
@@ -48,27 +52,27 @@ const (
 	RunBudgetOver    = "over"
 )
 
-// NewRunBudgetSnapshot builds the snapshot from the counted runs and the limit
-// in force. The state is near from 80% of the limit, at_limit when the limit is
-// spent (the guard refuses the next derived run) and over when named runs went
-// past it.
-func NewRunBudgetSnapshot(used int64, limit int, source string, windowStart time.Time) RunBudgetSnapshot {
+// NewRunBudgetSnapshot builds the snapshot from the counted runs, the limit in
+// force and the admitted balance. The state is near once the balance is down to
+// 20% of the limit, at_limit when the balance is spent (the guard refuses the
+// next derived run) and over when named runs went past it.
+func NewRunBudgetSnapshot(used int64, limit int, left int64, source string, windowStart time.Time) RunBudgetSnapshot {
 	snap := RunBudgetSnapshot{
-		Budgeted: true, RunsUsed: used, RunsLimit: limit, RunsSource: source,
+		Budgeted: true, RunsUsed: used, RunsLeft: left, RunsLimit: limit, RunsSource: source,
 		WindowStartedAt: windowStart, Blocking: []string{},
 	}
 	switch {
-	case used > int64(limit):
+	case left < 0:
 		snap.RunsState = RunBudgetOver
-	case used == int64(limit):
+	case left == 0:
 		snap.RunsState = RunBudgetAtLimit
-	case used*5 >= int64(limit)*4:
+	case left*5 <= int64(limit):
 		snap.RunsState = RunBudgetNear
 	default:
 		snap.RunsState = RunBudgetOK
 	}
 	snap.State = snap.RunsState
-	if used >= int64(limit) {
+	if left < 1 {
 		snap.Blocking = append(snap.Blocking, "runs")
 	}
 	// Runs past the platform maximum still read as used; the clamp only keeps
@@ -137,11 +141,15 @@ func loadRunBudgetUsage(ctx context.Context, q *db.Queries, issue db.Issue) (*ru
 // LoadRunBudgetSnapshot reads one issue's budget. An issue that is not
 // budgeted gets a snapshot with Budgeted false.
 func LoadRunBudgetSnapshot(ctx context.Context, q *db.Queries, issue db.Issue) (RunBudgetSnapshot, error) {
-	usage, err := loadRunBudgetUsage(ctx, q, issue)
-	if err != nil || usage == nil {
+	// The read-only form of the balance admission reads: it writes no entry.
+	_, usage, left, err := openRunBudget(readOnlyRunBudget(ctx), q, issue.ID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return RunBudgetSnapshot{Blocking: []string{}}, nil
+	}
+	if err != nil {
 		return RunBudgetSnapshot{Blocking: []string{}}, err
 	}
-	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, usage.Source, usage.Since)
+	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, left, usage.Source, usage.Since)
 	return withTokenBalance(ctx, q, issue, usage, snap)
 }
 

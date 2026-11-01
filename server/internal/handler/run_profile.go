@@ -138,6 +138,26 @@ func (h *Handler) protectedPathPatterns(ctx context.Context, workspaceID pgtype.
 	return row.Patterns, nil
 }
 
+// GetDaemonProtectedPathPolicy returns one named policy to the daemon push
+// broker, which reads it live on every push.
+func (h *Handler) GetDaemonProtectedPathPolicy(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "workspaceId"))
+	if !h.requireDaemonWorkspaceAccess(w, r, workspaceID) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if !policyName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid policy name")
+		return
+	}
+	patterns, err := h.protectedPathPatterns(r.Context(), parseUUID(workspaceID), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the policy")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "patterns": patterns})
+}
+
 func validPolicyPattern(p string) bool {
 	return p != "" && utf8.RuneCountInString(p) <= maxPolicyPatternLen && !strings.ContainsRune(p, 0) &&
 		!strings.HasPrefix(p, "/") && !slices.Contains(strings.Split(p, "/"), "..")

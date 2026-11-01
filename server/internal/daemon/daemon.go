@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
@@ -662,6 +664,11 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+
+	// hostSampler holds the latest host CPU/RAM/disk sample. Built in New so it
+	// exists before Run starts any reader; Run starts its sampling loop.
+	// Attached to every runtime heartbeat via heartbeatRequest.
+	hostSampler *hostSampler
 	// Sticky for this process: a finished task can leave independent processes
 	// behind even after activeTasks reaches zero.
 	cleanupUnconfirmed atomic.Bool
@@ -790,6 +797,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
 		repoCache:                   repocache.New(cacheRoot, logger),
 		skillCache:                  NewSkillBundleCache(skillCacheRoot),
@@ -2203,6 +2211,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
+	go d.hostSampler.Run(ctx, hostSampleWarmup, protocol.HostSampleInterval, d.logger)
 	go d.heartbeatLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
@@ -4535,7 +4544,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4681,7 +4690,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -7604,6 +7613,25 @@ type taskModelSelection struct {
 	ThinkingLevelWarning string
 }
 
+// launchContextArgs lists the context-window args every launch input carries, in
+// argv order: the runtime's launch prefix, the daemon's default args, then the
+// agent's custom args.
+func launchContextArgs(provider string, prefix, defaults, custom []string) []string {
+	return agentpreset.ContextArgsOf(provider, slices.Concat(prefix, defaults, custom))
+}
+
+// reportAppliedSettings tells the server what this launch will use (CHE-2248). It
+// runs only for a claim the server marked as supporting it, and a failure is
+// logged and dropped: the applied columns stay NULL and the task still runs.
+func (d *Daemon) reportAppliedSettings(ctx context.Context, task Task, provider string, applied AppliedSettings, log *slog.Logger) {
+	if !task.AppliedSettingsSupported {
+		return
+	}
+	if err := d.client.ReportAppliedSettings(ctx, task, applied); err != nil {
+		log.Warn("report applied settings failed; continuing", "provider", provider, "error", err)
+	}
+}
+
 // resolveTaskModelSelection settles the model selector and its capability
 // overrides against the runtime's own model catalog, reading that catalog at
 // most once per task — and not at all when nothing needs it.
@@ -8895,12 +8923,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
+	d.reportAppliedSettings(ctx, task, provider, AppliedSettings{
+		Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier,
+		ContextArgs: launchContextArgs(provider, profileFixedArgs, extraArgs, customArgs),
+	}, taskLog)
 
 	var idleWatchdogTimeout time.Duration
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd = ""
+		}
+	}
 	execOpts := agent.ExecOptions{
+		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -8991,6 +9031,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentID:         task.AgentID,
 		AgentName:       task.Agent.Name,
 		WorkDir:         env.WorkDir,
+		StableDir:       stableCwd,
 		IssueIdentifier: task.IssueIdentifier,
 		IntakeRun:       task.IntakeRun,
 		PinnedBranch:    task.PinnedBranch,

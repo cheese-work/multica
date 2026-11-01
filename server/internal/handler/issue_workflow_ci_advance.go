@@ -118,6 +118,7 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	if err != nil {
 		return false, false, fmt.Errorf("workflow refused the move: %w", err)
 	}
+	write.system = true
 	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
 	if err != nil {
 		return false, false, fmt.Errorf("status write failed: %w", err)

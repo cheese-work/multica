@@ -139,6 +139,8 @@ type activeRepoCheckoutTask struct {
 	AgentID     string
 	AgentName   string
 	WorkDir     string
+	// StableDir is the fixed cwd the agent sees instead of WorkDir (see stable_cwd.go); empty when off.
+	StableDir string
 	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
 	// tasks with no issue.
 	IssueIdentifier string
@@ -501,7 +503,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "repo checkout task context does not match the active task", http.StatusForbidden)
 			return
 		}
-		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
+		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, activeTask.hostPath(req.WorkDir))
 		if authErr != nil {
 			// The reason goes to both the agent and daemon.log: a refusal that
 			// says only "not owned" sent #8946 looking at ownership when the
