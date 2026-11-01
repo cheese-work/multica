@@ -8985,17 +8985,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
-	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID:     task.WorkspaceID,
-		TaskID:          task.ID,
-		AgentID:         task.AgentID,
-		AgentName:       task.Agent.Name,
-		WorkDir:         env.WorkDir,
-		IssueIdentifier: task.IssueIdentifier,
-		IntakeRun:       task.IntakeRun,
-		PinnedBranch:    task.PinnedBranch,
-		PinnedRepo:      task.PinnedRepo,
-	})
+	d.registerActiveRepoCheckoutTask(agentToken, newActiveRepoCheckoutTask(task, env.WorkDir))
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
 	taskLog.Debug("invoking backend",

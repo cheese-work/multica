@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -145,6 +146,11 @@ type activeRepoCheckoutTask struct {
 	IntakeRun       bool
 	PinnedBranch    string
 	PinnedRepo      string
+	// Elevated tasks check out the synthetic base of their grant's pinned
+	// commit, never a worktree (CHE-2216 plan 3.5).
+	Elevated      bool
+	PinnedBaseSHA string
+	PinnedHeadSHA string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -547,6 +553,15 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			pinnedBranch = activeTask.PinnedBranch
 		}
 
+		// An elevated run checks out the synthetic base of its grant's pinned
+		// commit and nothing else, whatever the request asks for. With no pin
+		// it checks out nothing.
+		if activeTask.Elevated && broker.PinnedSource(activeTask.PinnedBaseSHA, activeTask.PinnedHeadSHA) == "" {
+			d.logger.Warn("repo checkout rejected", "reason", "elevated_run_unpinned", "task_id", activeTask.TaskID)
+			http.Error(w, "this elevated run has no pinned commit to check out", http.StatusForbidden)
+			return
+		}
+
 		if err := d.ensureRepoReady(r.Context(), req.WorkspaceID, req.URL); err != nil {
 			if r.Context().Err() != nil {
 				d.logger.Debug("repo checkout readiness cancelled", "url", req.URL, "error", err)
@@ -558,6 +573,11 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			}
 			d.logger.Error("repo checkout readiness failed", "workspace_id", req.WorkspaceID, "url", req.URL, "error", err)
 			http.Error(w, err.Error(), statusCode)
+			return
+		}
+
+		if activeTask.Elevated {
+			d.serveElevatedCheckout(w, r.Context(), activeTask, req.URL, req.WorkDir)
 			return
 		}
 

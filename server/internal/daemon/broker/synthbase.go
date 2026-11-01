@@ -101,6 +101,10 @@ func MaterializeSyntheticBase(ctx context.Context, cacheGitDir, sha, dest, branc
 // copyTree moves the objects reachable from tree (the tree, its subtrees and
 // blobs, never a commit) from the cache into dest as one pack.
 func copyTree(ctx context.Context, cacheGitDir, dest, tree string) error {
+	// A failure anywhere cancels the others: a producer blocked on a full pipe
+	// would otherwise never exit.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	list := hostGit(ctx, "", "--git-dir="+cacheGitDir, "rev-list", "--objects", tree)
 	pack := hostGit(ctx, "", "--git-dir="+cacheGitDir, "pack-objects", "--stdout", "-q")
 	index := hostGit(ctx, dest, "index-pack", "--stdin")
@@ -116,23 +120,35 @@ func copyTree(ctx context.Context, cacheGitDir, dest, tree string) error {
 	if index.Stdin, err = pack.StdoutPipe(); err != nil {
 		return err
 	}
-	for _, c := range []*exec.Cmd{index, pack, list} {
-		if err = c.Start(); err != nil {
-			return fmt.Errorf("synthetic base: %w", err)
-		}
+	type result struct {
+		err    error
+		stderr *bytes.Buffer
 	}
-	var first error
-	var detail string
-	for _, c := range []struct {
+	cmds := []struct {
 		cmd  *exec.Cmd
 		errs *bytes.Buffer
-	}{{list, &listErr}, {pack, &packErr}, {index, &indexErr}} {
-		if err := c.cmd.Wait(); err != nil && first == nil {
-			first, detail = err, firstLine(c.errs.String())
+	}{{index, &indexErr}, {pack, &packErr}, {list, &listErr}}
+	done := make(chan result, len(cmds))
+	started := 0
+	for _, c := range cmds {
+		if err = c.cmd.Start(); err != nil {
+			break
+		}
+		started++
+		go func() { done <- result{c.cmd.Wait(), c.errs} }()
+	}
+	var first error
+	for range started {
+		if r := <-done; r.err != nil && first == nil {
+			first = fmt.Errorf("%w: %s", r.err, firstLine(r.stderr.String()))
+			cancel()
 		}
 	}
+	if err != nil {
+		return fmt.Errorf("synthetic base: %w", err)
+	}
 	if first != nil {
-		return fmt.Errorf("synthetic base: copy objects: %w: %s", first, detail)
+		return fmt.Errorf("synthetic base: copy objects: %w", first)
 	}
 	return nil
 }
@@ -149,7 +165,10 @@ func hostGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}
+	// The pinned SHA names one commit: a replace ref in the cache must not
+	// swap its tree.
 	cmd.Env = append(cmd.Env, gitEnv...)
+	cmd.Env = append(cmd.Env, "GIT_NO_REPLACE_OBJECTS=1")
 	return cmd
 }
 

@@ -640,6 +640,10 @@ type AgentTaskResponse struct {
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+	// PinnedBaseSHA and PinnedHeadSHA are claim-only (CHE-2216 plan 3.5): the
+	// elevated run's pinned commits. Mirror fields: internal/daemon/types.go.
+	PinnedBaseSHA string `json:"pinned_base_sha,omitempty"`
+	PinnedHeadSHA string `json:"pinned_head_sha,omitempty"`
 
 	// IntakeRun, PinnedBranch and PinnedRepo are claim-only (CHE-2216 plan 3.6):
 	// a run an intake item dispatched, the same-repository PR head ref it is

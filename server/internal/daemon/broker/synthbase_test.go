@@ -2,11 +2,13 @@ package broker
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const upstreamMsg = "UPSTREAM-PRIVATE-MESSAGE do not leak"
@@ -279,5 +281,64 @@ func TestM5SyntheticBaseSize(t *testing.T) {
 	t.Logf("M5: synthetic base %d bytes (%.1f MB)", n, float64(n)/1e6)
 	if n > 300_000_000 {
 		t.Fatalf("M5 miss: %d bytes > 300000000", n)
+	}
+}
+
+// A replace ref in the cache must not swap the pinned commit's tree.
+func TestSyntheticBaseIgnoresReplaceRefs(t *testing.T) {
+	u := newUpstream(t)
+	git(t, u.cache, "replace", u.c2, u.c3)
+	got, err := MaterializeSyntheticBase(context.Background(), u.cache, u.c2, filepath.Join(t.TempDir(), "run"), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tree != u.tree2 {
+		t.Fatalf("tree %s follows the replace ref, want pinned tree %s", got.Tree, u.tree2)
+	}
+}
+
+// When the consumer exits early the producers must be stopped and reaped, not
+// left blocked on a full pipe.
+func TestSyntheticBaseCopyFailureDoesNotHang(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "w")
+	cache := filepath.Join(root, "cache.git")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "init", "-b", "main")
+	blob := make([]byte, 4<<20) // incompressible, well past the pipe capacity
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "big.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", "-A")
+	git(t, work, "commit", "-m", "big")
+	sha := git(t, work, "rev-parse", "HEAD")
+	if out, err := exec.Command("git", "clone", "--bare", work, cache).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = index-pack ] && exit 1; done\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = MaterializeSyntheticBase(ctx, cache, sha, filepath.Join(t.TempDir(), "run"), "b")
+	if err == nil {
+		t.Fatal("want error from failing index-pack")
+	}
+	if ctx.Err() != nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("copy hung until the context expired (%v)", time.Since(start))
 	}
 }
