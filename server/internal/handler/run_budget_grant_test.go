@@ -165,8 +165,8 @@ func TestRunBudgetStepGrantPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if moved, _ := testHandler.moveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false); !moved {
-			t.Fatal("the edge move did not happen")
+		if moved, _, err := testHandler.tryMoveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false); !moved {
+			t.Fatalf("the edge move did not happen: %v", err)
 		}
 		if got := grantCount(t, c.issueID); got != 1 {
 			t.Fatalf("grants after the edge move = %d, want 1", got)

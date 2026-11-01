@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -152,6 +153,14 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
 		return
 	}
+	// Moves and top-ups on one issue start their windows one at a time, and
+	// wait for their turn before they hold a connection.
+	leave, err := h.enterRunBudgetBoundary(r.Context(), issue.ID, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
+	defer leave()
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
@@ -159,7 +168,6 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	// Moves and top-ups on one issue start their windows one at a time.
 	if err := qtx.LockIssueRunBudgetBoundary(r.Context(), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
@@ -231,7 +239,31 @@ type boundaryTurn struct {
 	waiting int
 }
 
-func takeBoundaryTurn(ctx context.Context, issueID pgtype.UUID) (give func(), err error) {
+// boundarySlots bounds, per pool, how many requests hold a boundary lock at
+// once. Each holder keeps one connection and needs more to finish, so holders
+// of different issues could otherwise take the whole pool between them. A
+// quarter of the pool leaves each holder room for the connections of its
+// write, its publish and the lock of the issue a listener moves next.
+var boundarySlots sync.Map // txStarter -> chan struct{}
+
+func boundarySlotsOf(starter txStarter) chan struct{} {
+	if slots, ok := boundarySlots.Load(starter); ok {
+		return slots.(chan struct{})
+	}
+	poolSize := int32(4)
+	if pool, ok := starter.(interface{ Stat() *pgxpool.Stat }); ok {
+		poolSize = pool.Stat().MaxConns()
+	}
+	slots, _ := boundarySlots.LoadOrStore(starter, make(chan struct{}, max(1, poolSize/4)))
+	return slots.(chan struct{})
+}
+
+// enterRunBudgetBoundary waits, holding no connection, for the issue's turn
+// and then for a slot, and returns the function that gives both back. A
+// request that holds a boundary lock and takes another one for the issue a
+// listener moves passes capped=false for the second: it already has a slot,
+// and waiting for another could wait on itself.
+func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID, capped bool) (leave func(), err error) {
 	boundaryQueue.Lock()
 	turn := boundaryQueue.turns[issueID]
 	if turn == nil {
@@ -241,23 +273,41 @@ func takeBoundaryTurn(ctx context.Context, issueID pgtype.UUID) (give func(), er
 	turn.waiting++
 	boundaryQueue.Unlock()
 
-	leave := func() {
+	var slots chan struct{}
+	if capped {
+		slots = boundarySlotsOf(h.TxStarter)
+	}
+	var gotTurn, gotSlot bool
+	leave = sync.OnceFunc(func() {
+		if gotSlot {
+			<-slots
+		}
+		if gotTurn {
+			<-turn.held
+		}
 		boundaryQueue.Lock()
 		if turn.waiting--; turn.waiting == 0 {
 			delete(boundaryQueue.turns, issueID)
 		}
 		boundaryQueue.Unlock()
-	}
+	})
 	select {
 	case turn.held <- struct{}{}:
+		gotTurn = true
 	case <-ctx.Done():
 		leave()
 		return nil, ctx.Err()
 	}
-	return sync.OnceFunc(func() {
-		<-turn.held
-		leave()
-	}), nil
+	if capped {
+		select {
+		case slots <- struct{}{}:
+			gotSlot = true
+		case <-ctx.Done():
+			leave()
+			return nil, ctx.Err()
+		}
+	}
+	return leave, nil
 }
 
 // lockRunBudgetBoundary holds the issue's boundary lock until release runs;
@@ -266,18 +316,22 @@ func takeBoundaryTurn(ctx context.Context, issueID pgtype.UUID) (give func(), er
 // status under the lock to decide whether it ends a window, so a write that
 // could land between that read and the move's own write has to wait.
 func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (release func(), err error) {
-	giveTurn, err := takeBoundaryTurn(ctx, issueID)
+	return h.lockBoundary(ctx, issueID, true)
+}
+
+func (h *Handler) lockBoundary(ctx context.Context, issueID pgtype.UUID, capped bool) (release func(), err error) {
+	leave, err := h.enterRunBudgetBoundary(ctx, issueID, capped)
 	if err != nil {
 		return nil, err
 	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		giveTurn()
+		leave()
 		return nil, err
 	}
 	release = sync.OnceFunc(func() {
 		_ = tx.Rollback(ctx)
-		giveTurn()
+		leave()
 	})
 	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
 		release()
