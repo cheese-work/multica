@@ -36,11 +36,15 @@
     "label_children": "Children · {{total}}",
     "label_showing": "{{label}} (showing {{shown}})",
     "chip_hierarchy": "Hierarchy {{count}}",
-    "chip_wakes": "Wakes {{count}}",
-    "chip_mentions": "Mentions {{count}}",
+    "chip_wakes": "Wakes {{value}}",
+    "chip_mentions": "Mentions {{value}}",
     "chip_mentions_off": "Mentions",
     "related": "Related",
-    "offscreen": "{{count}} off-screen"
+    "offscreen": "{{count}} off-screen",
+    "wakes_more": "{{count}}+ wakes",
+    "wakes_unknown": "Wakes unavailable",
+    "mentions_more": "{{count}}+ mentions",
+    "mentions_unknown": "Mentions unavailable"
   },
   "inline_run": {
     "label": "{{name}} run",

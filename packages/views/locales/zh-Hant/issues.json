@@ -1829,11 +1829,15 @@
     "label_children": "子層 · {{total}}",
     "label_showing": "{{label}}（顯示 {{shown}} 項）",
     "chip_hierarchy": "階層 {{count}}",
-    "chip_wakes": "喚醒 {{count}}",
-    "chip_mentions": "提及 {{count}}",
+    "chip_wakes": "喚醒 {{value}}",
+    "chip_mentions": "提及 {{value}}",
     "chip_mentions_off": "提及",
     "related": "相關",
-    "offscreen": "畫面外 {{count}} 項"
+    "offscreen": "畫面外 {{count}} 項",
+    "wakes_more": "至少 {{count}} 次喚醒",
+    "wakes_unknown": "喚醒無法使用",
+    "mentions_more": "至少 {{count}} 次提及",
+    "mentions_unknown": "提及無法使用"
   },
   "decision": {
     "class": {

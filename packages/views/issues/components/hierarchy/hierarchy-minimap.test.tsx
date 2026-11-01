@@ -34,7 +34,7 @@ vi.mock("./use-hierarchy", async () => {
       loading: state.loading,
       error: false,
       catalog: { categoryOf, labelOf: (status: string) => status },
-      wakeCount: 27,
+      wakeCount: { value: 27, partial: false },
       mentionCount: null,
       mentionsLoading: false,
       refetch: vi.fn(),
@@ -68,7 +68,10 @@ describe("minimap", () => {
   });
   it("clamps titles to two lines", () => {
     render(ui());
-    expect(screen.getByText(/A very long title/)).toHaveClass("line-clamp-2");
+    // `block` would override line-clamp's `display: -webkit-box` and let the title run past two lines.
+    const title = screen.getByText(/A very long title/);
+    expect(title).toHaveClass("line-clamp-2");
+    expect(title).not.toHaveClass("block");
   });
   it("shows a busy skeleton in the same section while the target loads", () => {
     state.loading = true;
@@ -149,14 +152,44 @@ describe("canvas dialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(screen.getByTestId("hierarchy-world").className).toContain("motion-reduce:transition-none");
   });
-  it("collapses into the target on a plain card click and returns focus to the minimap heading", async () => {
-    render(ui());
+  const openCard = () => {
     openCanvas();
     press("+", 5);
     fireEvent.click(within(screen.getByTestId("hierarchy-canvas")).getByRole("link", { name: /CHE-100/ }));
-    expect(push).toHaveBeenCalledWith("/issues/id-100");
+  };
+  it("shrinks the dialog toward the minimap for ~180ms before navigating, then focuses the minimap heading", async () => {
+    render(ui());
+    openCard();
+    const popup = screen.getByTestId("hierarchy-dialog");
+    expect(push).not.toHaveBeenCalled();
+    expect(popup.style.opacity).toBe("0");
+    expect(popup.style.scale).not.toBe("");
+    expect(popup.style.transition).toContain("180ms");
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/issues/id-100"));
     await waitFor(() => expect(screen.queryByTestId("hierarchy-dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("heading", { name: "Hierarchy" })).toHaveFocus());
+  });
+  it("navigates as soon as the shrink transition ends, without waiting for the fallback timer", () => {
+    render(ui());
+    openCard();
+    fireEvent.transitionEnd(screen.getByTestId("hierarchy-dialog"), { propertyName: "opacity" });
+    expect(push).toHaveBeenCalledWith("/issues/id-100");
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+  it("navigates at once when reduced motion is asked for", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    render(ui());
+    openCard();
+    expect(push).toHaveBeenCalledWith("/issues/id-100");
+    await waitFor(() => expect(screen.queryByTestId("hierarchy-dialog")).not.toBeInTheDocument());
+    vi.unstubAllGlobals();
+  });
+  it("cancels the pending navigation when the dialog is dismissed mid-collapse", async () => {
+    render(ui());
+    openCard();
+    fireEvent.keyDown(screen.getByTestId("hierarchy-dialog"), { key: "Escape" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(push).not.toHaveBeenCalled();
   });
   it("leaves modifier clicks to the browser", () => {
     render(ui());

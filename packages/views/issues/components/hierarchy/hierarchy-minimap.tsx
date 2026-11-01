@@ -51,7 +51,10 @@ export function IssueHierarchy({ issue }: { issue: Issue }) {
       </div>
       {hierarchy && (
         <p className="border-t border-surface-border px-3 py-1.5 text-micro text-muted-foreground">
-          {[t(($) => $.hierarchy.wakes, { count: wakeCount }), mentionCount !== null && t(($) => $.hierarchy.mentions, { count: mentionCount })].filter(Boolean).join(" · ")}
+          {[
+            wakeCount && (wakeCount.value === null ? t(($) => $.hierarchy.wakes_unknown) : wakeCount.partial ? t(($) => $.hierarchy.wakes_more, { count: wakeCount.value }) : t(($) => $.hierarchy.wakes, { count: wakeCount.value })),
+            mentionCount && (mentionCount.value === null ? t(($) => $.hierarchy.mentions_unknown) : mentionCount.partial ? t(($) => $.hierarchy.mentions_more, { count: mentionCount.value }) : t(($) => $.hierarchy.mentions, { count: mentionCount.value })),
+          ].filter(Boolean).join(" · ")}
         </p>
       )}
       {open && <HierarchyDialog issue={issue} headingRef={headingRef} onClose={() => setOpen(false)} />}

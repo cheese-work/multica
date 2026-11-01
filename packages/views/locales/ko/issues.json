@@ -32,11 +32,15 @@
     "label_children": "하위 · {{total}}",
     "label_showing": "{{label}} ({{shown}}개 표시)",
     "chip_hierarchy": "계층 {{count}}",
-    "chip_wakes": "깨우기 {{count}}",
-    "chip_mentions": "멘션 {{count}}",
+    "chip_wakes": "깨우기 {{value}}",
+    "chip_mentions": "멘션 {{value}}",
     "chip_mentions_off": "멘션",
     "related": "관련",
-    "offscreen": "화면 밖 {{count}}개"
+    "offscreen": "화면 밖 {{count}}개",
+    "wakes_more": "깨우기 {{count}}회 이상",
+    "wakes_unknown": "깨우기를 불러올 수 없음",
+    "mentions_more": "멘션 {{count}}개 이상",
+    "mentions_unknown": "멘션을 불러올 수 없음"
   },
   "inline_run": {
     "label": "{{name}} 실행",

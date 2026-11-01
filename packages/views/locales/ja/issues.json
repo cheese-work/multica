@@ -32,11 +32,15 @@
     "label_children": "子 · {{total}}",
     "label_showing": "{{label}}（{{shown}} 件表示）",
     "chip_hierarchy": "階層 {{count}}",
-    "chip_wakes": "ウェイク {{count}}",
-    "chip_mentions": "メンション {{count}}",
+    "chip_wakes": "ウェイク {{value}}",
+    "chip_mentions": "メンション {{value}}",
     "chip_mentions_off": "メンション",
     "related": "関連",
-    "offscreen": "画面外 {{count}} 件"
+    "offscreen": "画面外 {{count}} 件",
+    "wakes_more": "ウェイク {{count}} 件以上",
+    "wakes_unknown": "ウェイクを取得できません",
+    "mentions_more": "メンション {{count}} 件以上",
+    "mentions_unknown": "メンションを取得できません"
   },
   "inline_run": {
     "label": "{{name}} の実行",

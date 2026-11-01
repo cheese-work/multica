@@ -47,7 +47,7 @@ export function IssueCardBody({ issue, catalog, current = false, large = false }
         <span className={`font-mono font-bold ${current ? "text-info" : "text-muted-foreground"} ${large ? "text-caption" : "text-micro"}`}>{issue.identifier}</span>
         {current ? <span className="text-micro font-bold text-info">{t(($) => $.hierarchy.you_are_here)}</span> : <StatusLabel issue={issue} catalog={catalog} />}
       </span>
-      <span className={`mt-0.5 line-clamp-2 block break-words ${current ? "font-semibold" : ""} ${large ? "text-label" : "text-caption"}`}>{issue.title}</span>
+      <span className={`mt-0.5 line-clamp-2 break-words ${current ? "font-semibold" : ""} ${large ? "text-label" : "text-caption"}`}>{issue.title}</span>
       {current && <StatusLabel issue={issue} catalog={catalog} className="mt-1" />}
     </>
   );

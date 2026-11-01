@@ -21,6 +21,9 @@ function neighbours(graph: { nodes: HierarchyIssue[]; edges: { source: string; t
   return graph.nodes.filter((node) => ids.has(node.id));
 }
 
+/** `value` is null when the request failed; `partial` when the server omitted nodes, so the true total is at least `value`. */
+export type RelationCount = { value: number | null; partial: boolean };
+
 export function useHierarchy(issue: Pick<Issue, "id" | "parent_issue_id" | "identifier" | "title" | "status">, { wakes, mentions }: { wakes: boolean; mentions: boolean }) {
   const workspaceId = useWorkspaceId();
   const catalog = useIssueStatuses(workspaceId);
@@ -34,7 +37,7 @@ export function useHierarchy(issue: Pick<Issue, "id" | "parent_issue_id" | "iden
   const cachedMentions = useQuery({ ...issueRelationsOptions(workspaceId, issue.id, 1, true), enabled: false });
 
   const loading = (!!parentId && (parent.isPending || siblings.isPending)) || children.isPending;
-  const error = parent.isError || siblings.isError || children.isError;
+  const error = (!!parentId && (parent.isError || siblings.isError)) || children.isError;
   const mentionData = mentionGraph.data ?? cachedMentions.data;
 
   const hierarchy = useMemo<Hierarchy | null>(() => {
@@ -57,16 +60,21 @@ export function useHierarchy(issue: Pick<Issue, "id" | "parent_issue_id" | "iden
     };
   }, [loading, error, siblings.data, children.data, parent.data, relations.data, mentionData, wakes, mentions, issue, parentId, catalog.categoryOf]);
 
-  const count = (graph: typeof mentionData, types: string[]) => neighbours(graph, issue.id, types).length;
+  // null while not requested or still loading.
+  const count = (graph: typeof mentionData, failed: boolean, types: string[]): RelationCount | null =>
+    failed ? { value: null, partial: false } : graph ? { value: neighbours(graph, issue.id, types).length, partial: graph.omitted_count > 0 } : null;
   return {
     hierarchy,
     loading,
     error,
     catalog,
-    // Counts for the footer and the dialog chips; mentions stay null until loaded.
-    wakeCount: count(relations.data, ["wakeup", "children_done"]),
-    mentionCount: mentionData ? count(mentionData, ["mention"]) : null,
+    // Counts for the footer and the dialog chips; mentions stay null until requested.
+    wakeCount: count(relations.data, relations.isError, ["wakeup", "children_done"]),
+    mentionCount: count(mentionData, mentionGraph.isError, ["mention"]),
     mentionsLoading: mentions && mentionGraph.isFetching,
-    refetch: () => { void parent.refetch(); void siblings.refetch(); void children.refetch(); },
+    refetch: () => {
+      if (parentId) { void parent.refetch(); void siblings.refetch(); }
+      void children.refetch();
+    },
   };
 }

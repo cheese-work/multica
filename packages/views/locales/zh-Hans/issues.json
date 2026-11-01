@@ -32,11 +32,15 @@
     "label_children": "子级 · {{total}}",
     "label_showing": "{{label}}（显示 {{shown}} 项）",
     "chip_hierarchy": "层级 {{count}}",
-    "chip_wakes": "唤醒 {{count}}",
-    "chip_mentions": "提及 {{count}}",
+    "chip_wakes": "唤醒 {{value}}",
+    "chip_mentions": "提及 {{value}}",
     "chip_mentions_off": "提及",
     "related": "相关",
-    "offscreen": "屏幕外 {{count}} 项"
+    "offscreen": "屏幕外 {{count}} 项",
+    "wakes_more": "至少 {{count}} 次唤醒",
+    "wakes_unknown": "唤醒不可用",
+    "mentions_more": "至少 {{count}} 次提及",
+    "mentions_unknown": "提及不可用"
   },
   "inline_run": {
     "label": "{{name}} 的运行",

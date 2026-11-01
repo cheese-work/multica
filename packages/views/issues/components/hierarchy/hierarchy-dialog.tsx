@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { Issue } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
@@ -12,9 +12,20 @@ import { layoutHierarchy, intersects, type Box, type Hierarchy, type LayoutItem 
 import { CARD_CLASS, CURRENT_CLASS, GroupTotals, IssueCardBody, type Catalog } from "./hierarchy-parts";
 import { requestHierarchyFocus } from "./hierarchy-minimap";
 import { useCanvasView } from "./use-canvas-view";
-import { useHierarchy } from "./use-hierarchy";
+import { useHierarchy, type RelationCount } from "./use-hierarchy";
 
 const chip = "inline-flex h-7 items-center rounded-full border border-surface-border px-2.5 text-caption font-medium aria-pressed:border-info aria-pressed:bg-info/10";
+
+/** "…" while loading, "?" when the request failed, "N+" when the server omitted nodes. */
+const chipCount = (count: RelationCount | null) => (count === null ? "…" : count.value === null ? "?" : count.partial ? `${count.value}+` : `${count.value}`);
+
+const COLLAPSE_MS = 180;
+
+/** Scale and origin that map `from` onto `to` along one axis: the origin is the one fixed point of the scaling. */
+const squeeze = (fromStart: number, fromSize: number, toStart: number, toSize: number) => {
+  const scale = toSize / fromSize;
+  return { scale, origin: scale === 1 ? fromSize / 2 : (toStart - scale * fromStart) / (1 - scale) - fromStart };
+};
 
 export function HierarchyDialog({ issue, headingRef, onClose }: { issue: Issue; headingRef: RefObject<HTMLHeadingElement | null>; onClose: () => void }) {
   const { t } = useT("issues");
@@ -25,25 +36,58 @@ export function HierarchyDialog({ issue, headingRef, onClose }: { issue: Issue; 
   const [mentions, setMentions] = useState(false);
   const { hierarchy, catalog, wakeCount, mentionCount, mentionsLoading, error, refetch } = useHierarchy(issue, { wakes, mentions });
 
-  // D4: the dialog collapses into the target's minimap, which takes focus.
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [collapse, setCollapse] = useState<CSSProperties | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pending = useRef<() => void>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  // D4: the dialog shrinks into the sidebar minimap, then navigates; the target's minimap takes focus.
   const open = (id: string) => {
+    if (collapse) return;
     requestHierarchyFocus();
-    onClose();
-    navigation.push(paths.issueDetail(id));
+    const go = () => { onClose(); navigation.push(paths.issueDetail(id)); };
+    const popup = popupRef.current?.getBoundingClientRect();
+    const target = headingRef.current?.closest("section")?.getBoundingClientRect();
+    if (!popup || !target || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return go();
+    const x = squeeze(popup.left, popup.width, target.left, target.width);
+    const y = squeeze(popup.top, popup.height, target.top, target.height);
+    setCollapse({
+      scale: `${x.scale} ${y.scale}`,
+      transformOrigin: `${x.origin}px ${y.origin}px`,
+      opacity: 0,
+      transition: `scale ${COLLAPSE_MS}ms ease-in, opacity ${COLLAPSE_MS}ms ease-in`,
+    });
+    // transitionend keeps the shrink complete on a slow frame; the timer covers a transition that never fires.
+    pending.current = go;
+    timer.current = setTimeout(finish, COLLAPSE_MS * 2);
+  };
+  useEffect(() => {
+    const popup = popupRef.current;
+    if (!collapse || !popup) return;
+    const onEnd = (e: TransitionEvent) => { if (e.target === popup && e.propertyName === "opacity") finish(); };
+    popup.addEventListener("transitionend", onEnd);
+    return () => popup.removeEventListener("transitionend", onEnd);
+  });
+  const finish = () => {
+    clearTimeout(timer.current);
+    const go = pending.current;
+    pending.current = undefined;
+    go?.();
   };
   const total = hierarchy ? (hierarchy.parent ? 1 : 0) + 1 + hierarchy.siblings.total + hierarchy.children.total : 0;
 
   return (
-    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogContent data-testid="hierarchy-dialog" initialFocus={viewportRef} finalFocus={headingRef} className="flex h-[min(48rem,90dvh)] flex-col gap-3 sm:max-w-6xl">
+    <Dialog open onOpenChange={(next) => { if (!next) { clearTimeout(timer.current); pending.current = undefined; onClose(); } }}>
+      <DialogContent ref={popupRef} overlayClassName="supports-backdrop-filter:backdrop-blur-none" style={collapse ?? undefined} data-testid="hierarchy-dialog" initialFocus={viewportRef} finalFocus={headingRef} className="flex h-[min(48rem,90dvh)] flex-col gap-3 sm:max-w-6xl">
         <DialogHeader className="flex-row flex-wrap items-center gap-x-3 gap-y-2 pr-8">
           <DialogTitle>{t(($) => $.hierarchy.title)} <span aria-hidden="true" className="ml-2 font-mono text-caption text-muted-foreground">{issue.identifier}</span></DialogTitle>
           <DialogDescription className="sr-only">{t(($) => $.hierarchy.dialog_description)}</DialogDescription>
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={chip}>{t(($) => $.hierarchy.chip_hierarchy, { count: total })}</span>
-            <button type="button" className={chip} aria-pressed={wakes} onClick={() => setWakes((on) => !on)}>{t(($) => $.hierarchy.chip_wakes, { count: wakeCount })}</button>
+            <button type="button" className={chip} aria-pressed={wakes} onClick={() => setWakes((on) => !on)}>{t(($) => $.hierarchy.chip_wakes, { value: chipCount(wakeCount) })}</button>
             <button type="button" className={chip} aria-pressed={mentions} aria-busy={mentionsLoading} onClick={() => setMentions((on) => !on)}>
-              {mentionCount === null ? t(($) => $.hierarchy.chip_mentions_off) : t(($) => $.hierarchy.chip_mentions, { count: mentionCount })}
+              {mentionCount === null ? t(($) => $.hierarchy.chip_mentions_off) : t(($) => $.hierarchy.chip_mentions, { value: chipCount(mentionCount) })}
             </button>
           </div>
         </DialogHeader>

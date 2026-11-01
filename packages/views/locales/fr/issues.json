@@ -36,11 +36,15 @@
     "label_children": "Enfants · {{total}}",
     "label_showing": "{{label}} ({{shown}} affichées)",
     "chip_hierarchy": "Hiérarchie {{count}}",
-    "chip_wakes": "Réveils {{count}}",
-    "chip_mentions": "Mentions {{count}}",
+    "chip_wakes": "Réveils {{value}}",
+    "chip_mentions": "Mentions {{value}}",
     "chip_mentions_off": "Mentions",
     "related": "Liées",
-    "offscreen": "{{count}} hors écran"
+    "offscreen": "{{count}} hors écran",
+    "wakes_more": "{{count}}+ réveils",
+    "wakes_unknown": "Réveils indisponibles",
+    "mentions_more": "{{count}}+ mentions",
+    "mentions_unknown": "Mentions indisponibles"
   },
   "inline_run": {
     "label": "Exécution de {{name}}",
