@@ -23,8 +23,10 @@ type decisionPark struct {
 	// ReadinessID is the Readiness property the park set; empty when the
 	// workspace has none with a gated-human option.
 	ReadinessID string `json:"readiness_id,omitempty"`
-	// Readiness is the prior raw value; null when the issue had none.
+	// Readiness is the prior raw value; absent when the issue had none.
 	Readiness json.RawMessage `json:"readiness,omitempty"`
+	// Set is the value the park wrote; a restore leaves any other value alone.
+	Set json.RawMessage `json:"set,omitempty"`
 }
 
 // gatedHumanReadiness finds the Readiness property and its gated-human option.
@@ -86,6 +88,7 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 		}
 		park.ReadinessID, park.Readiness = propertyID, values[propertyID]
 		value, _ := json.Marshal(optionID)
+		park.Set = value
 		if _, err := queries.SetIssuePropertyValue(ctx, db.SetIssuePropertyValueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: propertyID, Value: value}); err != nil {
 			return issue, false, err
 		}
@@ -120,7 +123,7 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 	}
 	restored := issue.Status == park.To
 	if restored {
-		if park.ReadinessID != "" {
+		if park.ReadinessID != "" && readinessUnchanged(issue, park) {
 			if len(park.Readiness) == 0 {
 				_, err = queries.DeleteIssuePropertyValue(ctx, db.DeleteIssuePropertyValueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: park.ReadinessID})
 			} else {
@@ -138,6 +141,12 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 		return issue, false, err
 	}
 	return issue, restored, nil
+}
+
+// readinessUnchanged reports whether Readiness still holds the value the park set.
+func readinessUnchanged(issue db.Issue, park decisionPark) bool {
+	var values map[string]json.RawMessage
+	return json.Unmarshal(issue.Properties, &values) == nil && string(values[park.ReadinessID]) == string(park.Set)
 }
 
 func issueMetadataValue(issue db.Issue, key string) (json.RawMessage, bool) {

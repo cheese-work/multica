@@ -105,3 +105,36 @@ func TestDecisionAnswerRestoresTheParkedIssue(test *testing.T) {
 		test.Fatal("the park record outlived the answer")
 	}
 }
+
+func TestDecisionCancellationRestoresTheParkedIssue(test *testing.T) {
+	fixture := newParkFixture(test)
+	if _, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input()); err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET status = 'cancelled', cancel_reason = 'lane_archived' WHERE issue_id = $1`, fixture.issueID)
+	parked, _ := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if err := testHandler.checkDecisionWait(context.Background(), parked); err != nil {
+		test.Fatal(err)
+	}
+	if status, readiness, from := fixture.state(test); status != "in_progress" || readiness != "ready" || from != "" {
+		test.Fatalf("status=%q readiness=%q parked_from=%q, want in_progress/ready and no record", status, readiness, from)
+	}
+}
+
+func TestDecisionAnswerKeepsAReadinessSetDuringTheWait(test *testing.T) {
+	resetDecisionLease(test)
+	readinessID := ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	dbfx.Exec(test, `UPDATE issue SET properties = jsonb_build_object($1::text, 'ready') WHERE id = $2`, readinessID, fixture.issueID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	var readiness string
+	dbfx.QueryRow(test, `SELECT COALESCE(properties ->> $1, '') FROM issue WHERE id = $2`, readinessID, fixture.issueID).Scan(&readiness)
+	if readiness != "ready" {
+		test.Fatalf("readiness = %q, want the value set during the wait (ready)", readiness)
+	}
+}

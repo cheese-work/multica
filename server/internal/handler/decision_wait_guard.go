@@ -79,9 +79,26 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err != nil {
 		return err
 	}
+	closed := true
 	for _, request := range requests {
 		if request.Status == "open" {
 			eligible = false
+		}
+		if request.Status == "open" || request.Status == "answered" {
+			closed = false
+		}
+	}
+	// A request cancelled outside the answer path (lane archived, recipient
+	// removed, expired, withdrawn) leaves its park behind; undo it here.
+	if closed {
+		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, issue); err != nil {
+			return err
+		} else if ok {
+			if err := transaction.Commit(ctx); err != nil {
+				return err
+			}
+			handler.publishDecisionStatusChange(ctx, issue, restored, "decision_cancel")
+			return nil
 		}
 	}
 	if settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
