@@ -364,6 +364,28 @@ func TestNoticeAfterTheBudgetBlockWasReplacedByAnotherGivesNoRecoveryRun(t *test
 	}
 }
 
+// The recovery run is read before the notice's transaction. A person can move
+// the issue out of blocked and block it again in between: the claim must see
+// the budget's block gone and give no run.
+func TestNoticeGivesNoRecoveryRunWhenTheBlockIsReplacedBeforeTheNoticeTransaction(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886109, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	landBeforeNotice(t, func() {
+		c.enter(t, "in_progress")
+		c.enter(t, "blocked")
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (another writer blocked the issue after the budget's block ended)", n)
+	}
+	if n := raiseNotices(t, c); n != 1 {
+		t.Fatalf("notices = %d, want 1", n)
+	}
+}
+
 // A recovery run that is not enqueued (the window's claim is taken) debits
 // nothing, so the activity and the notice count none.
 func TestNoticeCountsNoRecoveryRunThatWasNotEnqueued(t *testing.T) {

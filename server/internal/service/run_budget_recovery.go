@@ -35,6 +35,11 @@ const (
 // claimed.
 var ErrRecoveryClaimed = errors.New("the window's recovery run was already claimed")
 
+// ErrRecoveryBlockEnded is returned when the budget's block of the issue no
+// longer stands: the issue left blocked since the run was read, so a block now
+// is another writer's.
+var ErrRecoveryBlockEnded = errors.New("the budget's block of the issue ended")
+
 // ErrRecoveryWindowLifted is returned when the window the recovery run was for
 // is no longer the issue's current window, or no longer refuses a run.
 var ErrRecoveryWindowLifted = errors.New("the window's refusal no longer applies")
@@ -66,7 +71,9 @@ func (s *TaskService) PrepareBudgetRecoveryRun(ctx context.Context, issue db.Iss
 // caller's transaction: a second claim in the same window returns
 // ErrRecoveryClaimed. A recovery run bypasses the exhaustion refusal, so the
 // claim revalidates the window under the budget lock: a top-up or grant that
-// landed since the refusal returns ErrRecoveryWindowLifted and no task. The run
+// landed since the refusal returns ErrRecoveryWindowLifted and no task, and so
+// does an issue whose budget block ended since the run was read
+// (ErrRecoveryBlockEnded); the claim holds the marker until the transaction ends. The run
 // exists only when the caller's transaction commits; Published follows it.
 //
 // Claim works in a savepoint, so a failed claim or insert (the handler's pending
@@ -94,6 +101,13 @@ func (r *BudgetRecoveryRun) Claim(ctx context.Context, tx pgx.Tx, since time.Tim
 		return err
 	} else if !still {
 		return ErrRecoveryWindowLifted
+	}
+	if _, err := qtx.LockRunBudgetBlockMarker(ctx, db.LockRunBudgetBlockMarkerParams{
+		IssueID: r.issue.ID, WindowID: runBudgetWindowID(since),
+	}); errors.Is(err, pgx.ErrNoRows) {
+		return ErrRecoveryBlockEnded
+	} else if err != nil {
+		return err
 	}
 	task, err := r.svc.insertPreparedIssueTask(r.txCtx, qtx, r.issue, r.params, pgtype.Timestamptz{}, OriginBudgetRecovery)
 	if err != nil {

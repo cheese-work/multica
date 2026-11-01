@@ -176,7 +176,7 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 			switch err := recovery.Claim(ctx, tx, e.Since); {
 			case err == nil:
 				recovered = true
-			case errors.Is(err, service.ErrRecoveryClaimed):
+			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
 			case errors.Is(err, service.ErrRecoveryWindowLifted):
 				return errRefusalLifted
 			default:
