@@ -5,7 +5,6 @@ import { PluginKey } from "@tiptap/pm/state";
 import { Suggestion, type SuggestionMatch, type Trigger } from "@tiptap/suggestion";
 import type { QueryClient } from "@tanstack/react-query";
 import { agentPresetCompletionsOptions, filterPresetCompletions } from "@multica/core/agents";
-import { useChatStore } from "@multica/core/chat";
 import { getCurrentWsId } from "@multica/core/platform";
 import {
   SlashCommandList,
@@ -64,14 +63,16 @@ export function createPresetArgExtension({ getNames }: { getNames: () => Promise
 }
 
 /**
- * The selected agent's `/preset` completions. Tiptap calls items outside React,
- * so the store is read directly (as the `/` skill picker does). A failed fetch
- * offers nothing rather than an error in the composer.
+ * The open DM's agent's `/preset` completions. `getAgentId` is the session's
+ * agent (undefined outside a saved DM), not the saved agent preference, which a
+ * deep-linked DM can contradict. Tiptap calls items outside React, so the
+ * workspace id is read from the store. A failed fetch offers nothing rather
+ * than an error in the composer.
  */
-export const presetNames = (qc: QueryClient, enabled: () => boolean) => async (): Promise<string[]> => {
+export const presetNames = (qc: QueryClient, getAgentId: () => string | undefined) => async (): Promise<string[]> => {
   const wsId = getCurrentWsId();
-  const agentId = useChatStore.getState().selectedAgentId;
-  if (!enabled() || !wsId || !agentId) return [];
+  const agentId = getAgentId();
+  if (!wsId || !agentId) return [];
   try {
     return await qc.fetchQuery({ ...agentPresetCompletionsOptions(wsId, agentId), staleTime: 10_000 });
   } catch {

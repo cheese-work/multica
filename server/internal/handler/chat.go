@@ -211,27 +211,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
-			resp = append(resp, ChatSessionResponse{
-				ID:                     uuidToString(s.ID),
-				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
-				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
-				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
-				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
-				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
-				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
-				WorkspaceID:            uuidToString(s.WorkspaceID),
-				AgentID:                uuidToString(s.AgentID),
-				CreatorID:              uuidToString(s.CreatorID),
-				ProjectID:              uuidToPtr(s.ProjectID),
-				Title:                  s.Title,
-				Status:                 s.Status,
-				HasUnread:              s.UnreadCount > 0,
-				UnreadCount:            int(s.UnreadCount),
-				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:                 s.PinnedAt.Valid,
-				CreatedAt:              timestampToString(s.CreatedAt),
-				UpdatedAt:              timestampToString(s.UpdatedAt),
-			})
+			resp = append(resp, chatSessionListRowToResponse(db.ListChatSessionsByCreatorRow(s)))
 		}
 	} else {
 		rows, err := h.Queries.ListChatSessionsByCreator(r.Context(), db.ListChatSessionsByCreatorParams{
@@ -247,27 +227,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
-			resp = append(resp, ChatSessionResponse{
-				ID:                     uuidToString(s.ID),
-				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
-				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
-				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
-				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
-				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
-				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
-				WorkspaceID:            uuidToString(s.WorkspaceID),
-				AgentID:                uuidToString(s.AgentID),
-				CreatorID:              uuidToString(s.CreatorID),
-				ProjectID:              uuidToPtr(s.ProjectID),
-				Title:                  s.Title,
-				Status:                 s.Status,
-				HasUnread:              s.UnreadCount > 0,
-				UnreadCount:            int(s.UnreadCount),
-				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:                 s.PinnedAt.Valid,
-				CreatedAt:              timestampToString(s.CreatedAt),
-				UpdatedAt:              timestampToString(s.UpdatedAt),
-			})
+			resp = append(resp, chatSessionListRowToResponse(s))
 		}
 	}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), resp); err != nil {
@@ -2288,6 +2248,34 @@ type ScheduledWakeupResponse struct {
 	Instruction string `json:"instruction"`
 	FireAt      string `json:"fire_at"`
 	CreatedAt   string `json:"created_at"`
+}
+
+// chatSessionListRowToResponse maps one interactive list row. Both list
+// queries return the same shape, so the first converts to the second's row type
+// and every list field is mapped here once.
+func chatSessionListRowToResponse(s db.ListChatSessionsByCreatorRow) ChatSessionResponse {
+	return ChatSessionResponse{
+		ID:                     uuidToString(s.ID),
+		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
+		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
+		WorkspaceID:            uuidToString(s.WorkspaceID),
+		AgentID:                uuidToString(s.AgentID),
+		CreatorID:              uuidToString(s.CreatorID),
+		ProjectID:              uuidToPtr(s.ProjectID),
+		Title:                  s.Title,
+		Status:                 s.Status,
+		HasUnread:              s.UnreadCount > 0,
+		UnreadCount:            int(s.UnreadCount),
+		LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+		Pinned:                 s.PinnedAt.Valid,
+		PresetName:             textToPtr(s.PresetName),
+		CreatedAt:              timestampToString(s.CreatedAt),
+		UpdatedAt:              timestampToString(s.UpdatedAt),
+	}
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {

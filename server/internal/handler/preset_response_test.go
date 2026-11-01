@@ -83,3 +83,31 @@ func TestTaskResponsePresetRun(t *testing.T) {
 		}
 	}
 }
+
+// Both interactive list queries feed the picker, so each row shape must carry
+// the saved choice: named, `base` and inherit (null).
+func TestChatSessionListRowCarriesPresetName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  db.ListChatSessionsByCreatorRow
+		want *string
+	}{
+		{"named", db.ListChatSessionsByCreatorRow{PresetName: text("fast")}, ptr("fast")},
+		{"base", db.ListChatSessionsByCreatorRow{PresetName: text("base")}, ptr("base")},
+		{"inherit", db.ListChatSessionsByCreatorRow{}, nil},
+	} {
+		got := chatSessionListRowToResponse(tc.row).PresetName
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("%s: preset_name = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The `status=all` query returns the same shape; converting must not drop a field.
+func TestChatSessionListAllRowConvertsWithPresetName(t *testing.T) {
+	row := db.ListAllChatSessionsByCreatorRow{PresetName: text("fast")}
+	got := chatSessionListRowToResponse(db.ListChatSessionsByCreatorRow(row)).PresetName
+	if got == nil || *got != "fast" {
+		t.Fatalf("preset_name = %v, want fast", got)
+	}
+}

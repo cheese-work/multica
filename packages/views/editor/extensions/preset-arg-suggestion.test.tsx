@@ -118,25 +118,30 @@ describe("/preset argument menu", () => {
 
 describe("presetNames", () => {
   const qcWith = (fetchQuery: () => Promise<string[]>) => ({ fetchQuery }) as unknown as QueryClient;
+  const keyOf = (agentId: string) => ["workspaces", "ws-1", "agents", agentId, "presets", "completions"];
 
-  it("loads the selected agent's completions", async () => {
+  it("loads the open DM's agent completions", async () => {
     const fetchQuery = vi.fn(() => Promise.resolve(NAMES));
-    expect(await presetNames(qcWith(fetchQuery), () => true)()).toEqual(NAMES);
-    expect(fetchQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: ["workspaces", "ws-1", "agents", "agent-1", "presets", "completions"] }),
-    );
+    expect(await presetNames(qcWith(fetchQuery), () => "agent-1")()).toEqual(NAMES);
+    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({ queryKey: keyOf("agent-1") }));
   });
 
-  it("offers nothing when the composer is not a saved DM, or no agent is selected", async () => {
+  it("ignores the saved agent preference when a deep-linked DM names another agent", async () => {
+    chatState.selectedAgentId = "agent-B";
     const fetchQuery = vi.fn(() => Promise.resolve(NAMES));
-    expect(await presetNames(qcWith(fetchQuery), () => false)()).toEqual([]);
-    chatState.selectedAgentId = null;
-    expect(await presetNames(qcWith(fetchQuery), () => true)()).toEqual([]);
+    await presetNames(qcWith(fetchQuery), () => "agent-A")();
+    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({ queryKey: keyOf("agent-A") }));
+    expect(fetchQuery).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: keyOf("agent-B") }));
     chatState.selectedAgentId = "agent-1";
+  });
+
+  it("offers nothing when the composer is not a saved DM", async () => {
+    const fetchQuery = vi.fn(() => Promise.resolve(NAMES));
+    expect(await presetNames(qcWith(fetchQuery), () => undefined)()).toEqual([]);
     expect(fetchQuery).not.toHaveBeenCalled();
   });
 
   it("offers nothing, not an error, when the fetch fails", async () => {
-    expect(await presetNames(qcWith(() => Promise.reject(new Error("403"))), () => true)()).toEqual([]);
+    expect(await presetNames(qcWith(() => Promise.reject(new Error("403"))), () => "agent-1")()).toEqual([]);
   });
 });
