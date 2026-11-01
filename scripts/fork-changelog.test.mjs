@@ -88,20 +88,24 @@ test("blank values and <placeholders> count as missing, none is explicit", async
   assert.equal(parseChangelogLine(undefined).status, "missing");
 });
 
-test("text over 140 code points is cut without splitting a grapheme and warns", async () => {
-  const { parseChangelogLine } = await load();
+test("text over 140 code points is rejected, not cut", async () => {
+  const { parseChangelogLine, evaluatePr, formatCheck } = await load();
   const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"; // one grapheme, 5 code points
-  const cut = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
-  assert.equal(cut.text, "a".repeat(138), "the grapheme that crosses 140 is dropped whole");
-  assert.ok(cut.warnings.some((w) => /truncat/i.test(w)), cut.warnings.join("|"));
-  assert.ok([...cut.text].length <= 140);
+  const long = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
+  assert.equal(long.status, "too-long");
+  assert.equal(long.text, null);
+  assert.ok(long.warnings.some((w) => /140/.test(w)), long.warnings.join("|"));
 
   const exact = parseChangelogLine(`Changelog: ${"b".repeat(140)}`);
+  assert.equal(exact.status, "text");
   assert.equal(exact.text.length, 140);
-  assert.ok(!exact.warnings.some((w) => /truncat/i.test(w)));
+  assert.equal(parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`).status, "too-long");
 
-  const emoji = parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`);
-  assert.equal([...emoji.text].length, 140);
+  // the PR check fails the PR, whatever its type, so the author shortens the line
+  for (const title of ["feat: x", "fix: x", "docs: x"]) {
+    const check = formatCheck(evaluatePr({ number: 1, title, body: `Changelog: ${"c".repeat(141)}`, headRef: "h" }));
+    assert.equal(check.failing, true, title);
+  }
 });
 
 // --- sanitizing ------------------------------------------------------------
@@ -207,7 +211,7 @@ test("feat, fix and perf PRs without a valid line fail the check; none and syncs
 test("warnings reach the check output", async () => {
   const { evaluatePr, formatCheck } = await load();
   const got = formatCheck(evaluatePr(pr(1, { body: `Changelog: ${"x".repeat(200)}` })));
-  assert.ok(got.warnings.some((w) => /truncat/i.test(w)), got.warnings.join("|"));
+  assert.ok(got.warnings.some((w) => /over 140/.test(w)), got.warnings.join("|"));
 });
 
 // --- generator --------------------------------------------------------------
@@ -369,7 +373,7 @@ test("warnings are collected per PR", async () => {
   const result = await run([pr(1, { body: `Changelog: ${"x".repeat(200)}` })]);
   assert.equal(result.warnings.length, 1);
   assert.equal(result.warnings[0].number, 1);
-  assert.match(result.warnings[0].message, /truncat/i);
+  assert.match(result.warnings[0].message, /over 140/);
 });
 
 test("serializeEntries is stable JSON with a trailing newline", async () => {
@@ -483,10 +487,11 @@ test("PR check: a feat PR without a line writes Hidden and fails", () => {
   assert.match(summary, /Hidden: missing — add "Changelog: <sentence>" to publish/);
 });
 
-test("PR check: warnings are annotated, a closed PR is skipped, a sync head passes", () => {
+test("PR check: an over-limit line fails with an annotation, a closed PR is skipped, a sync head passes", () => {
   const warn = checkEvent({ title: "fix(a): b", body: `Changelog: ${"y".repeat(200)}` });
-  assert.equal(warn.res.status, 0);
-  assert.match(warn.res.stdout, /::warning::.*truncat/i);
+  assert.equal(warn.res.status, 1);
+  assert.match(warn.res.stdout, /::warning::.*over 140/);
+  assert.match(warn.res.stdout, /::error::/);
 
   const closed = checkEvent({ title: "feat(a): b", body: "" }, "closed");
   assert.equal(closed.res.status, 0);

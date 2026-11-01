@@ -19,9 +19,9 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 ## Changelog
 
 <!-- Replace the line below with one sentence a user notices, in English, plain text,
-     at most 140 characters. It publishes as this PR's entry on /changelog. Keep the
-     line verbatim, like Closes/Refs. A PR without a valid line is hidden from
-     /changelog; the placeholder below counts as missing.
+     at most 140 characters (a longer line fails the PR check). It publishes as this
+     PR's entry on /changelog. Keep the line verbatim, like Closes/Refs. A PR without
+     a valid line is hidden from /changelog; the placeholder below counts as missing.
      The section follows the title type (feat, fix, perf); override it with
      Changelog(feat|fix|perf): <sentence>.
      Good:

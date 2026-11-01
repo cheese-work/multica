@@ -70,17 +70,6 @@ function liveLines(body) {
   });
 }
 
-function truncateGraphemes(text, limit) {
-  let used = 0;
-  let out = "";
-  for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)) {
-    used += [...segment].length;
-    if (used > limit) break;
-    out += segment;
-  }
-  return out;
-}
-
 const result = (status, text, override, warnings) => ({ status, text, override, warnings });
 
 export function parseChangelogLine(body) {
@@ -115,12 +104,11 @@ export function parseChangelogLine(body) {
     return result("parse-error", null, null, warnings);
   }
 
-  let text = cleaned;
-  if ([...text].length > MAX_CODE_POINTS) {
-    text = truncateGraphemes(text, MAX_CODE_POINTS).trimEnd();
-    warnings.push(`Truncated to ${MAX_CODE_POINTS} characters.`);
+  if ([...cleaned].length > MAX_CODE_POINTS) {
+    warnings.push(`The Changelog line is over ${MAX_CODE_POINTS} characters: shorten it to one short sentence.`);
+    return result("too-long", null, null, warnings);
   }
-  return result("text", text, override ?? null, warnings);
+  return result("text", cleaned, override ?? null, warnings);
 }
 
 const titleType = (title) => /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(title ?? "")?.[1].toLowerCase() ?? null;
@@ -216,7 +204,7 @@ export function formatCheck(evaluation) {
   const missingLine = evaluation.reason === "missing" || evaluation.reason === "parse-error";
   return {
     line: `Hidden: ${evaluation.reason} — add "Changelog: <sentence>" to publish`,
-    failing: missingLine && REQUIRES_LINE.has(evaluation.type),
+    failing: evaluation.reason === "too-long" || (missingLine && REQUIRES_LINE.has(evaluation.type)),
     warnings: evaluation.warnings,
   };
 }
@@ -323,7 +311,7 @@ function runCheck(eventPath, options, env) {
   console.log(check.line);
   for (const message of check.warnings) console.log(`::warning::${message}`);
   if (check.failing) {
-    console.log('::error::This feat/fix/perf PR has no valid Changelog line. Add "Changelog: <sentence>" or "Changelog: none".');
+    console.log('::error::This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none".');
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];
