@@ -1,10 +1,8 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -298,6 +296,3 @@ func TestBudgetBindingQueriesAreAllMapped(t *testing.T) {
 		}
 	}
 }
-
-var _ = context.Background
-var _ = httptest.NewRecorder
