@@ -1,4 +1,5 @@
 import { act, screen, waitFor } from "@testing-library/react";
+import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -20,9 +21,47 @@ vi.mock("../../issues/components/issue-chip", () => ({
 
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
+const uploadFile = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, listDecisionArtifacts },
+  api: { answerDecisionRequest, listDecisionArtifacts, uploadFile },
+}));
+
+// The real editor is Tiptap; its own suites cover typing and paste. Here it is
+// a textarea that exposes the props the card wires up.
+type EditorProps = {
+  value?: string;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
+  onUpdate?: (markdown: string) => void;
+  onSubmit?: () => void;
+  onUploadFile?: (file: File, uploadId: string) => Promise<unknown>;
+  onUploadingChange?: (uploading: boolean) => void;
+};
+const editor = vi.hoisted(() => ({ props: undefined as unknown, hasActiveUploads: false }));
+const editorProps = () => editor.props as EditorProps;
+vi.mock("../../editor", async () => ({
+  ...(await vi.importActual<typeof import("../../editor/use-upload-gate")>("../../editor/use-upload-gate")),
+  useEditorUpload: (await vi.importActual<typeof import("../../editor/use-editor-upload")>("../../editor/use-editor-upload")).useEditorUpload,
+  ContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
+    editor.props = props;
+    if (typeof ref === "function") ref({ hasActiveUploads: () => editor.hasActiveUploads } as never);
+    else if (ref) (ref as { current: unknown }).current = { hasActiveUploads: () => editor.hasActiveUploads };
+    return (
+      <textarea
+        aria-label={props.ariaLabel}
+        aria-describedby={props.ariaDescribedBy}
+        value={props.value ?? ""}
+        onChange={(event) => props.onUpdate?.(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            props.onSubmit?.();
+          }
+        }}
+      />
+    );
+  }),
 }));
 
 const card = {
@@ -219,6 +258,8 @@ describe("DecisionRequestCard answering", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
+    uploadFile.mockReset();
+    editor.hasActiveUploads = false;
   });
 
   it("sends the selected option on Send, and only once chosen", async () => {
@@ -258,6 +299,58 @@ describe("DecisionRequestCard answering", () => {
     await user.click(screen.getByRole("radio", { name: /Option A/ }));
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day{Enter}");
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
+  });
+
+  describe("image paste", () => {
+    it("uploads a pasted file against the card's issue and returns it to the editor", async () => {
+      uploadFile.mockResolvedValue({ id: "att-1", url: "https://cdn/x.png", markdown_url: "https://app/att-1" });
+      renderCard();
+      const file = new File(["png"], "x.png", { type: "image/png" });
+      const result = await editorProps().onUploadFile?.(file, "upload-1");
+      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined });
+      expect(result).toMatchObject({ markdownLink: "https://app/att-1" });
+    });
+
+    it("sends the image markdown the editor produced as the answer text", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("see ![x.png](https://app/att-1)"));
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "see ![x.png](https://app/att-1)" });
+    });
+
+    it("holds Send and Enter while an upload is in flight", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "hi");
+      act(() => editorProps().onUploadingChange?.(true));
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      editor.hasActiveUploads = true;
+      await user.keyboard("{Enter}");
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+      act(() => editorProps().onUploadingChange?.(false));
+      editor.hasActiveUploads = false;
+      expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    });
+  });
+
+  describe("the 8 KB answer cap", () => {
+    it("keeps an answer of exactly 8 KB sendable", async () => {
+      renderCard();
+      act(() => editorProps().onUpdate?.("x".repeat(8 << 10)));
+      expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+      expect(screen.queryByText(/over 8 KB/)).toBeNull();
+    });
+
+    it("blocks Send and says why once the text is over 8 KB, counting bytes not characters", async () => {
+      renderCard();
+      act(() => editorProps().onUpdate?.("é".repeat((8 << 10) / 2 + 1)));
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("over 8 KB");
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "{Enter}");
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+    });
   });
 
   it("has no answer form once the card is answered", () => {

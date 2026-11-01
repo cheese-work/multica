@@ -137,6 +137,10 @@ interface ContentEditorBaseProps {
   onUpdate?: (markdown: string, baseMarkdown: string) => void;
   placeholder?: string;
   className?: string;
+  /** Accessible name of the editable surface, for editors with a visible label that cannot use `htmlFor`. */
+  ariaLabel?: string;
+  /** Id of the element that describes the editable surface (a hint under the field). */
+  ariaDescribedBy?: string;
   debounceMs?: number;
   onSubmit?: () => void;
   onBlur?: () => void;
@@ -381,6 +385,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       onUpdate,
       placeholder: placeholderText = "",
       className,
+      ariaLabel,
+      ariaDescribedBy,
       debounceMs = 300,
       onSubmit,
       onBlur,
@@ -754,6 +760,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         },
         attributes: {
           class: cn("flex-1 rich-text-editor text-body outline-none", className),
+          ...(ariaLabel ? { role: "textbox", "aria-multiline": "true", "aria-label": ariaLabel } : {}),
+          ...(ariaDescribedBy ? { "aria-describedby": ariaDescribedBy } : {}),
         },
       },
     });

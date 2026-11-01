@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
@@ -8,6 +8,7 @@ import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
+import { ContentEditor, useEditorUpload, useUploadGate, type ContentEditorRef } from "../../editor";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -20,6 +21,10 @@ interface AnswerDraft {
   option: string;
   text: string;
 }
+
+// Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
+const MAX_ANSWER_BYTES = 8 << 10;
+const answerBytes = (text: string) => new TextEncoder().encode(text.trim()).length;
 
 const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 
@@ -51,9 +56,14 @@ function DecisionAnswerForm({
   const setText = (next: string) => onDraftChange({ option, text: next });
   const group = useId();
   const textId = useId();
-  const canSend = online && !answer.isPending && (option !== "" || text.trim() !== "");
+  const editorRef = useRef<ContentEditorRef>(null);
+  const uploadGate = useUploadGate(editorRef);
+  const { uploadWithToast } = useEditorUpload();
+  const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
+  const canSend = online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
   const send = () => {
-    if (canSend) onSend();
+    // Enter can arrive while an upload placeholder is still in the document.
+    if (canSend && !uploadGate.isBlocked()) onSend();
   };
 
   return (
@@ -95,26 +105,28 @@ function DecisionAnswerForm({
           ))}
         </fieldset>
       )}
-      <label htmlFor={textId} className="block text-label font-medium">
+      <span className="block text-label font-medium">
         {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-      </label>
-      <textarea
-        id={textId}
-        aria-describedby={`${textId}-hint`}
-        value={text}
-        rows={2}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            send();
-          }
-        }}
-        className="block w-full resize-y rounded-lg border border-surface-border bg-transparent px-2 py-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      />
+      </span>
+      <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
+        <ContentEditor
+          ref={editorRef}
+          value={text}
+          ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
+          ariaDescribedBy={`${textId}-hint`}
+          onUpdate={setText}
+          onSubmit={send}
+          onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+          onUploadingChange={uploadGate.onUploadingChange}
+          debounceMs={0}
+          showBubbleMenu={false}
+          className="max-h-60 overflow-y-auto"
+        />
+      </div>
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint)}
       </p>
+      {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
