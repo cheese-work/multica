@@ -760,6 +760,9 @@ const deleteWorkspacePullRequests = `-- name: DeleteWorkspacePullRequests :exec
 WITH deleted_github_webhook_dispatches AS (
     DELETE FROM github_webhook_dispatch
     WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_snapshot_approvals AS (
+    DELETE FROM github_snapshot_approval
+    WHERE github_snapshot_approval.workspace_id = $1
 ), deleted_github_webhook_revisions AS (
     DELETE FROM github_webhook_revision
     WHERE github_webhook_revision.workspace_id = $1

@@ -1173,6 +1173,23 @@ type GithubRouteGrant struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type GithubSnapshotApproval struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RevisionID     pgtype.UUID        `json:"revision_id"`
+	ApproverUserID pgtype.UUID        `json:"approver_user_id"`
+	SnapshotHash   string             `json:"snapshot_hash"`
+	ObjectKind     string             `json:"object_kind"`
+	ObjectID       int64              `json:"object_id"`
+	AuthorID       int64              `json:"author_id"`
+	BodyHash       string             `json:"body_hash"`
+	ReviewState    string             `json:"review_state"`
+	EditorType     string             `json:"editor_type"`
+	EditorID       int64              `json:"editor_id"`
+	LastEditedAt   pgtype.Timestamptz `json:"last_edited_at"`
+	ReadAt         pgtype.Timestamptz `json:"read_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubWebhookDispatch struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	ObjectKind  string             `json:"object_kind"`

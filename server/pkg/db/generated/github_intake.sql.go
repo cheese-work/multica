@@ -635,7 +635,7 @@ UNION ALL
 SELECT 'revision'::text, id::text, state, reason,
        EXTRACT(EPOCH FROM (now() - created_at))::bigint
 FROM github_webhook_revision
-WHERE state = 'unsigned' AND created_at < now() - $1::bigint * interval '1 second'
+WHERE (state = 'unsigned' OR (state = 'deferred' AND reason = 'approved_snapshot')) AND created_at < now() - $1::bigint * interval '1 second'
 ORDER BY 5 DESC
 `
 

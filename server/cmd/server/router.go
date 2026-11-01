@@ -2160,6 +2160,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			// R3 exact-snapshot approval (CHE-2126 plan 5.3): the handler checks can_route per issue.
+			r.Get("/api/github/intake/revisions/{id}/snapshot", h.GetGitHubRevisionSnapshot)
+			r.Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
+
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
