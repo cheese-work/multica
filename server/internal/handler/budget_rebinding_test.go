@@ -340,13 +340,12 @@ var budgetGuardFor = map[string][]string{
 	"SetProjectWorkflow":  {"projectSwitchWidensBudget"},
 	"SetIssueWorkflow":    {"issueBinding"},
 	"DeleteIssueWorkflow": {"workflowDeleteWidensBudget"},
-	"UpdateIssue":         {"guardIssueProjectRebinding"},
+	"UpdateIssue":         {"guardIssueProjectRebinding", "PreserveProject"},
 }
 
 // budgetGuardExempt names callers that cannot change a binding.
 var budgetGuardExempt = map[string]string{
-	"MoveIssue":     "delegates to the UpdateIssue handler, which sets the actor for the guard",
-	"UpdateContent": "re-sends the issue's own project_id; title and description only",
+	"MoveIssue": "delegates to the UpdateIssue handler, which sets the actor for the guard",
 }
 
 func TestBudgetBindingCallersAreGuarded(t *testing.T) {
@@ -372,6 +371,9 @@ func TestBudgetBindingCallersAreGuarded(t *testing.T) {
 				}
 				calls := map[string]bool{}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if id, ok := n.(*ast.Ident); ok {
+						calls[id.Name] = true
+					}
 					if call, ok := n.(*ast.CallExpr); ok {
 						switch f := call.Fun.(type) {
 						case *ast.SelectorExpr:
