@@ -25,8 +25,11 @@ func workflowTestSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// workflowRequest is a person's request from the app (interactive sign-in).
 func workflowRequest(method, path string, body any) *http.Request {
-	return newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
+	req := newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	return req
 }
 
 // statusSteps names a workflow's own steps by status key.
