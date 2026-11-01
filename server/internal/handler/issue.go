@@ -740,15 +740,15 @@ type SearchIssueResponse struct {
 // earliest occurring individual term and centers the snippet around it.
 func extractSnippet(content, query string) string {
 	runes := []rune(content)
-	lowerRunes := []rune(strings.ToLower(content))
-	queryRunes := []rune(strings.ToLower(query))
+	lowerRunes := []rune(foldDiacritics(content))
+	queryRunes := []rune(foldDiacritics(query))
 
 	idx := findRuneSubstring(lowerRunes, queryRunes)
 
 	// If phrase not found, try individual terms for multi-word queries.
 	matchLen := len(queryRunes)
 	if idx < 0 {
-		terms := strings.Fields(strings.ToLower(query))
+		terms := strings.Fields(foldDiacritics(query))
 		if len(terms) > 1 {
 			earliest := -1
 			earliestLen := 0
@@ -816,13 +816,13 @@ func descriptionContains(desc pgtype.Text, phrase string, terms []string) bool {
 	if !desc.Valid || desc.String == "" {
 		return false
 	}
-	lower := strings.ToLower(desc.String)
-	if strings.Contains(lower, strings.ToLower(phrase)) {
+	lower := foldDiacritics(desc.String)
+	if strings.Contains(lower, foldDiacritics(phrase)) {
 		return true
 	}
 	if len(terms) > 1 {
 		for _, t := range terms {
-			if !strings.Contains(lower, strings.ToLower(t)) {
+			if !strings.Contains(lower, foldDiacritics(t)) {
 				return false
 			}
 		}
@@ -887,11 +887,15 @@ type searchResult struct {
 // trades the title, description, and comment content GIN fast paths for one
 // predictable pass over each relation within the selected workspace.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	// Lowercase in Go so SQL only needs LOWER() on the column side.
-	phrase = strings.ToLower(phrase)
+	// Fold in Go so SQL only needs foldSQL() on the column side. When the query
+	// carries diacritics, matches that also agree on them rank first; an
+	// unaccented query has nothing to prefer.
+	lowerPhrase := strings.ToLower(phrase)
+	phrase = foldDiacritics(phrase)
 	for i, term := range terms {
-		terms[i] = strings.ToLower(term)
+		terms[i] = foldDiacritics(term)
 	}
+	exactDiacritics := lowerPhrase != phrase
 
 	args := []any{}
 	nextArg := func(value any) string {
@@ -922,6 +926,11 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		// Negate only known terminal keys so an unknown legacy key remains
 		// searchable instead of disappearing from the default result set.
 		terminalStatusesParam = nextArg(terminalStatusKeys)
+	}
+
+	var casedParam string
+	if exactDiacritics {
+		casedParam = nextArg("%" + escapeLike(lowerPhrase) + "%")
 	}
 
 	limitParam := nextArg(nil)
@@ -955,6 +964,12 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		fmt.Sprintf("%s AS title_phrase", titlePhrasePredicate),
 		fmt.Sprintf("COALESCE(%s LIKE %s, FALSE) AS description_phrase", loweredIssueDescription, phraseContainsParam),
 	}
+	if exactDiacritics {
+		issueFlagColumns = append(issueFlagColumns,
+			fmt.Sprintf("%s AND LOWER(i.title) LIKE %s AS title_cased", titlePhrasePredicate, casedParam),
+			fmt.Sprintf("COALESCE(%s LIKE %s AND LOWER(i.description) LIKE %s, FALSE) AS description_cased", loweredIssueDescription, phraseContainsParam, casedParam),
+		)
+	}
 	if hasNum {
 		issueFlagColumns = append(issueFlagColumns, fmt.Sprintf("i.number = %s AS number_exact", numParam))
 	}
@@ -983,16 +998,19 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		SELECT %s
 		FROM issue i
 		CROSS JOIN LATERAL (
-			SELECT LOWER(i.title) AS lowered
+			SELECT %s AS lowered
 			OFFSET 0
 		) lowered_issue_title
 		LEFT JOIN LATERAL (
-			SELECT LOWER(COALESCE(i.description, '')) AS lowered
+			SELECT %s AS lowered
 			WHERE NOT %s
 			OFFSET 0
 		) lowered_issue_description ON TRUE
 		WHERE %s
-	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"), titleMatchExpr, issueWhere)
+	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
+		foldSQL("i.title"),
+		foldSQL("COALESCE(i.description, '')"),
+		titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1006,6 +1024,10 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	commentFlagColumns := []string{
 		"c.issue_id",
 		fmt.Sprintf("BOOL_OR(%s LIKE %s) AS comment_phrase", loweredCommentContent, phraseContainsParam),
+	}
+	if exactDiacritics {
+		commentFlagColumns = append(commentFlagColumns,
+			fmt.Sprintf("BOOL_OR(%s LIKE %s AND LOWER(c.content) LIKE %s) AS comment_cased", loweredCommentContent, phraseContainsParam, casedParam))
 	}
 	commentCandidateFlags := []string{"aggregated_comments.comment_phrase"}
 	commentTerms := make([]string, 0, len(termContainsParams))
@@ -1037,7 +1059,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	))
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
-	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
+	// the folded c.content for every flag. OFFSET 0 is the intentional planner fence
 	// that keeps the long comment body lowercased once per row. Future indexable
 	// text predicates must stay outside this projection-only fence so an index on
 	// LOWER(c.content) can still match them.
@@ -1047,7 +1069,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			SELECT %s
 			FROM comment c
 			CROSS JOIN LATERAL (
-				SELECT LOWER(c.content) AS lowered
+				SELECT %s AS lowered
 				OFFSET 0
 			) lowered_comment
 			WHERE c.workspace_id = %s
@@ -1056,9 +1078,18 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		WHERE %s
 	)`,
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
+		foldSQL("c.content"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
+
+	// Exact diacritics rank a match above one that only agrees after folding,
+	// across all three sources. ponytail: phrase-level only; terms spread over
+	// different words fall back to the folded rank.
+	diacriticRank := "0"
+	if exactDiacritics {
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(cm.comment_cased, FALSE) THEN 0 ELSE 1 END"
+	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
 	// and ranking rules once, and materializes only the requested page.
@@ -1159,16 +1190,17 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			%s AS cancelled_rank,
 			%s AS relevance_rank,
 			%s AS status_rank,
+			%s AS diacritic_rank,
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
 		WHERE %s
-	)`, cancelledRank, rankExpr, statusRank, matchSourceExpr, eligibleExpr)
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
-		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, match_source
+		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
 		FROM ranked_candidates
-		ORDER BY cancelled_rank, relevance_rank, status_rank, updated_at DESC, issue_id ASC
+		ORDER BY cancelled_rank, relevance_rank, status_rank, diacritic_rank, updated_at DESC, issue_id ASC
 		LIMIT %s OFFSET %s
 	)`, limitParam, offsetParam)
 
@@ -1186,7 +1218,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
-	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.updated_at DESC, pc.issue_id ASC`,
+	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
 		issueMatchesCTE,
 		commentMatchesCTE,
 		rankedCandidatesCTE,
